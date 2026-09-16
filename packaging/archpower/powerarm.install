@@ -9,11 +9,6 @@ POWERarm installed.
     POWERarmBash                  # a bash running under emulation
     POWERarmConfig                # GUI for per-application settings
 
-  The launcher finds your installed games, Proton/Wine, DXVK and RootFS images
-  by itself, works out a CPU cage from this machine's topology, and shows the
-  exact command it runs. Nothing is hardcoded; add anything it missed under
-  Locations. `ppcx86-launch --help` lists the non-interactive modes.
-
   Gaming notes, per-title workarounds and tuning:
     /usr/share/doc/powerarm/GAMING.md
 

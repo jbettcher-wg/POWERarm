@@ -7,11 +7,6 @@ check_include_files("gdb/jit-reader.h" HAVE_GDB_JIT_READER_H)
 option(BUILD_FEX_LINUX_TESTS "Build FEXLinuxTests (requires x86 compiler)" FALSE)
 option(BUILD_THUNKS "Build thunks" FALSE)
 option(BUILD_FEXCONFIG "Build FEXConfig" TRUE)
-# The launcher is fastppcx86's x86 game launcher. It still exports FEX_* variables
-# to its children, installs under fastppcx86's names and is not part of POWERarm;
-# off until it is ported or removed.
-option(BUILD_LAUNCHER "Build the FastPPCx86 launcher GUI (ppcx86-launch; collides with fastppcx86)" FALSE)
-option(BUILD_LAUNCHER_TUI "Build the FastPPCx86 launcher TUI (ppcx86-launch-tui; collides with fastppcx86)" FALSE)
 # Building guest thunks with clang cross-targeting x86_64 was chosen because it
 # does not require a per-triple cross-gcc install. It corrupts the guest/host
 # ABI boundary though: clang's layout of the generated packed-args structs

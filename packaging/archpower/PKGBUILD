@@ -42,11 +42,7 @@ license=('MIT')
 
 # Runtime: fmt is linked as a shared library (the build prefers the system copy
 # over External/fmt); the Qt6 bits are needed by the FEXConfig GUI
-# (find_package(Qt6 COMPONENTS Qml Quick Widgets) in Source/Tools) and by the
-# ppcx86-launch game launcher, which uses Qt Widgets only -- so it needs
-# qt6-base but not qt6-declarative, and adds no dependency that was not already
-# here. ncurses is for ppcx86-launch-tui, the terminal frontend of the same
-# launcher, which links no Qt at all and works over ssh on a headless box.
+# (find_package(Qt6 COMPONENTS Qml Quick Widgets) in Source/Tools).
 #
 # The host thunks resolve their target library with dlopen() at load time
 # (thunkgen emits fexldr_init_<lib>, see ThunkLibs/Generator/gen.cpp), so none
@@ -61,7 +57,6 @@ depends=(
   'xxhash'
   'qt6-base'
   'qt6-declarative'
-  'ncurses'            # ppcx86-launch-tui
   # dlopen'd by the enabled host thunks:
   'libglvnd'            # libGL.so.1, libEGL.so.1 (GL and EGL thunks)
   'vulkan-icd-loader'   # libvulkan.so.1 (Vulkan thunk)
@@ -221,8 +216,6 @@ build() {
     -DBUILD_GUEST_THUNKS=ON \
     "${_guest32_args[@]}" \
     -DBUILD_FEXCONFIG=ON \
-    -DBUILD_LAUNCHER=OFF \
-    -DBUILD_LAUNCHER_TUI=OFF \
     -DENABLE_LTO=OFF \
     -DENABLE_CCACHE=OFF \
     -DENABLE_ASSERTIONS=OFF \
