@@ -282,10 +282,10 @@ bool QueryInterpreterInstalled(bool ExecutedWithFD, const FEX::Config::PortableI
     return false;
   }
 
-  // Check if FEX's binfmt_misc handlers are both installed.
+  // Check if POWERarm's binfmt_misc handler is installed.
   // The explicit check can be omitted if FEX was executed from an FD,
   // since this only happens if the kernel launched FEX through binfmt_misc
-  return ExecutedWithFD || (access("/proc/sys/fs/binfmt_misc/FEX-x86", F_OK) == 0 && access("/proc/sys/fs/binfmt_misc/FEX-x86_64", F_OK) == 0);
+  return ExecutedWithFD || access("/proc/sys/fs/binfmt_misc/" POWERARM_EXE_PREFIX "-aarch64", F_OK) == 0;
 }
 
 namespace FEX::Kernel {

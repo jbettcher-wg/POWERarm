@@ -13,8 +13,8 @@ for binfmt in "$@"; do
   if [ $result -eq 1 ]; then
     echo "==============================================================="
     echo "$binfmt binfmt file is installed!"
-    echo "This conflicts with FEX-Emu's binfmt_misc!"
-    echo "This will cause issues when running FEX-Emu through binfmt_misc"
+    echo "This conflicts with POWERarm's binfmt_misc!"
+    echo "This will cause issues when running POWERarm through binfmt_misc"
     echo "Not installing until you uninstall this binfmt_misc file!"
     echo "==============================================================="
     exit 1

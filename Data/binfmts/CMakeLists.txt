@@ -11,14 +11,14 @@ function(GenBinFmt Name)
     COMPONENT Runtime)
 endfunction()
 
+# POWERarm registers AArch64 ELF only. The x86/x86-64 entries belong to
+# fastppcx86 and must not be installed from this tree.
 if (NOT USE_LEGACY_BINFMTMISC)
-  configure_file(FEX-x86.conf.in ${CMAKE_BINARY_DIR}/Data/binfmts/FEX-x86.conf)
-  configure_file(FEX-x86_64.conf.in ${CMAKE_BINARY_DIR}/Data/binfmts/FEX-x86_64.conf)
+  configure_file(POWERarm-aarch64.conf.in ${CMAKE_BINARY_DIR}/Data/binfmts/POWERarm-aarch64.conf)
 
-  install(FILES ${CMAKE_BINARY_DIR}/Data/binfmts/FEX-x86.conf ${CMAKE_BINARY_DIR}/Data/binfmts/FEX-x86_64.conf
+  install(FILES ${CMAKE_BINARY_DIR}/Data/binfmts/POWERarm-aarch64.conf
     DESTINATION ${CMAKE_INSTALL_PREFIX}/lib/binfmt.d/
     COMPONENT Runtime)
 else()
-  GenBinFmt(FEX-x86.in)
-  GenBinFmt(FEX-x86_64.in)
+  GenBinFmt(POWERarm-aarch64.in)
 endif()
