@@ -66,7 +66,7 @@ void LoadOptions(int argc, char** argv) {
   }
 
   for (const auto& Program : Parser.args()) {
-    if (Program == "FEX") {
+    if (Program == POWERARM_EXE_PREFIX) {
       AllFEX = true;
     }
     Programs.emplace(Program);
@@ -304,9 +304,9 @@ int main(int argc, char** argv) {
     };
 
     int32_t ProgramArg = -1;
-    if (pid.exe_link.ends_with("FEX")) {
+    if (pid.exe_link.ends_with(POWERARM_EXE_PREFIX)) {
       // Skip the first argument if it contains `FEX`, otherwise the application name begins at 0.
-      ProgramArg = Args[0].ends_with("FEX") ? 1 : 0;
+      ProgramArg = Args[0].ends_with(POWERARM_EXE_PREFIX) ? 1 : 0;
     }
 
     // If matching all "FEX" instances then add to the matched list.

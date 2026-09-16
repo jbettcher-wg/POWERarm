@@ -2,6 +2,8 @@ add_executable(FEXGetConfig Main.cpp)
 
 list(APPEND LIBS Common JemallocDummy)
 
+set_target_properties(FEXGetConfig PROPERTIES OUTPUT_NAME ${POWERARM_EXE_PREFIX}GetConfig)
+
 LinkerGC(FEXGetConfig)
 
 install(TARGETS FEXGetConfig RUNTIME

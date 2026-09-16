@@ -25,19 +25,23 @@ target_link_libraries(FEX PRIVATE ${LIBS})
 
 target_compile_options(FEX PRIVATE ${FEX_TUNE_COMPILE_FLAGS})
 
+set_target_properties(FEX PROPERTIES OUTPUT_NAME ${POWERARM_EXE_PREFIX})
+
 LinkerGC(FEX)
 
 install(TARGETS FEX RUNTIME
     DESTINATION bin
     COMPONENT Runtime)
 
-# Create a copy of FEX with legacy names until phased out.
-install(PROGRAMS ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/FEX
-  RENAME FEXInterpreter
+# Create a copy of POWERarm with legacy names until phased out.
+install(PROGRAMS ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/${POWERARM_EXE_PREFIX}
+  RENAME ${POWERARM_EXE_PREFIX}Interpreter
   DESTINATION bin
   COMPONENT LegacyRuntime)
 
-if (ARCHITECTURE_arm64)
+if (ARCHITECTURE_arm64 OR ARCHITECTURE_ppc64le)
+  # POWERarm registers AArch64 ELF only (Data/binfmts/POWERarm-aarch64.*).
+  set(POWERARM_BINFMT_NAME "${POWERARM_EXE_PREFIX}-aarch64")
   if (NOT USE_LEGACY_BINFMTMISC)
     # Just restart the systemd service
     add_custom_target(binfmt_misc
@@ -45,28 +49,21 @@ if (ARCHITECTURE_arm64)
       COMMAND "service" "systemd-binfmt" "restart")
   else()
     # Check for conflicting binfmt before installing
-    set(CONFLICTING_BINFMTS_32
-      ${CMAKE_INSTALL_PREFIX}/share/binfmts/qemu-i386
-      ${CMAKE_INSTALL_PREFIX}/share/binfmts/box86)
     set(CONFLICTING_BINFMTS_64
-      ${CMAKE_INSTALL_PREFIX}/share/binfmts/qemu-x86_64
-      ${CMAKE_INSTALL_PREFIX}/share/binfmts/box64)
+      ${CMAKE_INSTALL_PREFIX}/share/binfmts/qemu-aarch64)
 
     find_program(UPDATE_BINFMTS_PROGRAM update-binfmts)
     if (UPDATE_BINFMTS_PROGRAM)
       add_custom_target(binfmt_misc
-        echo "Attempting to install FEX binfmt_misc now."
-        COMMAND "${CMAKE_SOURCE_DIR}/Scripts/CheckBinfmtNotInstall.sh" ${CONFLICTING_BINFMTS_32}
+        echo "Attempting to install POWERarm binfmt_misc now."
         COMMAND "${CMAKE_SOURCE_DIR}/Scripts/CheckBinfmtNotInstall.sh" ${CONFLICTING_BINFMTS_64}
-        COMMAND "update-binfmts" "--importdir=${CMAKE_INSTALL_PREFIX}/share/binfmts/" "--import" "FEX-x86"
-        COMMAND "update-binfmts" "--importdir=${CMAKE_INSTALL_PREFIX}/share/binfmts/" "--import" "FEX-x86_64"
+        COMMAND "update-binfmts" "--importdir=${CMAKE_INSTALL_PREFIX}/share/binfmts/" "--import" "${POWERARM_BINFMT_NAME}"
         COMMAND ${CMAKE_COMMAND} -E
-        echo "FEX binfmt_misc installed")
+        echo "POWERarm binfmt_misc installed")
 
       if(TARGET uninstall)
         add_custom_target(uninstall_binfmt_misc
-          COMMAND update-binfmts --unimport FEX-x86 || (exit 0)
-          COMMAND update-binfmts --unimport FEX-x86_64 || (exit 0))
+          COMMAND update-binfmts --unimport ${POWERARM_BINFMT_NAME} || (exit 0))
 
         add_dependencies(uninstall uninstall_binfmt_misc)
       endif()
@@ -74,28 +71,21 @@ if (ARCHITECTURE_arm64)
       # In the case of update-binfmts not being available (Arch for example) then we need to install manually
       add_custom_target(binfmt_misc
         COMMAND ${CMAKE_COMMAND} -E
-          echo "Attempting to remove FEX misc prior to install. Ignore permission denied"
+          echo "Attempting to remove POWERarm misc prior to install. Ignore permission denied"
         COMMAND ${CMAKE_COMMAND} -E
-          echo -1 > /proc/sys/fs/binfmt_misc/FEX-x86 || (exit 0)
+          echo -1 > /proc/sys/fs/binfmt_misc/${POWERARM_BINFMT_NAME} || (exit 0)
         COMMAND ${CMAKE_COMMAND} -E
-          echo -1 > /proc/sys/fs/binfmt_misc/FEX-x86_64 || (exit 0)
-        COMMAND ${CMAKE_COMMAND} -E
-          echo "Attempting to install FEX misc now."
+          echo "Attempting to install POWERarm misc now."
         COMMAND ${CMAKE_COMMAND} -E
           echo
-          ':FEX-x86:M:0:\\x7fELF\\x01\\x01\\x01\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x02\\x00\\x03\\x00:\\xff\\xff\\xff\\xff\\xff\\xfe\\xfe\\x00\\x00\\x00\\x00\\xff\\xff\\xff\\xff\\xff\\xfe\\xff\\xff\\xff:${CMAKE_INSTALL_PREFIX}/bin/FEX:POCF' > /proc/sys/fs/binfmt_misc/register
+          ':${POWERARM_BINFMT_NAME}:M:0:\\x7fELF\\x02\\x01\\x01\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x02\\x00\\xb7\\x00:\\xff\\xff\\xff\\xff\\xff\\xfe\\xfe\\x00\\xff\\xff\\xff\\xff\\xff\\xff\\xff\\xff\\xfe\\xff\\xff\\xff:${CMAKE_INSTALL_PREFIX}/bin/${POWERARM_EXE_PREFIX}:POCF' > /proc/sys/fs/binfmt_misc/register
         COMMAND ${CMAKE_COMMAND} -E
-          echo
-          ':FEX-x86_64:M:0:\\x7fELF\\x02\\x01\\x01\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x02\\x00\\x3e\\x00:\\xff\\xff\\xff\\xff\\xff\\xfe\\xfe\\x00\\x00\\x00\\x00\\xff\\xff\\xff\\xff\\xff\\xfe\\xff\\xff\\xff:${CMAKE_INSTALL_PREFIX}/bin/FEX:POCF' > /proc/sys/fs/binfmt_misc/register
-        COMMAND ${CMAKE_COMMAND} -E
-          echo "binfmt_misc FEX installed")
+          echo "binfmt_misc POWERarm installed")
 
       if(TARGET uninstall)
         add_custom_target(uninstall_binfmt_misc
           COMMAND ${CMAKE_COMMAND} -E
-            echo -1 > /proc/sys/fs/binfmt_misc/FEX-x86 || (exit 0)
-          COMMAND ${CMAKE_COMMAND} -E
-            echo -1 > /proc/sys/fs/binfmt_misc/FEX-x86_64 || (exit 0))
+            echo -1 > /proc/sys/fs/binfmt_misc/${POWERARM_BINFMT_NAME} || (exit 0))
 
         add_dependencies(uninstall uninstall_binfmt_misc)
       endif()

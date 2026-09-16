@@ -10,6 +10,8 @@ target_link_libraries(FEXOfflineCompiler PRIVATE
   ${PTHREAD_LIB}
   fmt::fmt)
 
+set_target_properties(FEXOfflineCompiler PROPERTIES OUTPUT_NAME ${POWERARM_EXE_PREFIX}OfflineCompiler)
+
 LinkerGC(FEXOfflineCompiler)
 
 install(TARGETS FEXOfflineCompiler RUNTIME

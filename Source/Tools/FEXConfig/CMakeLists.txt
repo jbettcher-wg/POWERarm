@@ -13,6 +13,8 @@ else()
 endif()
 target_sources(FEXConfig PRIVATE ${QT_RESOURCES})
 
+set_target_properties(FEXConfig PROPERTIES OUTPUT_NAME ${POWERARM_EXE_PREFIX}Config)
+
 LinkerGC(FEXConfig)
 
 install(TARGETS FEXConfig RUNTIME

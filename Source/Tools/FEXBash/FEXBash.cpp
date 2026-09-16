@@ -23,7 +23,7 @@ int main(int argc, char** argv, char** const envp) {
   // Use /bin/sh for -c commands and /bin/bash for interactive mode
   const char* BashPath = EmptyArgs ? "/bin/bash" : "/bin/sh";
 
-  std::string FEXPath = std::filesystem::path(argv[0]).parent_path().string() + "/FEX";
+  std::string FEXPath = std::filesystem::path(argv[0]).parent_path().string() + "/" POWERARM_EXE_PREFIX;
 
   // Check if a local FEX to FEXBash exists
   // If it does then it takes priority over the installed one
@@ -31,11 +31,11 @@ int main(int argc, char** argv, char** const envp) {
     char FEXBashPath[PATH_MAX];
     auto Result = readlink("/proc/self/exe", FEXBashPath, PATH_MAX);
     if (Result != -1) {
-      FEXPath = std::filesystem::path(&FEXBashPath[0], &FEXBashPath[Result]).parent_path().string() + "/FEX";
+      FEXPath = std::filesystem::path(&FEXBashPath[0], &FEXBashPath[Result]).parent_path().string() + "/" POWERARM_EXE_PREFIX;
     }
 
     if (!std::filesystem::exists(FEXPath)) {
-      fmt::print(stderr, "Could not locate FEX executable\n");
+      fmt::print(stderr, "Could not locate " POWERARM_EXE_PREFIX " executable\n");
       std::abort();
     }
   }
