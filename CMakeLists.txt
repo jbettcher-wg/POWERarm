@@ -6,17 +6,7 @@ check_include_files("gdb/jit-reader.h" HAVE_GDB_JIT_READER_H)
 
 option(BUILD_THUNKS "Build thunks" FALSE)
 option(BUILD_FEXCONFIG "Build FEXConfig" TRUE)
-# Building guest thunks with clang cross-targeting x86_64 was chosen because it
-# does not require a per-triple cross-gcc install. It corrupts the guest/host
-# ABI boundary though: clang's layout of the generated packed-args structs
-# disagrees with what the ppc64le-clang-built host thunks marshal, and calls
-# with structurally-richer arguments (glGenFramebuffers, VkImageCreateInfo,
-# etc.) crash the moment the layouts disagree. Simple string queries survive.
-# Reproduced on this host with FTL segfaulting at "Creating FBO..." and
-# Factorio dying ~2s after "OpenGL initialized" — both go away when this is
-# OFF and the ct-ng-built x86_64 cross-gcc compiles the guest stubs instead.
-# Default OFF until the layout divergence is fixed upstream; hosts without an
-# x86_64 cross-gcc need -DENABLE_CLANG_THUNKS=ON and accept the regression.
+# Links the host thunk libraries with lld (ThunkLibs/HostLibs).
 option(ENABLE_CLANG_THUNKS "Build thunks with clang" FALSE)
 option(ENABLE_IWYU "Enable the Include What You Use sanitizer" FALSE)
 option(ENABLE_LTO "Enable LTO with compilation" TRUE)
@@ -47,7 +37,6 @@ set_property(CACHE FEXCORE_PROFILER_BACKEND PROPERTY STRINGS gpuvis tracy)
 option(ENABLE_GLIBC_ALLOCATOR_HOOK_FAULT "Enables glibc memory allocation hooking with fault for CI testing")
 option(USE_PDB_DEBUGINFO "Build debug info in PDB format" FALSE)
 
-set(X86_64_TOOLCHAIN_FILE "${CMAKE_CURRENT_SOURCE_DIR}/Data/CMake/toolchain_x86_64.cmake" CACHE FILEPATH "Toolchain file for the (cross-)compiler targeting x86_64")
 set(X86_DEV_ROOTFS "/" CACHE FILEPATH "Path to the x86_64 sysroot used for cross-compiling")
 # Cross-toolchains keep libstdc++ headers beside the compiler rather than inside the sysroot, so
 # X86_DEV_ROOTFS alone finds libc but not <type_traits>. Point this at the toolchain root (the
@@ -614,10 +603,21 @@ endif()
 if (BUILD_THUNKS)
   set(FEX_PROJECT_SOURCE_DIR ${PROJECT_SOURCE_DIR})
 
+  # Guest-side stub libraries. The inherited x86-64 guest stubs and their
+  # cross-build (x86_64 cross gcc, X86_DEV_ROOTFS sysroot, guest-libs
+  # ExternalProject) were removed in POWERarm M0a. AArch64 guest stubs need an
+  # AAPCS64 model in thunkgen and are milestone M5.
+  option(BUILD_GUEST_THUNKS "Build guest stub libraries (AArch64 guest thunks, not implemented yet)" OFF)
+  if (BUILD_GUEST_THUNKS)
+    message(FATAL_ERROR "AArch64 guest thunks not implemented yet (POWERarm M5). Configure with -DBUILD_GUEST_THUNKS=OFF.")
+  endif()
+
+  # Host halves only. thunkgen's interface parse still models the inherited
+  # x86-64 guest ABI until M5 replaces it.
+  #
   # ArchPOWER packages a full x86_64 cross toolchain
   # (x86_64-pc-linux-gnu-{gcc,glibc}). When no explicit X86_DEV_ROOTFS was
-  # given, use its sysroot everywhere one is needed: thunkgen's x86 interface
-  # parses (host and guest side) and the guest-libs builds. Thunkgen output
+  # given, use its sysroot for thunkgen's x86 interface parses. Thunkgen output
   # against it validated byte-identical to a full ct-ng x86 sysroot for every
   # interface (2026-08-10).
   set(THUNKGEN_X86_CROSS_CXX_DIR "")
@@ -634,95 +634,15 @@ if (BUILD_THUNKS)
     endforeach()
   endif()
 
-  # Declared here (rather than at first use below) so the Generator decision
-  # can see it.
-  option(BUILD_GUEST_THUNKS "Build x86_64 guest stub libraries via ExternalProject" ON)
-
-  # With pre-generated host .inl files and no guest-side builds, nothing runs
-  # the generator, so don't require libclang for it.
+  # With pre-generated host .inl files nothing runs the generator, so don't
+  # require libclang for it.
   set(THUNKGEN_PREGEN_DIR "" CACHE PATH
       "Directory of pre-generated thunkgen host .inl files; skips the x86 interface parse")
-  if (NOT THUNKGEN_PREGEN_DIR OR BUILD_GUEST_THUNKS)
+  if (NOT THUNKGEN_PREGEN_DIR)
     add_subdirectory(ThunkLibs/Generator)
   endif()
 
-  # Thunk targets for both host libraries and IDE integration
   add_subdirectory(ThunkLibs/HostLibs)
-
-  # Thunk targets for IDE integration of guest code, only.
-  #
-  # These compile the guest stub sources with the *host* toolchain. The stubs
-  # contain the x86 `0f 3f` thunk trampolines, so on a non-x86 host the host
-  # assembler rejects them outright ("branch target not a multiple of four" on
-  # PPC64LE). They are only ever built for editor/IDE indexing, so skip them
-  # rather than let them break `ninja all`. The real guest stubs are built by
-  # the guest-libs ExternalProject below.
-  if (CMAKE_HOST_SYSTEM_PROCESSOR MATCHES "^(x86_64|amd64|AMD64|i.86)$")
-    add_subdirectory(ThunkLibs/GuestLibs)
-  else()
-    message(STATUS "Skipping guest-thunk IDE targets: host ${CMAKE_HOST_SYSTEM_PROCESSOR} cannot assemble x86 thunk trampolines")
-  endif()
-
-  # The guest-side stub libraries are optionally cross-built here. Disable on
-  # hosts without an x86_64 cross-compile chain and ship pre-built guest stubs
-  # separately.
-
-  # The guest stubs are built with gcc even when the host thunks use clang.
-  #
-  # ThunkLibs/include/common/Guest.h has to make the generated fexfn_pack_
-  # symbols non-static under clang (it can't alias to a static function), so a
-  # clang-built stub exports ~2400 extra symbols -- every fexfn_pack_gl*, plus
-  # bcmp, __cxa_begin_catch and assorted libstdc++ instantiations. The stub is
-  # dlopen'd as libGL.so.1 with RTLD_GLOBAL, so those land in the guest's
-  # global symbol namespace and Grimrock segfaults during GL setup. The
-  # gcc-built stub keeps them static and runs fine. Decouple the two rather
-  # than force the host thunks off clang as well.
-  option(ENABLE_CLANG_GUEST_THUNKS "Build the guest stub libraries with clang instead of gcc" OFF)
-
-  if (BUILD_GUEST_THUNKS)
-    # Thunk targets for guest libraries
-    include(ExternalProject)
-    ExternalProject_Add(guest-libs
-      PREFIX guest-libs
-      SOURCE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/ThunkLibs/GuestLibs"
-      BINARY_DIR "Guest"
-      CMAKE_ARGS
-        "-DBITNESS=64"
-        "-DCMAKE_BUILD_TYPE=${CMAKE_BUILD_TYPE}"
-        "-DENABLE_CLANG_THUNKS=${ENABLE_CLANG_GUEST_THUNKS}"
-        "-DCMAKE_TOOLCHAIN_FILE:FILEPATH=${X86_64_TOOLCHAIN_FILE}"
-        "-DCMAKE_INSTALL_PREFIX=${CMAKE_INSTALL_PREFIX}"
-        "-DFEX_PROJECT_SOURCE_DIR=${FEX_PROJECT_SOURCE_DIR}"
-        "-DGENERATOR_EXE=$<TARGET_FILE:thunkgen>"
-        "-DX86_DEV_ROOTFS=${X86_DEV_ROOTFS}"
-        "-DX86_DEV_GCC_TOOLCHAIN=${X86_DEV_GCC_TOOLCHAIN}"
-        "-DTHUNKGEN_X86_CROSS_CXX_DIR=${THUNKGEN_X86_CROSS_CXX_DIR}"
-        # The inner configure runs during the outer build and would otherwise
-        # absorb HOST toolchain flags from the environment (makepkg exports
-        # CFLAGS=-mcpu=power8..., which the x86 cross gcc rejects). Guest code
-        # gets its flags from the toolchain file and the build type only.
-        "-DCMAKE_C_FLAGS="
-        "-DCMAKE_CXX_FLAGS="
-        "-DCMAKE_EXE_LINKER_FLAGS="
-        "-DCMAKE_SHARED_LINKER_FLAGS="
-        "-DCMAKE_MODULE_LINKER_FLAGS="
-      INSTALL_COMMAND ""
-      BUILD_ALWAYS ON
-      DEPENDS thunkgen)
-
-    install(
-      CODE "message(\"-- Installing: guest-libs\")"
-      CODE "
-        execute_process(COMMAND ${CMAKE_COMMAND} --build . --target install
-          WORKING_DIRECTORY ${CMAKE_BINARY_DIR}/Guest)"
-      DEPENDS guest-libs
-      COMPONENT Runtime)
-
-    add_custom_target(uninstall_guest-libs
-      COMMAND ${CMAKE_COMMAND} "--build" "." "--target" "uninstall"
-      WORKING_DIRECTORY ${CMAKE_BINARY_DIR}/Guest)
-    add_dependencies(uninstall uninstall_guest-libs)
-  endif()
 endif()
 
 # Order the build-time git_version.h refresh ahead of the translation units

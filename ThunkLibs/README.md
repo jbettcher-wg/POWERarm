@@ -5,8 +5,11 @@ We support both guest->host thunks, as well as host->guest callbacks
 
 ## Building and using
 Configure the main FEX project with `-DBUILD_THUNKS=ON`. The host halves then build as part of the
-default target into `$BUILDDIR/HostLibs_64`; the guest stubs are cross-built by
-the `guest-libs` ExternalProject into `$BUILDDIR/Guest`.
+default target into `$BUILDDIR/HostLibs_64`.
+
+**POWERarm note.** The x86-64 guest-stub cross-build was removed in M0a. `-DBUILD_GUEST_THUNKS=ON`
+is a configure error until AArch64 guest stubs land (M5). The `lib*/Guest.cpp` sources and
+`include/common/Guest.h` are kept as the starting point; they still contain x86 trampolines.
 
 **PPC64LE note.** The generator must parse each `libX_interface.cpp` with an **x86** target, because
 the code it emits encodes guest data layout. Parsing against the ppc64le system headers is unsound:

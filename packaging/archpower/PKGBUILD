@@ -13,12 +13,8 @@
 # Override the branch with FASTPPCX86_GIT_BRANCH (e.g. to test daedalao-wt
 # before a release merge).
 #
-# Library thunks (native host GL/Vulkan/wayland passthrough) are ON,
-# everything built from source. ArchPOWER packages a full x86_64 cross
-# toolchain (x86_64-pc-linux-gnu-{gcc,glibc}); the build uses it for the
-# x86-target interface parses and the 64-bit guest stub libraries, all from
-# repo packages. Generated output is byte-identical to the maintainer ct-ng
-# sysroot reference (validated 2026-08-10).
+# Library thunks: host halves only. Guest stub libraries are not built
+# (AArch64 guest thunks are POWERarm milestone M5).
 
 # POWERarm: package renamed so it installs side by side with fastppcx86. Only the
 # names are updated here; the build recipe below is still fastppcx86's.
@@ -77,10 +73,6 @@ makedepends=(
   'libxcb'         # xcb presentation-support query in the Vulkan host thunk
   'libxshmfence'   # xshmfence host thunk
   'wayland'        # wayland-client host thunk
-  # x86 cross toolchain: thunkgen's x86-target interface parses and the
-  # 64-bit guest stub libraries.
-  'x86_64-pc-linux-gnu-gcc'
-  'x86_64-pc-linux-gnu-glibc'
 )
 optdepends=(
   'squashfuse: mount squashfs x86-64 RootFS images'
@@ -188,7 +180,7 @@ build() {
     -DBUILD_TESTING=OFF \
     -DBUILD_FEX_LINUX_TESTS=OFF \
     -DBUILD_THUNKS=ON \
-    -DBUILD_GUEST_THUNKS=ON \
+    -DBUILD_GUEST_THUNKS=OFF \
     -DBUILD_FEXCONFIG=ON \
     -DENABLE_LTO=OFF \
     -DENABLE_CCACHE=OFF \
@@ -214,12 +206,6 @@ package() {
   cd "$srcdir/$pkgname"
 
   install -Dm644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
-
-  # Guest thunk libraries (built by the guest-libs ExternalProjects; their
-  # INSTALL_COMMAND is empty) into the config-default location
-  # ($prefix/share/powerarm/GuestThunks).
-  install -dm755 "$pkgdir/usr/share/powerarm/GuestThunks"
-  install -m755 "$srcdir"/build/Guest/*.so "$pkgdir/usr/share/powerarm/GuestThunks/"
 
   # System-wide default configuration: thunks enabled for the libraries whose
   # thunk is production quality. Users override per-app or per-user via
