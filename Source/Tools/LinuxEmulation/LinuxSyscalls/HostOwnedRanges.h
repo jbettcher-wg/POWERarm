@@ -86,7 +86,7 @@ public:
 
   /// True if [Base, Base+Size) intersects any host-owned range.
   /// Always false before SnapshotSelf() has run, so tools that never call it
-  /// (TestHarnessRunner, CodeSizeValidation, unit tests) are unaffected.
+  /// (POWERarmOfflineCompiler, unit tests) are unaffected.
   static bool Overlaps(uint64_t Base, uint64_t Size);
 
   /// Emit one diagnostic line for a refused guest request. Rate-limited so a

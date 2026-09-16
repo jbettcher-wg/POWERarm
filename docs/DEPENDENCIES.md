@@ -54,7 +54,6 @@ at configure time with "does not contain a CMakeLists.txt".
 | `External/Vulkan-Headers` | `BUILD_THUNKS`. Used in preference to any system copy |
 | `External/Catch2` | `BUILD_TESTING`. Arch POWER has no Catch2 3 package (`Catch2_DIR-NOTFOUND`) |
 | `External/vixl` | `BUILD_TESTING` or `ENABLE_VIXL_{DISASSEMBLER,SIMULATOR}`. aarch64 disassembler for emitter tests only |
-| `External/zydis` | `ENABLE_ZYDIS` only (default OFF) |
 | `External/tracy` | `ENABLE_FEXCORE_PROFILER` with `FEXCORE_PROFILER_BACKEND=tracy` |
 
 ## 2. `BUILD_THUNKS=ON`

@@ -692,7 +692,7 @@ void FetchHostFeatures(FEX::CPUFeatures& Features, FEXCore::HostFeatures& HostFe
   // Attribution, since advertising AVX flips two things at once: setting only
   // the guest-glibc ifunc half (cpu-features.c gates Fast_Unaligned_Copy et al.
   // behind this same CPUID bit) measured neutral, so the regression is JIT
-  // codegen rather than ifunc selection. See docs/GAMING.md.
+  // codegen rather than ifunc selection (fastppcx86 measurement).
   HostFeatures.SupportsAVX = false;
   // AVX2 advertisement follows AVX unless FEX_HOSTFEATURES=disableavx2 masks
   // it: leaf-7 AVX2/BMI reporting is gated on BOTH bits in CPUID.cpp. This is

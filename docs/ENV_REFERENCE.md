@@ -960,12 +960,6 @@ When TSO emulation is enabled, controls if vector loadstores should also be atom
 Use volatile metadata in PE files to inform TSO instructions when available. When metadata is
 unavailable falls back to the currently enabled TSO options.
 
-### `FEX_X86DISASSEMBLE`
-`bool` · default `false`
-
-Enables x86/x86-64 guest disassembly output for compiled blocks. Requires FEX to be built with
--DENABLE_ZYDIS=TRUE
-
 ### `FEX_X87REDUCEDPRECISION`
 `bool` · default `false`
 

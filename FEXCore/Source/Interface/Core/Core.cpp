@@ -11,9 +11,6 @@ $end_info$
 #include <cinttypes>
 #include <cstdint>
 #include <cstdio>
-#ifdef ZYDIS_DISASSEMBLER
-#include <Zydis/Zydis.h>
-#endif
 #ifndef ARCHITECTURE_ppc64le
 #include "Interface/Core/ArchHelpers/Arm64Emitter.h"
 #endif
@@ -935,7 +932,7 @@ bool ContextImpl::InitCore() {
       "     Measured on this port, same guest binary: the MP litmus shape fired 659, 12 and\n"
       "     51 times per 30000 rounds with it on, and 0 times in 150000 rounds with it off.\n"
       "     IRIW agrees: 552/1000000 on, 0/67200000 off. A seq_cst-shaped test does NOT\n"
-      "     catch it. See docs/GAMING.md and powerpc64le-handbook/probes/atomics_litmus.c.\n"
+      "     catch it. See powerpc64le-handbook/probes/atomics_litmus.c.\n"
       "     Use only where a wrong answer is acceptable.\n";
     // write(2) rather than fwrite: no locale, no buffering, nothing to flush,
     // and no interleaving with a guest that has its own stdio state.
@@ -1221,14 +1218,6 @@ ContextImpl::GenerateIR(FEXCore::Core::InternalThreadState* Thread, uint64_t Gue
 
     const auto GPRSize = Thread->OpDispatcher->GetGPROpSize();
 
-#ifdef ZYDIS_DISASSEMBLER
-    const auto ZydisMachineMode = Config.Is64BitMode ? ZYDIS_MACHINE_MODE_LONG_64 : ZYDIS_MACHINE_MODE_LEGACY_32;
-    if (FEXCore::Config::Get_X86DISASSEMBLE()) {
-      const uint64_t DecodedMin = Thread->FrontendDecoder->DecodedMinAddress;
-      const uint64_t DecodedMax = Thread->FrontendDecoder->DecodedMaxAddress;
-      LogMan::Msg::IFmt("Guest x86 Begin (RIP={:#x}, {:#x}-{:#x})", GuestRIP, DecodedMin, DecodedMax);
-    }
-#endif
 
     // ForceTSO metadata is read per block and the instruction iterator lives
     // for the block loop; hold the reader side across it (see ForceTSOMutex).
@@ -1240,11 +1229,6 @@ ContextImpl::GenerateIR(FEXCore::Core::InternalThreadState* Thread, uint64_t Gue
       const bool FullSMCValidation =
         Config.SMCChecks == FEXCore::Config::CONFIG_SMC_FULL || Block.ForceFullSMCDetection || CodePagesValidateOnly;
 
-#ifdef ZYDIS_DISASSEMBLER
-      if (FEXCore::Config::Get_X86DISASSEMBLE() && CodeBlocks->size() > 1) {
-        LogMan::Msg::IFmt("  Block {} Entry={:#x} NumInsts={}", j, Block.Entry, Block.NumInstructions);
-      }
-#endif
 
       bool BlockInForceTSOValidRange = false;
       auto InstForceTSOIt = ForceTSOInstructions.end();
@@ -1278,17 +1262,6 @@ ContextImpl::GenerateIR(FEXCore::Core::InternalThreadState* Thread, uint64_t Gue
         TableInfo = Block.DecodedInstructions[i].TableInfo;
         DecodedInfo = &Block.DecodedInstructions[i];
 
-#ifdef ZYDIS_DISASSEMBLER
-        if (FEXCore::Config::Get_X86DISASSEMBLE()) {
-          const uint8_t* InstBytes = reinterpret_cast<const uint8_t*>(InstAddress);
-          ZydisDisassembledInstruction ZydisInst;
-          if (ZYAN_SUCCESS(ZydisDisassembleIntel(ZydisMachineMode, InstAddress, InstBytes, DecodedInfo->InstSize, &ZydisInst))) {
-            LogMan::Msg::IFmt("    {:#x}: {}", InstAddress, ZydisInst.text);
-          } else {
-            LogMan::Msg::IFmt("    {:#x}: (decode failed, {} bytes)", InstAddress, DecodedInfo->InstSize);
-          }
-        }
-#endif
 
         if (RecordBranchImmSites) {
           if (!BranchImmSitesOverflowed) {
@@ -1558,11 +1531,6 @@ ContextImpl::GenerateIR(FEXCore::Core::InternalThreadState* Thread, uint64_t Gue
       }
     }
 
-#ifdef ZYDIS_DISASSEMBLER
-    if (FEXCore::Config::Get_X86DISASSEMBLE()) {
-      LogMan::Msg::IFmt("Guest x86 End");
-    }
-#endif
 
     Thread->OpDispatcher->Finalize();
 

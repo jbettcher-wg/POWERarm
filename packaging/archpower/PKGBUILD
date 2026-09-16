@@ -98,7 +98,7 @@ _repobranch="${FASTPPCX86_GIT_BRANCH:-main}"
 # real makepkg sources (rather than fetched inside prepare()) so that the
 # download phase stays in makepkg's hands and prepare() needs no network.
 # Only the submodules this configuration actually compiles are listed:
-# Catch2/vixl (tests), zydis (ENABLE_ZYDIS), tracy (profiler) and the
+# Catch2/vixl (tests), tracy (profiler) and the
 # *-tests-bins are all skipped. drm-headers is needed by the 32-bit ioctl
 # emulation in LinuxEmulation; Vulkan-Headers by the Vulkan thunk.
 source=(
@@ -189,7 +189,6 @@ build() {
     -DENABLE_JEMALLOC_GLIBC_ALLOC=ON \
     -DENABLE_GDB_SYMBOLS=ON \
     -DENABLE_OFFLINE_TELEMETRY=ON \
-    -DENABLE_ZYDIS=OFF \
     -DUSE_LEGACY_BINFMTMISC=OFF \
     -DTUNE_CPU=none \
     -DTUNE_ARCH=generic \

@@ -103,7 +103,6 @@ flock /tmp/fex_build.lock nice -n19 taskset -c <high cores> makepkg -s
 | `ENABLE_JEMALLOC_GLIBC_ALLOC` | `ON` | required for thunk execution |
 | `ENABLE_FEX_ALLOCATOR` | `ON` | rpmalloc-backed `fextl` allocations |
 | `ENABLE_GDB_SYMBOLS` | `ON` | installs the `FEXGDBReader` JIT reader |
-| `ENABLE_ZYDIS` | `OFF` | guest disassembly is a debugging feature |
 | `TUNE_CPU` | `none` | upstream defaults to `native`, which is wrong for a distributable package. Set `power9`/`power10` for a machine-specific rebuild |
 | `OVERRIDE_VERSION` / `OVERRIDE_HASH` | from git | the commit hash is part of the JIT code-cache key, so it must be accurate |
 
