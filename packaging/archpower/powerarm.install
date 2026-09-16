@@ -1,15 +1,13 @@
 post_install() {
   cat <<'EOF'
 
-FastPPCx86 installed.
+POWERarm installed.
 
   Getting started:
-    FEXRootFSFetcher              # fetch/extract an x86-64 RootFS
-    ppcx86-launch                 # the game launcher (GUI)
-    ppcx86-launch-tui             # the same launcher in a terminal, for ssh
-    FEX /path/to/x86_64-binary    # run an x86-64 executable
-    FEXBash                       # a bash running under emulation
-    FEXConfig                     # GUI for per-application settings
+    POWERarmRootFSFetcher         # fetch/extract a RootFS
+    POWERarm /path/to/binary      # run a guest executable
+    POWERarmBash                  # a bash running under emulation
+    POWERarmConfig                # GUI for per-application settings
 
   The launcher finds your installed games, Proton/Wine, DXVK and RootFS images
   by itself, works out a CPU cage from this machine's topology, and shows the
@@ -17,15 +15,15 @@ FastPPCx86 installed.
   Locations. `ppcx86-launch --help` lists the non-interactive modes.
 
   Gaming notes, per-title workarounds and tuning:
-    /usr/share/doc/fastppcx86/GAMING.md
+    /usr/share/doc/powerarm/GAMING.md
 
-  binfmt_misc handlers for x86/x86-64 ELF binaries are installed to
+  The binfmt_misc handler for AArch64 ELF binaries is installed to
   /usr/lib/binfmt.d. Activate them with:
     systemctl restart systemd-binfmt
 
   Library thunks (native host GL/Vulkan/wayland passthrough) are installed
-  and enabled system-wide via /usr/share/fex-emu/Config.json. Disable or
-  tune them per user (~/.config/fex-emu/Config.json) or per app (FEXConfig).
+  and enabled system-wide via /usr/share/powerarm/Config.json. Disable or
+  tune them per user (~/.config/powerarm/Config.json) or per app (POWERarmConfig).
   If this package was built without an x86 RootFS (the default), 32-bit
   titles fall back to emulated libraries; rebuild with FASTPPCX86_X86_ROOTFS
   set to add the 32-bit thunk stubs (see the PKGBUILD header).

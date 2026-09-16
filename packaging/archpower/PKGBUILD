@@ -1,7 +1,7 @@
 # Maintainer: daedalao <daedalao@hotmail.com>
 #
 # FastPPCx86: x86 / x86-64 emulation for 64-bit POWER (ppc64le).
-# Downstream port of FEX-Emu; the installed binaries keep their FEX names.
+# Downstream port of FEX-Emu via fastppcx86; installed names use the POWERarm prefix.
 #
 # Builds the 'main' branch of the public repository by default:
 #   cd packaging/archpower && makepkg -s
@@ -24,11 +24,13 @@
 # x86 sysroot the repos do not carry. Point FASTPPCX86_X86_ROOTFS at an
 # extracted multilib x86-64 RootFS (e.g. from FEXRootFSFetcher) to build and
 # ship them too:
-#   FASTPPCX86_X86_ROOTFS=$HOME/.local/share/fex-emu/RootFS/ArchLinux makepkg -s
+#   FASTPPCX86_X86_ROOTFS=$HOME/.local/share/powerarm/RootFS/ArchLinux makepkg -s
 # Without it, 64-bit titles get thunks and 32-bit titles transparently fall
 # back to emulated libraries.
 
-pkgname=fastppcx86
+# POWERarm: package renamed so it installs side by side with fastppcx86. Only the
+# names are updated here; the build recipe below is still fastppcx86's.
+pkgname=powerarm
 # Placeholder: pkgver() below recomputes this from the checkout at build time.
 # The committed value tracks the last metadata refresh so .SRCINFO is not stale.
 pkgver=r14884.211e31a
@@ -219,8 +221,8 @@ build() {
     -DBUILD_GUEST_THUNKS=ON \
     "${_guest32_args[@]}" \
     -DBUILD_FEXCONFIG=ON \
-    -DBUILD_LAUNCHER=ON \
-    -DBUILD_LAUNCHER_TUI=ON \
+    -DBUILD_LAUNCHER=OFF \
+    -DBUILD_LAUNCHER_TUI=OFF \
     -DENABLE_LTO=OFF \
     -DENABLE_CCACHE=OFF \
     -DENABLE_ASSERTIONS=OFF \
@@ -232,7 +234,7 @@ build() {
     -DUSE_LEGACY_BINFMTMISC=OFF \
     -DTUNE_CPU=none \
     -DTUNE_ARCH=generic \
-    -DOVERRIDE_VERSION="FEX-$pkgver" \
+    -DOVERRIDE_VERSION="POWERarm-$pkgver" \
     -DOVERRIDE_HASH="$_hash" \
     -Wno-dev
 
@@ -248,19 +250,19 @@ package() {
 
   # Guest thunk libraries (built by the guest-libs ExternalProjects; their
   # INSTALL_COMMAND is empty) into the config-default location
-  # ($prefix/share/fex-emu/GuestThunks{,_32}).
-  install -dm755 "$pkgdir/usr/share/fex-emu/GuestThunks"
-  install -m755 "$srcdir"/build/Guest/*.so "$pkgdir/usr/share/fex-emu/GuestThunks/"
+  # ($prefix/share/powerarm/GuestThunks{,_32}).
+  install -dm755 "$pkgdir/usr/share/powerarm/GuestThunks"
+  install -m755 "$srcdir"/build/Guest/*.so "$pkgdir/usr/share/powerarm/GuestThunks/"
   if [[ -n $_x86rootfs ]]; then
-    install -dm755 "$pkgdir/usr/share/fex-emu/GuestThunks_32"
-    install -m755 "$srcdir"/build/Guest_32/*.so "$pkgdir/usr/share/fex-emu/GuestThunks_32/"
+    install -dm755 "$pkgdir/usr/share/powerarm/GuestThunks_32"
+    install -m755 "$srcdir"/build/Guest_32/*.so "$pkgdir/usr/share/powerarm/GuestThunks_32/"
   fi
 
   # System-wide default configuration: thunks enabled for the libraries whose
   # thunk is production quality. Users override per-app or per-user via
-  # FEXConfig / ~/.config/fex-emu; asound stays off (the stub has no symbol
+  # POWERarmConfig / ~/.config/powerarm; asound stays off (the stub has no symbol
   # versions and crash-loops PulseAudio clients).
-  install -Dm644 /dev/stdin "$pkgdir/usr/share/fex-emu/Config.json" <<'EOF'
+  install -Dm644 /dev/stdin "$pkgdir/usr/share/powerarm/Config.json" <<'EOF'
 {
   "Config": {},
   "ThunksDB": {
@@ -282,7 +284,7 @@ EOF
   local _tpl _fmt
   for _tpl in Data/binfmts/*.conf.in; do
     _fmt="${_tpl##*/}"
-    sed 's|@CMAKE_INSTALL_PREFIX@|/usr|g' "$_tpl" \
+    sed -e 's|@CMAKE_INSTALL_PREFIX@|/usr|g' -e 's|@POWERARM_EXE_PREFIX@|POWERarm|g' "$_tpl" \
       >"$pkgdir/usr/lib/binfmt.d/${_fmt%.in}"
     chmod 644 "$pkgdir/usr/lib/binfmt.d/${_fmt%.in}"
   done
@@ -295,8 +297,8 @@ EOF
   done
 
   # The uninstall/binfmt helper scripts are build-system scaffolding, and the
-  # legacy FEXInterpreter alias is a plain copy of FEX; drop the duplicate.
-  if [[ -f $pkgdir/usr/bin/FEXInterpreter && -f $pkgdir/usr/bin/FEX ]]; then
-    ln -sf FEX "$pkgdir/usr/bin/FEXInterpreter"
+  # legacy POWERarmInterpreter alias is a plain copy of POWERarm; drop the duplicate.
+  if [[ -f $pkgdir/usr/bin/POWERarmInterpreter && -f $pkgdir/usr/bin/POWERarm ]]; then
+    ln -sf POWERarm "$pkgdir/usr/bin/POWERarmInterpreter"
   fi
 }
