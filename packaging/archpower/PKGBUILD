@@ -19,14 +19,6 @@
 # x86-target interface parses and the 64-bit guest stub libraries, all from
 # repo packages. Generated output is byte-identical to the maintainer ct-ng
 # sysroot reference (validated 2026-08-10).
-#
-# The 32-bit guest stubs are the one exception: they need an i686/multilib
-# x86 sysroot the repos do not carry. Point FASTPPCX86_X86_ROOTFS at an
-# extracted multilib x86-64 RootFS (e.g. from FEXRootFSFetcher) to build and
-# ship them too:
-#   FASTPPCX86_X86_ROOTFS=$HOME/.local/share/powerarm/RootFS/ArchLinux makepkg -s
-# Without it, 64-bit titles get thunks and 32-bit titles transparently fall
-# back to emulated libraries.
 
 # POWERarm: package renamed so it installs side by side with fastppcx86. Only the
 # names are updated here; the build recipe below is still fastppcx86's.
@@ -109,7 +101,6 @@ _repourl="${FASTPPCX86_GIT_URL:-https://github.com/daedalao/fastppcx86.git}"
 # Pinned explicitly rather than relying on the remote HEAD symref, so a change
 # to the repository's default branch cannot silently change what is packaged.
 _repobranch="${FASTPPCX86_GIT_BRANCH:-main}"
-_x86rootfs="${FASTPPCX86_X86_ROOTFS:-}"
 
 # The bundled third-party trees are git submodules. They are listed here as
 # real makepkg sources (rather than fetched inside prepare()) so that the
@@ -173,29 +164,13 @@ build() {
   local _hash
   _hash="$(git -C "$srcdir/$pkgname" rev-parse HEAD)"
 
-  # 32-bit guest stubs only when a multilib x86 RootFS was provided (see the
-  # header comment). They build with clang against the RootFS sysroot; the
-  # 64-bit stubs always build, with the repo cross gcc (gcc deliberately:
-  # clang-built 64-bit stubs export ~2400 extra symbols and break titles, see
-  # the note in CMakeLists.txt).
-  local _guest32_args=(-DBUILD_GUEST_THUNKS_32=OFF)
-  if [[ -n $_x86rootfs ]]; then
-    _guest32_args=(
-      -DBUILD_GUEST_THUNKS_32=ON
-      -DENABLE_CLANG_GUEST_THUNKS_32=ON
-      -DX86_DEV_ROOTFS_32="$_x86rootfs"
-    )
-  fi
-
   # Mirrors the known-good POWER9 configuration (build-smc): clang, Ninja,
   # RelWithDebInfo, jemalloc-glibc + FEX allocator on, LTO off, tests off.
   # TUNE_CPU is forced to 'none'; the upstream default of 'native' bakes
   # -march=native into a package that other machines then install.
   # Set it to power9/power10 for a machine-specific rebuild.
   #
-  # Two options are deliberately left at their CMakeLists defaults:
-  #   BUILD_THUNKS_32BIT (ON)  32-bit host-side thunks. Independent of the
-  #     guest stubs below: it only controls the HostThunks_32 halves.
+  # One option is deliberately left at its CMakeLists default:
   #   X86_DEV_ROOTFS ("/")     "/" is the cache default meaning "unset", which
   #     is what makes CMakeLists fall back to the packaged
   #     x86_64-pc-linux-gnu cross sysroot. Do not set it.
@@ -214,7 +189,6 @@ build() {
     -DBUILD_FEX_LINUX_TESTS=OFF \
     -DBUILD_THUNKS=ON \
     -DBUILD_GUEST_THUNKS=ON \
-    "${_guest32_args[@]}" \
     -DBUILD_FEXCONFIG=ON \
     -DENABLE_LTO=OFF \
     -DENABLE_CCACHE=OFF \
@@ -243,13 +217,9 @@ package() {
 
   # Guest thunk libraries (built by the guest-libs ExternalProjects; their
   # INSTALL_COMMAND is empty) into the config-default location
-  # ($prefix/share/powerarm/GuestThunks{,_32}).
+  # ($prefix/share/powerarm/GuestThunks).
   install -dm755 "$pkgdir/usr/share/powerarm/GuestThunks"
   install -m755 "$srcdir"/build/Guest/*.so "$pkgdir/usr/share/powerarm/GuestThunks/"
-  if [[ -n $_x86rootfs ]]; then
-    install -dm755 "$pkgdir/usr/share/powerarm/GuestThunks_32"
-    install -m755 "$srcdir"/build/Guest_32/*.so "$pkgdir/usr/share/powerarm/GuestThunks_32/"
-  fi
 
   # System-wide default configuration: thunks enabled for the libraries whose
   # thunk is production quality. Users override per-app or per-user via

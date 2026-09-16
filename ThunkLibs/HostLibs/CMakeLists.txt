@@ -12,7 +12,7 @@ option(ENABLE_CLANG_THUNKS "Enable building thunks with clang" FALSE)
 # for libwayland-client and refused valid Vulkan structs -- so builds on hosts
 # without an x86 sysroot (i.e. end users) consume maintainer-generated .inl
 # files instead of running the generator. Expects
-# ${THUNKGEN_PREGEN_DIR}/gen_{32,64}/thunkgen_host_<name>.inl.
+# ${THUNKGEN_PREGEN_DIR}/gen_64/thunkgen_host_<name>.inl.
 set(THUNKGEN_PREGEN_DIR "" CACHE PATH
     "Directory of pre-generated thunkgen host .inl files; skips the x86 interface parse")
 
@@ -25,8 +25,7 @@ set(PPC_THUNKGEN_EXTRA_FLAGS "")
 
 # x86 cross toolchain detected at top level: its cross gcc supplies the
 # libstdc++ headers for the x86-target parses (the cross-glibc sysroot in
-# X86_DEV_ROOTFS has none of its own). The i686 parse additionally needs the
-# stubs-32.h stand-in below: the cross glibc is 64-bit-only.
+# X86_DEV_ROOTFS has none of its own).
 if (THUNKGEN_X86_CROSS_CXX_DIR)
   list(APPEND PPC_THUNKGEN_EXTRA_FLAGS
        "-isystem${THUNKGEN_X86_CROSS_CXX_DIR}"
@@ -64,12 +63,8 @@ function(generate NAME SOURCE_FILE GUEST_BITNESS)
   # Interface target for the user to add include directories
   add_library(${NAME}-${GUEST_BITNESS}-deps INTERFACE)
   target_include_directories(${NAME}-${GUEST_BITNESS}-deps INTERFACE "${CMAKE_CURRENT_SOURCE_DIR}/../include")
-  if (GUEST_BITNESS EQUAL 32)
-    target_compile_definitions(${NAME}-${GUEST_BITNESS}-deps INTERFACE IS_32BIT_THUNK)
-  endif()
   # Cross-arch host (non-x86_64): guest VAs cannot be bctrl'd into directly,
-  # so callbacks passed by the guest must be wrapped in host trampolines just
-  # like the 32-bit-on-64-bit case. Gates the cross-arch wrap path in
+  # so callbacks passed by the guest must be wrapped in host trampolines. Gates the cross-arch wrap path in
   # ThunkLibs/include/common/Host.h.
   if (NOT CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64")
     target_compile_definitions(${NAME}-${GUEST_BITNESS}-deps INTERFACE THUNK_HOST_NOT_X86_64)
@@ -96,16 +91,10 @@ function(generate NAME SOURCE_FILE GUEST_BITNESS)
 
   file(MAKE_DIRECTORY "${OUTFOLDER}")
 
-  set(BITNESS_FLAGS "")
-  if (GUEST_BITNESS EQUAL 32)
-    set(BITNESS_FLAGS "-for-32bit-guest")
-  endif()
-
   # Without an X86_DEV_ROOTFS the x86-target interface parses run against the
   # host's glibc headers, and ppc64le glibc's <gnu/stubs.h> includes
   # <gnu/stubs-32.h> for ANY target that does not define __powerpc64__ -- so
-  # both the x86_64 and the i686 parse die on a header only multilib glibc
-  # ships. The parse never links, so an empty stand-in is sufficient;
+  # the x86_64 parse dies on a header only multilib glibc ships. The parse never links, so an empty stand-in is sufficient;
   # -idirafter keeps it behind every real header, so a provided sysroot still
   # wins.
   set(THUNKGEN_COMPAT_DIR "${CMAKE_BINARY_DIR}/thunkgen-compat")
@@ -113,14 +102,7 @@ function(generate NAME SOURCE_FILE GUEST_BITNESS)
     "/* Empty parse-only stand-in for the x86 multilib stubs header. */\n")
   set(BITNESS_COMPAT_FLAGS "-idirafter${THUNKGEN_COMPAT_DIR}")
 
-  # Only pass X86_DEV_GCC_TOOLCHAIN for 64-bit guest thunks. For 32-bit the
-  # ct-ng x86_64 crosstool has no i686 libstdc++, and pointing thunkgen's
-  # clang at it forces the header search there and skips the perfectly good
-  # i686-compatible headers inside X86_DEV_ROOTFS.
-  set(THUNKGEN_GCC_TOOLCHAIN_ENV "")
-  if (GUEST_BITNESS EQUAL 64)
-    set(THUNKGEN_GCC_TOOLCHAIN_ENV "FEX_THUNKGEN_GCC_TOOLCHAIN=${X86_DEV_GCC_TOOLCHAIN}")
-  endif()
+  set(THUNKGEN_GCC_TOOLCHAIN_ENV "FEX_THUNKGEN_GCC_TOOLCHAIN=${X86_DEV_GCC_TOOLCHAIN}")
 
   if (THUNKGEN_PREGEN_DIR)
     set(PREGEN_FILE "${THUNKGEN_PREGEN_DIR}/gen_${GUEST_BITNESS}/thunkgen_host_${NAME}.inl")
@@ -138,7 +120,7 @@ function(generate NAME SOURCE_FILE GUEST_BITNESS)
     DEPENDS "${SOURCE_FILE}"
     DEPENDS thunkgen
     COMMAND ${CMAKE_COMMAND} -E env ${THUNKGEN_GCC_TOOLCHAIN_ENV}
-      "$<TARGET_FILE:thunkgen>" "${SOURCE_FILE}" "${NAME}" "-host" "${OUTFILE}" "${X86_DEV_ROOTFS}" ${BITNESS_FLAGS} -- -std=c++20
+      "$<TARGET_FILE:thunkgen>" "${SOURCE_FILE}" "${NAME}" "-host" "${OUTFILE}" "${X86_DEV_ROOTFS}" -- -std=c++20
       # Expand compile definitions to space-separated list of -D parameters
       "$<$<BOOL:${compile_prop}>:;-D$<JOIN:${compile_prop},;-D>>"
       # Expand include directories to space-separated list of -isystem parameters
@@ -168,14 +150,6 @@ function(add_host_lib NAME GUEST_BITNESS)
   set_target_properties(${NAME}-host-${GUEST_BITNESS} PROPERTIES OUTPUT_NAME "${NAME}-host")
   set_target_properties(${NAME}-host-${GUEST_BITNESS} PROPERTIES LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/HostLibs_${GUEST_BITNESS}")
   target_include_directories(${NAME}-host-${GUEST_BITNESS} PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/gen_${GUEST_BITNESS}/")
-  # For GUEST_BITNESS 32 on ppc64le, common/Host.h includes
-  # <FEXCore/Utils/ArchHelpers/PPC64CacheFlush.h> for the low-32 trampoline's
-  # I-cache publication. Stated explicitly rather than relying on the FEX
-  # executable target below to propagate FEXCore's PUBLIC include dirs.
-  # The include is confined to that one configuration inside Host.h: leaving it
-  # unconditional at the top of the file broke every out-of-tree consumer of
-  # ThunkLibs/include, which is a public include root with no other FEXCore
-  # dependency and no way to know it had acquired one.
   target_include_directories(${NAME}-host-${GUEST_BITNESS} PRIVATE "${FEX_PROJECT_SOURCE_DIR}/FEXCore/include/")
   target_link_libraries(${NAME}-host-${GUEST_BITNESS} PRIVATE dl)
   target_link_libraries(${NAME}-host-${GUEST_BITNESS} PRIVATE lib${NAME}-${GUEST_BITNESS}-deps)
@@ -189,11 +163,7 @@ function(add_host_lib NAME GUEST_BITNESS)
     target_link_options(${NAME}-host-${GUEST_BITNESS} PRIVATE "LINKER:--no-undefined")
   endif()
 
-  if (${GUEST_BITNESS} EQUAL 32)
-    install(TARGETS ${NAME}-host-${GUEST_BITNESS} COMPONENT Runtime DESTINATION ${HOSTLIBS_DATA_DIRECTORY}/HostThunks_32/)
-  else()
-    install(TARGETS ${NAME}-host-${GUEST_BITNESS} COMPONENT Runtime DESTINATION ${HOSTLIBS_DATA_DIRECTORY}/HostThunks/)
-  endif()
+  install(TARGETS ${NAME}-host-${GUEST_BITNESS} COMPONENT Runtime DESTINATION ${HOSTLIBS_DATA_DIRECTORY}/HostThunks/)
 endfunction()
 
 set(BITNESS_LIST "64")
@@ -213,18 +183,7 @@ foreach(GUEST_BITNESS IN LISTS BITNESS_LIST)
   # target_include_directories(SDL2-host PRIVATE ${SDL2_INCLUDE_DIRS})
 endforeach()
 
-# These libs support both guest bitnesses. Generating the 32-bit variants requires thunkgen to parse
-# the interface headers as i686, which needs an i686 sysroot — hosts with only an x86_64
-# cross-toolchain cannot do it, and nothing 64-bit-guest-only depends on the result.
-if (BUILD_THUNKS_32BIT)
-  set(BITNESS_LIST "32;64")
-else()
-  set(BITNESS_LIST "64")
-endif()
 foreach(GUEST_BITNESS IN LISTS BITNESS_LIST)
-  # libxshmfence: 32-bit support added 2026-08-07 for the guest Mesa/DRI3 stack
-  # used by 32-bit Unity titles. Handles are translated through an opaque-handle
-  # token registry on 32-bit; see ThunkLibs/libxshmfence/Host.cpp.
   generate(libxshmfence ${CMAKE_CURRENT_SOURCE_DIR}/../libxshmfence/libxshmfence_interface.cpp ${GUEST_BITNESS})
   add_host_lib(xshmfence ${GUEST_BITNESS})
 
@@ -236,10 +195,6 @@ foreach(GUEST_BITNESS IN LISTS BITNESS_LIST)
   add_host_lib(wayland-client ${GUEST_BITNESS})
   target_include_directories(libwayland-client-${GUEST_BITNESS}-deps INTERFACE /usr/include/wayland)
 
-  # libdrm: 32-bit lane added 2026-08-23 for the lib32 Mesa DRI loaders. The
-  # host-allocated drmVersion/drmDevice returns are rebuilt on the guest heap
-  # by custom host impls; see the 32-bit design note in
-  # ThunkLibs/libdrm/libdrm_interface.cpp.
   generate(libdrm ${CMAKE_CURRENT_SOURCE_DIR}/../libdrm/libdrm_interface.cpp ${GUEST_BITNESS})
   target_include_directories(libdrm-${GUEST_BITNESS}-deps INTERFACE /usr/include/drm/)
   target_include_directories(libdrm-${GUEST_BITNESS}-deps INTERFACE /usr/include/libdrm/)

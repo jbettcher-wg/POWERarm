@@ -47,21 +47,12 @@ set_property(CACHE FEXCORE_PROFILER_BACKEND PROPERTY STRINGS gpuvis tracy)
 option(ENABLE_GLIBC_ALLOCATOR_HOOK_FAULT "Enables glibc memory allocation hooking with fault for CI testing")
 option(USE_PDB_DEBUGINFO "Build debug info in PDB format" FALSE)
 
-set(X86_32_TOOLCHAIN_FILE "${CMAKE_CURRENT_SOURCE_DIR}/Data/CMake/toolchain_x86_32.cmake" CACHE FILEPATH "Toolchain file for the (cross-)compiler targeting i686")
 set(X86_64_TOOLCHAIN_FILE "${CMAKE_CURRENT_SOURCE_DIR}/Data/CMake/toolchain_x86_64.cmake" CACHE FILEPATH "Toolchain file for the (cross-)compiler targeting x86_64")
-set(X86_DEV_ROOTFS "/" CACHE FILEPATH "Path to the sysroot used for cross-compiling for i686 and x86_64")
+set(X86_DEV_ROOTFS "/" CACHE FILEPATH "Path to the x86_64 sysroot used for cross-compiling")
 # Cross-toolchains keep libstdc++ headers beside the compiler rather than inside the sysroot, so
 # X86_DEV_ROOTFS alone finds libc but not <type_traits>. Point this at the toolchain root (the
 # directory containing lib/gcc/<triple>/<version>) and clang will locate both.
 set(X86_DEV_GCC_TOOLCHAIN "" CACHE FILEPATH "Optional GCC cross-toolchain root passed to clang as --gcc-toolchain when generating thunks")
-# 32-bit thunks require an i686 multilib sysroot in addition to the x86_64 one. Hosts that only have
-# a 64-bit cross-toolchain can disable them; nothing 64-bit-guest-only depends on these.
-option(BUILD_THUNKS_32BIT "Build the 32-bit guest thunk libraries" ON)
-# Sysroot for the i686 guest stub libraries. The x86_64 dev sysroot generally
-# has no 32-bit libc/libgcc at all; the FEX RootFS does ship them (Arch:
-# usr/lib32). Defaults to X86_DEV_ROOTFS so existing configurations are unchanged.
-set(X86_DEV_ROOTFS_32 "${X86_DEV_ROOTFS}" CACHE PATH
-    "Sysroot used to build the 32-bit guest stub libraries")
 ## POWERarm product naming ##
 # Single source of truth for every user-visible name that would otherwise
 # collide with a side-by-side fastppcx86 / FEX-Emu install (docs/powerarm/DESIGN.md
@@ -628,7 +619,7 @@ if (BUILD_THUNKS)
   # given, use its sysroot everywhere one is needed: thunkgen's x86 interface
   # parses (host and guest side) and the guest-libs builds. Thunkgen output
   # against it validated byte-identical to a full ct-ng x86 sysroot for every
-  # interface at both bitnesses (2026-08-10).
+  # interface (2026-08-10).
   set(THUNKGEN_X86_CROSS_CXX_DIR "")
   # "/" is the cache default, meaning "nothing configured".
   if ((NOT X86_DEV_ROOTFS OR X86_DEV_ROOTFS STREQUAL "/") AND EXISTS "/usr/x86_64-pc-linux-gnu/usr/include/gnu/stubs.h")
@@ -644,15 +635,14 @@ if (BUILD_THUNKS)
   endif()
 
   # Declared here (rather than at first use below) so the Generator decision
-  # can see them.
+  # can see it.
   option(BUILD_GUEST_THUNKS "Build x86_64 guest stub libraries via ExternalProject" ON)
-  option(BUILD_GUEST_THUNKS_32 "Build 32-bit guest stub libraries via ExternalProject" ON)
 
   # With pre-generated host .inl files and no guest-side builds, nothing runs
   # the generator, so don't require libclang for it.
   set(THUNKGEN_PREGEN_DIR "" CACHE PATH
       "Directory of pre-generated thunkgen host .inl files; skips the x86 interface parse")
-  if (NOT THUNKGEN_PREGEN_DIR OR BUILD_GUEST_THUNKS OR BUILD_GUEST_THUNKS_32)
+  if (NOT THUNKGEN_PREGEN_DIR OR BUILD_GUEST_THUNKS)
     add_subdirectory(ThunkLibs/Generator)
   endif()
 
@@ -675,11 +665,7 @@ if (BUILD_THUNKS)
 
   # The guest-side stub libraries are optionally cross-built here. Disable on
   # hosts without an x86_64 cross-compile chain and ship pre-built guest stubs
-  # separately. The 32-bit stubs need a separate i686 cross chain, which is
-  # far less widely packaged than the x86_64 one (e.g. Arch on POWER8 ships
-  # x86_64-pc-linux-gnu but no i686-linux-gnu), so it is independently
-  # switchable: a missing i686 chain doesn't take the 64-bit thunks down with
-  # it. Both option() declarations moved up next to the Generator decision.
+  # separately.
 
   # The guest stubs are built with gcc even when the host thunks use clang.
   #
@@ -693,20 +679,6 @@ if (BUILD_THUNKS)
   # than force the host thunks off clang as well.
   option(ENABLE_CLANG_GUEST_THUNKS "Build the guest stub libraries with clang instead of gcc" OFF)
 
-  # The 32-bit guest stubs need their own switch. toolchain_x86_32.cmake's gcc
-  # branch hardcodes the Debian triple x86_64-linux-gnu-gcc and needs 32-bit
-  # multilib; a ppc64le Arch host has neither (its cross-gcc is
-  # x86_64-pc-linux-gnu and cannot -m32), so gcc cannot build these at all
-  # there. clang can, via -target i686-linux-gnu plus the rootfs sysroot.
-  #
-  # Kept separate from ENABLE_CLANG_GUEST_THUNKS because turning that on also
-  # switches the 64-bit stubs, and the 64-bit toolchain then feeds clang-only
-  # flags such as -target to gcc and fails the whole guest-libs build.
-  set(ENABLE_CLANG_GUEST_THUNKS_32 ${ENABLE_CLANG_GUEST_THUNKS} CACHE BOOL
-      "Build the 32-bit guest stub libraries with clang instead of gcc")
-
-  # X86_DEV_ROOTFS_32 (the sysroot for the 32-bit guest stubs) is declared at
-  # the top of this file, next to X86_DEV_ROOTFS.
   if (BUILD_GUEST_THUNKS)
     # Thunk targets for guest libraries
     include(ExternalProject)
@@ -738,32 +710,6 @@ if (BUILD_THUNKS)
       BUILD_ALWAYS ON
       DEPENDS thunkgen)
 
-    if (BUILD_GUEST_THUNKS_32)
-    ExternalProject_Add(guest-libs-32
-      PREFIX guest-libs-32
-      SOURCE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/ThunkLibs/GuestLibs"
-      BINARY_DIR "Guest_32"
-      CMAKE_ARGS
-        "-DBITNESS=32"
-        "-DCMAKE_BUILD_TYPE=${CMAKE_BUILD_TYPE}"
-        "-DENABLE_CLANG_THUNKS=${ENABLE_CLANG_GUEST_THUNKS_32}"
-        "-DCMAKE_TOOLCHAIN_FILE:FILEPATH=${X86_32_TOOLCHAIN_FILE}"
-        "-DCMAKE_INSTALL_PREFIX=${CMAKE_INSTALL_PREFIX}"
-        "-DFEX_PROJECT_SOURCE_DIR=${FEX_PROJECT_SOURCE_DIR}"
-        "-DGENERATOR_EXE=$<TARGET_FILE:thunkgen>"
-        "-DX86_DEV_ROOTFS=${X86_DEV_ROOTFS_32}"
-        "-DX86_DEV_GCC_TOOLCHAIN=${X86_DEV_GCC_TOOLCHAIN}"
-        # Same environment isolation as guest-libs above.
-        "-DCMAKE_C_FLAGS="
-        "-DCMAKE_CXX_FLAGS="
-        "-DCMAKE_EXE_LINKER_FLAGS="
-        "-DCMAKE_SHARED_LINKER_FLAGS="
-        "-DCMAKE_MODULE_LINKER_FLAGS="
-      INSTALL_COMMAND ""
-      BUILD_ALWAYS ON
-      DEPENDS thunkgen)
-    endif()
-
     install(
       CODE "message(\"-- Installing: guest-libs\")"
       CODE "
@@ -776,21 +722,6 @@ if (BUILD_THUNKS)
       COMMAND ${CMAKE_COMMAND} "--build" "." "--target" "uninstall"
       WORKING_DIRECTORY ${CMAKE_BINARY_DIR}/Guest)
     add_dependencies(uninstall uninstall_guest-libs)
-
-    if (BUILD_GUEST_THUNKS_32)
-      install(
-        CODE "message(\"-- Installing: guest-libs-32\")"
-        CODE "
-          execute_process(COMMAND ${CMAKE_COMMAND} --build . --target install
-            WORKING_DIRECTORY ${CMAKE_BINARY_DIR}/Guest_32)"
-        DEPENDS guest-libs-32
-        COMPONENT Runtime)
-
-      add_custom_target(uninstall_guest-libs-32
-        COMMAND ${CMAKE_COMMAND} "--build" "." "--target" "uninstall"
-        WORKING_DIRECTORY ${CMAKE_BINARY_DIR}/Guest_32)
-      add_dependencies(uninstall uninstall_guest-libs-32)
-    endif()
   endif()
 endif()
 
