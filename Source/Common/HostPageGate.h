@@ -84,10 +84,8 @@ inline Mode GetMode(bool ConfigAvailable, Mode DefaultMode, bool* Explicit) {
  *
  * DefaultMode applies when neither config nor environment says otherwise. The
  * FEX launcher keeps Abort: the Linux syscall lane still has the loader,
- * guest-mmap and mtrack gaps. FexBridge passes Force: in the bridge lane Wine
- * does every guest mapping itself, host-granular, and the bridge forces
- * SMCChecks off in favour of Wine's explicit invalidation, so none of the
- * remaining gaps applies -- the stage-S2 fixes are the whole requirement.
+ * guest-mmap and mtrack gaps. Force is for embedders that do every guest
+ * mapping themselves, host-granular, and handle invalidation explicitly.
  */
 inline void CheckHostPageSize(bool ConfigAvailable = false, Mode DefaultMode = Mode::Abort) {
   const long HostPageSize = ::sysconf(_SC_PAGESIZE);
