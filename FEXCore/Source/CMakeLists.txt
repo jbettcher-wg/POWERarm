@@ -195,8 +195,8 @@ set(OUTPUT_CONFIG_FOLDER "${CMAKE_BINARY_DIR}/include/FEXCore/Config")
 set(OUTPUT_CONFIG_NAME "${OUTPUT_CONFIG_FOLDER}/ConfigValues.inl")
 set(OUTPUT_CONFIG_OPTION_NAME "${OUTPUT_CONFIG_FOLDER}/ConfigOptions.inl")
 set(INPUT_CONFIG_NAME "${CMAKE_BINARY_DIR}/generated/Config/Config.json")
-set(OUTPUT_MAN_NAME "${CMAKE_BINARY_DIR}/generated/FEX.1")
-set(OUTPUT_MAN_NAME_COMPRESS "${CMAKE_BINARY_DIR}/generated/FEX.1.gz")
+set(OUTPUT_MAN_NAME "${CMAKE_BINARY_DIR}/generated/${POWERARM_EXE_PREFIX}.1")
+set(OUTPUT_MAN_NAME_COMPRESS "${CMAKE_BINARY_DIR}/generated/${POWERARM_EXE_PREFIX}.1.gz")
 
 file(MAKE_DIRECTORY "${OUTPUT_CONFIG_FOLDER}")
 
@@ -207,7 +207,7 @@ add_custom_command(
   DEPENDS "${INPUT_CONFIG_NAME}"
   DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/../Scripts/config_generator.py"
   COMMAND "python3" "${CMAKE_CURRENT_SOURCE_DIR}/../Scripts/config_generator.py" "${INPUT_CONFIG_NAME}" "${OUTPUT_CONFIG_NAME}" "${OUTPUT_MAN_NAME}"
-  "${OUTPUT_CONFIG_OPTION_NAME}")
+  "${OUTPUT_CONFIG_OPTION_NAME}" "${POWERARM_ENV_PREFIX}")
 
 add_custom_command(
   OUTPUT "${OUTPUT_MAN_NAME_COMPRESS}"
@@ -281,6 +281,9 @@ endfunction()
 # Build FEXCore_Base static library
 add_library(FEXCore_Base STATIC ${FEXCORE_BASE_SRCS})
 target_link_libraries(FEXCore_Base PUBLIC ${LIBS})
+if (TARGET POWERarmEnv)
+  target_link_libraries(FEXCore_Base PUBLIC POWERarmEnv)
+endif()
 AddDefaultOptionsToTarget(FEXCore_Base)
 
 if (ENABLE_FEXCORE_PROFILER AND FEXCORE_PROFILER_BACKEND STREQUAL "TRACY")
@@ -310,6 +313,11 @@ endfunction()
 AddObject(${PROJECT_NAME}_object)
 AddLibrary(${PROJECT_NAME} STATIC)
 AddLibrary(${PROJECT_NAME}_shared SHARED)
+# Installed as libPOWERarmCore.so so it cannot collide with fastppcx86's libFEXCore.so.
+set_target_properties(${PROJECT_NAME}_shared PROPERTIES OUTPUT_NAME ${POWERARM_EXE_PREFIX}Core)
+if (TARGET POWERarmEnv)
+  target_link_libraries(${PROJECT_NAME}_shared PRIVATE POWERarmEnv)
+endif()
 
 if (NOT MINGW AND NOT BUILD_STEAM_SUPPORT)
   install(TARGETS ${PROJECT_NAME}_shared LIBRARY

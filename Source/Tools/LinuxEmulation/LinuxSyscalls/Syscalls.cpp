@@ -614,7 +614,7 @@ uint64_t ExecveHandler(FEXCore::Core::CpuStateFrame* Frame, const char* pathname
 
       // Create the environment variable to pass the FD to our FEX.
       // Needs to stick around until execveat completes.
-      FDExecEnv = fextl::fmt::format("FEX_EXECVEFD={}", Args.dirfd);
+      FDExecEnv = fextl::fmt::format(POWERARM_ENV_PREFIX "EXECVEFD={}", Args.dirfd);
 
       // Insert the FD for FEX to track.
       EnvpArgs.emplace_back(FDExecEnv.data());
@@ -623,7 +623,7 @@ uint64_t ExecveHandler(FEXCore::Core::CpuStateFrame* Frame, const char* pathname
     if (HasSeccomp) {
       // Create the environment variable to pass the FD to our FEX.
       // Needs to stick around until execveat completes.
-      FDSeccompEnv = fextl::fmt::format("FEX_SECCOMPFD={}", *SeccompFD);
+      FDSeccompEnv = fextl::fmt::format(POWERARM_ENV_PREFIX "SECCOMPFD={}", *SeccompFD);
 
       // Insert the FD for FEX to track.
       EnvpArgs.emplace_back(FDSeccompEnv.data());

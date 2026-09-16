@@ -7,8 +7,11 @@ check_include_files("gdb/jit-reader.h" HAVE_GDB_JIT_READER_H)
 option(BUILD_FEX_LINUX_TESTS "Build FEXLinuxTests (requires x86 compiler)" FALSE)
 option(BUILD_THUNKS "Build thunks" FALSE)
 option(BUILD_FEXCONFIG "Build FEXConfig" TRUE)
-option(BUILD_LAUNCHER "Build the FastPPCx86 launcher GUI (ppcx86-launch)" TRUE)
-option(BUILD_LAUNCHER_TUI "Build the FastPPCx86 launcher TUI (ppcx86-launch-tui)" TRUE)
+# The launcher is fastppcx86's x86 game launcher. It still exports FEX_* variables
+# to its children, installs under fastppcx86's names and is not part of POWERarm;
+# off until it is ported or removed.
+option(BUILD_LAUNCHER "Build the FastPPCx86 launcher GUI (ppcx86-launch; collides with fastppcx86)" FALSE)
+option(BUILD_LAUNCHER_TUI "Build the FastPPCx86 launcher TUI (ppcx86-launch-tui; collides with fastppcx86)" FALSE)
 # Building guest thunks with clang cross-targeting x86_64 was chosen because it
 # does not require a per-triple cross-gcc install. It corrupts the guest/host
 # ABI boundary though: clang's layout of the generated packed-args structs
@@ -76,16 +79,29 @@ set(X86_DEV_ROOTFS_32 "${X86_DEV_ROOTFS}" CACHE PATH
 # 64K host's FEX_HOSTPAGEMODE=degrade forces). Off by default so the test
 # count on a 4K host is unchanged.
 option(ENABLE_SMC_FULL_TESTS "Add a jit_500_smcfull variant of the 64-bit ASM tests (FEX_SMCCHECKS=full)" OFF)
+## POWERarm product naming ##
+# Single source of truth for every user-visible name that would otherwise
+# collide with a side-by-side fastppcx86 / FEX-Emu install (docs/powerarm/DESIGN.md
+# §10.4). Source paths, C++ namespaces and CMake target names deliberately stay
+# FEX* so backend commits cherry-pick between the two trees; only OUTPUT_NAMEs,
+# install names, directories, socket names and environment variables change.
+#   POWERARM_EXE_PREFIX: FEX -> POWERarm, FEXServer -> POWERarmServer, ...
+#   POWERARM_DIR_NAME:   fex-emu -> powerarm ($XDG_*/, ~/.powerarm, /usr/share, /usr/lib)
+#   POWERARM_ENV_PREFIX: FEX_<NAME> -> POWERARM_<NAME> (see Source/POWERarm/EnvPrefix.cpp)
+set(POWERARM_EXE_PREFIX "POWERarm")
+set(POWERARM_DIR_NAME "powerarm")
+set(POWERARM_ENV_PREFIX "POWERARM_")
+
 set(DATA_DIRECTORY "" CACHE PATH "Global data directory (override)")
 set(HOSTLIBS_DATA_DIRECTORY "" CACHE PATH "Global data directory (override)")
 
 if (NOT DATA_DIRECTORY)
-  set(DATA_DIRECTORY "${CMAKE_INSTALL_PREFIX}/share/fex-emu")
+  set(DATA_DIRECTORY "${CMAKE_INSTALL_PREFIX}/share/${POWERARM_DIR_NAME}")
 endif()
 
 include(GNUInstallDirs)
 if (NOT HOSTLIBS_DATA_DIRECTORY)
-  set(HOSTLIBS_DATA_DIRECTORY "${CMAKE_INSTALL_FULL_LIBDIR}/fex-emu")
+  set(HOSTLIBS_DATA_DIRECTORY "${CMAKE_INSTALL_FULL_LIBDIR}/${POWERARM_DIR_NAME}")
 endif()
 
 ## Platform Checks ##
@@ -445,6 +461,10 @@ endif()
 
 add_compile_options(-Wno-trigraphs)
 add_compile_definitions(GLOBAL_DATA_DIRECTORY="${DATA_DIRECTORY}/")
+add_compile_definitions(
+  POWERARM_EXE_PREFIX="${POWERARM_EXE_PREFIX}"
+  POWERARM_DIR_NAME="${POWERARM_DIR_NAME}"
+  POWERARM_ENV_PREFIX="${POWERARM_ENV_PREFIX}")
 
 if (BUILD_TESTING)
   find_package(Catch2 3 QUIET)
@@ -592,9 +612,13 @@ add_subdirectory(External/SoftFloat-3e/)
 add_subdirectory(External/cephes/)
 add_subdirectory(FEXHeaderUtils/)
 add_subdirectory(CodeEmitter/)
+if (NOT MINGW)
+  # FEX_* -> POWERARM_* getenv/setenv translation; linked through FEXCore_Base.
+  add_subdirectory(Source/POWERarm/)
+endif()
 add_subdirectory(FEXCore/)
 
-if (ARCHITECTURE_arm64 AND NOT MINGW AND NOT BUILD_STEAM_SUPPORT)
+if ((ARCHITECTURE_arm64 OR ARCHITECTURE_ppc64le) AND NOT MINGW AND NOT BUILD_STEAM_SUPPORT)
   # Binfmt_misc files must be installed prior to Source/ installs
   add_subdirectory(Data/binfmts/)
 endif()

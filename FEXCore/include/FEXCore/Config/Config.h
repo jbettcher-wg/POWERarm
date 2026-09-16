@@ -48,7 +48,7 @@ enum ConfigSMCChecks {
 };
 
 enum class LayerType {
-  LAYER_GLOBAL_MAIN, ///< /usr/share/fex-emu/Config.json by default
+  LAYER_GLOBAL_MAIN, ///< /usr/share/powerarm/Config.json by default
   LAYER_MAIN,
   LAYER_ARGUMENTS,
   LAYER_GLOBAL_STEAM_APP,

@@ -2,6 +2,10 @@ import datetime
 import json
 import sys
 
+# POWERarm: environment variables are <ENV_PREFIX><NAME>. The prefix comes from
+# POWERARM_ENV_PREFIX in the top-level CMakeLists.txt (optional 5th argument).
+ENV_PREFIX = sys.argv[5] if len(sys.argv) > 5 else "POWERARM_"
+
 def print_header():
     header = '''#ifndef OPT_BASE
 #define OPT_BASE(type, group, enum, json, default)
@@ -102,7 +106,7 @@ def print_man_option(short, long, desc, default):
     output_man.write(".Pp\n\n")
 
 def print_man_env_option(name, desc, default, no_json_key):
-    output_man.write("\\fBFEX_{0}\\fR\n".format(name.upper()))
+    output_man.write("\\fB{0}{1}\\fR\n".format(ENV_PREFIX, name.upper()))
 
     # Print description
     for line in desc:
@@ -156,9 +160,9 @@ def print_man_environment_tail():
     "APP_CONFIG_LOCATION",
     [
     "Allows the user to override where FEX looks for configuration files",
-    "By default FEX will look in ${XDG_CONFIG_HOME, $HOME/.config}/fex-emu/",
+    "By default FEX will look in ${XDG_CONFIG_HOME, $HOME/.config}/powerarm/",
     "This will override the full path",
-    "If FEX_PORTABLE is declared then relative paths are also supported",
+    "If POWERARM_PORTABLE is declared then relative paths are also supported",
     "For FEX: Relative to the FEX binary",
     "For WINE: Relative to %LOCALAPPDATA%"
     ],
@@ -168,11 +172,11 @@ def print_man_environment_tail():
     "APP_CONFIG",
     [
     "Allows the user to override where FEX looks for only the application config file",
-    "By default FEX will look in ${XDG_CONFIG_HOME, $HOME/.config}/fex-emu/Config.json",
+    "By default FEX will look in ${XDG_CONFIG_HOME, $HOME/.config}/powerarm/Config.json",
     "This will override this file location",
     "One must be careful with this option as it will override any applications that load with execve as well"
-    "If you need to support applications that execve then use FEX_APP_CONFIG_LOCATION instead"
-    "If FEX_PORTABLE is declared then relative paths are also supported",
+    "If you need to support applications that execve then use POWERARM_APP_CONFIG_LOCATION instead"
+    "If POWERARM_PORTABLE is declared then relative paths are also supported",
     "For FEX: Relative to the FEX binary",
     "For WINE: Relative to %LOCALAPPDATA%"
     ],
@@ -182,7 +186,7 @@ def print_man_environment_tail():
     "APP_DATA_LOCATION",
     [
     "Allows the user to override where FEX looks for data files",
-    "By default FEX will look in {$XDG_DATA_HOME, $HOME/.local/share}/fex-emu/",
+    "By default FEX will look in {$XDG_DATA_HOME, $HOME/.local/share}/powerarm/",
     "This will override the full path",
     "This is the folder where FEX stores generated files like IR cache"
     ],
@@ -193,10 +197,10 @@ def print_man_environment_tail():
     [
     "Allows FEX to run without installation. Global locations for configuration and binfmt_misc are ignored.",
     "For FEX on Linux:",
-    "These files are instead read from <FEXPath>/fex-emu/ by default.",
+    "These files are instead read from <POWERarmPath>/powerarm/ by default.",
     "For Arm64ec/Wow64 WINE builds:",
-    "These files are instead read from $LOCALAPPDATA/fex-emu/ by default.",
-    "For further customization, see FEX_APP_CONFIG_LOCATION and FEX_APP_DATA_LOCATION."
+    "These files are instead read from $LOCALAPPDATA/powerarm/ by default.",
+    "For further customization, see POWERARM_APP_CONFIG_LOCATION and POWERARM_APP_DATA_LOCATION."
     ],
     "''", True)
 
@@ -204,24 +208,24 @@ def print_man_environment_tail():
     "APP_CACHE_LOCATION",
     [
     "Allows the user to override where FEX stores and loads cache files",
-    "By default FEX will look in ${XDG_CACHE_HOME, $HOME/.cache}/fex-emu/",
+    "By default FEX will look in ${XDG_CACHE_HOME, $HOME/.cache}/powerarm/",
     "This will override the full path, trailing forward-slash is expected to exist",
     ],
     "''", True)
 
 def print_man_header():
     header ='''.Dd {0}
-.Dt FEX
+.Dt POWERARM
 .Os Linux
 .Sh NAME
-.Nm FEX
-.Nm FEXBash
+.Nm POWERarm
+.Nm POWERarmBash
 .Nd Fast x86-64 and x86 emulation.
 .Sh SYNOPSIS
 .Nm
 .Ar <args> ...
 .Pp
-.Nm FEXBash
+.Nm POWERarmBash
 .Ar <args> ...
 .Sh DESCRIPTION
 FEX allows you to run x86 and x86-64 binaries on an AArch64 host, similar to qemu-user and box86.
@@ -233,14 +237,14 @@ FEX is very much work in progress, so expect things to change.
 
 def print_man_tail():
     tail ='''.Sh FILES
-.Bl -tag -width "$prefix/share/fex-emu/GuestThunks" -compact
-.It Pa $XDG_CONFIG_DIR/fex-emu
-Default FEX user configuration directory
-.It Pa $prefix/share/fex-emu/AppConfig
+.Bl -tag -width "$prefix/share/powerarm/GuestThunks" -compact
+.It Pa $XDG_CONFIG_DIR/powerarm
+Default POWERarm user configuration directory
+.It Pa $prefix/share/powerarm/AppConfig
 System level application configuration files
-.It Pa $prefix/share/fex-emu/GuestThunks
+.It Pa $prefix/share/powerarm/GuestThunks
 guest-side thunk data libraries
-.It Pa $prefix/lib/fex-emu/HostThunks
+.It Pa $prefix/lib/powerarm/HostThunks
 host-side thunks for guest communication
 .El
 '''
@@ -336,13 +340,13 @@ def print_parse_envloader_options(options):
         for op_key, op_vals in group_vals.items():
             value_type = op_vals["Type"]
             if (value_type == "strenum"):
-                output_argloader.write("else if (Key == \"FEX_{0}\") {{\n".format(op_key.upper()))
+                output_argloader.write("else if (Key == \"{1}{0}\") {{\n".format(op_key.upper(), ENV_PREFIX))
                 output_argloader.write("\tValue = FEXCore::Config::EnumParser<FEXCore::Config::{}ConfigPair>(FEXCore::Config::{}_EnumPairs, Value_View);\n".format(op_key, op_key))
                 output_argloader.write("}\n")
 
             if ("ArgumentHandler" in op_vals):
                 conversion_func = "FEXCore::Config::Handler::{0}".format(op_vals["ArgumentHandler"])
-                output_argloader.write("else if (Key == \"FEX_{0}\") {{\n".format(op_key.upper()))
+                output_argloader.write("else if (Key == \"{1}{0}\") {{\n".format(op_key.upper(), ENV_PREFIX))
                 output_argloader.write("\tValue = {0}(Value_View);\n".format(conversion_func))
                 output_argloader.write("}\n")
     output_argloader.write("#endif\n")

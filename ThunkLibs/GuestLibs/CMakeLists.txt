@@ -26,7 +26,7 @@ if (CMAKE_CURRENT_SOURCE_DIR STREQUAL CMAKE_SOURCE_DIR)
   # This gets passed in from the main cmake project
   set(DATA_DIRECTORY "" CACHE PATH "Global data directory (override)")
   if (NOT DATA_DIRECTORY)
-    set(DATA_DIRECTORY "${CMAKE_INSTALL_PREFIX}/share/fex-emu")
+    set(DATA_DIRECTORY "${CMAKE_INSTALL_PREFIX}/share/powerarm")
   endif()
 
   set(TARGET_TYPE SHARED)

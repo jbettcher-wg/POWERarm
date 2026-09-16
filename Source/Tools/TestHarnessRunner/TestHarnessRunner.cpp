@@ -62,7 +62,7 @@ void AssertHandler(const char* Message) {
 
 namespace {
 static const fextl::vector<std::pair<const char*, FEXCore::Config::ConfigOption>> EnvConfigLookup = {{
-#define OPT_BASE(type, group, enum, json, default) {"FEX_" #enum, FEXCore::Config::ConfigOption::CONFIG_##enum},
+#define OPT_BASE(type, group, enum, json, default) {POWERARM_ENV_PREFIX #enum, FEXCore::Config::ConfigOption::CONFIG_##enum},
 #include <FEXCore/Config/ConfigValues.inl>
 }};
 

@@ -285,8 +285,8 @@ void EnvLoader::Load() {
   for (const char* const* pvar = envp; pvar && *pvar; pvar++) {
     std::string_view Var(*pvar);
 
-    ///< All FEX environment variables start with `FEX_`
-    if (!Var.starts_with("FEX_")) {
+    ///< All POWERarm environment variables start with POWERARM_ENV_PREFIX
+    if (!Var.starts_with(POWERARM_ENV_PREFIX)) {
       continue;
     }
 
@@ -328,10 +328,10 @@ void EnvLoader::Load() {
 
   // Walk all the environment options and corresponding config option.
 #define OPT_BASE(type, group, enum, json, default) \
-  Value = GetVar(EnvMap, "FEX_" #enum);            \
+  Value = GetVar(EnvMap, POWERARM_ENV_PREFIX #enum);            \
   if (Value.has_value()) Set(FEXCore::Config::ConfigOption::CONFIG_##enum, *Value);
 #define OPT_STRARRAY(group, enum, json, default) \
-  Value = GetVar(EnvMap, "FEX_" #enum);          \
+  Value = GetVar(EnvMap, POWERARM_ENV_PREFIX #enum);          \
   if (Value.has_value()) AppendStrArrayValue(FEXCore::Config::ConfigOption::CONFIG_##enum, *Value);
 
 #include <FEXCore/Config/ConfigValues.inl>
@@ -617,14 +617,14 @@ fextl::string GetDataDirectory(bool Global, const PortableInformation& PortableI
 #ifdef FEX_STEAM_SUPPORT
   const char* SteamDataPath = getenv("STEAM_COMPAT_DATA_PATH");
   if (SteamDataPath) {
-    return fextl::fmt::format("{}/fex-emu/", SteamDataPath);
+    return fextl::fmt::format("{}/" POWERARM_DIR_NAME "/", SteamDataPath);
   }
 #endif
 
   const char* DataOverride = getenv("FEX_APP_DATA_LOCATION");
 
   if (PortableInfo.IsPortable && (Global || !DataOverride)) {
-    return fextl::fmt::format("{}/fex-emu/", PortableInfo.InterpreterPath);
+    return fextl::fmt::format("{}/" POWERARM_DIR_NAME "/", PortableInfo.InterpreterPath);
   }
 
   if (Global) {
@@ -633,9 +633,9 @@ fextl::string GetDataDirectory(bool Global, const PortableInformation& PortableI
 
   auto HomeDir = GetHomeDirectory();
   const char* DataXDG = getenv("XDG_DATA_HOME");
-  const fextl::string LegacyDir = fextl::string {HomeDir} + "/.fex-emu/";
+  const fextl::string LegacyDir = fextl::string {HomeDir} + "/." POWERARM_DIR_NAME "/";
 
-  // If $HOME/.fex-emu exists, use that
+  // If $HOME/.powerarm exists, use that
   if (FHU::Filesystem::Exists(LegacyDir)) {
     return LegacyDir;
   }
@@ -647,7 +647,7 @@ fextl::string GetDataDirectory(bool Global, const PortableInformation& PortableI
   } else {
     // use ~/.local/share if XDG_DATA_HOME is unset
     DataDir = DataXDG ? DataXDG : fmt::format("{}/.local/share", HomeDir);
-    DataDir += "/fex-emu/";
+    DataDir += "/" POWERARM_DIR_NAME "/";
   }
 
   return DataDir;
@@ -656,7 +656,7 @@ fextl::string GetDataDirectory(bool Global, const PortableInformation& PortableI
 fextl::string GetConfigDirectory(bool Global, const PortableInformation& PortableInfo) {
   const char* ConfigOverride = getenv("FEX_APP_CONFIG_LOCATION");
   if (PortableInfo.IsPortable && Global) {
-    return fextl::fmt::format("{}/fex-emu/", PortableInfo.InterpreterPath);
+    return fextl::fmt::format("{}/" POWERARM_DIR_NAME "/", PortableInfo.InterpreterPath);
   } else if (ConfigOverride && !Global) {
     fextl::string AppConfigStr = ConfigOverride;
     if (FHU::Filesystem::IsRelative(AppConfigStr)) {
@@ -669,7 +669,7 @@ fextl::string GetConfigDirectory(bool Global, const PortableInformation& Portabl
 #ifdef FEX_STEAM_SUPPORT
   const char* SteamDataPath = getenv("STEAM_COMPAT_DATA_PATH");
   if (SteamDataPath) {
-    return fextl::fmt::format("{}/fex-emu/", SteamDataPath);
+    return fextl::fmt::format("{}/" POWERARM_DIR_NAME "/", SteamDataPath);
   }
 #endif
 
@@ -681,9 +681,9 @@ fextl::string GetConfigDirectory(bool Global, const PortableInformation& Portabl
   auto HomeDir = GetHomeDirectory();
   const char* ConfigXDG = getenv("XDG_CONFIG_HOME");
 
-  const fextl::string LegacyDir = fextl::string {HomeDir} + "/.fex-emu/";
+  const fextl::string LegacyDir = fextl::string {HomeDir} + "/." POWERARM_DIR_NAME "/";
 
-  // If $HOME/.fex-emu exists, use that
+  // If $HOME/.powerarm exists, use that
   if (FHU::Filesystem::Exists(LegacyDir)) {
     return LegacyDir;
   }
@@ -694,7 +694,7 @@ fextl::string GetConfigDirectory(bool Global, const PortableInformation& Portabl
   } else {
     // use ~/.config if XDG_CONFIG_HOME is unset
     ConfigDir = ConfigXDG ? ConfigXDG : fmt::format("{}/.config", HomeDir);
-    ConfigDir += "/fex-emu/";
+    ConfigDir += "/" POWERARM_DIR_NAME "/";
   }
 
 
@@ -711,16 +711,16 @@ fextl::string GetCacheDirectory() {
 #ifdef FEX_STEAM_SUPPORT
   const char* SteamDataPath = getenv("STEAM_COMPAT_SHADER_PATH");
   if (SteamDataPath) {
-    return fextl::fmt::format("{}/fex-emu/", SteamDataPath);
+    return fextl::fmt::format("{}/" POWERARM_DIR_NAME "/", SteamDataPath);
   }
 #endif
 
   auto HomeDir = GetHomeDirectory();
   const char* CacheXDG = getenv("XDG_CACHE_HOME");
-  return (CacheXDG ? fextl::string {CacheXDG} : (fextl::string {HomeDir} + "/.cache")) + "/fex-emu/";
+  return (CacheXDG ? fextl::string {CacheXDG} : (fextl::string {HomeDir} + "/.cache")) + "/" POWERARM_DIR_NAME "/";
 #else
   const char* PrefixAppData = getenv("LOCALAPPDATA");
-  return PrefixAppData ? (fextl::string {PrefixAppData} + "\\fex-emu\\") : fextl::string {".\\"};
+  return PrefixAppData ? (fextl::string {PrefixAppData} + "\\" POWERARM_DIR_NAME "\\") : fextl::string {".\\"};
 #endif
 }
 

@@ -190,21 +190,21 @@
           "\teg: ~/RootFS/Debian_x86_64",
           "Or this can be a name of a rootfs",
           "If the named rootfs exists in the FEX data folder then it will use that one",
-          "\teg: $XDG_DATA_HOME/fex-emu/RootFS/<RootFS name>/",
+          "\teg: $XDG_DATA_HOME/powerarm/RootFS/<RootFS name>/",
           "If XDG_DATA_HOME is unset, ~/.local/share will be used in its place.",
-          "\teg: $HOME/.local/share/fex-emu/RootFS/<RootFS name>/"
+          "\teg: $HOME/.local/share/powerarm/RootFS/<RootFS name>/"
         ]
       },
       "ThunkHostLibs": {
         "Type": "str",
-        "Default": "@CMAKE_INSTALL_FULL_LIBDIR@/fex-emu/HostThunks",
+        "Default": "@HOSTLIBS_DATA_DIRECTORY@/HostThunks",
         "Desc": [
           "Folder to find the host-side thunking libraries."
         ]
       },
       "ThunkGuestLibs": {
         "Type": "str",
-        "Default": "@CMAKE_INSTALL_PREFIX@/share/fex-emu/GuestThunks",
+        "Default": "@DATA_DIRECTORY@/GuestThunks",
         "Desc": [
           "Folder to find the guest-side thunking libraries."
         ]
@@ -218,9 +218,9 @@
           "\teg: ~/MyThunkConfig.json",
           "Or this can be a named of a Thunk config file",
           "If the named config file exists in the FEX data folder folder the it will use that one",
-          "\teg: $XDG_DATA_HOME/fex-emu/ThunkConfigs/<ThunkConfig name>",
+          "\teg: $XDG_DATA_HOME/powerarm/ThunkConfigs/<ThunkConfig name>",
           "If XDG_DATA_HOME is unset, ~/.local/share will be used in its place.",
-          "\teg: $HOME/.local/share/fex-emu/ThunkConfigs/<ThunkConfig name>"
+          "\teg: $HOME/.local/share/powerarm/ThunkConfigs/<ThunkConfig name>"
         ]
       },
       "Env": {
@@ -469,7 +469,7 @@
         "Default": "",
         "Desc": [
           "Redirects the telemetry folder that FEX usually writes to.",
-          "By default telemetry data is stored in {$FEX_APP_DATA_LOCATION,{$XDG_DATA_HOME,$HOME}/fex-emu/Telemetry/}"
+          "By default telemetry data is stored in {$POWERARM_APP_DATA_LOCATION,{$XDG_DATA_HOME,$HOME}/powerarm/Telemetry/}"
         ]
       },
       "ProfileStats": {
