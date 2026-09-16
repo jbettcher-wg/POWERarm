@@ -389,8 +389,6 @@ struct JITPointers {
   // Sig: void (*)(); just calls sched_yield(). C-ABI.
   uint64_t PPC64_PauseSchedYield {};
 
-  // Handles returning/calling ARM64EC code from the JIT, expects the target PC in TMP3
-  uint64_t ExitFunctionEC {};
 
   FallbackABIInfo FallbackHandlerPointers[FallbackHandlerIndex::OPINDEX_MAX];
   uint64_t NamedVectorConstantPointers[FEXCore::IR::NamedVectorConstant::NAMED_VECTOR_CONST_POOL_MAX];
@@ -406,8 +404,6 @@ struct JITPointers {
    * @{ */
   uint64_t DispatcherLoopTop {};
   uint64_t DispatcherLoopTopFillSRA {};
-  uint64_t DispatcherLoopTopEnterEC {};
-  uint64_t DispatcherLoopTopEnterECFillSRA {};
   uint64_t ExitFunctionLinker {};
   uint64_t ThreadStopHandlerSpillSRA {};
   uint64_t ThreadPauseHandlerSpillSRA {};
@@ -471,13 +467,6 @@ struct CpuStateFrame {
    */
   uint64_t InSyscallInfo {};
 
-  /**
-   * @brief 1 while an EC DIRECT call (fexbridge.h) is in flight on this
-   * thread: the transition block spilled the file, stored the call site in
-   * State.rip and is inside the native callee.  Read by
-   * fexbridge_ec_direct_in_flight for the embedder's fault handler.
-   */
-  uint64_t EcDirectInFlight {};
 
   uint32_t SignalHandlerRefCounter {};
 
@@ -507,10 +496,6 @@ struct CpuStateFrame {
    */
   uint8_t* InterruptFaultPagePtr {};
 
-#ifdef ARCHITECTURE_arm64ec
-  // Set by the kernel on ARM64EC whenever the JIT should cooperatively suspend running guest code.
-  uint32_t SuspendDoorbell {};
-#endif
 
 #ifdef ARCHITECTURE_ppc64le
   // 16-byte aligned scratch slot used by JIT-emitted helpers that need a
