@@ -324,11 +324,6 @@ if (BITNESS EQUAL 32)
   target_compile_options(VDSO-guest PRIVATE "-fno-pic")
 endif()
 
-if (BUILD_FEX_LINUX_TESTS)
-  generate(libfex_thunk_test ${CMAKE_CURRENT_SOURCE_DIR}/../libfex_thunk_test/libfex_thunk_test_interface.cpp)
-  add_guest_lib(fex_thunk_test "libfex_thunk_test.so")
-endif()
-
 generate(libGL ${CMAKE_CURRENT_SOURCE_DIR}/../libGL/libGL_interface.cpp)
 add_guest_lib(GL "libGL.so.1")
 

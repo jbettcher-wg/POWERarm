@@ -222,11 +222,6 @@ else()
   set(BITNESS_LIST "64")
 endif()
 foreach(GUEST_BITNESS IN LISTS BITNESS_LIST)
-  if (BUILD_FEX_LINUX_TESTS)
-    generate(libfex_thunk_test ${CMAKE_CURRENT_SOURCE_DIR}/../libfex_thunk_test/libfex_thunk_test_interface.cpp ${GUEST_BITNESS})
-    add_host_lib(fex_thunk_test ${GUEST_BITNESS})
-  endif()
-
   # libxshmfence: 32-bit support added 2026-08-07 for the guest Mesa/DRI3 stack
   # used by 32-bit Unity titles. Handles are translated through an opaque-handle
   # token registry on 32-bit; see ThunkLibs/libxshmfence/Host.cpp.
@@ -259,8 +254,3 @@ foreach(GUEST_BITNESS IN LISTS BITNESS_LIST)
   find_package(OpenGL REQUIRED)
   target_link_libraries(GL-host-${GUEST_BITNESS} PRIVATE OpenGL::GL)
 endforeach()
-
-if (BUILD_FEX_LINUX_TESTS)
-  add_library(fex_thunk_test SHARED ../libfex_thunk_test/lib.cpp)
-  install(TARGETS fex_thunk_test LIBRARY DESTINATION lib COMPONENT TestLibraries)
-endif()

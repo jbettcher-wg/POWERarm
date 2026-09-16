@@ -1,5 +1,0 @@
-# 2026-05-14: Audited on PPC64LE host. Previously gated 32-bit tests now pass.
-# Removed: pr57275 (was "Uses AVX" — now passes), 20080723-1 (was "Solidrun CI"),
-#   14 sse4_1-{ceil,floor,rint,round}{,f}-{vec,sfix-vec} variants (were "fail because
-#   of things unrelated to sse4.1 instructions" and Xavier-specific), mcount_pic
-#   (was "SIGPROF race" — 20/20 stable on POWER8).
