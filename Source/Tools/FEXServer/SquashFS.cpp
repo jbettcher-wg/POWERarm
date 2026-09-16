@@ -106,7 +106,7 @@ bool DowngradeRootFSPipeToReadLock() {
 
 bool MountRootFSImagePath(const fextl::string& SquashFS, bool EroFS) {
   pid_t ParentTID = ::getpid();
-  MountFolder = fmt::format("{}/.FEXMount{}-XXXXXX", FEXServerClient::GetServerMountFolder(), ParentTID);
+  MountFolder = fmt::format("{}/." POWERARM_EXE_PREFIX "Mount{}-XXXXXX", FEXServerClient::GetServerMountFolder(), ParentTID);
   char* MountFolderStr = MountFolder.data();
 
   // Make the temporary mount folder

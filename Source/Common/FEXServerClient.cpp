@@ -105,7 +105,7 @@ fextl::string GetServerMountFolder() {
   // - We don't want to use `/tmp/` if possible.
   //   - systemd services use `PrivateTmp` feature to gives services their own tmp.
   //   - We will use this as a fallback path /only/.
-  // - Can't be `[$XDG_DATA_HOME,$HOME]/.fex-emu/`
+  // - Can't be `[$XDG_DATA_HOME,$HOME]/.powerarm/`
   //   - Might be mounted with a filesystem (sshfs) which can't handle mount points inside it.
   //
   // Directories it can be in:
@@ -132,7 +132,7 @@ fextl::string GetServerMountFolder() {
 fextl::string GetServerSocketName() {
   FEX_CONFIG_OPT(ServerSocketPath, SERVERSOCKETPATH);
   if (ServerSocketPath().empty()) {
-    return fextl::fmt::format("{}.FEXServer.Socket", ::getuid());
+    return fextl::fmt::format("{}." POWERARM_EXE_PREFIX "Server.Socket", ::getuid());
   }
   return ServerSocketPath;
 }
@@ -155,7 +155,7 @@ fextl::string GetServerSocketPath() {
 #endif
 
   if (name.empty()) {
-    return fextl::fmt::format("{}/{}.FEXServer.Socket", Folder, ::getuid());
+    return fextl::fmt::format("{}/{}." POWERARM_EXE_PREFIX "Server.Socket", Folder, ::getuid());
   } else {
     return fextl::fmt::format("{}/{}", Folder, name);
   }
@@ -263,11 +263,11 @@ int StartServer(std::string_view InterpreterPath, int watch_fd) {
     InterpreterDir = InterpreterDir.substr(0, LastSlash);
   }
 
-  fextl::string FEXServerPath = fextl::fmt::format("{}/FEXServer", InterpreterDir);
+  fextl::string FEXServerPath = fextl::fmt::format("{}/" POWERARM_EXE_PREFIX "Server", InterpreterDir);
   // Check if a local FEXServer next to FEX exists
   // If it does then it takes priority over the installed one
   if (!FHU::Filesystem::Exists(FEXServerPath)) {
-    FEXServerPath = "FEXServer";
+    FEXServerPath = POWERARM_EXE_PREFIX "Server";
   }
 
   // Set-up our SIGCHLD handler to ignore the signal.

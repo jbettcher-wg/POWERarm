@@ -175,7 +175,7 @@ void ThreadManager::StatAlloc::Initialize() {
     return;
   }
 
-  int fd = shm_open(fextl::fmt::format("fex-{}-stats", ::getpid()).c_str(), O_CREAT | O_TRUNC | O_RDWR, USER_PERMS);
+  int fd = shm_open(fextl::fmt::format(POWERARM_DIR_NAME "-{}-stats", ::getpid()).c_str(), O_CREAT | O_TRUNC | O_RDWR, USER_PERMS);
   if (fd == -1) {
     return;
   }
@@ -225,7 +225,7 @@ uint32_t ThreadManager::StatAlloc::FrontendAllocateSlots(uint32_t NewSize) {
   NewSize = std::min(MAX_STATS_SIZE, NewSize);
 
   // When allocating more slots, open the fd without O_TRUNC | O_CREAT.
-  int fd = shm_open(fextl::fmt::format("fex-{}-stats", ::getpid()).c_str(), O_RDWR, USER_PERMS);
+  int fd = shm_open(fextl::fmt::format(POWERARM_DIR_NAME "-{}-stats", ::getpid()).c_str(), O_RDWR, USER_PERMS);
   if (fd == -1) {
     return CurrentSize;
   }
@@ -300,7 +300,7 @@ void ThreadManager::StatAlloc::CleanupForExit() {
                  static_cast<unsigned long>(Freq));
   }
 
-  shm_unlink(fextl::fmt::format("fex-{}-stats", ::getpid()).c_str());
+  shm_unlink(fextl::fmt::format(POWERARM_DIR_NAME "-{}-stats", ::getpid()).c_str());
 }
 
 void ThreadManager::StatAlloc::LockBeforeFork() {

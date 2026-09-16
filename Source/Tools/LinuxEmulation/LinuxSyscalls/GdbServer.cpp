@@ -1485,7 +1485,7 @@ void GdbServer::StartThread() {
 }
 
 void GdbServer::OpenListenSocket() {
-  const auto GdbUnixPath = fextl::fmt::format("{}/FEX_gdbserver/", FEXServerClient::GetTempFolder());
+  const auto GdbUnixPath = fextl::fmt::format("{}/" POWERARM_EXE_PREFIX "_gdbserver/", FEXServerClient::GetTempFolder());
   if (FHU::Filesystem::CreateDirectory(GdbUnixPath) == FHU::Filesystem::CreateDirectoryResult::ERROR) {
     LogMan::Msg::EFmt("[GdbServer] Couldn't create gdbserver folder {}", GdbUnixPath);
     return;
