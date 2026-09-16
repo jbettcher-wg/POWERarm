@@ -54,151 +54,6 @@ __attribute__((weak)) void* GetGuestStack();
 __attribute__((weak)) void MoveGuestStack(uintptr_t NewAddress);
 } // namespace FEX::HLE
 
-#ifdef IS_32BIT_THUNK
-#include <mutex>
-#include <sys/mman.h>
-#include <unordered_map>
-#include <utility>
-#include <vector>
-
-#ifdef __powerpc64__
-// This is the ONLY thing in the ThunkLibs consumer include tree that reaches
-// into FEXCore's, and it is deliberately confined to the one configuration
-// that uses it: MakeLow32HostTrampoline below writes four instruction words at
-// run time and must publish them to the fetch stream, which on ppc64le needs
-// the real dcbst/sync/icbi/sync/isync sequence rather than
-// __builtin___clear_cache (that builtin performs no cache maintenance here --
-// see the header for the measurement).
-//
-// It was briefly at the top of this file instead, which broke every
-// out-of-tree consumer of ThunkLibs/include: none of them pass
-// -I<fex>/FEXCore/include, and none of them build 32-bit thunks either, so
-// they were paying for a declaration they never instantiate. Anything that
-// does build a 32-bit ppc64le thunk genuinely needs FEXCore, so it fails here
-// with an instruction rather than a bare "file not found".
-#if !__has_include(<FEXCore/Utils/ArchHelpers/PPC64CacheFlush.h>)
-#error "32-bit ppc64le thunks need FEXCore's headers: add -I<fex-source>/FEXCore/include"
-#endif
-#include <FEXCore/Utils/ArchHelpers/PPC64CacheFlush.h>
-#endif
-
-// Address ranges of the low-4GB trampoline pools allocated by
-// MakeLow32HostTrampoline below. Kept separately from that function's own
-// cache because the interesting query at the call site is the reverse one:
-// "is this 32-bit value one of ours?" See IsLow32HostTrampoline.
-struct Low32TrampolinePools {
-  std::mutex Mutex;
-  std::vector<std::pair<uintptr_t, uintptr_t>> Ranges; // [base, end)
-};
-
-inline Low32TrampolinePools& GetLow32TrampolinePools() {
-  static Low32TrampolinePools Pools;
-  return Pools;
-}
-
-/**
- * True if Addr points into a low-4GB host trampoline minted by
- * MakeLow32HostTrampoline - i.e. it is a *host*-executable stub that
- * tail-calls a real host function, not a guest function pointer.
- *
- * Both kinds of value are 32 bits wide and both arrive at the host wrapper
- * edge, so width alone cannot tell them apart. Getting this wrong is not
- * subtle: treating one of our own trampolines as a guest callback replaces a
- * working host call with a bounce into CallbackUnpack<Sig>::CallGuestPtr,
- * whose body the compiler emits as a trap for most signatures.
- */
-inline bool IsLow32HostTrampoline(uintptr_t Addr) {
-  auto& Pools = GetLow32TrampolinePools();
-  std::lock_guard lk {Pools.Mutex};
-  for (const auto& [Base, End] : Pools.Ranges) {
-    if (Addr >= Base && Addr < End) {
-      return true;
-    }
-  }
-  return false;
-}
-
-// Host function pointers handed to a 32-bit guest must fit in 32 bits: the
-// value doubles as the fake guest address the thunk machinery links
-// (LinkAddressToFunction) and as the host callee the invoker calls back
-// through (AddThunkTrampolineIRHandler forwards the linked address via mm0).
-// Host VAs on ppc64le live at 0x3fff'xxxx'xxxx, so hand out a low-4GB
-// executable host trampoline instead: `ld r0,16(r12); mtctr r0; mr r12,r0;
-// bctr; .quad target` (ELFv2 indirect calls set r12 = entry, so the literal
-// is reachable r12-relative and the real callee sees its own entry in r12).
-// Cached per target so repeated queries return pointer-identical results.
-// The pool page is invisible to MemAllocator32Bit's bitmap, but its
-// MAP_FIXED_NOREPLACE + mincore-resync EEXIST path absorbs the collision if
-// the guest allocator ever proposes this page.
-inline void* MakeLow32HostTrampoline(void* Target) {
-#ifdef __powerpc64__
-  static std::mutex Mutex;
-  static std::unordered_map<void*, void*> Cache;
-  static uint8_t* Pool = nullptr;
-  static size_t PoolOff = 0;
-  // HOST: the pool is one mmap, so it has to be a whole number of host pages.
-  // 0x10000 already is one on a 64K host; this only matters if the host page
-  // ever exceeds it.
-  const size_t PoolSize = std::max<size_t>(0x10000, FEXCore::HostPage::Size());
-  constexpr size_t TrampSize = 24;
-
-  std::lock_guard lk {Mutex};
-  if (auto It = Cache.find(Target); It != Cache.end()) {
-    return It->second;
-  }
-  if (!Pool || PoolOff + TrampSize > PoolSize) {
-    // Drop the exhausted pool before scanning. Without this, an exhausted pool
-    // whose replacement mmap fails leaves Pool non-null, the `if (!Pool)` below
-    // does not fire, and we carve trampolines past the end of the mapping into
-    // whatever follows it - forever, with PoolOff growing unbounded.
-    Pool = nullptr;
-    PoolOff = 0;
-    for (uintptr_t Addr = 0x7000'0000; Addr >= 0x1000'0000; Addr -= 0x100'0000) {
-      void* P = ::mmap(reinterpret_cast<void*>(Addr), PoolSize, PROT_READ | PROT_WRITE | PROT_EXEC,
-                       MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED_NOREPLACE, -1, 0);
-      if (P != MAP_FAILED) {
-        Pool = static_cast<uint8_t*>(P);
-        PoolOff = 0;
-        {
-          // Record the range so IsLow32HostTrampoline can recognise these
-          // addresses when they come back through a host wrapper.
-          auto& Pools = GetLow32TrampolinePools();
-          std::lock_guard pool_lk {Pools.Mutex};
-          Pools.Ranges.emplace_back(reinterpret_cast<uintptr_t>(P), reinterpret_cast<uintptr_t>(P) + PoolSize);
-        }
-        // Claim the pages in the guest's 32-bit allocator as well. MAP_FIXED_
-        // NOREPLACE above only loses races against mappings that already
-        // exist; it does nothing about a guest MAP_FIXED or munmap arriving
-        // later, which would replace host instructions we still branch to.
-        if (FEX::HLE::ReserveLow32HostRange) {
-          FEX::HLE::ReserveLow32HostRange(reinterpret_cast<uintptr_t>(P), PoolSize);
-        }
-        break;
-      }
-    }
-    if (!Pool) {
-      return nullptr;
-    }
-  }
-  uint8_t* Tramp = Pool + PoolOff;
-  PoolOff += TrampSize;
-  uint32_t* Insns = reinterpret_cast<uint32_t*>(Tramp);
-  Insns[0] = 0xE80C0010; // ld    r0, 16(r12)
-  Insns[1] = 0x7C0903A6; // mtctr r0
-  Insns[2] = 0x7C0C0378; // mr    r12, r0   (or r12, r0, r0)
-  Insns[3] = 0x4E800420; // bctr
-  memcpy(Tramp + 16, &Target, 8);
-  // Only the four instruction words need I-cache publication; the literal at
-  // +16 is read by `ld`, i.e. through the data path. Not
-  // __builtin___clear_cache: it emits no cache maintenance on ppc64le.
-  FEXCore::ArchHelpers::PPC64::FlushICacheRange(Tramp, 16);
-  Cache.emplace(Target, Tramp);
-  return Tramp;
-#else
-  return nullptr;
-#endif
-}
-#endif
 
 template<typename Fn>
 struct function_traits;
@@ -279,7 +134,6 @@ template<typename T>
 inline constexpr bool has_compatible_data_layout =
   std::is_integral_v<T> || std::is_enum_v<T> ||
   std::is_floating_point_v<T>
-#ifndef IS_32BIT_THUNK
   // If none of the previous predicates matched, the thunk generator did *not* emit a specialization for T.
   // This should not happen on 64-bit with the currently thunked libraries, since their types
   // * either have fully consistent data layout across 64-bit architectures.
@@ -287,10 +141,8 @@ inline constexpr bool has_compatible_data_layout =
   //
   // Throwing a fake exception here will trigger a build failure.
   || (throw "Instantiated on a type that was expected to be compatible", true)
-#endif
   ;
 
-#ifndef IS_32BIT_THUNK
 // Pointers have the same size, hence data layout compatibility only depends on the pointee type
 template<typename T>
 inline constexpr bool has_compatible_data_layout<T*> = has_compatible_data_layout<std::remove_cv_t<T>>;
@@ -306,7 +158,6 @@ template<>
 inline constexpr bool has_compatible_data_layout<void**> = true;
 template<>
 inline constexpr bool has_compatible_data_layout<const void**> = true;
-#endif
 
 // Placeholder type to indicate the given data is in guest-layout
 template<typename T>
@@ -335,36 +186,12 @@ struct __attribute__((packed)) guest_layout<T[N]> {
 
 template<typename T>
 struct guest_layout<T*> {
-#ifdef IS_32BIT_THUNK
-  using type = uint32_t;
-#else
   using type = uint64_t;
-#endif
   type data;
 
   // Allow implicit conversion for function pointers, since they disallow use of host_layout
   guest_layout& operator=(const T* from) requires (std::is_function_v<T>)
   {
-#ifdef IS_32BIT_THUNK
-    // guest_layout's data field is uint32_t here: the value must be
-    // representable as a 32-bit guest address AND callable host-side (the
-    // thunk trampoline machinery forwards it back as the host callee).
-    // Host VAs sit above 4 GiB on ppc64le, so substitute a low-4GB host
-    // trampoline that tail-calls the real function. Identity is preserved
-    // per target, so guest-side pointer comparisons stay stable.
-    if ((reinterpret_cast<uintptr_t>(from) >> 32) != 0) {
-      void* Tramp = MakeLow32HostTrampoline(reinterpret_cast<void*>(reinterpret_cast<uintptr_t>(from)));
-      if (!Tramp) {
-        // Plain fprintf+abort because LOGMAN_THROW headers aren't in this
-        // TU. Silent truncation produces undebuggable downstream crashes —
-        // better to die at the obvious spot.
-        fprintf(stderr, "FEX FATAL: guest_layout<T*> 32-bit truncation: host VA %p does not fit in 32 bits\n", (void*)from);
-        std::abort();
-      }
-      data = static_cast<type>(reinterpret_cast<uintptr_t>(Tramp));
-      return *this;
-    }
-#endif
     data = reinterpret_cast<uintptr_t>(from);
     return *this;
   }
@@ -406,28 +233,12 @@ struct guest_layout<T*> {
 
 template<typename T>
 struct guest_layout<T* const> {
-#ifdef IS_32BIT_THUNK
-  using type = uint32_t;
-#else
   using type = uint64_t;
-#endif
   type data;
 
   // Allow implicit conversion for function pointers, since they disallow use of host_layout
   guest_layout& operator=(const T* from) requires (std::is_function_v<T>)
   {
-#ifdef IS_32BIT_THUNK
-    // Same low-4GB host trampoline substitution as guest_layout<T*> above.
-    if ((reinterpret_cast<uintptr_t>(from) >> 32) != 0) {
-      void* Tramp = MakeLow32HostTrampoline(reinterpret_cast<void*>(reinterpret_cast<uintptr_t>(from)));
-      if (!Tramp) {
-        fprintf(stderr, "FEX FATAL: guest_layout<T* const> 32-bit truncation: host VA %p does not fit in 32 bits\n", (void*)from);
-        std::abort();
-      }
-      data = static_cast<type>(reinterpret_cast<uintptr_t>(Tramp));
-      return *this;
-    }
-#endif
     data = reinterpret_cast<uintptr_t>(from);
     return *this;
   }
@@ -738,53 +549,10 @@ struct host_to_guest_convertible {
   operator guest_layout<T>() const requires (std::is_pointer_v<T>)
   {
     guest_layout<T> ret;
-#ifdef IS_32BIT_THUNK
-    // guest_layout<T*>::data is uint32_t here, so a host pointer above 4 GiB
-    // narrows silently. On ppc64le host VAs live at 0x3fff'xxxx'xxxx, so the
-    // guest would receive the low half of a real host mapping and dereference
-    // an unrelated low address — corruption with no fault at the point of
-    // failure, which is undebuggable downstream.
-    //
-    // The function-pointer path (guest_layout<T*>::operator= above) already
-    // dies here rather than truncate; do the same for data pointers. Values
-    // that legitimately reach this path are guest-side already (guest heap or
-    // stack, or a token from an opaque-handle registry) and fit in 32 bits.
-    //
-    // If this fires, the fix is a custom host impl for the offending function
-    // that returns guest-visible storage — see RelocateStringToGuestHeap in
-    // libGL_Host.cpp for the established pattern.
-    if ((reinterpret_cast<uintptr_t>(from.data) >> 32) != 0) {
-      // Plain fprintf+abort because LOGMAN_THROW headers aren't in this TU.
-      fprintf(stderr, "FEX FATAL: 32-bit truncation of host pointer %p returned to guest\n", (void*)from.data);
-      // Name the offending thunk. This conversion is a template instantiated
-      // from every generated unpacker, so the pointer value alone does not say
-      // which API returned it; the backtrace frame will be
-      // fexfn_unpack_<lib>_<function>.
-      void* Frames[16];
-      int Count = backtrace(Frames, 16);
-      fprintf(stderr, "FEX FATAL: offending thunk backtrace:\n");
-      fflush(stderr);
-      backtrace_symbols_fd(Frames, Count, 2);
-      std::abort();
-    }
-#endif
     ret.data = reinterpret_cast<uintptr_t>(from.data);
     return ret;
   }
 
-#if IS_32BIT_THUNK
-  // Allow size_t -> uint32_t conversions, since they are so common on 32-bit
-  operator guest_layout<uint32_t>() const requires (std::is_same_v<T, size_t>)
-  {
-    return {static_cast<uint32_t>(from.data)};
-  }
-
-  // libGL also needs to allow long->int conversions for return values...
-  operator guest_layout<int32_t>() const requires (std::is_same_v<T, long>)
-  {
-    return {static_cast<int32_t>(from.data)};
-  }
-#endif
 
   // Make guest_layout of "long long" and "long" interoperable, since they are
   // the same type as far as data layout is concerned.
@@ -902,7 +670,7 @@ auto Projection(guest_layout<T>& data) {
   }
 }
 
-#if defined(IS_32BIT_THUNK) || defined(THUNK_HOST_NOT_X86_64)
+#if defined(THUNK_HOST_NOT_X86_64)
 /**
  * Helper class to manage guest stack memory from a host function.
  *
@@ -978,7 +746,7 @@ struct CallbackUnpack<Result(Args...)> {
     GuestcallInfo* guestcall;
     LOAD_INTERNAL_GUESTPTR_VIA_CUSTOM_ABI(guestcall);
 
-#if defined(IS_32BIT_THUNK) || defined(THUNK_HOST_NOT_X86_64)
+#if defined(THUNK_HOST_NOT_X86_64)
     GuestStackBumpAllocator GuestStack;
     auto& packed_args = *GuestStack.New<PackedArguments<Result, guest_layout<Args>...>>(pack_to_guest(to_host_layout(args))...);
 #else
@@ -1074,7 +842,7 @@ struct GuestWrapperForHostFunction<Result(Args...), GuestArgs...> {
     // registered for this template's signature, build a HostToGuestTrampoline
     // on the fly and call THROUGH it.
     static_assert(sizeof(void*) == 8, "host must be 64-bit; the cross-arch check assumes wide pointers");
-#if defined(IS_32BIT_THUNK) || defined(THUNK_HOST_NOT_X86_64)
+#if defined(THUNK_HOST_NOT_X86_64)
     // The `(cb >> 32) == 0` heuristic is only meaningful for 32-bit guests,
     // where a guest pointer must fit in 32 bits. For 64-bit cross-arch (e.g.
     // x86_64 guest on PPC64LE host), guest VAs are full 64 bits, and every
@@ -1131,9 +899,6 @@ struct GuestWrapperForHostFunction<Result(Args...), GuestArgs...> {
     // 64-bit guests never hit this because fallback_wrap_enabled() is opt-in
     // there; for 32-bit it is always on, so the check has to be explicit.
     if (fallback_wrap_enabled() && cb && FEX::HLE::LookupGuestCallbackUnpacker
-#ifdef IS_32BIT_THUNK
-        && (cb >> 32) == 0 && !IsLow32HostTrampoline(cb)
-#endif
     ) {
       using Sig = Result(Args...);
       // typeid(Sig).name() is the C++ compiler-mangled name of the signature

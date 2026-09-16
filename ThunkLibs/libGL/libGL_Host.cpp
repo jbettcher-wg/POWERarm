@@ -43,61 +43,6 @@ struct host_layout<_XDisplay*> {
   ~host_layout();
 };
 
-#if defined(IS_32BIT_THUNK)
-// GLXFBConfig is an opaque handle that is really a host pointer
-// (__GLXFBConfigRec* living at 0x3fff'xxxx'xxxx on ppc64le). Storing one in a
-// 32-bit guest slot truncates it, and unlike a truncated string pointer the
-// damage is silent and total: the guest hands the truncated value straight
-// back to glXGetFBConfigAttrib, every attribute reads 0, and the config it
-// then selects is rejected by the server with GLXBadFBConfig.
-//
-// Hand out a stable 32-bit token instead and translate back on the way in.
-// The guest never dereferences these - GLX defines them as opaque - so the
-// token only has to be unique, stable (applications compare handles for
-// identity), and distinguishable from a real value.
-//
-// Hooking host_layout/to_guest rather than individual entry points means
-// every generated wrapper that takes or returns a GLXFBConfig is covered,
-// including ones reached through glXGetProcAddress.
-template<>
-struct host_layout<__GLXFBConfigRec*> {
-  __GLXFBConfigRec* data;
-
-  host_layout(const guest_layout<__GLXFBConfigRec*>&);
-};
-
-guest_layout<__GLXFBConfigRec*> to_guest(const host_layout<__GLXFBConfigRec*>& from);
-
-// GLXContext (__GLXcontextRec*) is the same shape of problem: an opaque host
-// pointer the guest stores and hands back. Truncated, the server rejects the
-// context with GLXBadContext on X_GLXMakeCurrent, glGetString then returns
-// NULL and a Unity title throws out of std::string construction.
-template<>
-struct host_layout<__GLXcontextRec*> {
-  __GLXcontextRec* data;
-
-  host_layout(const guest_layout<__GLXcontextRec*>&);
-};
-
-guest_layout<__GLXcontextRec*> to_guest(const host_layout<__GLXcontextRec*>& from);
-
-// GLsync (__GLsync*) is the third of these: glFenceSync returns an opaque host
-// pointer that the guest stores and hands back to glClientWaitSync/glWaitSync/
-// glGetSynciv/glDeleteSync. Its pointee is already annotated opaque_type in the
-// interface, but without these hooks the default conversion truncates it.
-//
-// Observed on The Witcher 2, whose eON layer fences every frame: the truncation
-// guard fires inside GuestWrapperForHostFunction<__GLsync*(uint,uint)>, i.e.
-// glFenceSync, and the title takes a Breakpad crash during startup.
-template<>
-struct host_layout<__GLsync*> {
-  __GLsync* data;
-
-  host_layout(const guest_layout<__GLsync*>&);
-};
-
-guest_layout<__GLsync*> to_guest(const host_layout<__GLsync*>& from);
-#endif
 
 static X11Manager x11_manager;
 
@@ -158,123 +103,7 @@ host_layout<_XDisplay*>::~host_layout() {
 // Functions returning _XDisplay* should be handled explicitly via ptr_passthrough
 guest_layout<_XDisplay*> to_guest(host_layout<_XDisplay*>) = delete;
 
-#if defined(IS_32BIT_THUNK)
-// Token registry backing the GLXFBConfig handle translation declared above.
-//
-// Tokens are drawn from a range that cannot collide with a real 32-bit guest
-// pointer value the guest might hand us: the guest's own address space is
-// populated well below this, and these values are never dereferenced by
-// either side. Entries are never retired - GLXFBConfigs are a small fixed
-// per-screen set (a few hundred), the guest may hold one indefinitely, and
-// reusing a token would alias two configs.
-namespace {
-// One registry per handle type, each with its own token range so a handle of
-// the wrong type is caught rather than silently reinterpreted.
-template<typename T, uint32_t TokenBase>
-struct OpaqueHandleRegistry {
-  std::mutex Mutex;
-  // Index 0 is never handed out so that token 0 stays reserved for null.
-  std::vector<T*> ByIndex {nullptr};
-  std::unordered_map<T*, uint32_t> ToToken;
 
-  uint32_t TokenFor(T* Host) {
-    if (!Host) {
-      return 0;
-    }
-    std::lock_guard lk {Mutex};
-    if (auto It = ToToken.find(Host); It != ToToken.end()) {
-      return It->second;
-    }
-    const uint32_t Token = TokenBase + static_cast<uint32_t>(ByIndex.size());
-    ByIndex.push_back(Host);
-    ToToken.emplace(Host, Token);
-    return Token;
-  }
-
-  T* ForToken(uint32_t Token) {
-    if (!Token) {
-      return nullptr;
-    }
-    std::lock_guard lk {Mutex};
-    // Token maps 1:1 onto an index. An earlier version spaced tokens 16 apart
-    // while still dividing by that stride, so 15 of every 16 values in the
-    // range resolved to a real-but-wrong handle instead of being rejected -
-    // the opposite of the intent.
-    const uint32_t Index = Token - TokenBase;
-    if (Token < TokenBase || Index >= ByIndex.size()) {
-      // Not one of ours. Pass it through rather than inventing a null: a guest
-      // that obtained a handle by some path we do not model should fail in the
-      // driver with its own diagnostics, not silently here.
-      return reinterpret_cast<T*>(static_cast<uintptr_t>(Token));
-    }
-    // Null here means the handle was retired (see Retire) - the guest is using
-    // it after destroying it. Returning null makes the driver reject it;
-    // returning the old pointer would dereference freed memory.
-    return ByIndex[Index];
-  }
-
-  // Drop a handle whose underlying object is being destroyed. The slot is
-  // kept (so later tokens keep their meaning) but emptied, and the pointer is
-  // un-interned so that an allocator reusing the address does not resurrect
-  // the retired token for a different object.
-  void Retire(T* Host) {
-    if (!Host) {
-      return;
-    }
-    std::lock_guard lk {Mutex};
-    auto It = ToToken.find(Host);
-    if (It == ToToken.end()) {
-      return;
-    }
-    const uint32_t Index = It->second - TokenBase;
-    if (Index < ByIndex.size()) {
-      ByIndex[Index] = nullptr;
-    }
-    ToToken.erase(It);
-  }
-};
-
-OpaqueHandleRegistry<__GLXFBConfigRec, 0xFBC0'0000> FBConfigRegistry;
-OpaqueHandleRegistry<__GLXcontextRec, 0xC0C0'0000> ContextRegistry;
-OpaqueHandleRegistry<__GLsync, 0x5C0'00000> SyncRegistry;
-} // namespace
-
-host_layout<__GLXFBConfigRec*>::host_layout(const guest_layout<__GLXFBConfigRec*>& guest)
-  : data(FBConfigRegistry.ForToken(static_cast<uint32_t>(guest.data))) {}
-
-guest_layout<__GLXFBConfigRec*> to_guest(const host_layout<__GLXFBConfigRec*>& from) {
-  guest_layout<__GLXFBConfigRec*> Result {};
-  Result.data = FBConfigRegistry.TokenFor(from.data);
-  return Result;
-}
-
-host_layout<__GLXcontextRec*>::host_layout(const guest_layout<__GLXcontextRec*>& guest)
-  : data(ContextRegistry.ForToken(static_cast<uint32_t>(guest.data))) {}
-
-guest_layout<__GLXcontextRec*> to_guest(const host_layout<__GLXcontextRec*>& from) {
-  guest_layout<__GLXcontextRec*> Result {};
-  Result.data = ContextRegistry.TokenFor(from.data);
-  return Result;
-}
-
-host_layout<__GLsync*>::host_layout(const guest_layout<__GLsync*>& guest)
-  : data(SyncRegistry.ForToken(static_cast<uint32_t>(guest.data))) {}
-
-guest_layout<__GLsync*> to_guest(const host_layout<__GLsync*>& from) {
-  guest_layout<__GLsync*> Result {};
-  Result.data = SyncRegistry.TokenFor(from.data);
-  return Result;
-}
-
-#endif
-
-#if defined(IS_32BIT_THUNK)
-// Same tripwire discipline for the GL/GLX string-return family. Any *future*
-// function that returns a `const GLubyte*` / `const char*` without an
-// explicit `ptr_passthrough` annotation becomes a compile error rather than
-// silent 32-bit truncation of a host `.rodata` address.
-guest_layout<const GLubyte*> to_guest(host_layout<const GLubyte*>) = delete;
-#endif
 
 static void fexfn_impl_libGL_GL_SetGuestMalloc(uintptr_t GuestTarget, uintptr_t GuestUnpacker) {
   MakeHostTrampolineForGuestFunctionAt(GuestTarget, GuestUnpacker, &GuestMalloc);
@@ -361,47 +190,10 @@ void fexfn_impl_libGL_glXSwapBuffers(Display* dpy, GLXDrawable drawable) {
   }
 }
 
-#ifdef IS_32BIT_THUNK
-// Single source of truth for the pointer-relocating custom_host_impl family.
-//
-// Each of these functions returns a host `.rodata` pointer (a GL/GLX driver
-// string) that the custom impl copies into guest-addressable memory via
-// RelocateStringToGuestHeap -- see the block near line ~350. The whole reason
-// they exist is that the default `to_guest` truncates a 64-bit host pointer to
-// 32 bits on an i386 guest (garbage that gldriverquery et al. read blindly).
-//
-// A procaddr-resolving i386 title (glXGetProcAddress("glGetString")) MUST land
-// on the custom impl, never the raw host symbol -- otherwise it gets the
-// truncating path the impl was written to avoid. The glXGetProcAddress table
-// below therefore *must* contain every name in this list. To make that
-// impossible to forget, the table branches are generated from this list: you
-// cannot add a relocating impl to the list without also adding its table
-// branch. (A generator-side check was considered but rejected: the generator
-// has no visibility into this hand-written table -- see gen.cpp custom_host_impl
-// handling -- so enforcing it there would mean teaching the generator to parse
-// the impl .cpp. This X-macro coupling gives the same guarantee locally.)
-#define FEX_LIBGL_RELOCATING_IMPLS(_) \
-  _(glGetString)                      \
-  _(glGetStringi)                     \
-  _(glXGetClientString)               \
-  _(glXQueryExtensionsString)         \
-  _(glXQueryServerString)
-#endif
 
 auto fexfn_impl_libGL_glXGetProcAddress(const GLubyte* name) -> void (*)() {
   using VoidFn = void (*)();
   std::string_view name_sv {reinterpret_cast<const char*>(name)};
-#ifdef IS_32BIT_THUNK
-  // Pointer-relocating impls (see FEX_LIBGL_RELOCATING_IMPLS above). Kept as an
-  // early-return block generated from the shared list so the "needs relocation"
-  // set and the procaddr table are literally the same declaration.
-#define FEX_LIBGL_PROCADDR_BRANCH(fn) \
-  if (name_sv == #fn) {               \
-    return (VoidFn)fexfn_impl_libGL_##fn; \
-  }
-  FEX_LIBGL_RELOCATING_IMPLS(FEX_LIBGL_PROCADDR_BRANCH)
-#undef FEX_LIBGL_PROCADDR_BRANCH
-#endif
   if (name_sv == "glCompileShaderIncludeARB") {
     return (VoidFn)fexfn_impl_libGL_glCompileShaderIncludeARB;
   } else if (name_sv == "glCreateShaderProgramv") {
@@ -451,65 +243,6 @@ auto fexfn_impl_libGL_glXGetProcAddress(const GLubyte* name) -> void (*)() {
     return (VoidFn)fexfn_impl_libGL_glTransformFeedbackVaryings;
   } else if (name_sv == "glTransformFeedbackVaryingsEXT") {
     return (VoidFn)fexfn_impl_libGL_glTransformFeedbackVaryingsEXT;
-#ifdef IS_32BIT_THUNK
-    // Buffer mapping. Psychonauts resolves glMapBufferARB exclusively through
-    // glXGetProcAddress and aborts with "Missing required OpenGL extensions"
-    // if it comes back null, so these must be listed here and not only exported.
-    // 32-bit only: on 64-bit these are plain generated thunks with no impl.
-  } else if (name_sv == "glMapBuffer") {
-    return (VoidFn)fexfn_impl_libGL_glMapBuffer;
-  } else if (name_sv == "glMapBufferARB") {
-    return (VoidFn)fexfn_impl_libGL_glMapBufferARB;
-  } else if (name_sv == "glMapBufferRange") {
-    return (VoidFn)fexfn_impl_libGL_glMapBufferRange;
-  } else if (name_sv == "glUnmapBuffer") {
-    return (VoidFn)fexfn_impl_libGL_glUnmapBuffer;
-  } else if (name_sv == "glUnmapBufferARB") {
-    return (VoidFn)fexfn_impl_libGL_glUnmapBufferARB;
-  } else if (name_sv == "glMapNamedBuffer") {
-    return (VoidFn)fexfn_impl_libGL_glMapNamedBuffer;
-  } else if (name_sv == "glMapNamedBufferEXT") {
-    return (VoidFn)fexfn_impl_libGL_glMapNamedBufferEXT;
-  } else if (name_sv == "glMapNamedBufferRange") {
-    return (VoidFn)fexfn_impl_libGL_glMapNamedBufferRange;
-  } else if (name_sv == "glMapNamedBufferRangeEXT") {
-    return (VoidFn)fexfn_impl_libGL_glMapNamedBufferRangeEXT;
-  } else if (name_sv == "glUnmapNamedBuffer") {
-    return (VoidFn)fexfn_impl_libGL_glUnmapNamedBuffer;
-  } else if (name_sv == "glUnmapNamedBufferEXT") {
-    return (VoidFn)fexfn_impl_libGL_glUnmapNamedBufferEXT;
-    // Explicit flush. Same reason as the map/unmap entries above, and it is the
-    // one that matters most for Unity: it resolves the whole buffer-mapping
-    // family through glXGetProcAddress, and a flush that reaches the driver
-    // without going through the staging copy uploads the range as it was at map
-    // time.
-    //
-    // Each is gated on the host actually exporting it. glXGetProcAddress is
-    // spec'd to return non-null for unsupported functions, but titles use it as
-    // a support probe (see the Psychonauts note above), and unlike the map
-    // family these are not universally present -- APPLE_flush_buffer_range is
-    // not a Mesa extension and the DSA spellings need GL 4.5 / EXT_DSA. Handing
-    // back an impl that forwards into a null loader pointer would turn "not
-    // supported" into a crash.
-  } else if (name_sv == "glFlushMappedBufferRange") {
-    return fexldr_ptr_libGL_glFlushMappedBufferRange ? (VoidFn)fexfn_impl_libGL_glFlushMappedBufferRange : nullptr;
-  } else if (name_sv == "glFlushMappedBufferRangeAPPLE") {
-    return fexldr_ptr_libGL_glFlushMappedBufferRangeAPPLE ? (VoidFn)fexfn_impl_libGL_glFlushMappedBufferRangeAPPLE : nullptr;
-  } else if (name_sv == "glFlushMappedNamedBufferRange") {
-    return fexldr_ptr_libGL_glFlushMappedNamedBufferRange ? (VoidFn)fexfn_impl_libGL_glFlushMappedNamedBufferRange : nullptr;
-  } else if (name_sv == "glFlushMappedNamedBufferRangeEXT") {
-    return fexldr_ptr_libGL_glFlushMappedNamedBufferRangeEXT ? (VoidFn)fexfn_impl_libGL_glFlushMappedNamedBufferRangeEXT : nullptr;
-#endif
-#ifdef IS_32BIT_THUNK
-  } else if (name_sv == "glBindBuffersRange") {
-    return (VoidFn)fexfn_impl_libGL_glBindBuffersRange;
-  } else if (name_sv == "glBindVertexBuffers") {
-    return (VoidFn)fexfn_impl_libGL_glBindVertexBuffers;
-  } else if (name_sv == "glGetUniformIndices") {
-    return (VoidFn)fexfn_impl_libGL_glGetUniformIndices;
-  } else if (name_sv == "glVertexArrayVertexBuffers") {
-    return (VoidFn)fexfn_impl_libGL_glVertexArrayVertexBuffers;
-#endif
   } else if (name_sv == "glXChooseFBConfig") {
     return (VoidFn)fexfn_impl_libGL_glXChooseFBConfig;
   } else if (name_sv == "glXChooseFBConfigSGIX") {
@@ -569,12 +302,6 @@ auto fexfn_impl_libGL_glXGetProcAddress(const GLubyte* name) -> void (*)() {
     return (VoidFn)fexfn_impl_libGL_glXGetConfig;
   } else if (name_sv == "glXGetVisualFromFBConfig") {
     return (VoidFn)fexfn_impl_libGL_glXGetVisualFromFBConfig;
-#ifdef IS_32BIT_THUNK
-  } else if (name_sv == "glXGetSelectedEvent") {
-    return (VoidFn)fexfn_impl_libGL_glXGetSelectedEvent;
-  } else if (name_sv == "glXGetSelectedEventSGIX") {
-    return (VoidFn)fexfn_impl_libGL_glXGetSelectedEventSGIX;
-#endif
   }
   // FEX_LIBGL_DEBUG=1: report every name that resolves to null. A title whose
   // GL init silently fails usually does so because one entry point it needs was
@@ -593,91 +320,35 @@ auto fexfn_impl_libGL_glXGetProcAddress(const GLubyte* name) -> void (*)() {
 
 
 void fexfn_impl_libGL_glCompileShaderIncludeARB(GLuint a_0, GLsizei Count, guest_layout<const GLchar* const*> a_2, const GLint* a_3) {
-#ifndef IS_32BIT_THUNK
   auto sources = a_2.force_get_host_pointer();
-#else
-  auto sources = (const char**)alloca(Count * sizeof(const char*));
-  for (GLsizei i = 0; i < Count; ++i) {
-    sources[i] = host_layout<const char* const> {a_2.get_pointer()[i]}.data;
-  }
-#endif
   return fexldr_ptr_libGL_glCompileShaderIncludeARB(a_0, Count, sources, a_3);
 }
 
 GLuint fexfn_impl_libGL_glCreateShaderProgramv(GLuint a_0, GLsizei count, guest_layout<const GLchar* const*> a_2) {
-#ifndef IS_32BIT_THUNK
   auto sources = a_2.force_get_host_pointer();
-#else
-  auto sources = (const char**)alloca(count * sizeof(const char*));
-  for (GLsizei i = 0; i < count; ++i) {
-    sources[i] = host_layout<const char* const> {a_2.get_pointer()[i]}.data;
-  }
-#endif
   return fexldr_ptr_libGL_glCreateShaderProgramv(a_0, count, sources);
 }
 
-#ifdef IS_32BIT_THUNK
-namespace {
-// Defined with the buffer-mapping staging cache further down. GL_BUFFER_MAP_POINTER
-// has to answer with the staging buffer, because that -- not the driver's
-// mapping -- is what glMapBuffer* handed the guest. Returning the host mapping
-// would narrow a 0x3fff'xxxx'xxxx pointer into a 32-bit slot, which is the
-// truncation 6b8ac0a56 made fatal. Return 0 when there is no live mapping, in
-// which case the query falls through to the driver, whose answer is then the
-// null that an unmapped buffer is required to report.
-uintptr_t StagingPointerForTarget(GLenum target);
-uintptr_t StagingPointerForName(GLuint buffer);
-
-// Shared by the four GL_BUFFER_MAP_POINTER queries below.
-bool WriteStagingPointer(uintptr_t Staging, guest_layout<void**>& GuestOut) {
-  if (!Staging) {
-    return false;
-  }
-  *GuestOut.get_pointer() = guest_layout<void*> {.data = static_cast<decltype(guest_layout<void*>::data)>(Staging)};
-  return true;
-}
-} // namespace
-#endif
 
 void fexfn_impl_libGL_glGetBufferPointerv(GLenum a_0, GLenum a_1, guest_layout<void**> GuestOut) {
-#ifdef IS_32BIT_THUNK
-  if (a_1 == GL_BUFFER_MAP_POINTER && WriteStagingPointer(StagingPointerForTarget(a_0), GuestOut)) {
-    return;
-  }
-#endif
   void* HostOut;
   fexldr_ptr_libGL_glGetBufferPointerv(a_0, a_1, &HostOut);
   *GuestOut.get_pointer() = to_guest(to_host_layout(HostOut));
 }
 
 void fexfn_impl_libGL_glGetBufferPointervARB(GLenum a_0, GLenum a_1, guest_layout<void**> GuestOut) {
-#ifdef IS_32BIT_THUNK
-  if (a_1 == GL_BUFFER_MAP_POINTER && WriteStagingPointer(StagingPointerForTarget(a_0), GuestOut)) {
-    return;
-  }
-#endif
   void* HostOut;
   fexldr_ptr_libGL_glGetBufferPointervARB(a_0, a_1, &HostOut);
   *GuestOut.get_pointer() = to_guest(to_host_layout(HostOut));
 }
 
 void fexfn_impl_libGL_glGetNamedBufferPointerv(GLuint a_0, GLenum a_1, guest_layout<void**> GuestOut) {
-#ifdef IS_32BIT_THUNK
-  if (a_1 == GL_BUFFER_MAP_POINTER && WriteStagingPointer(StagingPointerForName(a_0), GuestOut)) {
-    return;
-  }
-#endif
   void* HostOut;
   fexldr_ptr_libGL_glGetNamedBufferPointerv(a_0, a_1, &HostOut);
   *GuestOut.get_pointer() = to_guest(to_host_layout(HostOut));
 }
 
 void fexfn_impl_libGL_glGetNamedBufferPointervEXT(GLuint a_0, GLenum a_1, guest_layout<void**> GuestOut) {
-#ifdef IS_32BIT_THUNK
-  if (a_1 == GL_BUFFER_MAP_POINTER && WriteStagingPointer(StagingPointerForName(a_0), GuestOut)) {
-    return;
-  }
-#endif
   void* HostOut;
   fexldr_ptr_libGL_glGetNamedBufferPointervEXT(a_0, a_1, &HostOut);
   *GuestOut.get_pointer() = to_guest(to_host_layout(HostOut));
@@ -744,14 +415,7 @@ void fexfn_impl_libGL_glGetVertexArrayPointervEXT(GLuint a_0, GLenum a_1, guest_
 }
 
 void fexfn_impl_libGL_glShaderSource(GLuint a_0, GLsizei count, guest_layout<const GLchar* const*> a_2, const GLint* a_3) {
-#ifndef IS_32BIT_THUNK
   auto sources = a_2.force_get_host_pointer();
-#else
-  auto sources = (const char**)alloca(count * sizeof(const char*));
-  for (GLsizei i = 0; i < count; ++i) {
-    sources[i] = host_layout<const char* const> {a_2.get_pointer()[i]}.data;
-  }
-#endif
   return fexldr_ptr_libGL_glShaderSource(a_0, count, sources, a_3);
 }
 
@@ -768,64 +432,29 @@ void fexfn_impl_libGL_glShaderSource(GLuint a_0, GLsizei count, guest_layout<con
 // guest's own render loop rather than from untrusted input.
 void fexfn_impl_libGL_glMultiDrawElements(GLenum mode, const GLsizei* count, GLenum type, guest_layout<const void* const*> a_3,
                                           GLsizei drawcount) {
-#ifndef IS_32BIT_THUNK
   auto indices = a_3.force_get_host_pointer();
-#else
-  auto indices = (const void**)alloca(drawcount * sizeof(const void*));
-  for (GLsizei i = 0; i < drawcount; ++i) {
-    indices[i] = host_layout<const void* const> {a_3.get_pointer()[i]}.data;
-  }
-#endif
   return fexldr_ptr_libGL_glMultiDrawElements(mode, count, type, indices, drawcount);
 }
 
 void fexfn_impl_libGL_glMultiDrawElementsEXT(GLenum mode, const GLsizei* count, GLenum type, guest_layout<const void* const*> a_3,
                                              GLsizei drawcount) {
-#ifndef IS_32BIT_THUNK
   auto indices = a_3.force_get_host_pointer();
-#else
-  auto indices = (const void**)alloca(drawcount * sizeof(const void*));
-  for (GLsizei i = 0; i < drawcount; ++i) {
-    indices[i] = host_layout<const void* const> {a_3.get_pointer()[i]}.data;
-  }
-#endif
   return fexldr_ptr_libGL_glMultiDrawElementsEXT(mode, count, type, indices, drawcount);
 }
 
 void fexfn_impl_libGL_glMultiDrawElementsBaseVertex(GLenum mode, const GLsizei* count, GLenum type, guest_layout<const void* const*> a_3,
                                                     GLsizei drawcount, const GLint* basevertex) {
-#ifndef IS_32BIT_THUNK
   auto indices = a_3.force_get_host_pointer();
-#else
-  auto indices = (const void**)alloca(drawcount * sizeof(const void*));
-  for (GLsizei i = 0; i < drawcount; ++i) {
-    indices[i] = host_layout<const void* const> {a_3.get_pointer()[i]}.data;
-  }
-#endif
   return fexldr_ptr_libGL_glMultiDrawElementsBaseVertex(mode, count, type, indices, drawcount, basevertex);
 }
 
 void fexfn_impl_libGL_glTransformFeedbackVaryings(GLuint program, GLsizei count, guest_layout<const GLchar* const*> a_2, GLenum bufferMode) {
-#ifndef IS_32BIT_THUNK
   auto varyings = a_2.force_get_host_pointer();
-#else
-  auto varyings = (const char**)alloca(count * sizeof(const char*));
-  for (GLsizei i = 0; i < count; ++i) {
-    varyings[i] = host_layout<const char* const> {a_2.get_pointer()[i]}.data;
-  }
-#endif
   return fexldr_ptr_libGL_glTransformFeedbackVaryings(program, count, varyings, bufferMode);
 }
 
 void fexfn_impl_libGL_glTransformFeedbackVaryingsEXT(GLuint program, GLsizei count, guest_layout<const GLchar* const*> a_2, GLenum bufferMode) {
-#ifndef IS_32BIT_THUNK
   auto varyings = a_2.force_get_host_pointer();
-#else
-  auto varyings = (const char**)alloca(count * sizeof(const char*));
-  for (GLsizei i = 0; i < count; ++i) {
-    varyings[i] = host_layout<const char* const> {a_2.get_pointer()[i]}.data;
-  }
-#endif
   return fexldr_ptr_libGL_glTransformFeedbackVaryingsEXT(program, count, varyings, bufferMode);
 }
 
@@ -868,503 +497,9 @@ void fexfn_impl_libGL_glTransformFeedbackVaryingsEXT(GLuint program, GLsizei cou
 // FLUSH_EXPLICIT, and for a flushed mapping it rewrites bytes that already
 // match. Copying back only the flushed sub-ranges is a bandwidth optimisation
 // that can come later; unlike this, it is not a correctness matter.
-#ifdef IS_32BIT_THUNK
-namespace {
-struct MappedBuffer {
-  void* HostPtr = nullptr;      // driver mapping
-  uintptr_t GuestPtr = 0;       // staging buffer handed to the guest
-  size_t GuestCapacity = 0;     // allocated size of the staging buffer
-  size_t Length = 0;            // bytes actually mapped this time
-  bool CopyBackOnUnmap = false; // access included write
-};
-
-std::mutex MappedBufferMutex;
-
-// LEGACY FALLBACK ONLY -- see BoundBufferForTarget below.
-//
-// This map's (context, target) key was the primary key until 2026-08-23, on
-// the assumption that "a target names at most one buffer per context, and a
-// buffer maps once". That assumption is wrong GL: mapping is per-BUFFER
-// state, and a title may map buffer A on GL_ARRAY_BUFFER, bind B and map it
-// too, then rebind each to flush and unmap it -- every mapping legal and
-// live simultaneously under one (context, target). Unity 5 does exactly this
-// (Dex, Player.log 2026-08-23: back-to-back map-ranges on 0x8892/0x8893 with
-// 58 second-live-map hits in one session). With one slot per key the second
-// map stole the first's staging buffer and HostPtr/Length, so A's flush was
-// clamped to B's length (glyphs missing from the drawn string) and copied
-// into B's mapping (those glyphs piled up at the origin inside other draws).
-//
-// The primary key is therefore the buffer NAME, resolved from the target's
-// binding point at map/flush/unmap time and stored in MappedNamedBuffers
-// alongside the DSA mappings (same per-buffer object, same semantics). This
-// (context, target) map only serves targets whose binding-point query enum
-// is unknown to BindingQueryForTarget -- a set that sees no mapping traffic
-// from real titles.
-using TargetKey = std::pair<GLXContext, GLenum>;
-std::map<TargetKey, MappedBuffer> MappedBuffers;
-
-// Primary store for every live mapping, keyed by buffer name. Shared with the
-// DSA entry points (declared here, documented at its old site below).
-std::map<GLuint, MappedBuffer> MappedNamedBuffers;
-
-// The binding-point query enum for a buffer target, or 0 for targets this
-// table does not know (which then fall back to the legacy (context, target)
-// slot). Kept to the targets real titles map.
-GLenum BindingQueryForTarget(GLenum target) {
-  switch (target) {
-  case GL_ARRAY_BUFFER: return GL_ARRAY_BUFFER_BINDING;
-  case GL_ELEMENT_ARRAY_BUFFER: return GL_ELEMENT_ARRAY_BUFFER_BINDING;
-  case GL_PIXEL_PACK_BUFFER: return GL_PIXEL_PACK_BUFFER_BINDING;
-  case GL_PIXEL_UNPACK_BUFFER: return GL_PIXEL_UNPACK_BUFFER_BINDING;
-  case GL_UNIFORM_BUFFER: return GL_UNIFORM_BUFFER_BINDING;
-  case GL_TRANSFORM_FEEDBACK_BUFFER: return GL_TRANSFORM_FEEDBACK_BUFFER_BINDING;
-  case GL_COPY_READ_BUFFER: return GL_COPY_READ_BUFFER_BINDING;
-  case GL_COPY_WRITE_BUFFER: return GL_COPY_WRITE_BUFFER_BINDING;
-  case GL_DRAW_INDIRECT_BUFFER: return GL_DRAW_INDIRECT_BUFFER_BINDING;
-  case GL_DISPATCH_INDIRECT_BUFFER: return GL_DISPATCH_INDIRECT_BUFFER_BINDING;
-  case GL_SHADER_STORAGE_BUFFER: return GL_SHADER_STORAGE_BUFFER_BINDING;
-  case GL_ATOMIC_COUNTER_BUFFER: return GL_ATOMIC_COUNTER_BUFFER_BINDING;
-  case GL_TEXTURE_BUFFER: return GL_TEXTURE_BUFFER_BINDING;
-  default: return 0;
-  }
-}
-
-// The buffer currently bound to `target`, or 0 when the binding point is
-// unknown or empty. GL requires the buffer to be bound to the target for
-// glMapBuffer*/glFlushMappedBufferRange/glUnmapBuffer on that target, so
-// resolving at each of those calls names the right object even when several
-// mapped buffers rotate through one target.
-GLuint BoundBufferForTarget(GLenum target) {
-  const GLenum Query = BindingQueryForTarget(target);
-  if (!Query) {
-    return 0;
-  }
-  GLint Name = 0;
-  fexldr_ptr_libGL_glGetIntegerv(Query, &Name);
-  return Name > 0 ? static_cast<GLuint>(Name) : 0;
-}
-
-// The current context, read straight from the loader rather than through the
-// generated thunk: the token map that 32-bit guests see is not wanted here, the
-// driver's own pointer is what identifies the context. It is per-thread state
-// inside the driver, so this needs no lock of its own.
-GLXContext CurrentContext() {
-  return fexldr_ptr_libGL_glXGetCurrentContext();
-}
-
-// Returns the guest staging pointer for this target, growing it if needed.
-// Caller must hold MappedBufferMutex; note GuestMalloc re-enters the JIT, which
-// is why this must never be called with any other host lock held.
-uintptr_t GetStagingBuffer(MappedBuffer& Entry, size_t Length) {
-  if (Entry.GuestPtr && Entry.GuestCapacity >= Length) {
-    return Entry.GuestPtr;
-  }
-  auto* Malloc = __atomic_load_n(&GuestMalloc, __ATOMIC_ACQUIRE);
-  if (!Malloc) {
-    return 0;
-  }
-  // The old buffer is abandoned rather than freed (no guest free is
-  // registered). Growth is rare: buffers settle at their working size.
-  void* Buf = Malloc(Length);
-  if (!Buf) {
-    return 0;
-  }
-  Entry.GuestPtr = reinterpret_cast<uintptr_t>(Buf);
-  Entry.GuestCapacity = Length;
-  return Entry.GuestPtr;
-}
-
-// Shared by glMapBuffer/glMapBufferARB/glMapBufferRange.
-guest_layout<void*> MapBufferToGuest(GLenum target, void* HostPtr, size_t Length, bool WantsRead, bool WantsWrite) {
-  if (!HostPtr) {
-    return guest_layout<void*> {.data = 0};
-  }
-
-  const GLuint Name = BoundBufferForTarget(target);
-  std::lock_guard lk {MappedBufferMutex};
-  auto& Entry = Name ? MappedNamedBuffers[Name] : MappedBuffers[TargetKey {CurrentContext(), target}];
-  if (Entry.HostPtr && FexLibGLDebug()) {
-    // With per-buffer keying, a second live map on one entry means the guest
-    // mapped a buffer that is already mapped -- illegal GL the host driver
-    // would normally have rejected (and returned null before this point), or
-    // a name collision across unshared share groups. Either way the staging
-    // buffer is about to be shared between two mappings, so say so rather
-    // than silently clobbering.
-    fprintf(stderr, "[fex-libGL] staging: second live map on buffer=%u target=0x%x (previous host=%p)\n", Name, target, Entry.HostPtr);
-  }
-  const uintptr_t Staging = GetStagingBuffer(Entry, Length);
-  if (!Staging) {
-    // Guest heap exhausted, or the guest never registered its malloc. Unmap
-    // again and report failure rather than handing back a truncated pointer.
-    fexldr_ptr_libGL_glUnmapBuffer(target);
-    return guest_layout<void*> {.data = 0};
-  }
-
-  Entry.HostPtr = HostPtr;
-  Entry.Length = Length;
-  Entry.CopyBackOnUnmap = WantsWrite;
-
-  // Seed the staging buffer from the real mapping unconditionally — NOT only
-  // when the access asks for reading.
-  //
-  // Unmap copies the whole range back, and the staging buffer is reused across
-  // maps. If it is not seeded, every byte the application does not write still
-  // gets copied into the buffer, carrying whatever the previous map left there.
-  // The common Unity dynamic-geometry path is exactly this shape:
-  // WRITE|INVALIDATE_RANGE|FLUSH_EXPLICIT, write a sub-range, flush only that —
-  // so most of the range is untouched and would receive stale vertices. It
-  // showed up in Dex as degenerate triangles streaking across the frame and
-  // mirrored glyphs in the HUD text, one frame's geometry bleeding into the
-  // next.
-  //
-  // Reading a mapping made with GL_MAP_INVALIDATE_* is defined-but-undefined-
-  // valued, and copying those bytes straight back is a no-op for anything the
-  // application also treats as undefined. WantsRead is therefore no longer
-  // consulted here; it stays in the signature because it documents intent at
-  // the call sites.
-  (void)WantsRead;
-  std::memcpy(reinterpret_cast<void*>(Staging), HostPtr, Length);
-  return guest_layout<void*> {.data = static_cast<decltype(guest_layout<void*>::data)>(Staging)};
-}
-
-// The existing entry for the buffer bound to `target` (resolved as `Name` by
-// the caller, 0 for the legacy slot), or null. MappedBufferMutex must be held.
-MappedBuffer* FindTargetEntry(GLenum target, GLuint Name) {
-  if (Name) {
-    auto It = MappedNamedBuffers.find(Name);
-    return It != MappedNamedBuffers.end() ? &It->second : nullptr;
-  }
-  auto It = MappedBuffers.find(TargetKey {CurrentContext(), target});
-  return It != MappedBuffers.end() ? &It->second : nullptr;
-}
-
-GLboolean UnmapBufferFromGuest(GLenum target) {
-  const GLuint Name = BoundBufferForTarget(target);
-  {
-    std::lock_guard lk {MappedBufferMutex};
-    auto* Entry = FindTargetEntry(target, Name);
-    if (Entry && Entry->HostPtr) {
-      if (Entry->CopyBackOnUnmap && Entry->GuestPtr) {
-        std::memcpy(Entry->HostPtr, reinterpret_cast<const void*>(Entry->GuestPtr), Entry->Length);
-      }
-      // Keep the staging allocation for reuse; only the mapping is retired.
-      Entry->HostPtr = nullptr;
-      Entry->Length = 0;
-      Entry->CopyBackOnUnmap = false;
-    }
-  }
-  return fexldr_ptr_libGL_glUnmapBuffer(target);
-}
-
-size_t BufferSizeForTarget(GLenum target) {
-  GLint Size = 0;
-  fexldr_ptr_libGL_glGetBufferParameteriv(target, GL_BUFFER_SIZE, &Size);
-  return Size > 0 ? static_cast<size_t>(Size) : 0;
-}
-
-// Direct-state-access variants (GL 4.5 core, plus the EXT_direct_state_access
-// spelling). Same staging scheme, keyed by buffer name instead of target since
-// DSA never binds. Kept in a separate map so a buffer can legitimately be
-// mapped via glMapNamedBuffer while a different one is mapped to a target.
-// Deliberately keyed by name ALONE, unlike the target map above.
-//
-// A buffer name belongs to the share group, not to the context, so within a
-// share group the name already identifies the buffer uniquely and a title may
-// legally map it with one context current and unmap it with another. Adding the
-// context to the key would split that legal pattern across two entries and lose
-// the mapping -- strictly worse than what it would buy.
-//
-// What it would buy is narrow: two contexts that do NOT share can each own a
-// distinct buffer that happens to have the same name, and those two collide
-// here the way targets used to. There is no way to ask GL which share group a
-// context belongs to, so distinguishing them is not available; the collision
-// stays as a known limit. It needs DSA, two unshared contexts, and colliding
-// names to bite, whereas the target collision needed only two contexts.
-// (MappedNamedBuffers itself is declared above, next to the legacy map: since
-// 2026-08-23 the target-based entry points resolve their bound buffer and
-// store their mappings here too.)
-
-size_t BufferSizeForName(GLuint buffer) {
-  GLint Size = 0;
-  fexldr_ptr_libGL_glGetNamedBufferParameteriv(buffer, GL_BUFFER_SIZE, &Size);
-  return Size > 0 ? static_cast<size_t>(Size) : 0;
-}
-
-guest_layout<void*> MapNamedBufferToGuest(GLuint buffer, void* HostPtr, size_t Length, bool WantsRead, bool WantsWrite) {
-  if (!HostPtr) {
-    return guest_layout<void*> {.data = 0};
-  }
-
-  std::lock_guard lk {MappedBufferMutex};
-  auto& Entry = MappedNamedBuffers[buffer];
-  const uintptr_t Staging = GetStagingBuffer(Entry, Length);
-  if (!Staging) {
-    fexldr_ptr_libGL_glUnmapNamedBuffer(buffer);
-    return guest_layout<void*> {.data = 0};
-  }
-
-  Entry.HostPtr = HostPtr;
-  Entry.Length = Length;
-  Entry.CopyBackOnUnmap = WantsWrite;
-
-  // Seed the staging buffer from the real mapping unconditionally — NOT only
-  // when the access asks for reading.
-  //
-  // Unmap copies the whole range back, and the staging buffer is reused across
-  // maps. If it is not seeded, every byte the application does not write still
-  // gets copied into the buffer, carrying whatever the previous map left there.
-  // The common Unity dynamic-geometry path is exactly this shape:
-  // WRITE|INVALIDATE_RANGE|FLUSH_EXPLICIT, write a sub-range, flush only that —
-  // so most of the range is untouched and would receive stale vertices. It
-  // showed up in Dex as degenerate triangles streaking across the frame and
-  // mirrored glyphs in the HUD text, one frame's geometry bleeding into the
-  // next.
-  //
-  // Reading a mapping made with GL_MAP_INVALIDATE_* is defined-but-undefined-
-  // valued, and copying those bytes straight back is a no-op for anything the
-  // application also treats as undefined. WantsRead is therefore no longer
-  // consulted here; it stays in the signature because it documents intent at
-  // the call sites.
-  (void)WantsRead;
-  std::memcpy(reinterpret_cast<void*>(Staging), HostPtr, Length);
-  return guest_layout<void*> {.data = static_cast<decltype(guest_layout<void*>::data)>(Staging)};
-}
-
-GLboolean UnmapNamedBufferFromGuest(GLuint buffer) {
-  std::lock_guard lk {MappedBufferMutex};
-  auto It = MappedNamedBuffers.find(buffer);
-  if (It != MappedNamedBuffers.end() && It->second.HostPtr) {
-    auto& Entry = It->second;
-    if (Entry.CopyBackOnUnmap && Entry.GuestPtr) {
-      std::memcpy(Entry.HostPtr, reinterpret_cast<const void*>(Entry.GuestPtr), Entry.Length);
-    }
-    Entry.HostPtr = nullptr;
-    Entry.Length = 0;
-    Entry.CopyBackOnUnmap = false;
-  }
-  return fexldr_ptr_libGL_glUnmapNamedBuffer(buffer);
-}
-
-// Push a flushed sub-range from the staging buffer into the driver's mapping,
-// so that the flush the guest is about to perform sees the bytes it wrote.
-//
-// `offset` is relative to the start of the mapped range (GL spec), which is
-// also how the staging buffer is laid out, so the same offset indexes both.
-// Ranges are clamped against the recorded mapped length: a guest may pass an
-// out-of-range flush (the driver will raise GL_INVALID_VALUE for it), and this
-// runs before that validation, so it must not read or write past either buffer.
-// A target/name with no live mapping copies nothing and just forwards.
-void FlushStagingSubRange(MappedBuffer* Entry, GLintptr offset, GLsizeiptr length) {
-  if (!Entry || !Entry->HostPtr || !Entry->GuestPtr || offset < 0 || length <= 0) {
-    return;
-  }
-  const size_t Offset = static_cast<size_t>(offset);
-  if (Offset >= Entry->Length) {
-    return;
-  }
-  const size_t Length = std::min(static_cast<size_t>(length), Entry->Length - Offset);
-  std::memcpy(reinterpret_cast<char*>(Entry->HostPtr) + Offset, reinterpret_cast<const char*>(Entry->GuestPtr) + Offset, Length);
-}
-
-void FlushMappedTargetRange(GLenum target, GLintptr offset, GLsizeiptr length) {
-  const GLuint Name = BoundBufferForTarget(target);
-  std::lock_guard lk {MappedBufferMutex};
-  FlushStagingSubRange(FindTargetEntry(target, Name), offset, length);
-}
-
-void FlushMappedNameRange(GLuint buffer, GLintptr offset, GLsizeiptr length) {
-  std::lock_guard lk {MappedBufferMutex};
-  auto It = MappedNamedBuffers.find(buffer);
-  FlushStagingSubRange(It != MappedNamedBuffers.end() ? &It->second : nullptr, offset, length);
-}
-
-// Definitions for the forward declarations near the GL_BUFFER_MAP_POINTER
-// queries. A live mapping is one with a HostPtr; after unmap the entry survives
-// for its staging allocation only, and must then answer "no mapping" so the
-// query falls through to the driver's null.
-uintptr_t StagingPointerForTarget(GLenum target) {
-  const GLuint Name = BoundBufferForTarget(target);
-  std::lock_guard lk {MappedBufferMutex};
-  auto* Entry = FindTargetEntry(target, Name);
-  return (Entry && Entry->HostPtr) ? Entry->GuestPtr : 0;
-}
-
-uintptr_t StagingPointerForName(GLuint buffer) {
-  std::lock_guard lk {MappedBufferMutex};
-  auto It = MappedNamedBuffers.find(buffer);
-  return (It != MappedNamedBuffers.end() && It->second.HostPtr) ? It->second.GuestPtr : 0;
-}
-
-// Drop a destroyed context's staging entries, so the target map stays bounded by
-// the number of live contexts rather than by every context the title ever made.
-// SDL2 -- hence Unity -- builds a probe context and throws it away during
-// startup, so this is not a theoretical case.
-//
-// Only the bookkeeping is reclaimed: the staging allocations themselves are
-// abandoned, because the guest registers a malloc and no free (see
-// GetStagingBuffer). That is the pre-existing bargain here and it stays bounded
-// in practice, since a context that is gone cannot map anything more.
-//
-// The named-buffer map is not pruned by context, since it is not keyed by one.
-// Its entries are bounded by the number of distinct buffer names a title maps.
-void RetireStagingForContext(GLXContext Context) {
-  std::lock_guard lk {MappedBufferMutex};
-  std::erase_if(MappedBuffers, [Context](const auto& Entry) { return Entry.first.first == Context; });
-}
-} // namespace
-
-#ifndef GL_MAP_PERSISTENT_BIT
-#define GL_MAP_PERSISTENT_BIT 0x0040
-#endif
-
-// FEX_LIBGL_DEBUG map-traffic sampler: the first 512 map/flush/unmap calls,
-// with the access bits the application actually asked for. The one question
-// this answers cheaply is whether a title streams through
-// GL_MAP_PERSISTENT_BIT mappings — which the staging scheme can only serve
-// when every write is followed by an explicit flush, so persistent maps are
-// logged past the budget too.
-static void LogMapTraffic(const char* What, GLenum target, long offset, long length, unsigned access) {
-  if (!FexLibGLDebug()) {
-    return;
-  }
-  static std::atomic<int> Budget {512};
-  if (Budget.fetch_sub(1, std::memory_order_relaxed) <= 0 && !(access & GL_MAP_PERSISTENT_BIT)) {
-    return;
-  }
-  fprintf(stderr, "[fex-libGL] %s target=0x%x off=%ld len=%ld access=0x%x tid=%d\n", What, target, offset, length, access,
-          static_cast<int>(gettid()));
-}
-
-// Sampler-only passthroughs: the SubData/Data stream is the dynamic-geometry
-// path for titles that never map (Dex). Log, then forward untouched.
-void fexfn_impl_libGL_glBufferData(GLenum target, GLsizeiptr size, const void* data, GLenum usage) {
-  LogMapTraffic("bufferdata", target, 0, size, usage);
-  fexldr_ptr_libGL_glBufferData(target, size, data, usage);
-}
-
-void fexfn_impl_libGL_glBufferSubData(GLenum target, GLintptr offset, GLsizeiptr size, const void* data) {
-  LogMapTraffic("subdata", target, offset, size, 0);
-  fexldr_ptr_libGL_glBufferSubData(target, offset, size, data);
-}
-
-void fexfn_impl_libGL_glFlushMappedBufferRange(GLenum target, GLintptr offset, GLsizeiptr length) {
-  LogMapTraffic("flush", target, offset, length, 0);
-  FlushMappedTargetRange(target, offset, length);
-  fexldr_ptr_libGL_glFlushMappedBufferRange(target, offset, length);
-}
-
-// APPLE_flush_buffer_range spells the same operation with a `size` parameter;
-// the staging handling is identical.
-void fexfn_impl_libGL_glFlushMappedBufferRangeAPPLE(GLenum target, GLintptr offset, GLsizeiptr size) {
-  FlushMappedTargetRange(target, offset, size);
-  fexldr_ptr_libGL_glFlushMappedBufferRangeAPPLE(target, offset, size);
-}
-
-void fexfn_impl_libGL_glFlushMappedNamedBufferRange(GLuint buffer, GLintptr offset, GLsizeiptr length) {
-  FlushMappedNameRange(buffer, offset, length);
-  fexldr_ptr_libGL_glFlushMappedNamedBufferRange(buffer, offset, length);
-}
-
-void fexfn_impl_libGL_glFlushMappedNamedBufferRangeEXT(GLuint buffer, GLintptr offset, GLsizeiptr length) {
-  FlushMappedNameRange(buffer, offset, length);
-  fexldr_ptr_libGL_glFlushMappedNamedBufferRangeEXT(buffer, offset, length);
-}
-
-// Retire the GLsync token when the guest deletes the sync object. Unlike a GLX
-// context this genuinely matters: a title that fences once per frame creates a
-// sync object per frame, so leaving them interned grows the registry for the
-// life of the process. After retirement a stale token resolves to null, which
-// the driver rejects rather than acting on a freed pointer.
-void fexfn_impl_libGL_glDeleteSync(GLsync sync) {
-  SyncRegistry.Retire(sync);
-  fexldr_ptr_libGL_glDeleteSync(sync);
-}
-
-guest_layout<void*> fexfn_impl_libGL_glMapBuffer(GLenum target, GLenum access) {
-  LogMapTraffic("map", target, 0, -1, access);
-  auto* HostPtr = fexldr_ptr_libGL_glMapBuffer(target, access);
-  const bool WantsRead = (access == GL_READ_ONLY || access == GL_READ_WRITE);
-  const bool WantsWrite = (access == GL_WRITE_ONLY || access == GL_READ_WRITE);
-  return MapBufferToGuest(target, HostPtr, BufferSizeForTarget(target), WantsRead, WantsWrite);
-}
-
-guest_layout<void*> fexfn_impl_libGL_glMapBufferARB(GLenum target, GLenum access) {
-  auto* HostPtr = fexldr_ptr_libGL_glMapBufferARB(target, access);
-  const bool WantsRead = (access == GL_READ_ONLY || access == GL_READ_WRITE);
-  const bool WantsWrite = (access == GL_WRITE_ONLY || access == GL_READ_WRITE);
-  return MapBufferToGuest(target, HostPtr, BufferSizeForTarget(target), WantsRead, WantsWrite);
-}
-
-guest_layout<void*> fexfn_impl_libGL_glMapBufferRange(GLenum target, GLintptr offset, GLsizeiptr length, GLbitfield access) {
-  LogMapTraffic("map-range", target, offset, length, access);
-  auto* HostPtr = fexldr_ptr_libGL_glMapBufferRange(target, offset, length, access);
-  // GL_MAP_INVALIDATE_*_BIT means the previous contents are undefined, so there
-  // is nothing worth copying in even when GL_MAP_READ_BIT is also set.
-  const bool Invalidates = (access & (GL_MAP_INVALIDATE_RANGE_BIT | GL_MAP_INVALIDATE_BUFFER_BIT)) != 0;
-  const bool WantsRead = (access & GL_MAP_READ_BIT) != 0 && !Invalidates;
-  const bool WantsWrite = (access & GL_MAP_WRITE_BIT) != 0;
-  return MapBufferToGuest(target, HostPtr, length > 0 ? static_cast<size_t>(length) : 0, WantsRead, WantsWrite);
-}
-
-GLboolean fexfn_impl_libGL_glUnmapBuffer(GLenum target) {
-  LogMapTraffic("unmap", target, 0, 0, 0);
-  return UnmapBufferFromGuest(target);
-}
-
-GLboolean fexfn_impl_libGL_glUnmapBufferARB(GLenum target) {
-  // Same mapping table as glUnmapBuffer: ARB and core map/unmap are
-  // interchangeable against the same buffer object, and a title may mix them.
-  return UnmapBufferFromGuest(target);
-}
-
-guest_layout<void*> fexfn_impl_libGL_glMapNamedBuffer(GLuint buffer, GLenum access) {
-  auto* HostPtr = fexldr_ptr_libGL_glMapNamedBuffer(buffer, access);
-  const bool WantsRead = (access == GL_READ_ONLY || access == GL_READ_WRITE);
-  const bool WantsWrite = (access == GL_WRITE_ONLY || access == GL_READ_WRITE);
-  return MapNamedBufferToGuest(buffer, HostPtr, BufferSizeForName(buffer), WantsRead, WantsWrite);
-}
-
-guest_layout<void*> fexfn_impl_libGL_glMapNamedBufferEXT(GLuint buffer, GLenum access) {
-  auto* HostPtr = fexldr_ptr_libGL_glMapNamedBufferEXT(buffer, access);
-  const bool WantsRead = (access == GL_READ_ONLY || access == GL_READ_WRITE);
-  const bool WantsWrite = (access == GL_WRITE_ONLY || access == GL_READ_WRITE);
-  return MapNamedBufferToGuest(buffer, HostPtr, BufferSizeForName(buffer), WantsRead, WantsWrite);
-}
-
-guest_layout<void*> fexfn_impl_libGL_glMapNamedBufferRange(GLuint buffer, GLintptr offset, GLsizeiptr length, GLbitfield access) {
-  auto* HostPtr = fexldr_ptr_libGL_glMapNamedBufferRange(buffer, offset, length, access);
-  const bool Invalidates = (access & (GL_MAP_INVALIDATE_RANGE_BIT | GL_MAP_INVALIDATE_BUFFER_BIT)) != 0;
-  const bool WantsRead = (access & GL_MAP_READ_BIT) != 0 && !Invalidates;
-  const bool WantsWrite = (access & GL_MAP_WRITE_BIT) != 0;
-  return MapNamedBufferToGuest(buffer, HostPtr, length > 0 ? static_cast<size_t>(length) : 0, WantsRead, WantsWrite);
-}
-
-guest_layout<void*> fexfn_impl_libGL_glMapNamedBufferRangeEXT(GLuint buffer, GLintptr offset, GLsizeiptr length, GLbitfield access) {
-  auto* HostPtr = fexldr_ptr_libGL_glMapNamedBufferRangeEXT(buffer, offset, length, access);
-  const bool Invalidates = (access & (GL_MAP_INVALIDATE_RANGE_BIT | GL_MAP_INVALIDATE_BUFFER_BIT)) != 0;
-  const bool WantsRead = (access & GL_MAP_READ_BIT) != 0 && !Invalidates;
-  const bool WantsWrite = (access & GL_MAP_WRITE_BIT) != 0;
-  return MapNamedBufferToGuest(buffer, HostPtr, length > 0 ? static_cast<size_t>(length) : 0, WantsRead, WantsWrite);
-}
-
-GLboolean fexfn_impl_libGL_glUnmapNamedBuffer(GLuint buffer) {
-  return UnmapNamedBufferFromGuest(buffer);
-}
-
-GLboolean fexfn_impl_libGL_glUnmapNamedBufferEXT(GLuint buffer) {
-  return UnmapNamedBufferFromGuest(buffer);
-}
-#endif
 
 void fexfn_impl_libGL_glShaderSourceARB(GLuint a_0, GLsizei count, guest_layout<const GLcharARB**> a_2, const GLint* a_3) {
-#ifndef IS_32BIT_THUNK
   auto sources = a_2.force_get_host_pointer();
-#else
-  auto sources = (const char**)alloca(count * sizeof(const char*));
-  for (GLsizei i = 0; i < count; ++i) {
-    sources[i] = a_2.get_pointer()[i].force_get_host_pointer();
-  }
-#endif
   return fexldr_ptr_libGL_glShaderSourceARB(a_0, count, sources, a_3);
 }
 
@@ -1394,96 +529,6 @@ guest_layout<T*> RelocateArrayToGuestHeap(T* Data, int NumItems) {
   return GuestData;
 }
 
-#if defined(IS_32BIT_THUNK)
-// Copies a NUL-terminated host string onto the guest heap and returns a guest
-// pointer to it. GL/GLX driver strings (`glGetString`, `glGetStringi`, and
-// the `glX*String` trio) all return host `.rodata` pointers at
-// `0x3fff'xxxx'xxxx`. The default `to_guest` on that pointer silently
-// truncates to 32 bits on an i386 guest (`Host.h:551-557` -- upstream's own
-// `// TODO: Assert upper 32 bits are zero`), producing garbage that
-// `gldriverquery` and every driver-info consumer reads without noticing.
-//
-// Unlike `RelocateArrayToGuestHeap` this MUST NOT free the source. GL driver
-// strings live in the driver's `.rodata` for the process lifetime; calling
-// `HostXFree` on them would corrupt Mesa.
-//
-// Results are interned. GL strings are static, and applications compare
-// returned pointers for identity (`s == prev_s` as a cheap "still the same
-// driver?" check). Never freed by design -- the total is a small fixed set
-// per process (VENDOR, RENDERER, VERSION, EXTENSIONS, one GLSL_VERSION,
-// plus per-index EXTENSIONS strings, and a handful of GLX server/client
-// strings). Under a busy application it stays well under 100 entries.
-static guest_layout<const GLubyte*> RelocateStringToGuestHeap(const GLubyte* Str) {
-  if (!Str) {
-    return guest_layout<const GLubyte*> {.data = 0};
-  }
-
-  static std::mutex InternMutex;
-  static std::unordered_map<const void*, uintptr_t> Interned;
-
-  using GuestPtr = decltype(guest_layout<const GLubyte*>::data);
-
-  {
-    std::lock_guard<std::mutex> Lock(InternMutex);
-    if (auto It = Interned.find(Str); It != Interned.end()) {
-      return guest_layout<const GLubyte*> {.data = static_cast<GuestPtr>(It->second)};
-    }
-  }
-
-  // Allocate OUTSIDE the lock. GuestMalloc is a host->guest trampoline: it
-  // bumps the guest stack and re-enters the JIT to run the guest's malloc.
-  // Holding a host lock across that is the hazard X11Manager documents for
-  // GuestXSync - a guest allocator taking its own lock, or a signal landing on
-  // another glGetString on this thread, deadlocks against us. glGetString sits
-  // on the startup path, so this is not hypothetical.
-  const size_t Size = std::strlen(reinterpret_cast<const char*>(Str)) + 1;
-  void* GuestBuf = GuestMalloc(Size);
-  if (!GuestBuf) {
-    // Guest OOM. Returning null is honest -- the alternative is handing
-    // back a truncated host pointer, which is the bug we are fixing.
-    return guest_layout<const GLubyte*> {.data = 0};
-  }
-  std::memcpy(GuestBuf, Str, Size);
-
-  // Re-check: another thread may have interned this string while we were in
-  // the guest. Identity matters here (callers compare returned pointers), so
-  // the first writer wins and our buffer is abandoned - a handful of bytes on
-  // a rare race, against a fixed set of driver strings.
-  std::lock_guard<std::mutex> Lock(InternMutex);
-  auto [It, Inserted] = Interned.emplace(Str, reinterpret_cast<uintptr_t>(GuestBuf));
-  return guest_layout<const GLubyte*> {.data = static_cast<GuestPtr>(It->second)};
-}
-
-guest_layout<const GLubyte*> fexfn_impl_libGL_glGetString(GLenum name) {
-  return RelocateStringToGuestHeap(fexldr_ptr_libGL_glGetString(name));
-}
-
-guest_layout<const GLubyte*> fexfn_impl_libGL_glGetStringi(GLenum name, GLuint index) {
-  return RelocateStringToGuestHeap(fexldr_ptr_libGL_glGetStringi(name, index));
-}
-
-// The glX*String trio's public signature is `const char*` (not `const
-// GLubyte*` like the GL ones), and thunkgen declares the custom_host_impl
-// forward with that type. The narrow char*/uint8_t* pointer-flavor interop
-// on guest_layout<T*> (Host.h) bridges the assignment to the packed-args
-// `rv` (which is `guest_layout<const uint8_t*>`).
-static guest_layout<const char*> RelocateCharStringToGuestHeap(const char* Str) {
-  auto Result = RelocateStringToGuestHeap(reinterpret_cast<const GLubyte*>(Str));
-  return guest_layout<const char*> {.data = Result.data};
-}
-
-guest_layout<const char*> fexfn_impl_libGL_glXQueryExtensionsString(Display* dpy, int screen) {
-  return RelocateCharStringToGuestHeap(fexldr_ptr_libGL_glXQueryExtensionsString(dpy, screen));
-}
-
-guest_layout<const char*> fexfn_impl_libGL_glXGetClientString(Display* dpy, int name) {
-  return RelocateCharStringToGuestHeap(fexldr_ptr_libGL_glXGetClientString(dpy, name));
-}
-
-guest_layout<const char*> fexfn_impl_libGL_glXQueryServerString(Display* dpy, int screen, int name) {
-  return RelocateCharStringToGuestHeap(fexldr_ptr_libGL_glXQueryServerString(dpy, screen, name));
-}
-#endif // IS_32BIT_THUNK
 
 // Maps to a host-side XVisualInfo, which must be XFree'ed by the caller.
 static XVisualInfo* LookupHostVisualInfo(Display* HostDisplay, guest_layout<XVisualInfo*> GuestInfo) {
@@ -1596,25 +641,6 @@ static guest_layout<XVisualInfo*> MapToGuestVisualInfo(Display* HostDisplay, XVi
     }
   }
 
-#ifdef IS_32BIT_THUNK
-  // The re-query above did not produce a guest Visual — either the guest lib's
-  // OnInit has not registered the callbacks yet, or its Xlib has no visual
-  // matching this screen+visualid. The relocating path below cannot carry
-  // `visual` across: it is a pointer into the *host* Xlib's connection state at
-  // 0x3fff'xxxx'xxxx, and to_guest would narrow it to its low 32 bits.
-  //
-  // Observed on Dex: this fallback fired during FBConfig selection and the
-  // guest received a half-pointer, which is exactly the corruption the comment
-  // above warns about. NULL is strictly better — the guest's Xlib rejects it
-  // predictably instead of dereferencing garbage — and the callers this
-  // fallback exists to serve (depth/class/visualid readers) are unaffected.
-  //
-  // HostInfo is freed by RelocateArrayToGuestHeap immediately below, so
-  // clearing the member here does not disturb anything the host still owns.
-  if (HostInfo) {
-    HostInfo->visual = nullptr;
-  }
-#endif
 
   return RelocateArrayToGuestHeap(HostInfo, 1);
 }
@@ -1660,20 +686,6 @@ guest_layout<XVisualInfo*> fexfn_impl_libGL_glXChooseVisual(Display* Display, in
 }
 
 void fexfn_impl_libGL_glXDestroyContext(Display* Display, GLXContext Context) {
-#if defined(IS_32BIT_THUNK)
-  // Retire the token before the object goes away. Without this the registry
-  // keeps handing out a pointer to freed memory, which Mesa will dereference -
-  // strictly worse than the truncation this token map replaced, because a
-  // truncated context was merely rejected with GLXBadContext. Un-interning also
-  // stops an allocator that reuses the address from resurrecting the retired
-  // token for a different context. SDL2 (hence Unity) creates a probe context,
-  // destroys it and creates the real one during startup, so this path runs.
-  ContextRegistry.Retire(Context);
-  // Same reasoning for the buffer-mapping staging cache, which is keyed by
-  // context: drop this context's entries before the context pointer can be
-  // recycled by a later glXCreateContext and start matching someone else's key.
-  RetireStagingForContext(Context);
-#endif
   fexldr_ptr_libGL_glXDestroyContext(Display, Context);
 }
 
@@ -1765,53 +777,5 @@ guest_layout<XVisualInfo*> fexfn_impl_libGL_glXGetVisualFromFBConfig(Display* Di
   return MapToGuestVisualInfo(Display, fexldr_ptr_libGL_glXGetVisualFromFBConfig(Display, Config));
 }
 
-#ifdef IS_32BIT_THUNK
-void fexfn_impl_libGL_glBindBuffersRange(GLenum a_0, GLuint a_1, GLsizei Count, const GLuint* a_3, guest_layout<const int*> Offsets,
-                                         guest_layout<const int*> Sizes) {
-  auto HostOffsets = (GLintptr*)alloca(Count * sizeof(GLintptr));
-  auto HostSizes = (GLsizeiptr*)alloca(Count * sizeof(GLsizeiptr));
-  for (int i = 0; i < Count; ++i) {
-    HostOffsets[i] = Offsets.get_pointer()[i].data;
-    HostSizes[i] = Sizes.get_pointer()[i].data;
-  }
-  return fexldr_ptr_libGL_glBindBuffersRange(a_0, a_1, Count, a_3, HostOffsets, HostSizes);
-}
-
-void fexfn_impl_libGL_glBindVertexBuffers(GLuint a_0, GLsizei count, const GLuint* a_2, guest_layout<const int*> Offsets, const GLsizei* a_4) {
-  auto HostOffsets = (GLintptr*)alloca(count * sizeof(GLintptr));
-  for (int i = 0; i < count; ++i) {
-    HostOffsets[i] = Offsets.get_pointer()[i].data;
-  }
-  fexldr_ptr_libGL_glBindVertexBuffers(a_0, count, a_2, HostOffsets, a_4);
-}
-
-void fexfn_impl_libGL_glGetUniformIndices(GLuint a_0, GLsizei Count, guest_layout<const GLchar* const*> Names, GLuint* a_3) {
-  auto HostNames = (const GLchar**)alloca(Count * sizeof(GLintptr));
-  for (int i = 0; i < Count; ++i) {
-    HostNames[i] = host_layout<const char* const> {Names.get_pointer()[i]}.data;
-  }
-  fexldr_ptr_libGL_glGetUniformIndices(a_0, Count, HostNames, a_3);
-}
-
-void fexfn_impl_libGL_glVertexArrayVertexBuffers(GLuint a_0, GLuint a_1, GLsizei count, const GLuint* a_3, guest_layout<const int*> Offsets,
-                                                 const GLsizei* a_5) {
-  auto HostOffsets = (GLintptr*)alloca(count * sizeof(GLintptr));
-  for (int i = 0; i < count; ++i) {
-    HostOffsets[i] = Offsets.get_pointer()[i].data;
-  }
-  fexldr_ptr_libGL_glVertexArrayVertexBuffers(a_0, a_1, count, a_3, HostOffsets, a_5);
-}
-
-void fexfn_impl_libGL_glXGetSelectedEvent(Display* Display, GLXDrawable Drawable, guest_layout<uint32_t*> Mask) {
-  unsigned long HostMask;
-  fexldr_ptr_libGL_glXGetSelectedEvent(Display, Drawable, &HostMask);
-  *Mask.get_pointer() = HostMask;
-}
-void fexfn_impl_libGL_glXGetSelectedEventSGIX(Display* Display, GLXDrawable Drawable, guest_layout<uint32_t*> Mask) {
-  unsigned long HostMask;
-  fexldr_ptr_libGL_glXGetSelectedEventSGIX(Display, Drawable, &HostMask);
-  *Mask.get_pointer() = HostMask;
-}
-#endif
 
 EXPORTS(libGL)

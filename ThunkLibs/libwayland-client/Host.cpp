@@ -28,19 +28,11 @@ $end_info$
 
 template<>
 struct guest_layout<wl_argument> {
-#ifdef IS_32BIT_THUNK
-  using type = uint32_t;
-#else
   using type = wl_argument;
-#endif
   type data;
 
   guest_layout& operator=(const wl_argument from) {
-#ifdef IS_32BIT_THUNK
-    data = from.u;
-#else
     data = from;
-#endif
     return *this;
   }
 };
@@ -69,97 +61,9 @@ static void assert_is_valid_host_interface(const wl_interface* interface) {
   }
 }
 
-#ifdef IS_32BIT_THUNK
-static void assert_is_valid_guest_interface(guest_layout<const wl_interface*> guest_interface) {
-  // Consistency check for expected data layout.
-  // See assert_is_valid_host_interface for details
-
-  const wl_interface* as_host_interface = (const wl_interface*)guest_interface.force_get_host_pointer();
-  if ((uint32_t)as_host_interface->method_count < 0x1000 && (uint32_t)as_host_interface->event_count < 0x1000) {
-    fprintf(stderr, "ERROR: Expected %p to be a guest wl_interface, but it's not\n", guest_interface.force_get_host_pointer());
-    std::abort();
-  }
-}
-
-static void repack_guest_wl_interface_to_host(guest_layout<const wl_interface*> guest_interface_ptr, wl_interface* host_interface) {
-  auto& guest_interface = *guest_interface_ptr.get_pointer();
-  static_assert(sizeof(guest_interface) == 24);
-
-  *host_interface = host_layout<wl_interface> {guest_interface}.data;
-  fex_apply_custom_repacking_entry(reinterpret_cast<host_layout<wl_interface>&>(*host_interface), guest_interface);
-}
-
-// Maps guest interface pointers to host pointers
-static const wl_interface* lookup_wl_interface(guest_layout<const wl_interface*> interface) {
-  // Used e.g. for wl_shm_pool_destroy
-  if (interface.force_get_host_pointer() == nullptr) {
-    return nullptr;
-  }
-
-  auto [host_interface_it, inserted] = guest_to_host_interface.emplace(interface.get_pointer(), nullptr);
-  if (!inserted) {
-    assert_is_valid_host_interface(host_interface_it->second);
-    return host_interface_it->second;
-  }
-
-  assert_is_valid_guest_interface(interface);
-
-  fprintf(stderr, "Unknown wayland interface %p, adding to registry\n", interface.get_pointer());
-
-  host_interface_it->second = new wl_interface;
-  wl_interface* host_interface = host_interface_it->second;
-  repack_guest_wl_interface_to_host(interface, host_interface);
-  return host_interface_it->second;
-}
-
-void fex_custom_repack_entry(host_layout<wl_interface>& into, const guest_layout<wl_interface>& from) {
-  // NOTE: These arrays are complements to global symbols in the guest, so we
-  //       never explicitly free this memory
-  auto& host_interface = into.data;
-  into.data.methods = new wl_message[into.data.method_count];
-  into.data.events = new wl_message[into.data.event_count];
-
-  memset((void*)host_interface.methods, 0, sizeof(wl_message) * host_interface.method_count);
-  for (int i = 0; i < host_interface.method_count; ++i) {
-    const auto& guest_method {from.data.methods.get_pointer()[i]};
-    host_layout<wl_message> host_method {guest_method};
-    fex_apply_custom_repacking_entry(host_method, guest_method);
-    memcpy((void*)&host_interface.methods[i], &host_method, sizeof(host_method));
-  }
-
-  memset((void*)host_interface.events, 0, sizeof(wl_message) * host_interface.event_count);
-  for (int i = 0; i < host_interface.event_count; ++i) {
-    const auto& guest_event {from.data.events.get_pointer()[i]};
-    host_layout<wl_message> host_event {guest_event};
-    fex_apply_custom_repacking_entry(host_event, guest_event);
-    memcpy((void*)&host_interface.events[i], &host_event, sizeof(host_event));
-  }
-}
-
-bool fex_custom_repack_exit(guest_layout<wl_interface>&, const host_layout<wl_interface>&) {
-  fprintf(stderr, "Should not be called: %s\n", __PRETTY_FUNCTION__);
-  std::abort();
-}
-void fex_custom_repack_entry(host_layout<wl_message>& into, const guest_layout<wl_message>& from) {
-  auto& host_method = into.data;
-  auto num_types = std::ranges::count_if(std::string_view {host_method.signature}, [](char c) { return isalpha(static_cast<unsigned char>(c)); });
-  if (num_types) {
-    host_method.types = new const wl_interface*[num_types];
-    for (int type = 0; type < num_types; ++type) {
-      auto guest_interface_addr = from.data.types.get_pointer()[type];
-      host_method.types[type] = guest_interface_addr.force_get_host_pointer() ? lookup_wl_interface(guest_interface_addr) : nullptr;
-    }
-  }
-}
-bool fex_custom_repack_exit(guest_layout<wl_message>&, const host_layout<wl_message>&) {
-  fprintf(stderr, "Should not be called: %s\n", __PRETTY_FUNCTION__);
-  std::abort();
-}
-#else
 const wl_interface* lookup_wl_interface(guest_layout<const wl_interface*> interface) {
   return interface.force_get_host_pointer();
 }
-#endif
 
 static wl_proxy* fexfn_impl_libwayland_client_wl_proxy_create(wl_proxy* proxy, guest_layout<const wl_interface*> guest_interface_raw) {
   auto host_interface = lookup_wl_interface(guest_interface_raw);
@@ -168,22 +72,9 @@ static wl_proxy* fexfn_impl_libwayland_client_wl_proxy_create(wl_proxy* proxy, g
 
 #define WL_CLOSURE_MAX_ARGS 20
 static auto fex_wl_remap_argument_list(guest_layout<wl_argument*> args, const wl_message& message) {
-#ifndef IS_32BIT_THUNK
   // Cast to host layout and return as std::span
   wl_argument* host_args = host_layout<wl_argument*> {args}.data;
   return std::span<wl_argument, WL_CLOSURE_MAX_ARGS> {host_args, WL_CLOSURE_MAX_ARGS};
-#else
-  // Return a new array of elements zero-extended to 64-bit
-  std::array<wl_argument, WL_CLOSURE_MAX_ARGS> host_args;
-  int arg_count = std::ranges::count_if(std::string_view {message.signature}, [](char c) { return isalpha(static_cast<unsigned char>(c)); });
-  for (int i = 0; i < arg_count; ++i) {
-    // NOTE: wl_argument can store a pointer argument, so for 32-bit guests
-    //       we need to make sure the upper 32-bits are explicitly zeroed
-    std::memset(&host_args[i], 0, sizeof(host_args[i]));
-    std::memcpy(&host_args[i], &args.get_pointer()[i], sizeof(args.get_pointer()[i]));
-  }
-  return host_args;
-#endif
 }
 
 extern "C" void fexfn_impl_libwayland_client_wl_proxy_marshal_array(wl_proxy* proxy, uint32_t opcode, guest_layout<wl_argument*> args) {
@@ -242,31 +133,8 @@ extern "C" wl_proxy* fexfn_impl_libwayland_client_wl_proxy_marshal_array_flags(w
 // for 32-bit guests. Relocating this parameter is required since it may
 // reference inaccessible memory regions (presumably due to pointing to data
 // on the host stack).
-#ifndef IS_32BIT_THUNK
 template<typename Result, typename... Args>
 const auto CallGuestPtrWithWaylandArray = CallbackUnpack<Result(Args..., wl_array*)>::CallGuestPtr;
-#else
-template<typename Result, typename... Args>
-static auto CallGuestPtrWithWaylandArray(Args... args, wl_array* array) -> Result {
-  GuestcallInfo* guestcall;
-  LOAD_INTERNAL_GUESTPTR_VIA_CUSTOM_ABI(guestcall);
-
-  using PackedArgumentsType = PackedArguments<Result, guest_layout<Args>..., guest_layout<wl_array*>>;
-
-  GuestStackBumpAllocator GuestStack;
-
-  auto* guest_array = GuestStack.New<guest_layout<wl_array>>(to_guest(to_host_layout(*array)));
-  guest_layout<wl_array*> guest_array_ptr = {.data = static_cast<uint32_t>(reinterpret_cast<uintptr_t>(guest_array))};
-
-  auto& packed_args = *GuestStack.New<PackedArgumentsType>(to_guest(to_host_layout(args))..., guest_array_ptr);
-
-  guestcall->CallCallback(guestcall->GuestUnpacker, guestcall->GuestTarget, &packed_args);
-
-  if constexpr (!std::is_void_v<Result>) {
-    return packed_args.rv;
-  }
-}
-#endif
 
 // See wayland-util.h for documentation on protocol message signatures
 template<char>
@@ -488,25 +356,7 @@ void fexfn_impl_libwayland_client_fex_wl_exchange_interface_pointer(guest_layout
     std::abort();
   }
 
-#ifndef IS_32BIT_THUNK
   memcpy(&guest_interface, host_interface, sizeof(wl_interface));
-#else
-  guest_interface = to_guest(to_host_layout(*host_interface));
-
-  // NOTE: These arrays are complements to global symbols in the guest, so we
-  //       never explicitly free this memory
-  guest_interface.data.methods.data = (uintptr_t)new guest_layout<wl_message>[host_interface->method_count];
-  for (int i = 0; i < host_interface->method_count; ++i) {
-    guest_interface.data.methods.get_pointer()[i] = to_guest(to_host_layout(host_interface->methods[i]));
-    guest_interface.data.methods.get_pointer()[i].data.types = to_guest(to_host_layout(host_interface->methods[i].types));
-  }
-
-  guest_interface.data.events.data = (uintptr_t)new guest_layout<wl_message>[host_interface->event_count];
-  for (int i = 0; i < host_interface->event_count; ++i) {
-    guest_interface.data.events.get_pointer()[i] = to_guest(to_host_layout(host_interface->events[i]));
-    guest_interface.data.events.get_pointer()[i].data.types = to_guest(to_host_layout(host_interface->events[i].types));
-  }
-#endif
 
   // TODO: Disabled until we ensure the interface data is indeed stored in rodata
   //  mprotect((void*)page_begin, remap_size, PROT_READ);

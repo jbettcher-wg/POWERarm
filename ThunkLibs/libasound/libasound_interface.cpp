@@ -159,11 +159,9 @@ struct fex_gen_type<snd_seq_timestamp> : fexgen::assume_compatible_data_layout {
 template<>
 struct fex_gen_type<snd_seq_event> : fexgen::assume_compatible_data_layout {};
 
-#ifndef IS_32BIT_THUNK
 // TODO: Convert vtable
 template<>
 struct fex_gen_type<snd_pcm_scope_ops_t> : fexgen::assume_compatible_data_layout {};
-#endif
 
 template<>
 struct fex_gen_config<snd_asoundlib_version> {};

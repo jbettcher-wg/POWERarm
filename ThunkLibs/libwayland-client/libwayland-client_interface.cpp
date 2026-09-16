@@ -26,22 +26,8 @@ struct fex_gen_type<wl_event_queue> : fexgen::opaque_type {};
 template<>
 struct fex_gen_type<wl_array> : fexgen::emit_layout_wrappers {};
 
-#ifdef IS_32BIT_THUNK
-// wl_interface and wl_message reference each other through pointers
-template<>
-struct fex_gen_type<wl_interface> : fexgen::emit_layout_wrappers {};
-template<>
-struct fex_gen_config<&wl_interface::methods> : fexgen::custom_repack {};
-template<>
-struct fex_gen_config<&wl_interface::events> : fexgen::custom_repack {};
-template<>
-struct fex_gen_type<wl_message> : fexgen::emit_layout_wrappers {};
-template<>
-struct fex_gen_config<&wl_message::types> : fexgen::custom_repack {};
-#else
 template<>
 struct fex_gen_type<wl_interface> : fexgen::assume_compatible_data_layout {};
-#endif
 
 template<>
 struct fex_gen_config<wl_proxy_destroy> : fexgen::custom_guest_entrypoint {};

@@ -96,14 +96,10 @@ int main(int argc, char* const argv[]) {
   };
 
   // Analyse data layout for guest ABI
-  const bool is_32bit_guest = (argv[6] == std::string_view {"-for-32bit-guest"});
+  // POWERARM-M0-TODO(thunks): the guest data-layout parse still targets x86_64-linux-gnu; it needs an aarch64 (AAPCS64) guest model (DESIGN.md §6.1).
   GuestTool.appendArgumentsAdjuster([&](const clang::tooling::CommandLineArguments& Args, clang::StringRef) {
     clang::tooling::CommandLineArguments AdjustedArgs = Args;
-    const char* platform = is_32bit_guest ? "i686-linux-gnu" : "x86_64-linux-gnu";
-    if (is_32bit_guest) {
-      AdjustedArgs.push_back("-m32");
-      AdjustedArgs.push_back("-DIS_32BIT_THUNK");
-    }
+    const char* platform = "x86_64-linux-gnu";
     AdjustedArgs.push_back("-DGUEST_THUNK_LIBRARY");
     AdjustedArgs.push_back(std::string {"--target="} + platform);
     AdjustedArgs.push_back("-isystem");
@@ -122,7 +118,7 @@ int main(int argc, char* const argv[]) {
     clang::tooling::CommandLineArguments AdjustedArgs = Args;
     AdjustedArgs.push_back("-DIS_HOST_THUNKGEN_PASS");
     if (target_abi == "-guest") {
-      const char* platform = is_32bit_guest ? "i686-linux-gnu" : "x86_64-linux-gnu";
+      const char* platform = "x86_64-linux-gnu";
       append_x86_rootfs_includes(AdjustedArgs, platform);
     }
 

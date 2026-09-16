@@ -140,15 +140,8 @@ template<>
 struct fex_gen_config<glXDestroyGLXPbufferSGIX> {};
 template<>
 struct fex_gen_config<glXFreeContextEXT> {};
-#ifndef IS_32BIT_THUNK
 template<>
 struct fex_gen_config<glXGetSelectedEventSGIX> {};
-#else
-template<>
-struct fex_gen_config<glXGetSelectedEventSGIX> : fexgen::custom_host_impl {};
-template<>
-struct fex_gen_param<glXGetSelectedEventSGIX, 2, unsigned long*> : fexgen::ptr_passthrough {};
-#endif
 
 template<>
 struct fex_gen_config<glXQueryGLXPbufferSGIX> {};
@@ -160,29 +153,12 @@ template<>
 struct fex_gen_config<glXGetVisualFromFBConfigSGIX> : fexgen::custom_host_impl {};
 template<>
 struct fex_gen_param<glXGetVisualFromFBConfigSGIX, -1, XVisualInfo*> : fexgen::ptr_passthrough {};
-#if defined(IS_32BIT_THUNK)
-// glX*String trio returns host `const char*` -- default `to_guest` truncates
-// to 32 bits. See RelocateStringToGuestHeap in libGL_Host.cpp.
-template<>
-struct fex_gen_config<glXGetClientString> : fexgen::custom_host_impl {};
-template<>
-struct fex_gen_param<glXGetClientString, -1, const char*> : fexgen::ptr_passthrough {};
-template<>
-struct fex_gen_config<glXQueryExtensionsString> : fexgen::custom_host_impl {};
-template<>
-struct fex_gen_param<glXQueryExtensionsString, -1, const char*> : fexgen::ptr_passthrough {};
-template<>
-struct fex_gen_config<glXQueryServerString> : fexgen::custom_host_impl {};
-template<>
-struct fex_gen_param<glXQueryServerString, -1, const char*> : fexgen::ptr_passthrough {};
-#else
 template<>
 struct fex_gen_config<glXGetClientString> {};
 template<>
 struct fex_gen_config<glXQueryExtensionsString> {};
 template<>
 struct fex_gen_config<glXQueryServerString> {};
-#endif
 template<>
 struct fex_gen_config<glXGetCurrentDisplay> : fexgen::custom_host_impl {};
 template<>
@@ -260,15 +236,8 @@ struct fex_gen_config<glXAllocateMemoryNV> {};
 template<>
 struct fex_gen_config<glXFreeMemoryNV> {};
 #endif
-#ifndef IS_32BIT_THUNK
 template<>
 struct fex_gen_config<glXGetSelectedEvent> {};
-#else
-template<>
-struct fex_gen_config<glXGetSelectedEvent> : fexgen::custom_host_impl {};
-template<>
-struct fex_gen_param<glXGetSelectedEvent, 2, unsigned long*> : fexgen::ptr_passthrough {};
-#endif
 template<>
 struct fex_gen_config<glXQueryDrawable> {};
 template<>
@@ -480,24 +449,10 @@ template<>
 struct fex_gen_config<glWindowPos3s> {};
 template<>
 struct fex_gen_config<glWindowPos3sv> {};
-#if defined(IS_32BIT_THUNK)
-// See glX*String block above -- same story for glGetString/glGetStringi.
-// Returns are host `const GLubyte*` pointers into Mesa's `.rodata` at
-// `0x3fff'xxxx'xxxx`; default `to_guest` truncates on i386.
-template<>
-struct fex_gen_config<glGetString> : fexgen::custom_host_impl {};
-template<>
-struct fex_gen_param<glGetString, -1, const GLubyte*> : fexgen::ptr_passthrough {};
-template<>
-struct fex_gen_config<glGetStringi> : fexgen::custom_host_impl {};
-template<>
-struct fex_gen_param<glGetStringi, -1, const GLubyte*> : fexgen::ptr_passthrough {};
-#else
 template<>
 struct fex_gen_config<glGetString> {};
 template<>
 struct fex_gen_config<glGetStringi> {};
-#endif
 template<>
 struct fex_gen_config<glQueryMatrixxOES> {};
 template<>
@@ -615,28 +570,15 @@ struct fex_gen_config<glTestObjectAPPLE> {};
 // On 32-bit these copy the guest's staging buffer back into the real mapping
 // before unmapping it. See the glMapBuffer block further down and the
 // implementation in libGL_Host.cpp. 64-bit keeps the plain generated thunk.
-#ifdef IS_32BIT_THUNK
-template<>
-struct fex_gen_config<glUnmapBufferARB> : fexgen::custom_host_impl {};
-template<>
-struct fex_gen_config<glUnmapBuffer> : fexgen::custom_host_impl {};
-#else
 template<>
 struct fex_gen_config<glUnmapBufferARB> {};
 template<>
 struct fex_gen_config<glUnmapBuffer> {};
-#endif
 template<>
 struct fex_gen_config<glUnmapNamedBufferEXT>
-#ifdef IS_32BIT_THUNK
-  : fexgen::custom_host_impl
-#endif
 {};
 template<>
 struct fex_gen_config<glUnmapNamedBuffer>
-#ifdef IS_32BIT_THUNK
-  : fexgen::custom_host_impl
-#endif
 {};
 template<>
 struct fex_gen_config<glVDPAUIsSurfaceNV> {};
@@ -896,17 +838,8 @@ template<>
 struct fex_gen_config<glBindBufferRangeNV> {};
 template<>
 struct fex_gen_config<glBindBuffersBase> {};
-#ifndef IS_32BIT_THUNK
 template<>
 struct fex_gen_config<glBindBuffersRange> {};
-#else
-template<>
-struct fex_gen_config<glBindBuffersRange> : fexgen::custom_host_impl {};
-template<>
-struct fex_gen_param<glBindBuffersRange, 4, const GLintptr*> : fexgen::ptr_passthrough {};
-template<>
-struct fex_gen_param<glBindBuffersRange, 5, const GLsizeiptr*> : fexgen::ptr_passthrough {};
-#endif
 template<>
 struct fex_gen_config<glBindFragDataLocationEXT> {};
 template<>
@@ -961,15 +894,8 @@ template<>
 struct fex_gen_config<glBindVertexArray> {};
 template<>
 struct fex_gen_config<glBindVertexBuffer> {};
-#ifndef IS_32BIT_THUNK
 template<>
 struct fex_gen_config<glBindVertexBuffers> {};
-#else
-template<>
-struct fex_gen_config<glBindVertexBuffers> : fexgen::custom_host_impl {};
-template<>
-struct fex_gen_param<glBindVertexBuffers, 3, const GLintptr*> : fexgen::ptr_passthrough {};
-#endif
 template<>
 struct fex_gen_config<glBindVertexShaderEXT> {};
 template<>
@@ -1066,16 +992,8 @@ template<>
 struct fex_gen_config<glBufferAttachMemoryNV> {};
 template<>
 struct fex_gen_config<glBufferDataARB> {};
-#ifndef IS_32BIT_THUNK
 template<>
 struct fex_gen_config<glBufferData> {};
-#else
-// 32-bit: custom impl purely for the FEX_LIBGL_DEBUG map-traffic sampler --
-// with buffer mapping unused by some titles (Dex streams without a single
-// glMapBuffer* call), the SubData/Data stream is the one to observe.
-template<>
-struct fex_gen_config<glBufferData> : fexgen::custom_host_impl {};
-#endif
 template<>
 struct fex_gen_config<glBufferPageCommitmentARB> {};
 template<>
@@ -1088,14 +1006,8 @@ template<>
 struct fex_gen_config<glBufferStorageMemEXT> {};
 template<>
 struct fex_gen_config<glBufferSubDataARB> {};
-#ifndef IS_32BIT_THUNK
 template<>
 struct fex_gen_config<glBufferSubData> {};
-#else
-// See glBufferData above.
-template<>
-struct fex_gen_config<glBufferSubData> : fexgen::custom_host_impl {};
-#endif
 template<>
 struct fex_gen_config<glCallCommandListNV> {};
 template<>
@@ -1300,7 +1212,6 @@ template<>
 struct fex_gen_config<glColorPointerEXT> {};
 template<>
 struct fex_gen_config<glColorPointer> {};
-#ifndef IS_32BIT_THUNK
 // TODO: 32-bit support
 template<>
 struct fex_gen_config<glColorPointerListIBM> {};
@@ -1310,7 +1221,6 @@ template<>
 struct fex_gen_config<glColorPointervINTEL> {};
 template<>
 struct fex_gen_param<glColorPointervINTEL, 2, const void**> : fexgen::assume_compatible_data_layout {};
-#endif
 template<>
 struct fex_gen_config<glColorSubTableEXT> {};
 template<>
@@ -1653,9 +1563,6 @@ struct fex_gen_config<glDeleteStatesNV> {};
 // of the process.
 template<>
 struct fex_gen_config<glDeleteSync>
-#ifdef IS_32BIT_THUNK
-  : fexgen::custom_host_impl
-#endif
 {};
 template<>
 struct fex_gen_config<glDeleteTexturesEXT> {};
@@ -1759,18 +1666,14 @@ template<>
 struct fex_gen_config<glDrawBuffers> {};
 template<>
 struct fex_gen_config<glDrawCommandsAddressNV> {};
-#ifndef IS_32BIT_THUNK
 // TODO: 32-bit support
 template<>
 struct fex_gen_config<glDrawCommandsNV> {};
-#endif
 template<>
 struct fex_gen_config<glDrawCommandsStatesAddressNV> {};
-#ifndef IS_32BIT_THUNK
 // TODO: 32-bit support
 template<>
 struct fex_gen_config<glDrawCommandsStatesNV> {};
-#endif
 template<>
 struct fex_gen_config<glDrawElementArrayAPPLE> {};
 template<>
@@ -1833,13 +1736,11 @@ template<>
 struct fex_gen_config<glEdgeFlagPointerEXT> {};
 template<>
 struct fex_gen_config<glEdgeFlagPointer> {};
-#ifndef IS_32BIT_THUNK
 // TODO: 32-bit support
 template<>
 struct fex_gen_config<glEdgeFlagPointerListIBM> {};
 template<>
 struct fex_gen_param<glEdgeFlagPointerListIBM, 1, const GLboolean**> : fexgen::assume_compatible_data_layout {};
-#endif
 template<>
 struct fex_gen_config<glEdgeFlagv> {};
 template<>
@@ -1980,27 +1881,15 @@ struct fex_gen_config<glFlush> {};
 // through and needs none of this.
 template<>
 struct fex_gen_config<glFlushMappedBufferRangeAPPLE>
-#ifdef IS_32BIT_THUNK
-  : fexgen::custom_host_impl
-#endif
 {};
 template<>
 struct fex_gen_config<glFlushMappedBufferRange>
-#ifdef IS_32BIT_THUNK
-  : fexgen::custom_host_impl
-#endif
 {};
 template<>
 struct fex_gen_config<glFlushMappedNamedBufferRangeEXT>
-#ifdef IS_32BIT_THUNK
-  : fexgen::custom_host_impl
-#endif
 {};
 template<>
 struct fex_gen_config<glFlushMappedNamedBufferRange>
-#ifdef IS_32BIT_THUNK
-  : fexgen::custom_host_impl
-#endif
 {};
 template<>
 struct fex_gen_config<glFlushPixelDataRangeNV> {};
@@ -2028,13 +1917,11 @@ template<>
 struct fex_gen_config<glFogCoordhvNV> {};
 template<>
 struct fex_gen_config<glFogCoordPointerEXT> {};
-#ifndef IS_32BIT_THUNK
 // TODO: 32-bit support
 template<>
 struct fex_gen_config<glFogCoordPointerListIBM> {};
 template<>
 struct fex_gen_param<glFogCoordPointerListIBM, 2, const void**> : fexgen::assume_compatible_data_layout {};
-#endif
 template<>
 struct fex_gen_config<glFogf> {};
 template<>
@@ -2635,11 +2522,9 @@ template<>
 struct fex_gen_config<glGetPerfMonitorGroupsAMD> {};
 template<>
 struct fex_gen_config<glGetPerfMonitorGroupStringAMD> {};
-#ifndef IS_32BIT_THUNK
 // TODO: 32-bit support
 template<>
 struct fex_gen_config<glGetPerfQueryDataINTEL> {};
-#endif
 template<>
 struct fex_gen_config<glGetPerfQueryIdByNameINTEL> {};
 template<>
@@ -2838,13 +2723,11 @@ template<>
 struct fex_gen_config<glGetTexParameterIuiv> {};
 template<>
 struct fex_gen_config<glGetTexParameteriv> {};
-#ifndef IS_32BIT_THUNK
 // TODO: 32-bit support
 template<>
 struct fex_gen_config<glGetTexParameterPointervAPPLE> {};
 template<>
 struct fex_gen_param<glGetTexParameterPointervAPPLE, 2, void**> : fexgen::assume_compatible_data_layout {};
-#endif
 template<>
 struct fex_gen_config<glGetTexParameterxvOES> {};
 template<>
@@ -2901,17 +2784,10 @@ template<>
 struct fex_gen_config<glGetUniformi64vARB> {};
 template<>
 struct fex_gen_config<glGetUniformi64vNV> {};
-#ifndef IS_32BIT_THUNK
 template<>
 struct fex_gen_config<glGetUniformIndices> {};
 template<>
 struct fex_gen_param<glGetUniformIndices, 2, const char* const*> : fexgen::assume_compatible_data_layout {};
-#else
-template<>
-struct fex_gen_config<glGetUniformIndices> : fexgen::custom_host_impl {};
-template<>
-struct fex_gen_param<glGetUniformIndices, 2, const char* const*> : fexgen::ptr_passthrough {};
-#endif
 template<>
 struct fex_gen_config<glGetUniformivARB> {};
 template<>
@@ -3100,13 +2976,11 @@ template<>
 struct fex_gen_config<glIndexPointerEXT> {};
 template<>
 struct fex_gen_config<glIndexPointer> {};
-#ifndef IS_32BIT_THUNK
 // TODO: 32-bit support
 template<>
 struct fex_gen_config<glIndexPointerListIBM> {};
 template<>
 struct fex_gen_param<glIndexPointerListIBM, 2, const void**> : fexgen::assume_compatible_data_layout {};
-#endif
 template<>
 struct fex_gen_config<glIndexs> {};
 template<>
@@ -3193,13 +3067,11 @@ template<>
 struct fex_gen_config<glLinkProgram> {};
 template<>
 struct fex_gen_config<glListBase> {};
-#ifndef IS_32BIT_THUNK
 // TODO: 32-bit support
 template<>
 struct fex_gen_config<glListDrawCommandsStatesClientNV> {};
 template<>
 struct fex_gen_param<glListDrawCommandsStatesClientNV, 2, const void**> : fexgen::assume_compatible_data_layout {};
-#endif
 template<>
 struct fex_gen_config<glListParameterfSGIX> {};
 template<>
@@ -3284,27 +3156,12 @@ struct fex_gen_config<glMap2xOES> {};
 // Instead, 32-bit gets a custom host impl that stages the mapping through
 // guest-visible memory and copies back on unmap (see libGL_Host.cpp). 64-bit
 // keeps the plain generated thunk, so its codegen is untouched.
-#ifdef IS_32BIT_THUNK
-template<>
-struct fex_gen_config<glMapBufferARB> : fexgen::custom_host_impl {};
-template<>
-struct fex_gen_param<glMapBufferARB, -1, void*> : fexgen::ptr_passthrough {};
-template<>
-struct fex_gen_config<glMapBuffer> : fexgen::custom_host_impl {};
-template<>
-struct fex_gen_param<glMapBuffer, -1, void*> : fexgen::ptr_passthrough {};
-template<>
-struct fex_gen_config<glMapBufferRange> : fexgen::custom_host_impl {};
-template<>
-struct fex_gen_param<glMapBufferRange, -1, void*> : fexgen::ptr_passthrough {};
-#else
 template<>
 struct fex_gen_config<glMapBufferARB> {};
 template<>
 struct fex_gen_config<glMapBuffer> {};
 template<>
 struct fex_gen_config<glMapBufferRange> {};
-#endif
 // The matching unmaps are declared further up (near glUnmapBufferARB); on
 // 32-bit they are custom too, since that is where the guest's writes get copied
 // back into the real mapping.
@@ -3326,24 +3183,6 @@ struct fex_gen_config<glMapGrid2xOES> {};
 // Same staging treatment as glMapBuffer above, keyed by buffer name. These are
 // core GL, not a vendor curiosity — leaving them unresolved on 32-bit shows up
 // as glXGetProcAddress misses in real titles.
-#ifdef IS_32BIT_THUNK
-template<>
-struct fex_gen_config<glMapNamedBufferEXT> : fexgen::custom_host_impl {};
-template<>
-struct fex_gen_param<glMapNamedBufferEXT, -1, void*> : fexgen::ptr_passthrough {};
-template<>
-struct fex_gen_config<glMapNamedBuffer> : fexgen::custom_host_impl {};
-template<>
-struct fex_gen_param<glMapNamedBuffer, -1, void*> : fexgen::ptr_passthrough {};
-template<>
-struct fex_gen_config<glMapNamedBufferRangeEXT> : fexgen::custom_host_impl {};
-template<>
-struct fex_gen_param<glMapNamedBufferRangeEXT, -1, void*> : fexgen::ptr_passthrough {};
-template<>
-struct fex_gen_config<glMapNamedBufferRange> : fexgen::custom_host_impl {};
-template<>
-struct fex_gen_param<glMapNamedBufferRange, -1, void*> : fexgen::ptr_passthrough {};
-#else
 template<>
 struct fex_gen_config<glMapNamedBufferEXT> {};
 template<>
@@ -3352,24 +3191,19 @@ template<>
 struct fex_gen_config<glMapNamedBufferRangeEXT> {};
 template<>
 struct fex_gen_config<glMapNamedBufferRange> {};
-#endif
-#ifndef IS_32BIT_THUNK
 // glMapObjectBufferATI has no matching unmap that takes the same handle
 // (glUnmapObjectBufferATI exists but the ATI object-buffer model is separate
 // from GL buffer objects), so the staging scheme above does not apply. It is a
 // dead vendor extension; left 64-bit-only rather than guessed at.
 template<>
 struct fex_gen_config<glMapObjectBufferATI> {};
-#endif
 template<>
 struct fex_gen_config<glMapParameterfvNV> {};
 template<>
 struct fex_gen_config<glMapParameterivNV> {};
-#ifndef IS_32BIT_THUNK
 // TODO: 32-bit support — same truncated-host-pointer return as glMapBuffer above.
 template<>
 struct fex_gen_config<glMapTexture2DINTEL> {};
-#endif
 template<>
 struct fex_gen_config<glMapVertexAttrib1dAPPLE> {};
 template<>
@@ -3557,13 +3391,11 @@ template<>
 struct fex_gen_config<glMultiDrawRangeElementArrayAPPLE> {};
 template<>
 struct fex_gen_config<glMultiModeDrawArraysIBM> {};
-#ifndef IS_32BIT_THUNK
 // TODO: 32-bit support
 template<>
 struct fex_gen_config<glMultiModeDrawElementsIBM> {};
 template<>
 struct fex_gen_param<glMultiModeDrawElementsIBM, 3, const void* const*> : fexgen::assume_compatible_data_layout {};
-#endif
 template<>
 struct fex_gen_config<glMultiTexBufferEXT> {};
 template<>
@@ -3944,7 +3776,6 @@ template<>
 struct fex_gen_config<glNormalPointerEXT> {};
 template<>
 struct fex_gen_config<glNormalPointer> {};
-#ifndef IS_32BIT_THUNK
 // TODO: 32-bit support
 template<>
 struct fex_gen_config<glNormalPointerListIBM> {};
@@ -3954,7 +3785,6 @@ template<>
 struct fex_gen_config<glNormalPointervINTEL> {};
 template<>
 struct fex_gen_param<glNormalPointervINTEL, 1, const void**> : fexgen::assume_compatible_data_layout {};
-#endif
 template<>
 struct fex_gen_config<glNormalStream3bATI> {};
 template<>
@@ -4647,13 +4477,11 @@ template<>
 struct fex_gen_config<glRenderbufferStorageMultisample> {};
 template<>
 struct fex_gen_config<glRenderGpuMaskNV> {};
-#ifndef IS_32BIT_THUNK
 // TODO: 32-bit support
 template<>
 struct fex_gen_config<glReplacementCodePointerSUN> {};
 template<>
 struct fex_gen_param<glReplacementCodePointerSUN, 2, const void**> : fexgen::assume_compatible_data_layout {};
-#endif
 template<>
 struct fex_gen_config<glReplacementCodeubSUN> {};
 template<>
@@ -4812,13 +4640,11 @@ template<>
 struct fex_gen_config<glSecondaryColorFormatNV> {};
 template<>
 struct fex_gen_config<glSecondaryColorPointerEXT> {};
-#ifndef IS_32BIT_THUNK
 // TODO: 32-bit support
 template<>
 struct fex_gen_config<glSecondaryColorPointerListIBM> {};
 template<>
 struct fex_gen_param<glSecondaryColorPointerListIBM, 3, const void**> : fexgen::assume_compatible_data_layout {};
-#endif
 template<>
 struct fex_gen_config<glSelectBuffer> {};
 template<>
@@ -5131,7 +4957,6 @@ template<>
 struct fex_gen_config<glTexCoordPointerEXT> {};
 template<>
 struct fex_gen_config<glTexCoordPointer> {};
-#ifndef IS_32BIT_THUNK
 // TODO: 32-bit support
 template<>
 struct fex_gen_config<glTexCoordPointerListIBM> {};
@@ -5141,7 +4966,6 @@ template<>
 struct fex_gen_config<glTexCoordPointervINTEL> {};
 template<>
 struct fex_gen_param<glTexCoordPointervINTEL, 2, const void**> : fexgen::assume_compatible_data_layout {};
-#endif
 template<>
 struct fex_gen_config<glTexEnvf> {};
 template<>
@@ -5312,11 +5136,9 @@ template<>
 struct fex_gen_config<glTextureParameterivEXT> {};
 template<>
 struct fex_gen_config<glTextureParameteriv> {};
-#ifndef IS_32BIT_THUNK
 // TODO: 32-bit support
 template<>
 struct fex_gen_config<glTextureRangeAPPLE> {};
-#endif
 template<>
 struct fex_gen_config<glTextureRenderbufferEXT> {};
 template<>
@@ -5638,11 +5460,9 @@ template<>
 struct fex_gen_config<glUnmapObjectBufferATI> {};
 template<>
 struct fex_gen_config<glUnmapTexture2DINTEL> {};
-#ifndef IS_32BIT_THUNK
 // TODO: 32-bit support
 template<>
 struct fex_gen_config<glUpdateObjectBufferATI> {};
-#endif
 template<>
 struct fex_gen_config<glUploadGpuMaskNVX> {};
 template<>
@@ -5685,18 +5505,14 @@ template<>
 struct fex_gen_config<glVDPAUGetSurfaceivNV> {};
 template<>
 struct fex_gen_config<glVDPAUInitNV> {};
-#ifndef IS_32BIT_THUNK
 // TODO: 32-bit support
 template<>
 struct fex_gen_config<glVDPAUMapSurfacesNV> {};
-#endif
 template<>
 struct fex_gen_config<glVDPAUSurfaceAccessNV> {};
-#ifndef IS_32BIT_THUNK
 // TODO: 32-bit support
 template<>
 struct fex_gen_config<glVDPAUUnmapSurfacesNV> {};
-#endif
 template<>
 struct fex_gen_config<glVDPAUUnregisterSurfaceNV> {};
 template<>
@@ -5813,11 +5629,9 @@ template<>
 struct fex_gen_config<glVertexArrayParameteriAPPLE> {};
 template<>
 struct fex_gen_config<glVertexArrayRangeAPPLE> {};
-#ifndef IS_32BIT_THUNK
 // TODO: 32-bit support
 template<>
 struct fex_gen_config<glVertexArrayRangeNV> {};
-#endif
 template<>
 struct fex_gen_config<glVertexArraySecondaryColorOffsetEXT> {};
 template<>
@@ -5842,15 +5656,8 @@ template<>
 struct fex_gen_config<glVertexArrayVertexBindingDivisorEXT> {};
 template<>
 struct fex_gen_config<glVertexArrayVertexBuffer> {};
-#ifndef IS_32BIT_THUNK
 template<>
 struct fex_gen_config<glVertexArrayVertexBuffers> {};
-#else
-template<>
-struct fex_gen_config<glVertexArrayVertexBuffers> : fexgen::custom_host_impl {};
-template<>
-struct fex_gen_param<glVertexArrayVertexBuffers, 4, const GLintptr*> : fexgen::ptr_passthrough {};
-#endif
 template<>
 struct fex_gen_config<glVertexArrayVertexOffsetEXT> {};
 template<>
@@ -6313,7 +6120,6 @@ template<>
 struct fex_gen_config<glVertexPointerEXT> {};
 template<>
 struct fex_gen_config<glVertexPointer> {};
-#ifndef IS_32BIT_THUNK
 // TODO: 32-bit support
 template<>
 struct fex_gen_config<glVertexPointerListIBM> {};
@@ -6323,7 +6129,6 @@ template<>
 struct fex_gen_config<glVertexPointervINTEL> {};
 template<>
 struct fex_gen_param<glVertexPointervINTEL, 2, const void**> : fexgen::assume_compatible_data_layout {};
-#endif
 template<>
 struct fex_gen_config<glVertexStream1dATI> {};
 template<>
@@ -6629,11 +6434,9 @@ template<>
 struct fex_gen_config<glXResetFrameCountNV> {};
 template<>
 struct fex_gen_config<glXBindVideoCaptureDeviceNV> {};
-#ifndef IS_32BIT_THUNK
 // TODO: 32-bit support
 template<>
 struct fex_gen_config<glXEnumerateVideoCaptureDevicesNV> {};
-#endif
 template<>
 struct fex_gen_config<glXLockVideoCaptureDeviceNV> {};
 template<>
@@ -6648,13 +6451,11 @@ template<>
 struct fex_gen_config<glXBindVideoImageNV> {};
 template<>
 struct fex_gen_config<glXReleaseVideoImageNV> {};
-#ifndef IS_32BIT_THUNK
 // TODO: 32-bit support
 template<>
 struct fex_gen_config<glXSendPbufferToVideoNV> {};
 template<>
 struct fex_gen_config<glXGetVideoInfoNV> {};
-#endif
 template<>
 struct fex_gen_config<glXQueryHyperpipeNetworkSGIX> {};
 template<>
@@ -6689,9 +6490,7 @@ template<>
 struct fex_gen_config<glXChannelRectSyncSGIX> {};
 template<>
 struct fex_gen_config<glXCushionSGI> {};
-#ifndef IS_32BIT_THUNK
 // TODO: 32-bit support
 template<>
 struct fex_gen_config<glXGetTransparentIndexSUN> {};
-#endif
 } // namespace internal

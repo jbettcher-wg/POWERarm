@@ -10,13 +10,8 @@
 #include <X11/Xlib.h>
 #include <xcb/xcb.h>
 
-#ifdef IS_32BIT_THUNK
-using guest_long = int32_t;
-using guest_size_t = int32_t;
-#else
 using guest_long = long;
 using guest_size_t = size_t;
-#endif
 
 /**
  * Guest X11 displays and xcb connections can't be used by the host, so
