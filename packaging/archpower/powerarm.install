@@ -9,9 +9,6 @@ POWERarm installed.
     POWERarmBash                  # a bash running under emulation
     POWERarmConfig                # GUI for per-application settings
 
-  Gaming notes, per-title workarounds and tuning:
-    /usr/share/doc/powerarm/GAMING.md
-
   The binfmt_misc handler for AArch64 ELF binaries is installed to
   /usr/lib/binfmt.d. Activate them with:
     systemctl restart systemd-binfmt

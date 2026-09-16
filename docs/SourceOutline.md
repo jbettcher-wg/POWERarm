@@ -144,10 +144,6 @@ These are generated + glue logic 1:1 thunks unless noted otherwise
 #### fex_malloc_symbols
 - [Host.cpp](../ThunkLibs/libfex_malloc_symbols/Host.cpp): Allows FEX to export allocation symbols
 
-#### fex_thunk_test
-- [Guest.cpp](../ThunkLibs/libfex_thunk_test/Guest.cpp)
-- [Host.cpp](../ThunkLibs/libfex_thunk_test/Host.cpp)
-
 #### wayland-client
 - [Guest.cpp](../ThunkLibs/libwayland-client/Guest.cpp)
 - [Host.cpp](../ThunkLibs/libwayland-client/Host.cpp)

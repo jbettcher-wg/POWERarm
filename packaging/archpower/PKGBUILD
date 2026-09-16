@@ -239,7 +239,7 @@ EOF
   done
 
   local _doc
-  for _doc in README.md docs/GAMING.md docs/CPUID.md; do
+  for _doc in README.md; do
     if [[ -f $_doc ]]; then
       install -Dm644 "$_doc" "$pkgdir/usr/share/doc/$pkgname/${_doc##*/}"
     fi
