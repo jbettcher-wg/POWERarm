@@ -9,7 +9,7 @@
 #   1. include()d from the top-level CMakeLists.txt at configure time. This
 #      guarantees the generated header exists before anything compiles, and
 #      leaves GIT_DESCRIBE_STRING / GIT_HASH set in the caller's scope for
-#      Source/Steam/VERSIONS.txt.in and the status messages.
+#      the status messages.
 #
 #   2. Run via `cmake -P` from the `git_version_header` custom target
 #      (FEXCore/CMakeLists.txt) on every build. Configure-time-only detection

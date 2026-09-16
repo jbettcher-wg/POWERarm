@@ -231,10 +231,8 @@ add_custom_target(CONFIG_INC
   DEPENDS "${OUTPUT_MAN_NAME}"
   DEPENDS "${OUTPUT_MAN_NAME_COMPRESS}")
 
-if (NOT BUILD_STEAM_SUPPORT)
-  # Install the compressed man page
-  install(FILES ${OUTPUT_MAN_NAME_COMPRESS} COMPONENT Runtime DESTINATION ${MAN_DIR}/man1)
-endif()
+# Install the compressed man page
+install(FILES ${OUTPUT_MAN_NAME_COMPRESS} COMPONENT Runtime DESTINATION ${MAN_DIR}/man1)
 
 # Add in diagnostic colours if the option is available.
 # Ninja code generator will kill colours if this isn't here
@@ -319,7 +317,7 @@ if (TARGET POWERarmEnv)
   target_link_libraries(${PROJECT_NAME}_shared PRIVATE POWERarmEnv)
 endif()
 
-if (NOT MINGW AND NOT BUILD_STEAM_SUPPORT)
+if (NOT MINGW)
   install(TARGETS ${PROJECT_NAME}_shared LIBRARY
     DESTINATION ${CMAKE_INSTALL_LIBDIR}
     COMPONENT Libraries)

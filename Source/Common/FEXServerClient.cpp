@@ -139,7 +139,6 @@ fextl::string GetServerSocketName() {
 
 fextl::string GetServerSocketPath() {
   fextl::string name {};
-#ifndef FEX_STEAM_SUPPORT
   FEX_CONFIG_OPT(ServerSocketPath, SERVERSOCKETPATH);
 
   name = ServerSocketPath();
@@ -149,10 +148,6 @@ fextl::string GetServerSocketPath() {
   }
 
   auto Folder = GetTempFolder();
-#else
-  // Under Steam the FEXServer's socket is a game-specific directory.
-  auto Folder = GetServerLockFolder();
-#endif
 
   if (name.empty()) {
     return fextl::fmt::format("{}/{}." POWERARM_EXE_PREFIX "Server.Socket", Folder, ::getuid());
@@ -178,8 +173,6 @@ int ConnectToServer(ConnectionOption ConnectionOption) {
     return -1;
   }
 
-  // Steam doesn't get to connect to global sockets.
-#ifndef FEX_STEAM_SUPPORT
   auto ServerSocketName = GetServerSocketName();
 
   // AF_UNIX has a special feature for named socket paths.
@@ -199,7 +192,6 @@ int ConnectToServer(ConnectionOption ConnectionOption) {
   } else {
     return SocketFD;
   }
-#endif
 
   // Try again with a path-based socket, since abstract sockets will fail if we have been
   // placed in a new netns as part of a sandbox.

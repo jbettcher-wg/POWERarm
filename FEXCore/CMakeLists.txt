@@ -71,11 +71,9 @@ add_compile_options($<$<COMPILE_LANGUAGE:CXX>:-fno-strict-aliasing> $<$<COMPILE_
 
 add_subdirectory(Source/)
 
-if (NOT BUILD_STEAM_SUPPORT)
-  install (DIRECTORY include/FEXCore ${CMAKE_BINARY_DIR}/include/FEXCore
-    DESTINATION include
-    COMPONENT Development)
-endif()
+install (DIRECTORY include/FEXCore ${CMAKE_BINARY_DIR}/include/FEXCore
+  DESTINATION include
+  COMPONENT Development)
 
 if (BUILD_TESTING)
   add_subdirectory(unittests/)

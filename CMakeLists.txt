@@ -47,7 +47,6 @@ set(FEXCORE_PROFILER_BACKEND "gpuvis" CACHE STRING "Set which backend to use for
 set_property(CACHE FEXCORE_PROFILER_BACKEND PROPERTY STRINGS gpuvis tracy)
 option(ENABLE_GLIBC_ALLOCATOR_HOOK_FAULT "Enables glibc memory allocation hooking with fault for CI testing")
 option(USE_PDB_DEBUGINFO "Build debug info in PDB format" FALSE)
-option(BUILD_STEAM_SUPPORT "Enable Steam integration" FALSE)
 
 set(X86_32_TOOLCHAIN_FILE "${CMAKE_CURRENT_SOURCE_DIR}/Data/CMake/toolchain_x86_32.cmake" CACHE FILEPATH "Toolchain file for the (cross-)compiler targeting i686")
 set(X86_64_TOOLCHAIN_FILE "${CMAKE_CURRENT_SOURCE_DIR}/Data/CMake/toolchain_x86_64.cmake" CACHE FILEPATH "Toolchain file for the (cross-)compiler targeting x86_64")
@@ -164,10 +163,6 @@ endif()
 if (NOT (ARCHITECTURE_arm64 OR ARCHITECTURE_arm64ec OR ARCHITECTURE_x86_64 OR ARCHITECTURE_ppc64le))
   message(FATAL_ERROR "Unsupported processor type ${processor}."
     " If you believe this is in error, file an issue.")
-endif()
-
-if (BUILD_STEAM_SUPPORT)
-  add_compile_definitions(FEX_STEAM_SUPPORT=1)
 endif()
 
 if (ENABLE_FEXCORE_PROFILER)
@@ -559,7 +554,7 @@ endif()
 #
 # This configure-time run also writes ${CMAKE_BINARY_DIR}/generated/git_version.h,
 # so the header always exists before anything compiles, and leaves GIT_HASH /
-# GIT_DESCRIBE_STRING set for Source/Steam/VERSIONS.txt.in.
+# GIT_DESCRIBE_STRING set.
 #
 # OVERRIDE_VERSION / OVERRIDE_HASH remain the escape hatch for reproducible and
 # release builds; with OVERRIDE_HASH set to anything but "detect" no git command
@@ -613,16 +608,14 @@ if (NOT MINGW)
 endif()
 add_subdirectory(FEXCore/)
 
-if ((ARCHITECTURE_arm64 OR ARCHITECTURE_ppc64le) AND NOT MINGW AND NOT BUILD_STEAM_SUPPORT)
+if ((ARCHITECTURE_arm64 OR ARCHITECTURE_ppc64le) AND NOT MINGW)
   # Binfmt_misc files must be installed prior to Source/ installs
   add_subdirectory(Data/binfmts/)
 endif()
 
 add_subdirectory(Source/)
 
-if (NOT BUILD_STEAM_SUPPORT)
-  add_subdirectory(Data/AppConfig/)
-endif()
+add_subdirectory(Data/AppConfig/)
 
 # Install the ThunksDB file
 file(GLOB CONFIG_SOURCES CONFIGURE_DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/Data/*.json)
@@ -812,10 +805,6 @@ if (BUILD_THUNKS)
       add_dependencies(uninstall uninstall_guest-libs-32)
     endif()
   endif()
-endif()
-
-if (NOT MINGW AND BUILD_STEAM_SUPPORT)
-  add_subdirectory(Source/Steam/)
 endif()
 
 # Order the build-time git_version.h refresh ahead of the translation units

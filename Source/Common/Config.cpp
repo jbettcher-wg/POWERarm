@@ -614,13 +614,6 @@ fextl::string GetHomeDirectory() {
 #endif
 
 fextl::string GetDataDirectory(bool Global, const PortableInformation& PortableInfo) {
-#ifdef FEX_STEAM_SUPPORT
-  const char* SteamDataPath = getenv("STEAM_COMPAT_DATA_PATH");
-  if (SteamDataPath) {
-    return fextl::fmt::format("{}/" POWERARM_DIR_NAME "/", SteamDataPath);
-  }
-#endif
-
   const char* DataOverride = getenv("FEX_APP_DATA_LOCATION");
 
   if (PortableInfo.IsPortable && (Global || !DataOverride)) {
@@ -666,13 +659,6 @@ fextl::string GetConfigDirectory(bool Global, const PortableInformation& Portabl
     return AppConfigStr;
   }
 
-#ifdef FEX_STEAM_SUPPORT
-  const char* SteamDataPath = getenv("STEAM_COMPAT_DATA_PATH");
-  if (SteamDataPath) {
-    return fextl::fmt::format("{}/" POWERARM_DIR_NAME "/", SteamDataPath);
-  }
-#endif
-
   fextl::string ConfigDir;
   if (Global) {
     return GLOBAL_DATA_DIRECTORY;
@@ -708,13 +694,6 @@ fextl::string GetCacheDirectory() {
   }
 
 #ifndef _WIN32
-#ifdef FEX_STEAM_SUPPORT
-  const char* SteamDataPath = getenv("STEAM_COMPAT_SHADER_PATH");
-  if (SteamDataPath) {
-    return fextl::fmt::format("{}/" POWERARM_DIR_NAME "/", SteamDataPath);
-  }
-#endif
-
   auto HomeDir = GetHomeDirectory();
   const char* CacheXDG = getenv("XDG_CACHE_HOME");
   return (CacheXDG ? fextl::string {CacheXDG} : (fextl::string {HomeDir} + "/.cache")) + "/" POWERARM_DIR_NAME "/";
