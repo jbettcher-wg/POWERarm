@@ -2,7 +2,6 @@
 // PPC64LE memory operations for FEX JIT backend.
 #include "Interface/Core/JIT/PPC64LE/JITClass.h"
 #include "Interface/Context/Context.h"
-#include "Interface/Core/CPUID.h"
 
 #include <FEXCore/Core/CoreState.h>
 #include <FEXCore/Core/X86Enums.h>
@@ -603,26 +602,6 @@ DEF_OP(StoreRegister) {
     auto Src = GetReg(Op->Value);
     if (Dst != Src) mr(Dst, Src);
   }
-}
-
-DEF_OP(LoadPF) {
-  auto Dst = GetReg(Node);
-  if (Dst != REG_PF) mr(Dst, REG_PF);
-}
-
-DEF_OP(LoadAF) {
-  auto Dst = GetReg(Node);
-  if (Dst != REG_AF) mr(Dst, REG_AF);
-}
-
-DEF_OP(StorePF) {
-  auto Src = GetReg(IROp->C<IR::IROp_StorePF>()->Value);
-  if (REG_PF != Src) mr(REG_PF, Src);
-}
-
-DEF_OP(StoreAF) {
-  auto Src = GetReg(IROp->C<IR::IROp_StoreAF>()->Value);
-  if (REG_AF != Src) mr(REG_AF, Src);
 }
 
 // =========================================================================
@@ -2333,10 +2312,12 @@ DEF_OP(CacheLineClean)  {
 }
 
 DEF_OP(CacheLineZero)   {
+  // POWERARM-M0-TODO(backend): was CPUIDEmu::CACHELINE_SIZE (the x86 CLFLUSH/CLZERO line size); A64 DC ZVA zeroes DCZID_EL0-sized blocks, which is a guest-ABI decision.
+  constexpr uint64_t GuestCacheLineSize = 64;
   GPR Addr = GetReg(IROp->C<IR::IROp_CacheLineZero>()->Addr);
   if (!CTX->Config.Is64BitMode()) { rldicl(TMP3, Addr, 0, 32); Addr = TMP3; }
 
-  if (CTX->HostFeatures.DCacheLineSize == CPUIDEmu::CACHELINE_SIZE) {
+  if (CTX->HostFeatures.DCacheLineSize == GuestCacheLineSize) {
     // Fast path: dcbz zeroes exactly one host d-cache line, at an effective
     // address truncated to that line. That is the semantics x86 CLZERO wants
     // only when the host line is 64 bytes.
@@ -2358,7 +2339,7 @@ DEF_OP(CacheLineZero)   {
     // the forced alignment: the guest address is not required to be aligned and
     // CLZERO truncates rather than faulting.
     clrrdi(TMP1, Addr, 6);  // EA & ~63
-    for (int16_t Offset = 0; Offset < static_cast<int16_t>(CPUIDEmu::CACHELINE_SIZE); Offset += 8) {
+    for (int16_t Offset = 0; Offset < static_cast<int16_t>(GuestCacheLineSize); Offset += 8) {
       // r0 in the RS slot reads the register, which the backend's r0 == 0 block
       // invariant holds at zero (see MemoryOps.cpp:705, ALUOps.cpp:3275).
       std(r0, Offset, TMP1);
@@ -2924,31 +2905,6 @@ DEF_OP(VBroadcastFromMem) {
     Op_Unhandled(IROp, Node);
     break;
   }
-}
-
-// =========================================================================
-// X87 SVE optimisation stubs (ARM64-specific, fall back)
-// =========================================================================
-DEF_OP(StoreMemX87SVEOptPredicate) { StoreMem_Impl(IROp, Node); }
-DEF_OP(LoadMemX87SVEOptPredicate)  { LoadMem_Impl(IROp, Node); }
-
-// (These are thin wrappers — reuse the regular load/store logic)
-void PPC64JITCore::StoreMem_Impl(const IR::IROp_Header* IROp, IR::Ref Node) {
-  // Treat as regular StoreMem
-  auto Op   = IROp->C<IR::IROp_StoreMemX87SVEOptPredicate>();
-  GPR Addr = GetReg(Op->Addr);
-  auto Src  = GetVReg(Op->Value);
-  if (!CTX->Config.Is64BitMode()) { rldicl(TMP3, Addr, 0, 32); Addr = TMP3; }
-  li(TMP4, 0);
-  stvx(Src, Addr, TMP4);
-}
-void PPC64JITCore::LoadMem_Impl(const IR::IROp_Header* IROp, IR::Ref Node) {
-  auto Op   = IROp->C<IR::IROp_LoadMemX87SVEOptPredicate>();
-  GPR Addr = GetReg(Op->Addr);
-  auto Dst  = GetVReg(Node);
-  if (!CTX->Config.Is64BitMode()) { rldicl(TMP3, Addr, 0, 32); Addr = TMP3; }
-  li(TMP4, 0);
-  lvx(Dst, Addr, TMP4);
 }
 
 } // namespace FEXCore::CPU

@@ -6,7 +6,6 @@
 #ifdef ARCHITECTURE_ppc64le
 #include "Interface/Core/JIT/PPC64LE/PPC64Dispatcher.h"
 #endif
-#include "Interface/Core/CPUID.h"
 #include <Interface/IR/IntrusiveIRList.h>
 #include <FEXCore/Config/Config.h>
 #include <FEXCore/Core/Context.h>
@@ -280,10 +279,6 @@ public:
   void SetSyscallHandler(FEXCore::HLE::SyscallHandler* Handler) override;
   void SetThunkHandler(FEXCore::ThunkHandler* Handler) override;
 
-  FEXCore::CPUID::FunctionResults RunCPUIDFunction(uint32_t Function, uint32_t Leaf) override;
-  FEXCore::CPUID::XCRResults RunXCRFunction(uint32_t Function) override;
-  FEXCore::CPUID::FunctionResults RunCPUIDFunctionName(uint32_t Function, uint32_t Leaf, uint32_t CPU) override;
-
   CodeCache& GetCodeCache() override {
     return CodeCache;
   }
@@ -409,7 +404,6 @@ public:
     FEX_CONFIG_OPT(BlockJITNaming, BLOCKJITNAMING);
     FEX_CONFIG_OPT(GDBSymbols, GDBSYMBOLS);
     FEX_CONFIG_OPT(JITOpSizeProfile, JITOPSIZEPROFILE);
-    FEX_CONFIG_OPT(x87ReducedPrecision, X87REDUCEDPRECISION);
     FEX_CONFIG_OPT(DisableTelemetry, DISABLETELEMETRY);
     FEX_CONFIG_OPT(DisableVixlIndirectCalls, DISABLE_VIXL_INDIRECT_RUNTIME_CALLS);
     FEX_CONFIG_OPT(SmallTSCScale, SMALLTSCSCALE);
@@ -425,8 +419,6 @@ public:
   uint32_t StrictSplitLockMutex {};
 
   FEXCore::HostFeatures HostFeatures;
-  // CPUID depends on HostFeatures so needs to be initialized after that.
-  FEXCore::CPUIDEmu CPUID;
   FEXCore::HLE::SyscallHandler* SyscallHandler {};
   FEXCore::HLE::SourcecodeResolver* SourcecodeResolver {};
   FEXCore::ThunkHandler* ThunkHandler {};

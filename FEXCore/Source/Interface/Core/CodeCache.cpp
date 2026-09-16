@@ -313,7 +313,6 @@ uint64_t ComputeCodeCacheConfigId() {
     // unsound in a session with it off, and vice versa.
     HASH_OPT(HOSTFEATURES);
     HASH_OPT(FORCESVEWIDTH);
-    HASH_OPT(X87REDUCEDPRECISION);
     HASH_OPT(MONOHACKS);
 
     // Memory model. These change the instructions emitted for essentially every

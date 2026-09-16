@@ -210,18 +210,6 @@ static void PrintArg(fextl::stringstream* out, const IRListView*, NamedVectorCon
         return "movmaskb_upper";
       case NamedVectorConstant::NAMED_VECTOR_ZERO:
         return "vectorzero";
-      case NamedVectorConstant::NAMED_VECTOR_X87_ONE:
-        return "x87_1_0";
-      case NamedVectorConstant::NAMED_VECTOR_X87_LOG2_10:
-        return "x87_log2_10";
-      case NamedVectorConstant::NAMED_VECTOR_X87_LOG2_E:
-        return "x87_log2_e";
-      case NamedVectorConstant::NAMED_VECTOR_X87_PI:
-        return "x87_pi";
-      case NamedVectorConstant::NAMED_VECTOR_X87_LOG10_2:
-        return "x87_log10_2";
-      case NamedVectorConstant::NAMED_VECTOR_X87_LOG_2:
-        return "x87_log2";
       case NamedVectorConstant::NAMED_VECTOR_CVTMAX_F32_I32:
         return "cvtmax_f32_i32";
       case NamedVectorConstant::NAMED_VECTOR_CVTMAX_F32_I32_UPPER:
@@ -238,8 +226,6 @@ static void PrintArg(fextl::stringstream* out, const IRListView*, NamedVectorCon
         return "cvtmax_i32";
       case NamedVectorConstant::NAMED_VECTOR_CVTMAX_I64:
         return "cvtmax_i64";
-      case NamedVectorConstant::NAMED_VECTOR_F80_SIGN_MASK:
-        return "f80_sign_mask";
       case NamedVectorConstant::NAMED_VECTOR_SHA1RNDS_K0:
         return "sha1rnds_k0";
       case NamedVectorConstant::NAMED_VECTOR_SHA1RNDS_K1:

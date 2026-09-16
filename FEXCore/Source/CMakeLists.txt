@@ -22,11 +22,8 @@ set(SRCS
   Interface/Core/Core.cpp
   Interface/Core/CPUBackend.cpp
   Interface/Core/Addressing.cpp
-  Interface/Core/CPUID.cpp
   Interface/Core/A64Frontend/Decoder.cpp
-  Interface/Core/A64Frontend/IRBuilder.cpp
-  Interface/Core/Interpreter/Fallbacks/InterpreterFallbacks.cpp
-  Interface/Core/Interpreter/Fallbacks/StringCompareFallbacks.cpp)
+  Interface/Core/A64Frontend/IRBuilder.cpp)
 
 # PPC64LE JIT backend. This fork targets PPC64LE hosts only; the ARM64 JIT
 # and its Dispatcher have been removed.
@@ -38,7 +35,6 @@ list(APPEND SRCS
   Interface/Core/JIT/PPC64LE/BranchOps.cpp
   Interface/Core/JIT/PPC64LE/MemoryOps.cpp
   Interface/Core/JIT/PPC64LE/VectorOps.cpp
-  Interface/Core/JIT/PPC64LE/X87Ops.cpp
   Interface/Core/JIT/PPC64LE/PPC64Dispatcher.cpp)
 
 list(APPEND SRCS
@@ -52,7 +48,6 @@ list(APPEND SRCS
   Interface/IR/Passes/RedundantFlagCalculationElimination.cpp
   Interface/IR/Passes/RegisterAllocationPass.cpp
   Interface/IR/Passes/ScalarSplatChain.cpp
-  Interface/IR/Passes/x87StackOptimizationPass.cpp
   Utils/LongJump.cpp
   Utils/Telemetry.cpp
   Utils/Threads.cpp
@@ -108,7 +103,7 @@ else()
   list(APPEND DEFINES "-DFEXCORE_PRESERVE_ALL_ATTR=;-DFEXCORE_HAS_PRESERVE_ALL_ATTR=0")
 endif()
 
-set(LIBS fmt::fmt xxHash::xxhash FEXHeaderUtils CodeEmitter cephes_128bit)
+set(LIBS fmt::fmt xxHash::xxhash FEXHeaderUtils CodeEmitter)
 
 if (ENABLE_VIXL_DISASSEMBLER OR ENABLE_VIXL_SIMULATOR)
   list(APPEND LIBS vixl::vixl)

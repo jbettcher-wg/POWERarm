@@ -54,19 +54,7 @@ enum PPC64HelperIndex : uint32_t {
   PPC64_HELPER_SplitLockEmulate = 0,
   PPC64_HELPER_F16HiToF32x4,
   PPC64_HELPER_F32x4ToF16Hi,
-  PPC64_HELPER_F64Sin,
-  PPC64_HELPER_F64Cos,
-  PPC64_HELPER_F64Tan,
-  PPC64_HELPER_F64Atan,
-  PPC64_HELPER_F64FYL2X,
-  PPC64_HELPER_F64Scale,
-  // No F64F2XM1 entry HERE — it was appended later (S3.7-C5, below) to keep
-  // table offsets stable. The still-true half of the old note: it MUST NOT
-  // reuse the upstream Pointers.F64F2XM1Handler slot — F64F2XM1Impl diverges
-  // from it (expm1(x*ln2) vs exp2(src)-1.0, off by >1 ULP on 44.6% of
-  // inputs); reusing that Pointers slot re-breaks D9_F0_02_F64.
   PPC64_HELPER_VAESImc,
-  PPC64_HELPER_VAESKeyGenAssist,
   PPC64_HELPER_VAESEnc,
   PPC64_HELPER_VAESEncLast,
   PPC64_HELPER_VAESDec,
@@ -83,19 +71,9 @@ enum PPC64HelperIndex : uint32_t {
   PPC64_HELPER_PCLMUL,
   PPC64_HELPER_RDRAND,
   PPC64_HELPER_CRC32,
-  PPC64_HELPER_VPCMPESTRX,
-  PPC64_HELPER_VPCMPISTRX,
-  // S3.7-C5: appended AFTER existing entries so table offsets don't shift
-  // (any code cached against the old table layout would misresolve helpers
-  // if this reordered). MUST NOT reuse Pointers.F64F2XM1Handler — see the
-  // note above about D9_F0_02_F64 divergence. Distinct implementation
-  // (F64F2XM1Impl in VectorOps.cpp) with different semantics from
-  // F64F2XM1Handler; the helper table entry points at the local impl.
-  PPC64_HELPER_F64F2XM1,
-  // Appended (same S3.7-C5 rule): the F16C f16x4<->f32x4 paths previously
-  // bctrl'd through a bare LoadConstant of the host function address — the
-  // exact serialized-block stale-pointer hazard the F64F2XM1 entry above was
-  // added to fix. Table-resolved now.
+  // Appended (S3.7-C5 rule): the F16C f16x4<->f32x4 paths previously
+  // bctrl'd through a bare LoadConstant of the host function address — a
+  // serialized-block stale-pointer hazard. Table-resolved now.
   PPC64_HELPER_F16x4ToF32x4,
   PPC64_HELPER_F32x4ToF16x4,
   PPC64_HELPER_MAX,
@@ -1139,8 +1117,6 @@ private:
                      IR::MemOffsetType OffsetType, uint8_t OffsetScale);
 
   // SVE predicate mem ops — thin wrappers reusing load/store logic
-  void StoreMem_Impl(const IR::IROp_Header* IROp, IR::Ref Node);
-  void LoadMem_Impl(const IR::IROp_Header* IROp, IR::Ref Node);
 
   // -----------------------------------------------------------------------
   // Op dispatch helpers
@@ -1280,69 +1256,6 @@ private:
   DEF_OP(LoadMemRev);
   DEF_OP(StoreMemRev);
 
-  // -----------------------------------------------------------------------
-  // x87 stack bookkeeping ops (X87Ops.cpp).
-  // These IR ops are normally lowered away by the x87StackOptimization pass
-  // into LoadContext/StoreContext primitives. The pass is conditional on
-  // !DisablePasses(), so when O0 is set (or the optimizer doesn't fully
-  // eliminate them) they survive to the JIT. The base FallbackHandler table
-  // has no entry for any of these — relying on Op_Unhandled would silently
-  // leave destination registers unwritten, so we implement the slow-path
-  // semantics directly here, mirroring the IR the pass would have emitted.
-  // -----------------------------------------------------------------------
-  DEF_OP(InitStack);
-  DEF_OP(IncStackTop);
-  DEF_OP(DecStackTop);
-  DEF_OP(InvalidateStack);
-  DEF_OP(PushStack);
-  DEF_OP(CopyPushStack);
-  DEF_OP(PopStackDestroy);
-  DEF_OP(ReadStackValue);
-  DEF_OP(StoreStackMem);
-  DEF_OP(StoreStackToStack);
-  DEF_OP(StackValidTag);
-  DEF_OP(SyncStackToSlow);
-  DEF_OP(StackForceSlow);
-
-  // Native f64→f80 conversion (X87Ops.cpp). IR.json marks F80CVTTO
-  // JITDispatch:false (every other size/backend uses the FABI softfloat
-  // bridge); we override the i64 source case with a branchy bit-manipulation
-  // lowering because FXSAVE in ReducedPrecisionMode hammers it.
-  DEF_OP(F80CVTTo);
-
-  // Bucket C: stack-form arithmetic ops that survive the optimisation pass.
-  // Each is a thin wrapper that loads operands from x87 stack slots, calls
-  // the corresponding F80 fallback handler via the existing FABI bridge,
-  // and stores the result back to a stack slot.
-  DEF_OP(F80AddStack);
-  DEF_OP(F80SubStack);
-  DEF_OP(F80MulStack);
-  DEF_OP(F80DivStack);
-  DEF_OP(F80AddValue);
-  DEF_OP(F80SubValue);
-  DEF_OP(F80SubRValue);
-  DEF_OP(F80MulValue);
-  DEF_OP(F80DivValue);
-  DEF_OP(F80DivRValue);
-  DEF_OP(F80CmpStack);
-  DEF_OP(F80CmpValue);
-  DEF_OP(F80StackTest);
-  DEF_OP(F80SQRTStack);
-  DEF_OP(F80SINStack);
-  DEF_OP(F80COSStack);
-  DEF_OP(F80F2XM1Stack);
-  DEF_OP(F80SINCOSStack);
-  DEF_OP(F80RoundStack);
-  DEF_OP(F80FYL2XStack);
-  DEF_OP(F80SCALEStack);
-  DEF_OP(F80FPREMStack);
-  DEF_OP(F80FPREM1Stack);
-  DEF_OP(F80PTANStack);
-  DEF_OP(F80ATANStack);
-  DEF_OP(F80VBSLStack);
-  DEF_OP(F80StackXchange);
-  DEF_OP(F80StackChangeSign);
-  DEF_OP(F80StackAbs);
 #undef DEF_OP
 };
 

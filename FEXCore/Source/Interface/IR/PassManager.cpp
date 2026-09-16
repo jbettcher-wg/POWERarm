@@ -73,8 +73,6 @@ void PassManager::AddDefaultPasses(FEXCore::Context::ContextImpl* ctx) {
   FEX_CONFIG_OPT(DisableScalarSplatChain, DISABLESCALARSPLATCHAIN);
 
   if (!DisablePasses()) {
-    InsertPass(CreateX87StackOptimizationPass(ctx->HostFeatures, ctx->Config.Is64BitMode ? IR::OpSize::i64Bit : IR::OpSize::i32Bit));
-
     // Must precede DFCE: fusion turns a FromNZCV CondJump into a direct
     // register compare, and it is DFCE that then observes the branch no longer
     // reads NZCV and demotes/removes the SubWithFlags feeding it. Running it
@@ -104,8 +102,7 @@ void PassManager::AddDefaultPasses(FEXCore::Context::ContextImpl* ctx) {
     // The pass is a pure IR transform with no correctness mandate, and a
     // wrong flag elimination surfaces as a wrong conditional branch --
     // silent and data-dependent. So it gets its own persistent kill switch
-    // rather than relying on FEX_O0 (which would also drop
-    // X87StackOptimization and change x87 behaviour):
+    // rather than relying on FEX_O0 (which would also drop the other passes):
     //     FEX_DISABLEDFCE=1
     // turns just this pass off at runtime, no rebuild.
     if (!DisableDFCE()) {
@@ -138,7 +135,7 @@ void PassManager::AddDefaultValidationPasses() {
 }
 
 void PassManager::InsertRegisterAllocationPass(FEXCore::Context::ContextImpl* ctx) {
-  InsertPass(IR::CreateRegisterAllocationPass(&ctx->CPUID), "RA");
+  InsertPass(IR::CreateRegisterAllocationPass(), "RA");
 }
 
 void PassManager::Run(IREmitter* IREmit) {

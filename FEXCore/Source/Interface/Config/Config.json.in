@@ -1072,13 +1072,6 @@
           "When metadata is unavailable falls back to the currently enabled TSO options."
         ]
       },
-      "X87ReducedPrecision": {
-        "Type": "bool",
-        "Default": "false",
-        "Desc": [
-          "Emulates X87 floating point using 64-bit precision. This reduces emulation accuracy and may result in rendering bugs."
-        ]
-      },
       "StallProcess": {
         "Type": "bool",
         "Default": "false",

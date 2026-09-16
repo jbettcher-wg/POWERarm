@@ -9,7 +9,6 @@
 
 #include <FEXCore/Core/CoreState.h>
 #include <FEXCore/Core/Context.h>
-#include <FEXCore/Core/CPUID.h>
 #include <FEXCore/Core/HostFeatures.h>
 #include <FEXCore/Core/SignalDelegator.h>
 #include <FEXCore/HLE/SyscallHandler.h>
@@ -45,18 +44,6 @@ void FEXCore::Context::ContextImpl::SetSyscallHandler(FEXCore::HLE::SyscallHandl
 
 void FEXCore::Context::ContextImpl::SetThunkHandler(FEXCore::ThunkHandler* Handler) {
   ThunkHandler = Handler;
-}
-
-FEXCore::CPUID::FunctionResults FEXCore::Context::ContextImpl::RunCPUIDFunction(uint32_t Function, uint32_t Leaf) {
-  return CPUID.RunFunction(Function, Leaf);
-}
-
-FEXCore::CPUID::XCRResults FEXCore::Context::ContextImpl::RunXCRFunction(uint32_t Function) {
-  return CPUID.RunXCRFunction(Function);
-}
-
-FEXCore::CPUID::FunctionResults FEXCore::Context::ContextImpl::RunCPUIDFunctionName(uint32_t Function, uint32_t Leaf, uint32_t CPU) {
-  return CPUID.RunFunctionName(Function, Leaf, CPU);
 }
 
 bool FEXCore::Context::ContextImpl::IsAddressInCodeBuffer(FEXCore::Core::InternalThreadState* Thread, uintptr_t Address) const {

@@ -705,11 +705,6 @@ ApplicationWindow {
             }
 
             ConfigCheckBox {
-                text: qsTr("Reduced x87 precision")
-                config: "X87ReducedPrecision"
-            }
-
-            ConfigCheckBox {
                 text: qsTr("Disable JIT optimization passes")
                 config: "O0"
             }

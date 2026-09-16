@@ -3,7 +3,6 @@
 #pragma once
 
 #include "Interface/Core/ArchHelpers/PPC64Emitter.h"
-#include "Interface/Core/Interpreter/InterpreterOps.h"
 
 #include <FEXCore/Core/SignalDelegator.h>
 #include <FEXCore/fextl/memory.h>
@@ -117,13 +116,6 @@ private:
   uint64_t GuestSignal_SIGSEGV_Address {};
 
   void EmitDispatcher();
-
-  // ABI bridge stub addresses (one per FallbackABI type)
-  std::array<uint64_t, FallbackABI::FABI_UNKNOWN> ABIPointers {};
-
-  // Generate an ABI bridge stub for the given FallbackABI type.
-  // Returns the address of the generated stub.
-  uint64_t GenerateABICall(FallbackABI ABI);
 };
 
 } // namespace FEXCore::CPU

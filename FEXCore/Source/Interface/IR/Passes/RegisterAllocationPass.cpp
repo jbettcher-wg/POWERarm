@@ -10,7 +10,6 @@ $end_info$
 #include "Interface/IR/IREmitter.h"
 #include "Interface/IR/RegisterAllocationData.h"
 #include "Interface/IR/Passes.h"
-#include "Interface/Core/CPUID.h"
 #include <FEXCore/IR/IR.h>
 #include <FEXCore/Utils/EnumUtils.h>
 #include <FEXCore/Utils/LogManager.h>
@@ -54,8 +53,7 @@ namespace {
 
 class ConstrainedRAPass final : public RegisterAllocationPass {
 public:
-  explicit ConstrainedRAPass(const FEXCore::CPUIDEmu* CPUID)
-    : CPUID {CPUID} {}
+  explicit ConstrainedRAPass() {}
   void Run(IREmitter* IREmit) override;
   void AddRegisters(IR::RegClass Class, uint32_t RegisterCount) override;
   bool TryPostRAMerge(Ref LastNode, Ref CodeNode, IROp_Header* IROp);
@@ -65,7 +63,6 @@ private:
 
   IREmitter* IREmit {};
   IRListView* IR {};
-  const FEXCore::CPUIDEmu* CPUID {};
 
   // Map of nodes to their preferred register, to coalesce load/store reg.
   fextl::vector<PhysicalRegister> PreferredReg;
@@ -220,14 +217,10 @@ private:
   };
 
   Ref DecodeSRANode(const IROp_Header* IROp, Ref Node) {
-    if (IROp->Op == OP_LOADREGISTER || IROp->Op == OP_LOADPF || IROp->Op == OP_LOADAF) {
+    if (IROp->Op == OP_LOADREGISTER) {
       return Node;
     } else if (IROp->Op == OP_STOREREGISTER) {
-      auto V = IROp->C<IR::IROp_StorePF>()->Value;
-      V.ClearKill();
-      return IR->GetNode(V);
-    } else if (IROp->Op == OP_STOREPF || IROp->Op == OP_STOREAF) {
-      auto V = IROp->C<IR::IROp_StorePF>()->Value;
+      auto V = IROp->C<IR::IROp_StoreRegister>()->Value;
       V.ClearKill();
       return IR->GetNode(V);
     }
@@ -236,14 +229,8 @@ private:
   };
 
   PhysicalRegister DecodeSRAReg(const IROp_Header* IROp, Ref Node) {
-    uint8_t FlagOffset = Classes[FEXCore::ToUnderlying(RegClass::GPRFixed)].Count - 2;
-
     if (IROp->Op == OP_STOREREGISTER) {
       return PhysicalRegister(Node);
-    } else if (IROp->Op == OP_LOADPF || IROp->Op == OP_STOREPF) {
-      return PhysicalRegister {RegClass::GPRFixed, FlagOffset};
-    } else if (IROp->Op == OP_LOADAF || IROp->Op == OP_STOREAF) {
-      return PhysicalRegister {RegClass::GPRFixed, uint8_t(FlagOffset + 1)};
     } else {
       const IROp_LoadRegister* Op = IROp->C<IR::IROp_LoadRegister>();
 
@@ -570,39 +557,6 @@ bool ConstrainedRAPass::TryPostRAMerge(Ref LastNode, Ref CodeNode, IROp_Header* 
         return PhysicalRegister(LastNode) == PhysicalRegister(Op->OutRemainder);
       }
     }
-  } else if (IROp->Op == OP_XGETBV && PhysicalRegister(IROp->Args[0]) == PhysicalRegister(LastNode) && LastOp->Op == OP_CONSTANT && LastOp->C<IROp_Constant>()->PatchSite == 0) {
-    // Try to constant fold
-    uint64_t ConstantFunction = LastOp->C<IROp_Constant>()->Constant;
-    auto Op = IROp->CW<IR::IROp_XGetBV>();
-    if (CPUID->DoesXCRFunctionReportConstantData(ConstantFunction)) {
-      const auto Result = CPUID->RunXCRFunction(ConstantFunction);
-      IREmit->SetWriteCursorBefore(CodeNode);
-      IREmit->_Constant(Result.eax).Node->Reg = PhysicalRegister(Op->OutEAX).Raw;
-      IREmit->_Constant(Result.edx).Node->Reg = PhysicalRegister(Op->OutEDX).Raw;
-      IREmit->RemovePostRA(CodeNode);
-      return false;
-    }
-  } else if (IROp->Op == OP_CPUID && PhysicalRegister(IROp->Args[0]) == PhysicalRegister(LastNode) && LastOp->Op == OP_CONSTANT && LastOp->C<IROp_Constant>()->PatchSite == 0) {
-    // Try to constant fold. As a limitation of merging only 2 instructions, we
-    // can only handle constant functions, not constant leafs. This could be
-    // lifted if we generalized at a (significant) complexity cost.
-    uint64_t ConstantFunction = LastOp->C<IROp_Constant>()->Constant;
-    auto Op = IROp->CW<IR::IROp_CPUID>();
-
-    const auto SupportsConstant = CPUID->DoesFunctionReportConstantData(ConstantFunction);
-    if (SupportsConstant.SupportsConstantFunction == CPUIDEmu::SupportsConstant::CONSTANT &&
-        SupportsConstant.NeedsLeaf != CPUIDEmu::NeedsLeafConstant::NEEDSLEAFCONSTANT) {
-      const auto Result = CPUID->RunFunction(ConstantFunction, 0 /* leaf */);
-
-      IREmit->SetWriteCursorBefore(CodeNode);
-      IREmit->_Fence(IR::FenceType::Inst);
-      IREmit->_Constant(Result.eax).Node->Reg = PhysicalRegister(Op->OutEAX).Raw;
-      IREmit->_Constant(Result.ebx).Node->Reg = PhysicalRegister(Op->OutEBX).Raw;
-      IREmit->_Constant(Result.ecx).Node->Reg = PhysicalRegister(Op->OutECX).Raw;
-      IREmit->_Constant(Result.edx).Node->Reg = PhysicalRegister(Op->OutEDX).Raw;
-      IREmit->RemovePostRA(CodeNode);
-      return false;
-    }
   }
 
   // Merge moves that are immediately consumed.
@@ -883,7 +837,7 @@ void ConstrainedRAPass::Run(IREmitter* IREmit_) {
   IR->GetHeader()->PostRA = true;
 }
 
-fextl::unique_ptr<IR::RegisterAllocationPass> CreateRegisterAllocationPass(const FEXCore::CPUIDEmu* CPUID) {
-  return fextl::make_unique<ConstrainedRAPass>(CPUID);
+fextl::unique_ptr<IR::RegisterAllocationPass> CreateRegisterAllocationPass() {
+  return fextl::make_unique<ConstrainedRAPass>();
 }
 } // namespace FEXCore::IR

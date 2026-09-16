@@ -26,12 +26,10 @@ $end_info$
 #define FLAG_C (1U << 1)
 #define FLAG_Z (1U << 2)
 #define FLAG_N (1U << 3)
-#define FLAG_P (1U << 4)
-#define FLAG_A (1U << 5)
 
 #define FLAG_ZCV (FLAG_Z | FLAG_C | FLAG_V)
 #define FLAG_NZCV (FLAG_N | FLAG_ZCV)
-#define FLAG_ALL (FLAG_NZCV | FLAG_A | FLAG_P)
+#define FLAG_ALL FLAG_NZCV
 
 namespace FEXCore::IR {
 
@@ -184,7 +182,6 @@ private:
   void FoldBranch(IREmitter* IREmit, IRListView& CurrentIR, IROp_CondJump* Op, Ref CodeNode);
   CondClass X86ToArmFloatCond(CondClass X86);
   bool ProcessBlock(IREmitter* IREmit, IRListView& CurrentIR, Ref Block, ControlFlowGraph& CFG);
-  void OptimizeParity(IREmitter* IREmit, IRListView& CurrentIR, ControlFlowGraph& CFG);
 };
 
 unsigned DeadFlagCalculationEliminination::FlagsForCondClassType(CondClass Cond) {
@@ -269,13 +266,11 @@ constexpr FlagInfo ClassifyConst(IROps Op) {
     });
 
   case OP_SHIFTFLAGS:
-    // _ShiftFlags conditionally sets NZCV+PF, which we model here as a
-    // read-modify-write. Logically, it also conditionally makes AF undefined,
-    // which we model by omitting AF from both Read and Write sets (since
-    // "cond ? AF : undef" may be optimized to "AF").
+    // _ShiftFlags conditionally sets NZCV, which we model here as a
+    // read-modify-write.
     return FlagInfo::Pack({
-      .Read = FLAG_NZCV | FLAG_P,
-      .Write = FLAG_NZCV | FLAG_P,
+      .Read = FLAG_NZCV,
+      .Write = FLAG_NZCV,
       .CanEliminate = true,
     });
 
@@ -350,11 +345,6 @@ constexpr FlagInfo ClassifyConst(IROps Op) {
       .Write = FLAG_NZCV,
       .CanEliminate = true,
     });
-
-  case OP_LOADPF: return FlagInfo::Pack({.Read = FLAG_P});
-  case OP_LOADAF: return FlagInfo::Pack({.Read = FLAG_A});
-  case OP_STOREPF: return FlagInfo::Pack({.Write = FLAG_P, .CanEliminate = true});
-  case OP_STOREAF: return FlagInfo::Pack({.Write = FLAG_A, .CanEliminate = true});
 
   case OP_NZCVSELECT:
   case OP_NZCVSELECTV:
@@ -471,14 +461,6 @@ FlagInfo DeadFlagCalculationEliminination::Classify(IROp_Header* IROp) {
       Flags |= FLAG_V;
     }
 
-    if (Op->Flags & (1u << X86State::RFLAG_PF_RAW_LOC)) {
-      Flags |= FLAG_P;
-    }
-
-    if (Op->Flags & (1u << X86State::RFLAG_AF_RAW_LOC)) {
-      Flags |= FLAG_A;
-    }
-
     // The mental model of InvalidateFlags is writing undefined values to all
     // of the selected flags, allowing the write-after-write optimizations to
     // optimize invalidate-after-write for free.
@@ -559,8 +541,7 @@ void DeadFlagCalculationEliminination::FoldBranch(IREmitter* IREmit, IRListView&
   // still show the unfolded AXFLAG / SUBNZCV in the after-opt IR. That also
   // means FoldBranch_Sub8_Sub16.asm has never actually tested FoldBranch.
   auto PrevWrap = CodeNode->Header.Previous;
-  while (CurrentIR.GetOp<IR::IROp_Header>(PrevWrap)->Op == OP_STOREREGISTER ||
-         CurrentIR.GetOp<IR::IROp_Header>(PrevWrap)->Op == OP_STOREPF || CurrentIR.GetOp<IR::IROp_Header>(PrevWrap)->Op == OP_STOREAF) {
+  while (CurrentIR.GetOp<IR::IROp_Header>(PrevWrap)->Op == OP_STOREREGISTER) {
     PrevWrap = CurrentIR.GetNode(PrevWrap)->Header.Previous;
   }
 
@@ -804,71 +785,6 @@ bool DeadFlagCalculationEliminination::ProcessBlock(IREmitter* IREmit, IRListVie
   return (OldFlagsRead != FlagsRead);
 }
 
-void DeadFlagCalculationEliminination::OptimizeParity(IREmitter* IREmit, IRListView& CurrentIR, ControlFlowGraph& CFG) {
-  // Mapping for flags inside this pass.
-  const uint8_t PARTIAL = 0;
-  const uint8_t FULL = 1;
-
-  // Initialize conservatively: all blocks need full parity. This initialization
-  // matters for proper handling of backedges.
-  for (auto [Block, BlockHeader] : CurrentIR.GetBlocks()) {
-    auto ID = BlockHeader->C<IROp_CodeBlock>()->ID;
-    CFG.Get(ID)->Flags = FULL;
-  }
-
-  for (auto [Block, BlockHeader] : CurrentIR.GetBlocks()) {
-    const auto ID = BlockHeader->C<IROp_CodeBlock>()->ID;
-    const auto& Predecessors = CFG.Get(ID)->Predecessors;
-    bool Full = false;
-
-    if (Predecessors.empty()) {
-      // Conservatively assume there was full parity before the start block
-      Full = true;
-    } else {
-      // If any predecessor needs full parity at the end, we need full parity.
-      for (auto Pred : Predecessors) {
-        Full |= (CFG.Get(Pred)->Flags == FULL);
-      }
-    }
-
-    for (auto [CodeNode, IROp] : CurrentIR.GetCode(Block)) {
-      if (IROp->Op == OP_STOREPF) {
-        auto Op = IROp->CW<IR::IROp_StorePF>();
-        auto Generator = CurrentIR.GetOp<IR::IROp_Header>(Op->Value);
-
-        // Determine if we only write 0/1 to the parity flag.
-        Full = true;
-        if (Generator->Op == OP_NZCVSELECT) {
-          auto C0 = CurrentIR.GetOp<IR::IROp_Header>(Generator->Args[0]);
-          auto C1 = CurrentIR.GetOp<IR::IROp_Header>(Generator->Args[1]);
-          if (C0->Op == C1->Op && C0->Op == OP_INLINECONSTANT) {
-            auto IC0 = CurrentIR.GetOp<IR::IROp_InlineConstant>(Generator->Args[0]);
-            auto IC1 = CurrentIR.GetOp<IR::IROp_InlineConstant>(Generator->Args[1]);
-
-            // We need the full 8 if the constant has upper bits set.
-            Full = (IC0->Constant | IC1->Constant) & ~1;
-          }
-        }
-      } else if (IROp->Op == OP_PARITY && !Full) {
-        // Eliminate parity calculations if it's only 1-bit.
-        auto Parity = IROp->C<IROp_Parity>();
-        Ref Value = CurrentIR.GetNode(Parity->Raw);
-
-        if (Parity->Invert) {
-          IREmit->SetWriteCursor(CodeNode);
-          Value = IREmit->_Xor(OpSize::i32Bit, Value, IREmit->_InlineConstant(1));
-        }
-
-        IREmit->ReplaceUsesWithAfter(CodeNode, Value, CurrentIR.at(CodeNode));
-        IREmit->Remove(CodeNode);
-      }
-    }
-
-    // Record our final state for our successors to read.
-    CFG.Get(ID)->Flags = Full ? FULL : PARTIAL;
-  }
-}
-
 void DeadFlagCalculationEliminination::Run(IREmitter* IREmit) {
   FEXCORE_PROFILE_SCOPED("PassManager::DFE");
 
@@ -937,9 +853,6 @@ void DeadFlagCalculationEliminination::Run(IREmitter* IREmit) {
     }
   }
 
-  if (CurrentIR.GetHeader()->ReadsParity) {
-    OptimizeParity(IREmit, CurrentIR, CFG);
-  }
 }
 
 fextl::unique_ptr<FEXCore::IR::Pass> CreateDeadFlagCalculationEliminination() {

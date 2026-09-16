@@ -304,70 +304,6 @@ static_assert(offsetof(CPUState, pf_raw) % 8 == 0, "pf_raw must be 8-byte aligne
 
 struct InternalThreadState;
 
-enum FallbackHandlerIndex {
-  OPINDEX_F80CVTTO_4 = 0,
-  OPINDEX_F80CVTTO_8,
-  OPINDEX_F80CVT_4,
-  OPINDEX_F80CVT_8,
-  OPINDEX_F80CVTINT_2,
-  OPINDEX_F80CVTINT_4,
-  OPINDEX_F80CVTINT_8,
-  OPINDEX_F80CVTINT_TRUNC2,
-  OPINDEX_F80CVTINT_TRUNC4,
-  OPINDEX_F80CVTINT_TRUNC8,
-  OPINDEX_F80CMP,
-  OPINDEX_F80CVTTOINT_2,
-  OPINDEX_F80CVTTOINT_4,
-
-  // Unary
-  OPINDEX_F80ROUND,
-  OPINDEX_F80F2XM1,
-  OPINDEX_F80TAN,
-  OPINDEX_F80SQRT,
-  OPINDEX_F80SIN,
-  OPINDEX_F80COS,
-  OPINDEX_F80SINCOS,
-  OPINDEX_F80XTRACT_EXP,
-  OPINDEX_F80XTRACT_SIG,
-  OPINDEX_F80BCDSTORE,
-  OPINDEX_F80BCDLOAD,
-
-  // Binary
-  OPINDEX_F80ADD,
-  OPINDEX_F80SUB,
-  OPINDEX_F80MUL,
-  OPINDEX_F80DIV,
-  OPINDEX_F80FYL2X,
-  OPINDEX_F80ATAN,
-  OPINDEX_F80FPREM1,
-  OPINDEX_F80FPREM,
-  OPINDEX_F80SCALE,
-
-  // Double Precision
-  OPINDEX_F64SIN,
-  OPINDEX_F64COS,
-  OPINDEX_F64SINCOS,
-  OPINDEX_F64TAN,
-  OPINDEX_F64ATAN,
-  OPINDEX_F64F2XM1,
-  OPINDEX_F64FYL2X,
-  OPINDEX_F64FPREM,
-  OPINDEX_F64FPREM1,
-  OPINDEX_F64SCALE,
-
-  // SSE4.2 string instructions
-  OPINDEX_VPCMPESTRX,
-  OPINDEX_VPCMPISTRX,
-
-  // Maximum
-  OPINDEX_MAX,
-};
-
-struct FallbackABIInfo {
-  uint64_t ABIHandler;
-  uint64_t Func;
-};
-
 struct JITPointers {
 
   // Process specific
@@ -375,9 +311,6 @@ struct JITPointers {
   uint64_t PrintVectorValue {};
   uint64_t PrintMsgValue {};
   uint64_t ThreadRemoveCodeEntryFromJIT {};
-  uint64_t CPUIDObj {};
-  uint64_t CPUIDFunction {};
-  uint64_t XCRFunction {};
   uint64_t SyscallHandlerObj {};
   uint64_t SyscallHandlerFunc {};
   uint64_t ExitFunctionLink {};
@@ -390,7 +323,6 @@ struct JITPointers {
   uint64_t PPC64_PauseSchedYield {};
 
 
-  FallbackABIInfo FallbackHandlerPointers[FallbackHandlerIndex::OPINDEX_MAX];
   uint64_t NamedVectorConstantPointers[FEXCore::IR::NamedVectorConstant::NAMED_VECTOR_CONST_POOL_MAX];
   uint64_t IndexedNamedVectorConstantPointers[FEXCore::IR::IndexNamedVectorConstant::INDEXED_NAMED_VECTOR_MAX];
   // JIT-emitted code loads counter addresses out of this table; sized to the
@@ -415,13 +347,6 @@ struct JITPointers {
   uint64_t L2Pointer {};
   uint64_t LUDIVHandler {};
   uint64_t LDIVHandler {};
-  uint64_t F64SinHandler {};
-  uint64_t F64CosHandler {};
-  uint64_t F64TanHandler {};
-  uint64_t F64F2XM1Handler {};
-  uint64_t F64ScaleHandler {};
-  uint64_t F64AtanHandler {};
-  uint64_t F64FYL2XHandler {};
   // PPC64LE block linking (constant-target jump exits only) intentionally
   // does NOT add per-thread frame slots.  The dispatcher stub materialises
   // its C++ callee address as an inline constant (PPC64Dispatcher.cpp), and

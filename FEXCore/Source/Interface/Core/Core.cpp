@@ -18,7 +18,6 @@ $end_info$
 #include "Interface/Core/SMCSoftInvalidate.h"
 #include "Interface/Core/SMCSemanticPatch.h"
 #include "Interface/Core/CPUBackend.h"
-#include "Interface/Core/CPUID.h"
 #include "Interface/Core/A64Frontend/Decoder.h"
 #include "Interface/Core/A64Frontend/IRBuilder.h"
 #ifdef ARCHITECTURE_ppc64le
@@ -85,6 +84,9 @@ $end_info$
 #include <unordered_map>
 #include <utility>
 #include <xxhash.h>
+#ifdef ARCHITECTURE_ppc64le
+#include <sys/platform/ppc.h>
+#endif
 
 // FEX_SMC_AUDIT compile-side sibling of the logger in SyscallsSMCTracking.cpp
 // (same env var, same file, opened O_APPEND so lines from both interleave).
@@ -249,9 +251,17 @@ CompileLogState* GetCompileLog() {
 } // anonymous namespace
 
 namespace FEXCore::Context {
+// Host timebase frequency, used to scale the guest cycle counter (was in the x86 CPUID emulation).
+static uint64_t GetCycleCounterFrequency() {
+#if defined(ARCHITECTURE_ppc64le)
+  return __ppc_get_timebase_freq();
+#else
+  return 0;
+#endif
+}
+
 ContextImpl::ContextImpl(const FEXCore::HostFeatures& Features)
   : HostFeatures {Features}
-  , CPUID {this}
   , CodeCache {*this} {
   if (!Config.Is64BitMode()) {
     // When operating in 32-bit mode, the virtual memory we care about is only the lower 32-bits.
@@ -263,7 +273,7 @@ ContextImpl::ContextImpl(const FEXCore::HostFeatures& Features)
     Symbols.InitFile();
   }
 
-  uint64_t FrequencyCounter = FEXCore::GetCycleCounterFrequency();
+  uint64_t FrequencyCounter = GetCycleCounterFrequency();
   if (FrequencyCounter && FrequencyCounter < FEXCore::Context::TSC_SCALE_MAXIMUM && Config.SmallTSCScale()) {
     // Scale TSC until it is at the minimum required.
     while (FrequencyCounter < FEXCore::Context::TSC_SCALE_MAXIMUM) {

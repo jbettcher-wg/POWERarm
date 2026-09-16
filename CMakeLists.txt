@@ -551,8 +551,6 @@ if (BUILD_TESTING)
   set(TEST_JOB_FLAG "-j${TEST_JOB_COUNT}")
 endif()
 
-add_subdirectory(External/SoftFloat-3e/)
-add_subdirectory(External/cephes/)
 add_subdirectory(FEXHeaderUtils/)
 add_subdirectory(CodeEmitter/)
 if (NOT MINGW)
