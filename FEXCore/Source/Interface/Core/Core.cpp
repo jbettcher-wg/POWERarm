@@ -19,8 +19,8 @@ $end_info$
 #include "Interface/Core/SMCSemanticPatch.h"
 #include "Interface/Core/CPUBackend.h"
 #include "Interface/Core/CPUID.h"
-#include "Interface/Core/Frontend.h"
-#include "Interface/Core/OpcodeDispatcher.h"
+#include "Interface/Core/A64Frontend/Decoder.h"
+#include "Interface/Core/A64Frontend/IRBuilder.h"
 #ifdef ARCHITECTURE_ppc64le
 #include "Interface/Core/JIT/PPC64LE/JITClass.h"
 #include "Interface/Core/JIT/PPC64LE/PPC64Dispatcher.h"
@@ -28,7 +28,6 @@ $end_info$
 #include "Interface/Core/JIT/JITClass.h"
 #include "Interface/Core/Dispatcher/Dispatcher.h"
 #endif
-#include "Interface/Core/X86Tables/X86Tables.h"
 #include <Interface/GDBJIT/GDBJIT.h>
 #include "Interface/IR/IR.h"
 #include "Interface/IR/IREmitter.h"
@@ -250,51 +249,6 @@ CompileLogState* GetCompileLog() {
 } // anonymous namespace
 
 namespace FEXCore::Context {
-// SpinLoopClamp spec: "0x<begin>-0x<end>:<induction>:<bound>", registers by
-// x86 name. Any malformed field returns false so a typo disables the hack
-// entirely rather than half-applying it. Does not set Out.Active.
-static bool ParseSpinLoopClamp(std::string_view Spec, ContextImpl::SpinLoopClampInfo& Out) {
-  static constexpr std::array<std::string_view, 16> RegNames = {"rax", "rcx", "rdx", "rbx", "rsp", "rbp", "rsi", "rdi",
-                                                                "r8",  "r9",  "r10", "r11", "r12", "r13", "r14", "r15"};
-  auto RegIndex = [&](std::string_view Name) -> int {
-    for (size_t i = 0; i < RegNames.size(); ++i) {
-      if (Name == RegNames[i]) {
-        return static_cast<int>(i);
-      }
-    }
-    return -1;
-  };
-  auto ParseAddr = [](std::string_view Field, uint64_t& Value) {
-    const fextl::string Copy {Field};
-    char* End {};
-    Value = std::strtoull(Copy.c_str(), &End, 0);
-    return !Copy.empty() && *End == '\0';
-  };
-
-  const size_t Dash = Spec.find('-');
-  const size_t Colon1 = Spec.find(':');
-  const size_t Colon2 = Colon1 == Spec.npos ? Spec.npos : Spec.find(':', Colon1 + 1);
-  if (Dash == Spec.npos || Colon1 == Spec.npos || Colon2 == Spec.npos || Dash > Colon1) {
-    return false;
-  }
-
-  uint64_t Begin {}, End {};
-  if (!ParseAddr(Spec.substr(0, Dash), Begin) || !ParseAddr(Spec.substr(Dash + 1, Colon1 - Dash - 1), End)) {
-    return false;
-  }
-  const int Induction = RegIndex(Spec.substr(Colon1 + 1, Colon2 - Colon1 - 1));
-  const int Bound = RegIndex(Spec.substr(Colon2 + 1));
-  if (Induction < 0 || Bound < 0 || Induction == Bound || Begin >= End) {
-    return false;
-  }
-
-  Out.Begin = Begin;
-  Out.End = End;
-  Out.InductionReg = static_cast<uint8_t>(Induction);
-  Out.BoundReg = static_cast<uint8_t>(Bound);
-  return true;
-}
-
 ContextImpl::ContextImpl(const FEXCore::HostFeatures& Features)
   : HostFeatures {Features}
   , CPUID {this}
@@ -331,41 +285,6 @@ ContextImpl::ContextImpl(const FEXCore::HostFeatures& Features)
     FEXCore::SMC::CodeGranuleTrackingEnabled.store(true, std::memory_order_release);
   }
 
-  // Per-title atomic-displacement additions (see ForceTSODisplacements in
-  // Config.json.in). Malformed fields are skipped individually — a partial
-  // list is still useful and a typo shouldn't disable the rest.
-  if (const fextl::string Spec = Config.ForceTSODisplacements(); !Spec.empty()) {
-    size_t Pos = 0;
-    while (Pos < Spec.size()) {
-      size_t Comma = Spec.find(',', Pos);
-      if (Comma == Spec.npos) {
-        Comma = Spec.size();
-      }
-      const fextl::string Field {Spec.substr(Pos, Comma - Pos)};
-      char* End {};
-      const uint64_t Value = std::strtoull(Field.c_str(), &End, 0);
-      if (!Field.empty() && *End == '\0') {
-        ExtraForceTSODisplacements.push_back(Value);
-      } else {
-        LogMan::Msg::EFmt("ForceTSODisplacements: skipping unparseable field '{}'", Field);
-      }
-      Pos = Comma + 1;
-    }
-    if (!ExtraForceTSODisplacements.empty()) {
-      LogMan::Msg::IFmt("ForceTSODisplacements: {} extra displacement(s) armed", ExtraForceTSODisplacements.size());
-    }
-  }
-
-  // Spin-loop overshoot clamp; see SpinLoopClampInfo in Context.h.
-  if (const fextl::string Spec = Config.SpinLoopClamp(); !Spec.empty()) {
-    if (ParseSpinLoopClamp(Spec, SpinLoopClamp)) {
-      SpinLoopClamp.Active = true;
-      LogMan::Msg::IFmt("SpinLoopClamp active: RIP [0x{:x}, 0x{:x}), induction GPR {}, bound GPR {}", SpinLoopClamp.Begin,
-                        SpinLoopClamp.End, SpinLoopClamp.InductionReg, SpinLoopClamp.BoundReg);
-    } else {
-      LogMan::Msg::EFmt("SpinLoopClamp: failed to parse '{}'; hack disabled", Spec);
-    }
-  }
 }
 
 // Maps a host PC to the JIT block containing it.
@@ -722,6 +641,17 @@ uint64_t ContextImpl::RestoreRIPFromHostPC(FEXCore::Core::InternalThreadState* T
   return Result;
 }
 
+// Bit position of an x86 flag inside the packed NZCV word (was OpDispatchBuilder::IndexNZCV).
+static inline constexpr unsigned IndexNZCV(unsigned BitOffset) {
+  switch (BitOffset) {
+  case X86State::RFLAG_OF_RAW_LOC: return 28;
+  case X86State::RFLAG_CF_RAW_LOC: return 29;
+  case X86State::RFLAG_ZF_RAW_LOC: return 30;
+  case X86State::RFLAG_SF_RAW_LOC: return 31;
+  default: FEX_UNREACHABLE;
+  }
+}
+
 uint32_t ContextImpl::ReconstructCompactedEFLAGS(FEXCore::Core::InternalThreadState* Thread, bool WasInJIT, const uint64_t* HostGPRs,
                                                  uint64_t PSTATE) {
   const auto Frame = Thread->CurrentFrame;
@@ -761,10 +691,10 @@ uint32_t ContextImpl::ReconstructCompactedEFLAGS(FEXCore::Core::InternalThreadSt
     memcpy(&Packed_NZCV, &Frame->State.flags[X86State::RFLAG_NZCV_LOC], sizeof(Packed_NZCV));
   }
 
-  uint32_t OF = (Packed_NZCV >> IR::OpDispatchBuilder::IndexNZCV(X86State::RFLAG_OF_RAW_LOC)) & 1;
-  uint32_t CF = (Packed_NZCV >> IR::OpDispatchBuilder::IndexNZCV(X86State::RFLAG_CF_RAW_LOC)) & 1;
-  uint32_t ZF = (Packed_NZCV >> IR::OpDispatchBuilder::IndexNZCV(X86State::RFLAG_ZF_RAW_LOC)) & 1;
-  uint32_t SF = (Packed_NZCV >> IR::OpDispatchBuilder::IndexNZCV(X86State::RFLAG_SF_RAW_LOC)) & 1;
+  uint32_t OF = (Packed_NZCV >> IndexNZCV(X86State::RFLAG_OF_RAW_LOC)) & 1;
+  uint32_t CF = (Packed_NZCV >> IndexNZCV(X86State::RFLAG_CF_RAW_LOC)) & 1;
+  uint32_t ZF = (Packed_NZCV >> IndexNZCV(X86State::RFLAG_ZF_RAW_LOC)) & 1;
+  uint32_t SF = (Packed_NZCV >> IndexNZCV(X86State::RFLAG_SF_RAW_LOC)) & 1;
 
   // CF is inverted in our representation, undo the invert here.
   CF ^= 1;
@@ -877,10 +807,10 @@ void ContextImpl::SetFlagsFromCompactedEFLAGS(FEXCore::Core::InternalThreadState
 
   // Calculate packed NZCV. Note CF is inverted.
   uint32_t Packed_NZCV {};
-  Packed_NZCV |= (EFLAGS & (1U << X86State::RFLAG_OF_RAW_LOC)) ? 1U << IR::OpDispatchBuilder::IndexNZCV(X86State::RFLAG_OF_RAW_LOC) : 0;
-  Packed_NZCV |= (EFLAGS & (1U << X86State::RFLAG_CF_RAW_LOC)) ? 0 : 1U << IR::OpDispatchBuilder::IndexNZCV(X86State::RFLAG_CF_RAW_LOC);
-  Packed_NZCV |= (EFLAGS & (1U << X86State::RFLAG_ZF_RAW_LOC)) ? 1U << IR::OpDispatchBuilder::IndexNZCV(X86State::RFLAG_ZF_RAW_LOC) : 0;
-  Packed_NZCV |= (EFLAGS & (1U << X86State::RFLAG_SF_RAW_LOC)) ? 1U << IR::OpDispatchBuilder::IndexNZCV(X86State::RFLAG_SF_RAW_LOC) : 0;
+  Packed_NZCV |= (EFLAGS & (1U << X86State::RFLAG_OF_RAW_LOC)) ? 1U << IndexNZCV(X86State::RFLAG_OF_RAW_LOC) : 0;
+  Packed_NZCV |= (EFLAGS & (1U << X86State::RFLAG_CF_RAW_LOC)) ? 0 : 1U << IndexNZCV(X86State::RFLAG_CF_RAW_LOC);
+  Packed_NZCV |= (EFLAGS & (1U << X86State::RFLAG_ZF_RAW_LOC)) ? 1U << IndexNZCV(X86State::RFLAG_ZF_RAW_LOC) : 0;
+  Packed_NZCV |= (EFLAGS & (1U << X86State::RFLAG_SF_RAW_LOC)) ? 1U << IndexNZCV(X86State::RFLAG_SF_RAW_LOC) : 0;
   memcpy(&Frame->State.flags[X86State::RFLAG_NZCV_LOC], &Packed_NZCV, sizeof(Packed_NZCV));
 
   // Reserved, Read-As-1, Write-as-1
@@ -957,10 +887,9 @@ void ContextImpl::ExecuteThread(FEXCore::Core::InternalThreadState* Thread) {
 }
 
 void ContextImpl::InitializeCompiler(FEXCore::Core::InternalThreadState* Thread) {
-  Thread->OpDispatcher = fextl::make_unique<FEXCore::IR::OpDispatchBuilder>(this);
-  Thread->OpDispatcher->SetMultiblock(Config.Multiblock);
+  Thread->OpDispatcher = fextl::make_unique<FEXCore::A64::IRBuilder>(this);
   Thread->LookupCache = fextl::make_unique<FEXCore::LookupCache>(this);
-  Thread->FrontendDecoder = fextl::make_unique<FEXCore::Frontend::Decoder>(Thread);
+  Thread->FrontendDecoder = fextl::make_unique<FEXCore::A64::Decoder>(Thread);
   Thread->PassManager = fextl::make_unique<FEXCore::IR::PassManager>();
 
   Thread->CurrentFrame->State.L1Pointer = Thread->LookupCache->GetL1Pointer();
@@ -1134,7 +1063,7 @@ static void IRDumper(FEXCore::Core::InternalThreadState* Thread, IR::IREmitter* 
 };
 
 bool ContextImpl::CheckIfBlockIsCacheable(FEXCore::Core::InternalThreadState& Thread, uint64_t GuestRIP, uint64_t MaxInst) {
-  return Thread.FrontendDecoder->CheckIfCacheable(Thread, reinterpret_cast<const uint8_t*>(GuestRIP), GuestRIP, MaxInst);
+  return Thread.FrontendDecoder->CheckIfCacheable(Thread, GuestRIP, MaxInst);
 }
 
 ContextImpl::GenerateIRResult
@@ -1148,20 +1077,9 @@ ContextImpl::GenerateIR(FEXCore::Core::InternalThreadState* Thread, uint64_t Gue
 
   bool HasCustomIR {};
 
-  // SMC Idea 4 (FEX_SMCSEMANTICPATCH): rel32 fields of the direct branches this
-  // decode covers. Filled in the instruction loop below, where the decoded
-  // instruction's address and length are both in hand; left empty (and the
-  // block therefore ineligible) with the flag off or on a custom-IR block.
-  // See Interface/Core/SMCSemanticPatch.h.
-  const bool RecordBranchImmSites = Config.SMCSemanticPatch();
+  // POWERARM-M0-TODO(smc): SMC Idea 4 (FEX_SMCSEMANTICPATCH) site tables stay empty; the x86 rel32/mov-imm site decoders have no A64 counterpart yet (ADRP/MOVZ/B imm26 are the analogues).
   FEXCore::SMC::BranchImmSites BranchImmSites;
-  bool BranchImmSitesOverflowed {};
-  // ... and the immediate fields of its mov-immediates. Recorded in the same
-  // loop; each recognised site additionally tags the IR constant the dispatcher
-  // materialises for it, which is what gives the backend provenance for the
-  // host window it bakes.
   FEXCore::SMC::MovImmSites MovImmSites;
-  bool MovImmSitesOverflowed {};
 
   if (HasCustomIRHandlers.load(std::memory_order_relaxed)) {
     std::shared_lock lk(CustomIRMutex);
@@ -1175,34 +1093,15 @@ ContextImpl::GenerateIR(FEXCore::Core::InternalThreadState* Thread, uint64_t Gue
   }
 
   if (!HasCustomIR) {
-    const uint8_t* GuestCode {};
-    GuestCode = reinterpret_cast<const uint8_t*>(GuestRIP);
-
-    bool HadDispatchError {false};
-    bool HadInvalidInst {false};
-
-    Thread->FrontendDecoder->DecodeInstructionsAtEntry(Thread, GuestCode, GuestRIP, MaxInst);
-
-    // Cheap compile tier (FEX_SMCCHEAPTIER): the decoder decides per block
-    // whether the entry page is churning badly enough to compile disposably,
-    // and refuses to follow branches when it is. Mirror that decision onto the
-    // dispatcher, which otherwise stitches blocks together on its own. This is
-    // a per-compilation override of Config.Multiblock; the global config is
-    // untouched, and the next block re-derives the flag from scratch.
-    Thread->OpDispatcher->SetMultiblock(Config.Multiblock && !Thread->FrontendDecoder->IsCheapTierBlock());
+    Thread->FrontendDecoder->DecodeInstructionsAtEntry(Thread, GuestRIP, MaxInst);
 
     auto BlockInfo = Thread->FrontendDecoder->GetDecodedBlockInfo();
     auto CodeBlocks = &BlockInfo->Blocks;
 
     // FEX_SMCGRANULEMIXED (64K hosts): a guest page whose host granule mtrack
     // has stopped write-protecting gets the SMCCHECKS=full treatment per block
-    // instead -- every instruction validated against its decoded bytes. The
-    // answer is read here, under this function's shared CodeInvalidationMutex,
-    // and MarkGuestExecutableRange below reads the same bit under the same
-    // hold; a demotion in between is followed by an exclusive invalidation of
-    // the granule that kills whatever this compile publishes. Decided over all
-    // of the decode's pages: a multiblock that touches one demoted page is
-    // guarded in full. See LinuxSyscalls/SMCHostGranule.h.
+    // instead -- every instruction validated against its decoded bytes. See
+    // LinuxSyscalls/SMCHostGranule.h.
     bool CodePagesValidateOnly = false;
     if (SyscallHandler && Config.SMCChecks == FEXCore::Config::CONFIG_SMC_MTRACK) {
       for (auto CodePage : BlockInfo->CodePages) {
@@ -1213,166 +1112,43 @@ ContextImpl::GenerateIR(FEXCore::Core::InternalThreadState* Thread, uint64_t Gue
       }
     }
 
-    Thread->OpDispatcher->BeginFunction(GuestRIP, CodeBlocks, BlockInfo->TotalInstructionCount, BlockInfo->Is64BitMode,
-                                        AreMonoHacksActive() && MonoBackpatcherBlock.load(std::memory_order_relaxed) == GuestRIP);
+    Thread->OpDispatcher->BeginFunction(GuestRIP, CodeBlocks, BlockInfo->TotalInstructionCount);
 
-    const auto GPRSize = Thread->OpDispatcher->GetGPROpSize();
-
-
-    // ForceTSO metadata is read per block and the instruction iterator lives
-    // for the block loop; hold the reader side across it (see ForceTSOMutex).
-    std::shared_lock ForceTSOlk(ForceTSOMutex);
     for (size_t j = 0; j < CodeBlocks->size(); ++j) {
-      const FEXCore::Frontend::Decoder::DecodedBlocks& Block = CodeBlocks->at(j);
-      // Per-instruction ValidateCode guards: the whole process (SMCCHECKS=full),
-      // the mono tailcall block (Frontend), or a demoted mixed granule.
+      const FEXCore::A64::Decoder::DecodedBlocks& Block = CodeBlocks->at(j);
       const bool FullSMCValidation =
         Config.SMCChecks == FEXCore::Config::CONFIG_SMC_FULL || Block.ForceFullSMCDetection || CodePagesValidateOnly;
 
-
-      bool BlockInForceTSOValidRange = false;
-      auto InstForceTSOIt = ForceTSOInstructions.end();
-      if (ForceTSOValidRanges.Contains({Block.Entry, Block.Entry + Block.Size})) {
-        if (auto It = ForceTSOInstructions.lower_bound(Block.Entry); *It < Block.Entry + Block.Size) {
-          InstForceTSOIt = It;
-          BlockInForceTSOValidRange = true;
-        }
-      }
-
-      // Set the block entry point
       Thread->OpDispatcher->SetNewBlockIfChanged(Block.Entry);
-
-      uint64_t BlockInstructionsLength {};
-
-      // Reset any block-specific state
       Thread->OpDispatcher->StartNewBlock();
 
-      uint64_t InstsInBlock = Block.NumInstructions;
+      uint64_t BlockInstructionsLength {};
+      const uint64_t InstsInBlock = Block.NumInstructions;
 
       if (InstsInBlock == 0) {
-        // Special case for an empty instruction block.
-        Thread->OpDispatcher->ExitFunction(Thread->OpDispatcher->_InlineEntrypointOffset(GPRSize, Block.Entry - GuestRIP));
+        Thread->OpDispatcher->ExitFunction(Thread->OpDispatcher->_InlineEntrypointOffset(IR::OpSize::i64Bit, Block.Entry - GuestRIP));
       }
 
       for (size_t i = 0; i < InstsInBlock; ++i) {
-        uint64_t InstAddress = Block.Entry + BlockInstructionsLength;
-        const FEXCore::X86Tables::X86InstInfo* TableInfo {nullptr};
-        const FEXCore::X86Tables::DecodedInst* DecodedInfo {nullptr};
+        const auto& DecodedInfo = Block.DecodedInstructions[i];
+        const uint64_t InstAddress = DecodedInfo.PC;
 
-        TableInfo = Block.DecodedInstructions[i].TableInfo;
-        DecodedInfo = &Block.DecodedInstructions[i];
-
-
-        if (RecordBranchImmSites) {
-          if (!BranchImmSitesOverflowed) {
-            FEXCore::SMC::BranchImmSite Site {};
-            if (FEXCore::SMC::DecodeRel32BranchSite(reinterpret_cast<const uint8_t*>(InstAddress), DecodedInfo->InstSize, InstAddress,
-                                                    BlockInfo->Is64BitMode, &Site)) {
-              if (BranchImmSites.size() >= FEXCore::SMC::kMaxSitesPerBlock) {
-                // Over the cap: drop the whole table rather than describe the
-                // block partially. A partial table would let a write to an
-                // unrecorded branch look like "not a patch site" and silently take
-                // the fallback -- which is correct but unattributable -- while a
-                // write to a recorded one would be serviced against a block whose
-                // other branches we never checked.
-                BranchImmSites.clear();
-                BranchImmSitesOverflowed = true;
-              } else {
-                BranchImmSites.push_back(Site);
-              }
-            }
-          }
-
-          // The mov-immediate half. The tag handed to the dispatcher is only
-          // valid for THIS instruction, so it is cleared first and re-set only
-          // when the instruction is a recognised site; the dispatcher also
-          // re-checks the instruction's PC before acting on it.
-          Thread->OpDispatcher->ClearPatchableImmSite();
-          if (!MovImmSitesOverflowed) {
-            FEXCore::SMC::MovImmSite MovSite {};
-            uint64_t MovValue {};
-            if (FEXCore::SMC::DecodeMovImmSite(reinterpret_cast<const uint8_t*>(InstAddress), DecodedInfo->InstSize, InstAddress,
-                                               BlockInfo->Is64BitMode, &MovSite, &MovValue)) {
-              if (MovImmSites.size() >= FEXCore::SMC::kMaxSitesPerBlock) {
-                // Same all-or-nothing rule as above. Windows already tagged with
-                // now-dangling indices are harmless: CompileBlock drops the whole
-                // window table when the site table is empty.
-                MovImmSites.clear();
-                MovImmSitesOverflowed = true;
-              } else {
-                MovImmSites.push_back(MovSite);
-                Thread->OpDispatcher->SetPatchableImmSite(static_cast<uint32_t>(MovImmSites.size()), InstAddress, MovValue, MovSite.ImmSize);
-              }
-            }
-          }
-        }
-
-        bool IsLocked = DecodedInfo->Flags & FEXCore::X86Tables::DecodeFlags::FLAG_LOCK;
-
-        // Do a partial register cache flush before every instruction. This
-        // prevents cross-instruction static register caching, while allowing
-        // context load/stores to be optimized within a block. Theoretically,
-        // this flush is not required for correctness, all mandatory flushes are
-        // included in instruction-specific handlers. Instead, this is a blunt
-        // heuristic to make the register cache less aggressive, as the current
-        // RA generates bad code in common cases with tied registers otherwise.
-        //
-        // However, it makes our exception handling behaviour more predictable.
-        // It is potentially correctness bearing in that sense, but that is a
-        // side effect here and (if that behaviour is required) we should handle
-        // that more explicitly later.
-        Thread->OpDispatcher->FlushRegisterCache(true);
-
-        // Emit a RIP-table marker for EVERY instruction, not just those with
-        // side effects. ROOT CAUSE of the Ziggurat finalize spin
-        // (docs/ZIGGURAT_FINALIZE_SPIN.md): with sparse markers,
-        // RestoreRIPFromHostPC rounds a signal-time host PC DOWN to the last
-        // marked instruction, and sigreturn then RE-EXECUTES everything
-        // between that marker and the true interrupt point. Re-running a
-        // non-idempotent register op — the observed case is `add rbx, 4`
-        // replayed after a GC-storm signal landed in the unmarked `cmp`
-        // that follows it — double-steps the induction variable past an
-        // exact-equality loop exit, which then never fires again.
-        // Side-effect-free ops are precisely the ones the old gate skipped
-        // AND the ones whose re-execution is unsafe from an earlier marker,
-        // so the gate was backwards for signal precision. Per-instruction
-        // markers make resume instruction-granular: only the interrupted
-        // instruction restarts, from its own start, before its architectural
-        // commit is observable. Marker cost is 1-2 vl64pair bytes per
-        // instruction in the block tail and no emitted host code
-        // (DEF_OP(GuestOpcode) only records the cursor).
+        // One RIP-table marker per instruction keeps signal resume instruction-granular.
         Thread->OpDispatcher->_GuestOpcode(InstAddress - GuestRIP);
 
+        if (Block.BlockStatus != FEXCore::A64::Decoder::DecodedBlockStatus::SUCCESS) {
+          // Only reachable for the entry instruction: nothing before it could have made it valid.
+          Thread->OpDispatcher->NoExecInstruction(InstAddress);
+          ++TotalInstructions;
+          break;
+        }
+
         if (FullSMCValidation) {
-          // Evidence gate for the accumulator-vs-decoder-PC audit: use
-          // DecodedInfo->PC (the address the decoder actually decoded from)
-          // as the validated address, not InstAddress (a running total
-          // computed before DecodedInfo is even assigned above). If they
-          // ever diverge, S4's snapshot would compare the right bytes at
-          // the wrong address and validation would pass forever. This trap
-          // is Release-visible (ERROR_AND_DIE_FMT — LOGMAN asserts compile
-          // out); if it never fires across the regression set, the follow-up
-          // commit moves the InstAddress computation on :651 to DecodedInfo
-          // ->PC after :655 so the loop has one notion of the current
-          // instruction address instead of two.
-          if (InstAddress != DecodedInfo->PC) {
-            ERROR_AND_DIE_FMT(
-              "SMC snapshot: InstAddress accumulator ({:#x}) diverged from decoder PC ({:#x}); "
-              "S4 validation would compare decoder bytes at accumulator address (guaranteed miscompile)",
-              InstAddress, DecodedInfo->PC);
-          }
-          auto InstAddressReg = Thread->OpDispatcher->_EntrypointOffset(GPRSize, DecodedInfo->PC - GuestRIP);
-          // Snapshot the bytes the decoder actually consumed (DecodedInfo->
-          // InstBytes), not a re-read of live guest memory. A guest write
-          // landing between decode and this point would otherwise pair IR
-          // built from the OLD bytes with a snapshot of the NEW ones, and
-          // ValidateCode would then return equal-forever while stale semantics
-          // execute. Zero-initialised so any tail past InstSize is defined;
-          // static_assert bounds the copy against CodeOriginal.
+          auto InstAddressReg = Thread->OpDispatcher->_EntrypointOffset(IR::OpSize::i64Bit, InstAddress - GuestRIP);
+          // Snapshot the word the decoder consumed, not a re-read of live guest memory.
           std::array<uint8_t, 0x10> CodeOriginal {};
-          static_assert(sizeof(DecodedInfo->InstBytes) <= sizeof(CodeOriginal));
-          memcpy(CodeOriginal.data(), DecodedInfo->InstBytes.data(), sizeof(DecodedInfo->InstBytes));
-          auto CodeChanged = Thread->OpDispatcher->_ValidateCode(CodeOriginal, InstAddressReg, DecodedInfo->InstSize);
+          memcpy(CodeOriginal.data(), &DecodedInfo.Word, sizeof(DecodedInfo.Word));
+          auto CodeChanged = Thread->OpDispatcher->_ValidateCode(CodeOriginal, InstAddressReg, FEXCore::A64::INSTRUCTION_SIZE);
 
           auto InvalidateCodeCond = Thread->OpDispatcher->CondJump(CodeChanged);
 
@@ -1382,155 +1158,34 @@ ContextImpl::GenerateIR(FEXCore::Core::InternalThreadState* Thread, uint64_t Gue
 
           Thread->OpDispatcher->SetCurrentCodeBlock(CodeWasChangedBlock);
           Thread->OpDispatcher->_ThreadRemoveCodeEntry();
-          Thread->OpDispatcher->ExitFunction(Thread->OpDispatcher->_InlineEntrypointOffset(GPRSize, InstAddress - GuestRIP));
+          Thread->OpDispatcher->ExitFunction(Thread->OpDispatcher->_InlineEntrypointOffset(IR::OpSize::i64Bit, InstAddress - GuestRIP));
 
           auto NextOpBlock = Thread->OpDispatcher->CreateNewCodeBlockAfter(CurrentBlock);
 
           Thread->OpDispatcher->SetFalseJumpTarget(InvalidateCodeCond, NextOpBlock);
           Thread->OpDispatcher->SetCurrentCodeBlock(NextOpBlock);
-          // New IR block, same guest block: drop cached SSA refs (see
-          // OpDispatchBuilder::StartContinuationBlock).
           Thread->OpDispatcher->StartContinuationBlock();
         }
 
-        if (TableInfo && TableInfo->OpcodeDispatcher.OpDispatch) {
-          auto Fn = TableInfo->OpcodeDispatcher.OpDispatch;
-          Thread->OpDispatcher->ResetHandledLock();
-          Thread->OpDispatcher->ResetDecodeFailure();
-          IR::ForceTSOMode ForceTSO = IR::ForceTSOMode::NoOverride;
-          if (BlockInForceTSOValidRange) {
-            if (InstForceTSOIt != ForceTSOInstructions.end() && *InstForceTSOIt == InstAddress) {
-              ForceTSO = IR::ForceTSOMode::ForceEnabled;
-            } else {
-              ForceTSO = IR::ForceTSOMode::ForceDisabled;
-            }
-          } else if (DecodedInfo->Flags & X86Tables::DecodeFlags::FLAG_FORCE_TSO) {
-            ForceTSO = IR::ForceTSOMode::ForceEnabled;
-          } else if (Config.LockOnlyTSO()) {
-            // Opt-in: only x86 instructions carrying FLAG_LOCK (LOCK CMPXCHG,
-            // LOCK XADD, implicit-LOCK XCHG-mem-reg, etc.) get TSO acquire/
-            // release emission.  Plain `MOV reg,[mem]` falls back to the
-            // cheap LoadMem path -- skips the 4-instruction `ldx; cmpd self;
-            // bc never; isync` dance that ARM64 sidesteps via single-insn
-            // LDAR.  Inert when global TSOEnabled is false (TSO already off).
-            //
-            // UNSOUND, and this is measured, not a caveat.  Guest code that
-            // relies on x86's "every load is acquire / every store is release"
-            // contract DOES race under this: the MP litmus shape fired 659, 12
-            // and 51 times per 30000 rounds with the option on and 0 times in
-            // 150000 rounds with it off, same guest binary
-            // (powerpc64le-handbook/probes/atomics_litmus.c).  MP is
-            // architecturally forbidden on x86, so those are guest-visible
-            // violations of the model this emulator claims to provide.
-            // seqcst_discriminator.c does not catch it (0/60000 both ways):
-            // LOCK ops keep their fences, so only plain accesses are affected.
-            // glibc futex / PLT lazy resolution happen to be backed by LOCK
-            // CMPXCHG and so stay correct -- that is why this is usable at all,
-            // and it is the limit of what is safe, not a general reassurance.
-            // A one-shot warning is emitted in InitCore.
-            if (DecodedInfo->Flags & X86Tables::DecodeFlags::FLAG_LOCK) {
-              ForceTSO = IR::ForceTSOMode::ForceEnabled;
-            } else {
-              ForceTSO = IR::ForceTSOMode::ForceDisabled;
-            }
+        if (!Thread->OpDispatcher->TranslateInstruction(DecodedInfo)) {
+          if (TotalInstructions == 0) {
+            Thread->OpDispatcher->DelayedDisownBuffer();
+            return {std::nullopt, 0, 0, 0, 0};
           }
-
-          Thread->OpDispatcher->SetForceTSO(ForceTSO);
-
-          // Vector-scan fusion lookahead window (docs/VCMPEQ_FUSION_DESIGN.md).
-          // A handler may swallow the instructions that follow it in this block
-          // and emit their combined effect itself. Only offer the window when
-          // doing so cannot lose anything the surrounding loop is responsible
-          // for emitting per instruction:
-          //   * CONFIG_SMC_FULL / ForceFullSMCDetection wraps EVERY instruction
-          //     in a ValidateCode guard above; a swallowed instruction would
-          //     silently lose its guard and run stale semantics after an SMC
-          //     write.
-          //   * ExtendedDebugInfo asks for a _GuestOpcode marker per
-          //     instruction, which swallowed instructions would not get.
-          // Both are rare/one-off modes, so refusing to fuse in them costs
-          // nothing and removes two whole classes of interaction.
-          const bool FusionWindowSafe = !ExtendedDebugInfo && !FullSMCValidation;
-          Thread->OpDispatcher->SetDecodeWindow(FusionWindowSafe ? &Block : nullptr, i);
-
-          std::invoke(Fn, Thread->OpDispatcher, DecodedInfo);
-          if (Thread->OpDispatcher->HadDecodeFailure()) {
-            HadDispatchError = true;
-          } else {
-            if (Thread->OpDispatcher->HasHandledLock() != IsLocked) {
-              HadDispatchError = true;
-              LogMan::Msg::EFmt("Missing LOCK HANDLER at 0x{:x}{{'{}'}}", InstAddress, TableInfo->Name ?: "UND");
-            }
-            BlockInstructionsLength += DecodedInfo->InstSize;
-            TotalInstructionsLength += DecodedInfo->InstSize;
-            ++TotalInstructions;
-
-            // The handler may have fused the instructions that follow into its
-            // own emission (see SetDecodeWindow). Account for them and skip
-            // them: they must never be dispatched a second time.
-            if (const uint32_t Fused = Thread->OpDispatcher->ConsumeFusedInstructionCount(); Fused) {
-              LOGMAN_THROW_A_FMT(i + Fused < InstsInBlock, "Fusion swallowed past the end of the block");
-              for (uint32_t f = 1; f <= Fused; ++f) {
-                const auto& Swallowed = Block.DecodedInstructions[i + f];
-                BlockInstructionsLength += Swallowed.InstSize;
-                TotalInstructionsLength += Swallowed.InstSize;
-                ++TotalInstructions;
-              }
-              // DecodedInfo must name the LAST instruction the block consumed,
-              // because the loop tail uses it for FinishOp's next-RIP.
-              DecodedInfo = &Block.DecodedInstructions[i + Fused];
-              i += Fused;
-            }
-
-            // Walk InstForceTSOIt forward past the handled instruction
-            InstForceTSOIt =
-              std::find_if(InstForceTSOIt, ForceTSOInstructions.end(), [&](auto Val) { return Val >= Block.Entry + BlockInstructionsLength; });
-          }
-        } else {
-          // Invalid instruction
-          if (!BlockInstructionsLength) {
-            // SMC can modify block contents and patch invalid instructions to valid ones inline.
-            // End blocks upon encountering them and only emit an invalid opcode exception if there are no prior instructions in the block (that could have modified it to be valid).
-
-            if (TableInfo) {
-              LogMan::Msg::EFmt("Invalid or Unknown instruction: {} 0x{:x}", TableInfo->Name ?: "UND", Block.Entry - GuestRIP);
-            }
-
-            if (Block.BlockStatus == Frontend::Decoder::DecodedBlockStatus::INVALID_INST ||
-                Block.BlockStatus == Frontend::Decoder::DecodedBlockStatus::BAD_RELOCATION) {
-              Thread->OpDispatcher->InvalidOp(DecodedInfo);
-            } else {
-              Thread->OpDispatcher->NoExecOp(DecodedInfo);
-            }
-          }
-
-          HadInvalidInst = true;
-        }
-
-        const bool NeedsBlockEnd = (HadDispatchError && TotalInstructions > 0) ||
-                                   (Thread->OpDispatcher->NeedsBlockEnder() && i + 1 == InstsInBlock) || HadInvalidInst;
-
-        // If we had a dispatch error then leave early
-        if (HadDispatchError && TotalInstructions == 0) {
-          // Couldn't handle any instruction in op dispatcher
-          Thread->OpDispatcher->DelayedDisownBuffer();
-          return {std::nullopt, 0, 0, 0, 0};
-        }
-
-        if (NeedsBlockEnd) {
-          // We had some instructions. Early exit
           Thread->OpDispatcher->ExitFunction(
-            Thread->OpDispatcher->_InlineEntrypointOffset(GPRSize, Block.Entry + BlockInstructionsLength - GuestRIP));
+            Thread->OpDispatcher->_InlineEntrypointOffset(IR::OpSize::i64Bit, Block.Entry + BlockInstructionsLength - GuestRIP));
           break;
         }
 
+        BlockInstructionsLength += FEXCore::A64::INSTRUCTION_SIZE;
+        TotalInstructionsLength += FEXCore::A64::INSTRUCTION_SIZE;
+        ++TotalInstructions;
 
-        if (Thread->OpDispatcher->FinishOp(DecodedInfo->PC + DecodedInfo->InstSize, i + 1 == InstsInBlock)) {
+        if (Thread->OpDispatcher->FinishOp(InstAddress + FEXCore::A64::INSTRUCTION_SIZE, i + 1 == InstsInBlock)) {
           break;
         }
       }
     }
-
 
     Thread->OpDispatcher->Finalize();
 

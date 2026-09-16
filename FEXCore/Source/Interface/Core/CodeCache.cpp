@@ -8,8 +8,9 @@
 #endif
 #include <Interface/Core/JIT/DebugData.h>
 #include <Interface/Core/JIT/Relocations.h>
+#include <Interface/Core/A64Frontend/Decoder.h>
+#include <Interface/Core/A64Frontend/IRBuilder.h>
 #include <Interface/Core/LookupCache.h>
-#include <Interface/Core/OpcodeDispatcher.h>
 #include <Interface/IR/PassManager.h>
 
 #include <FEXCore/Core/Thunks.h>
@@ -522,8 +523,6 @@ uint64_t ComputeCodeCacheConfigId() {
       // of them flipped would have been reused by a session with it unflipped.
       // Latent rather than live, since EnableCodeCachingWIP is off by default,
       // but it is exactly the shape of bug that costs a week when it does bite.
-      // Mind the types: SpinLoopClamp and ForceTSODisplacements are `str`,
-      // SpinLoopClampAuto is `uint32`, the other two are `bool`.
       HASH_OPT(DISABLECMPBRANCHFUSION);
       HASH_OPT(DISABLESCALARSPLATCHAIN);
       // Aligned 128-bit vector lowering: with it on, an $Align-certified
@@ -531,9 +530,6 @@ uint64_t ComputeCodeCacheConfigId() {
       // lxvd2x+xxpermdi / xxpermdi+stxvd2x pair. Different bytes for the same
       // guest instruction, so the two are not interchangeable in a cache.
       HASH_OPT(DISABLEALIGNEDVECTORLDST);
-      HASH_STR_OPT(SPINLOOPCLAMP);
-      HASH_OPT(SPINLOOPCLAMPAUTO);
-      HASH_STR_OPT(FORCETSODISPLACEMENTS);
 
       // Spin collapse changes the emitted Sub and CondJump inside every matched
       // spin region, so the raw option value is part of the block identity.

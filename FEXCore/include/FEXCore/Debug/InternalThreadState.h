@@ -33,12 +33,12 @@ namespace FEXCore::CPU {
 class CPUBackend;
 } // namespace FEXCore::CPU
 
-namespace FEXCore::Frontend {
+namespace FEXCore::A64 {
 class Decoder;
-}
+class IRBuilder;
+} // namespace FEXCore::A64
 
 namespace FEXCore::IR {
-class OpDispatchBuilder;
 class PassManager;
 } // namespace FEXCore::IR
 
@@ -99,12 +99,12 @@ struct InternalThreadState : public FEXCore::Allocator::FEXAllocOperators {
 
   FEXCore::Context::Context* const CTX;
 
-  NonMovableUniquePtr<FEXCore::IR::OpDispatchBuilder> OpDispatcher;
+  NonMovableUniquePtr<FEXCore::A64::IRBuilder> OpDispatcher;
 
   NonMovableUniquePtr<FEXCore::CPU::CPUBackend> CPUBackend;
   NonMovableUniquePtr<FEXCore::LookupCache> LookupCache;
 
-  NonMovableUniquePtr<FEXCore::Frontend::Decoder> FrontendDecoder;
+  NonMovableUniquePtr<FEXCore::A64::Decoder> FrontendDecoder;
   NonMovableUniquePtr<FEXCore::IR::PassManager> PassManager;
   NonMovableUniquePtr<JITSymbolBuffer> SymbolBuffer;
 

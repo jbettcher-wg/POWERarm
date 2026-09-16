@@ -1116,55 +1116,6 @@
         "Desc": [
           "Permits a hook-based SMC approach and smaller JIT blocks when mono is detected."
         ]
-      },
-      "SpinLoopClamp": {
-        "Type": "str",
-        "Default": "",
-        "Desc": [
-          "Workaround for a guest loop entered with a corrupted induction variable",
-          "(e.g. the Ziggurat finalize spin: RBX += 4 exiting only on RBX == R15).",
-          "Format: 0xBEGIN-0xEND:ind:bound with x86 register names,",
-          "e.g. 0x551330-0x5515e5:rbx:r15.",
-          "Every 64-bit register-register CMP between ind and bound whose guest RIP",
-          "falls in [BEGIN, END) is compiled with an overshoot clamp: if ind is",
-          "unsigned-above bound at the compare, it is forced equal to bound so the",
-          "equality exit fires instead of spinning forever. A sane loop never",
-          "trips the clamp; empty string disables it."
-        ]
-      },
-      "ForceTSODisplacements": {
-        "Type": "str",
-        "Default": "",
-        "Desc": [
-          "Extra guest displacements (comma-separated, e.g. 0x70,0x74,0x78)",
-          "added to the built-in Unity-2015+ set (0x80,0x84,0xC0,0xC4) that",
-          "MonoHacks force-orders for plain MOV loads/stores. The built-in",
-          "numbers came from upstream's ARM64 work on Unity's SPSC ringbuffer;",
-          "older engine versions place the same fields at different offsets —",
-          "supply a title's own special numbers here (census table in",
-          "docs/MONO_UNITY_CENSUS.md). Only active when MonoHacks is active."
-        ]
-      },
-      "SpinLoopClampAuto": {
-        "Type": "uint32",
-        "Default": "0",
-        "Desc": [
-          "Systemic version of SpinLoopClamp: a post-decode pass structurally",
-          "detects tight loops whose only exit for a register is exact equality",
-          "against a loop-invariant register while that register steps by a",
-          "positive constant, and compiles their compare with the overshoot",
-          "clamp automatically (no RIPs needed). Auto sites clamp only on",
-          "SIGNED overshoot beyond a 2^30 margin, so negative inductions and",
-          "small legitimate overshoots in multi-exit scan loops are never",
-          "touched; unclassifiable loops are left alone entirely.",
-          "0 (default) = off — opt-in per title; the census showed most",
-          "Mono/Unity wedges are not this class, and surgical per-title",
-          "FEX_SPINLOOPCLAMP ranges are preferred.",
-          "1 = Mono-detected titles only, and only loops in the low (< 4GiB)",
-          "main-executable range — the observed wedge class is game-binary",
-          "text; shared libraries are never instrumented.",
-          "2 = every process, every address (testing/diagnosis)."
-        ]
       }
     },
     "Misc": {

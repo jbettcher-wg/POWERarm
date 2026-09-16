@@ -23,14 +23,8 @@ set(SRCS
   Interface/Core/CPUBackend.cpp
   Interface/Core/Addressing.cpp
   Interface/Core/CPUID.cpp
-  Interface/Core/Frontend.cpp
-  Interface/Core/OpcodeDispatcher/AVX_128.cpp
-  Interface/Core/OpcodeDispatcher/Crypto.cpp
-  Interface/Core/OpcodeDispatcher/Flags.cpp
-  Interface/Core/OpcodeDispatcher/Vector.cpp
-  Interface/Core/OpcodeDispatcher/X87.cpp
-  Interface/Core/OpcodeDispatcher/X87F64.cpp
-  Interface/Core/OpcodeDispatcher.cpp
+  Interface/Core/A64Frontend/Decoder.cpp
+  Interface/Core/A64Frontend/IRBuilder.cpp
   Interface/Core/Interpreter/Fallbacks/InterpreterFallbacks.cpp
   Interface/Core/Interpreter/Fallbacks/StringCompareFallbacks.cpp)
 
@@ -48,16 +42,6 @@ list(APPEND SRCS
   Interface/Core/JIT/PPC64LE/PPC64Dispatcher.cpp)
 
 list(APPEND SRCS
-  Interface/Core/X86Tables/BaseTables.cpp
-  Interface/Core/X86Tables/DDDTables.cpp
-  Interface/Core/X86Tables/H0F38Tables.cpp
-  Interface/Core/X86Tables/H0F3ATables.cpp
-  Interface/Core/X86Tables/PrimaryGroupTables.cpp
-  Interface/Core/X86Tables/SecondaryGroupTables.cpp
-  Interface/Core/X86Tables/SecondaryModRMTables.cpp
-  Interface/Core/X86Tables/SecondaryTables.cpp
-  Interface/Core/X86Tables/VEXTables.cpp
-  Interface/Core/X86Tables/X87Tables.cpp
   Interface/GDBJIT/GDBJIT.cpp
   Interface/IR/IRDumper.cpp
   Interface/IR/IREmitter.cpp

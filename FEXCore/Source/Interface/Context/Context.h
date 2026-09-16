@@ -366,6 +366,7 @@ public:
 
   void RemoveForceTSOInformation(uint64_t Address, uint64_t Size) override;
 
+  // POWERARM-M0-TODO(other): MonoHacks are x86 Unity/Mono JIT workarounds; the A64 frontend has no consumer. Remove together with the Linux-layer Mono detection.
   void MarkMonoDetected() override {
     MonoDetected = true;
   }
@@ -417,46 +418,7 @@ public:
     FEX_CONFIG_OPT(BlockLinking, BLOCKLINKING);
     FEX_CONFIG_OPT(ShadowRetStack, SHADOWRETSTACK);
     FEX_CONFIG_OPT(MonoHacks, MONOHACKS);
-    FEX_CONFIG_OPT(SpinLoopClamp, SPINLOOPCLAMP);
-    FEX_CONFIG_OPT(SpinLoopClampAuto, SPINLOOPCLAMPAUTO);
-    FEX_CONFIG_OPT(ForceTSODisplacements, FORCETSODISPLACEMENTS);
   } Config;
-
-  // Parsed Config.ForceTSODisplacements (see Config.json.in): per-title
-  // additions to the Unity atomic-displacement set the frontend force-orders
-  // under MonoHacks. Small and scanned linearly at decode time only.
-  fextl::vector<uint64_t> ExtraForceTSODisplacements;
-
-  // Automatic spin-loop clamp (Decoder::DetectSpinLoops): 0 = off,
-  // 1 = when Mono detected (default), 2 = everywhere.
-  bool IsSpinLoopClampAutoActive() const {
-    return Config.SpinLoopClampAuto() == 2 || (Config.SpinLoopClampAuto() == 1 && MonoDetected);
-  }
-
-  // Detection-log dedupe for the auto spin-loop clamp: Mono recompiles the
-  // same blocks constantly, and per-compile logging was 86% of a RimWorld
-  // session log. Returns true only the first time a CMP PC is seen.
-  bool MarkSpinClampSiteLogged(uint64_t PC, size_t& TotalSites) {
-    std::lock_guard lk {SpinClampLogMutex};
-    const bool First = SpinClampLoggedPCs.insert(PC).second;
-    TotalSites = SpinClampLoggedPCs.size();
-    return First;
-  }
-
-  // Parsed form of Config.SpinLoopClamp ("0xBEGIN-0xEND:ind:bound"). When
-  // Active, OpDispatchBuilder::CMPOp compiles any 64-bit register-register
-  // compare of InductionReg against BoundReg whose guest RIP lies in
-  // [Begin, End) with an overshoot clamp: an induction value unsigned-above
-  // the bound is forced back to the bound so the loop's equality exit fires.
-  // Workaround for loops entered with an already-corrupted induction variable
-  // (the Ziggurat finalize spin); a sane execution never trips the clamp.
-  struct SpinLoopClampInfo {
-    uint64_t Begin {};
-    uint64_t End {};
-    uint8_t InductionReg {};
-    uint8_t BoundReg {};
-    bool Active {};
-  } SpinLoopClamp {};
 
   FEXCore::Utils::WritePriorityMutex::Mutex CodeInvalidationMutex {};
 
@@ -669,9 +631,6 @@ private:
 
   bool MonoDetected = false;
 
-  // See MarkSpinClampSiteLogged.
-  std::mutex SpinClampLogMutex;
-  fextl::set<uint64_t> SpinClampLoggedPCs;
   std::atomic<uint64_t> MonoBackpatcherBlock;
 
   std::mutex CodeBufferListLock;

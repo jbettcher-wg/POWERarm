@@ -10,7 +10,6 @@ $end_info$
 #include "Interface/IR/IREmitter.h"
 #include "Interface/IR/PassManager.h"
 #include "Interface/IR/Passes/RegisterAllocationPass.h"
-#include "Interface/Core/OpcodeDispatcher.h"
 
 #include <FEXCore/IR/IR.h>
 

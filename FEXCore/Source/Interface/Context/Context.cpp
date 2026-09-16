@@ -1,11 +1,11 @@
 // SPDX-License-Identifier: MIT
 #include "Interface/Context/Context.h"
-#include "Interface/Core/OpcodeDispatcher.h"
+#include "Interface/Core/A64Frontend/Decoder.h"
+#include "Interface/Core/A64Frontend/IRBuilder.h"
 #include "Interface/Core/LookupCache.h"
 #ifndef ARCHITECTURE_ppc64le
 #include "Interface/Core/Dispatcher/Dispatcher.h"
 #endif
-#include "Interface/Core/X86Tables/X86Tables.h"
 
 #include <FEXCore/Core/CoreState.h>
 #include <FEXCore/Core/Context.h>
