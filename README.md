@@ -1,383 +1,61 @@
-# FastPPCx86: run x86 programs on POWER
+# POWERarm: run AArch64 Linux programs on POWER
 
-FastPPCx86 is an x86/x86-64 user-mode emulator for **PPC64LE** hosts (POWER8 and later,
-little-endian). It JITs guest x86 code to PPC64LE machine code and thunks guest libraries (GL,
-Vulkan, EGL, etc.) through to the host's own implementations, so graphics and compute do not go
-through the emulator. The codegen backend, the memory-model work (weak-ordering TSO emulation,
-split-lock handling) and the self-modifying-code subsystem are written for POWER.
+POWERarm is a planned AArch64 Linux user-mode emulator for **PPC64LE** hosts (POWER8 and later).
+It translates guest A64 code to PPC64LE machine code at run time. It registers with
+`binfmt_misc`, so AArch64 ELF binaries run the same way native ones do. When the host already
+has a ppc64le build of a library or toolchain, POWERarm calls that build through a thunk
+instead of emulating it. Everything else comes from an AArch64 rootfs.
 
-- **Minimum ISA: POWER8.** All emitted code must stay POWER8-legal; POWER9-only instructions are
-  gated behind runtime feature detection, not assumed.
-- **POWER9 hosts are supported** and get additional codegen improvements where the ISA allows it,
-  but nothing requires POWER9.
-- **Host page size: 4K and 64K kernels, one binary.** The guest is always told `AT_PAGESZ=4096`;
-  the host page size is a runtime quantity (`FEXCore::HostPage`), read once at start-up. On a 64K
-  ppc64le kernel the port emulates the guest's 4K view on top of 64K host granules:
-  - the ELF loader and the guest `mmap`/`munmap`/`mprotect`/`mremap` family map, copy or protect
-    whole host granules and keep a per-guest-page table of what the guest intended
-    (`docs/PAGE_SIZE_64K_PLAN.md` §2, the *permissive tier*: a protection stricter than the
-    granule union is tracked but not enforced, so a 4K guard page inside a live granule does not
-    fault);
-  - `mincore`/`msync`/`madvise` and `/proc/self/maps` answer at guest granularity from that table;
-  - mtrack SMC write-protects whole granules and invalidates every tracked guest page in a granule
-    it opens (`docs/PAGE_SIZE_64K_PLAN.md` §5). Mixed code/data granules thrash; `FEX_SMCGRANULEFLIPLOG`
-    reports them and `FEX_HOSTPAGEMODE=degrade` switches to hash-checked SMC instead.
-  - Wine's native ppc64le build (`wine-ppc64le`, the `nw` lane) does its own 64K handling and the
-    bridge lane needs none of the above.
+Status: **M0, rename done.** The tree is a history-sharing fork of fastppcx86 (`daedalao-wt`).
+The product surface has been renamed so both emulators install side by side; the x86 guest is
+still present and the A64 frontend doesn't exist yet. Start with
+[`docs/powerarm/DESIGN.md`](docs/powerarm/DESIGN.md).
 
-  The 64K lane is new (2026-09-11): The Witcher 3, Cyberpunk 2077, RimWorld and Portal 2 (32-bit,
-  2026-09-12) run through the native-wine lane, and Linux-native guests load and run. `FEX_HOSTPAGEMODE` (`abort`, the default
-  for the FEX launcher; `degrade`; `force`) gates a non-4K host. Status, measurements and open items:
-  [`docs/PAGE_SIZE_64K_EXECUTION.md`](docs/PAGE_SIZE_64K_EXECUTION.md); design:
-  [`docs/PAGE_SIZE_64K_PLAN.md`](docs/PAGE_SIZE_64K_PLAN.md); site audit:
-  [`docs/PAGE_SIZE_AUDIT.md`](docs/PAGE_SIZE_AUDIT.md). The bundled `jemalloc_glibc` is compiled
-  for a 64K page (`LG_PAGE 16`) so that one build serves both kernels; a 64K-page host
-  needs `x86_64-pc-linux-gnu-gcc` for the thunk generator like any other.
+- **Minimum ISA: POWER8 (2.07).** POWER9 (ISA 3.0) paths sit behind a runtime `AT_HWCAP2`
+  gate, following the same rule fastppcx86 uses.
+- **License: MIT.** See [`LICENSE`](LICENSE) and the reuse analysis in `DESIGN.md` §2.
 
-## Documentation
+## Names
 
-- [`docs/GAMING.md`](docs/GAMING.md): the launch guide. Prerequisites, CPU cages, SMC recipes,
-  per-title knobs, Steam, troubleshooting. Start here to run something.
-- [`docs/AppConfigRecipes.md`](docs/AppConfigRecipes.md): per-title JSON config templates.
-- [Flags reference](#flags-reference) below: every config option and environment variable.
-- [`docs/AUDIO_PLAN.md`](docs/AUDIO_PLAN.md): audio investigation status.
-- [`docs/SourceOutline.md`](docs/SourceOutline.md): generated map of the source tree.
-- [`docs/CPUID.md`](docs/CPUID.md), [`docs/DeferredSignals.md`](docs/DeferredSignals.md),
-  [`docs/ProgrammingConcerns.md`](docs/ProgrammingConcerns.md),
-  [`docs/allocator_usage.md`](docs/allocator_usage.md): internals, largely inherited from upstream.
-- [`packaging/archpower/README.md`](packaging/archpower/README.md): building the Arch POWER package.
-- [`docs/ReleaseProcess.md`](docs/ReleaseProcess.md): how releases are cut.
-- [`docs/DEPENDENCIES.md`](docs/DEPENDENCIES.md): authoritative build-dependency list,
-  validated against a working POWER8 build host.
+POWERarm never uses fastppcx86's names, so neither emulator can pick up the other's settings,
+server or binfmt entry.
+
+| What | fastppcx86 | POWERarm |
+|---|---|---|
+| Loader | `FEX`, `FEXInterpreter` | `POWERarm`, `POWERarmInterpreter` |
+| Tools | `FEXBash`, `FEXServer`, `FEXRootFSFetcher`, `FEXConfig`, `FEXGetConfig`, `FEXOfflineCompiler`, `FEXpidof` | `POWERarmBash`, `POWERarmServer`, `POWERarmRootFSFetcher`, `POWERarmConfig`, `POWERarmGetConfig`, `POWERarmOfflineCompiler`, `POWERarmpidof` |
+| Environment | `FEX_<NAME>` | `POWERARM_<NAME>` |
+| Directories | `~/.fex-emu`, `$XDG_*_HOME/fex-emu`, `$prefix/{share,lib}/fex-emu` | `~/.powerarm`, `$XDG_*_HOME/powerarm`, `$prefix/{share,lib}/powerarm` |
+| Server socket | `<uid>.FEXServer.Socket` | `<uid>.POWERarmServer.Socket` |
+| binfmt_misc | `FEX-x86`, `FEX-x86_64` | `POWERarm-aarch64` |
+
+All of these come from `POWERARM_EXE_PREFIX`, `POWERARM_DIR_NAME` and `POWERARM_ENV_PREFIX` in
+the top-level `CMakeLists.txt`. Source paths (`FEXCore/`, `CodeEmitter/`, `ThunkLibs/`,
+`Source/`), C++ namespaces and CMake target names deliberately keep their FEX names, so backend
+commits `git cherry-pick` cleanly between the two trees. The code still spells its knobs
+`getenv("FEX_...")`. The linker redirects those calls to `Source/POWERarm/EnvPrefix.cpp`, which
+looks up `POWERARM_...` instead.
+
+## Building
+
+```
+git submodule update --init --recursive
+CC=clang CXX=clang++ cmake -S . -B build-powerarm -GNinja \
+  -DCMAKE_BUILD_TYPE=Release -DBUILD_THUNKS=OFF -DBUILD_TESTING=OFF
+ninja -C build-powerarm
+```
+
+Build dependencies are the same as fastppcx86's; see [`docs/DEPENDENCIES.md`](docs/DEPENDENCIES.md).
 
 ## Provenance
 
-FastPPCx86 is derived from the FEX-Emu project (<https://github.com/FEX-Emu/FEX>) and is
-distributed under the same MIT license. See [`LICENSE`](LICENSE), which is unmodified. This
-project was forked and heavily uses LLM generated code.
+POWERarm is derived from fastppcx86 (<https://github.com/daedalao/fastppcx86>), which is in turn
+derived from the FEX-Emu project (<https://github.com/FEX-Emu/FEX>). It is distributed under the
+same MIT license. See [`LICENSE`](LICENSE), which is unmodified. Both projects were forked and
+heavily use LLM-generated code.
 
-This is a permanent fork with no plan to merge back. The PPC64LE backend, the memory-model work
-and the SMC subsystem diverge deliberately from how upstream solves the same problems on ARM64.
-The upstream README is preserved verbatim as [`README.upstream.md`](README.upstream.md) (with its
-translation [`docs/Readme_CN.md`](docs/Readme_CN.md)) and is not maintained here. Everything else
-in `docs/` describes *this* project.
+The upstream FEX-Emu README is preserved verbatim as [`README.upstream.md`](README.upstream.md)
+and is not maintained here. Most of `docs/` outside `docs/powerarm/` is inherited from
+fastppcx86 and describes the x86 guest.
 
-**Binaries and environment variables keep the historical `FEX` prefix.** The programs are still
-called `FEX`, `FEXBash`, `FEXServer`, `FEXRootFSFetcher`, config keys are unchanged, and every
-environment variable is still `FEX_<NAME>`. Only the documentation has been renamed; renaming the
-code would break every existing config file, launcher and script for no benefit.
-
-## Dependencies
-
-Arch POWER package names. Full detail, with the file each one provides and the version
-it was validated at, in [`docs/DEPENDENCIES.md`](docs/DEPENDENCIES.md).
-
-**Required**
-
-```
-clang (>= 13)  lld  llvm  cmake (>= 3.14)  ninja  python (>= 3.9)  git  pkgconf
-glibc  gcc-libs  fmt  xxhash  range-v3
-```
-
-**Submodules** — `git submodule update --init --recursive`
-
-```
-unordered_dense  jemalloc_glibc  rpmalloc  cpp-optparse  drm-headers
-fmt  xxhash  range-v3            (only if the system copy is absent)
-Vulkan-Headers                   (BUILD_THUNKS)
-Catch2  vixl  fex-*-tests-bins   (BUILD_TESTING)
-zydis                            (ENABLE_ZYDIS)
-tracy                            (ENABLE_FEXCORE_PROFILER, tracy backend)
-```
-
-**BUILD_THUNKS**
-
-```
-clang  llvm                      (thunkgen: libclang-cpp)
-libglvnd  libx11  libxcb  libdrm  libxshmfence  wayland  alsa-lib  vulkan-icd-loader
-x86_64-pc-linux-gnu-gcc  x86_64-pc-linux-gnu-glibc      (BUILD_GUEST_THUNKS)
-a multilib x86 sysroot                                  (BUILD_GUEST_THUNKS_32)
-```
-
-**BUILD_FEXCONFIG / BUILD_LAUNCHER / BUILD_LAUNCHER_TUI**
-
-```
-qt6-base  qt6-declarative  ncurses
-```
-
-**BUILD_TESTING**
-
-```
-nasm
-```
-
-**ENABLE_GDB_SYMBOLS** (auto-detected) — `gdb` · **ENABLE_CCACHE** (default on) — `ccache`
-
-**Runtime**
-
-```
-libglvnd  vulkan-icd-loader  libdrm  libxshmfence  wayland  libx11  libxcb
-```
-
-**Optional**
-
-```
-vulkan-driver     an ICD for the Vulkan thunk to pass through to
-pipewire-pulse    PulseAudio server for guest audio (pulseaudio also works)
-alsa-lib          only if the asound thunk is enabled; ships disabled
-squashfuse        mount squashfs x86-64 RootFS images
-erofs-utils       mount EROFS x86-64 RootFS images
-wget              used by FEXRootFSFetcher to download a RootFS
-xz                RootFS extraction
-```
-
-## Build
-
-Standard CMake/Ninja build:
-
-```sh
-mkdir build && cd build
-cmake -GNinja -DCMAKE_BUILD_TYPE=Release ..
-ninja
-```
-
-Notable CMake options (see top-level `CMakeLists.txt` for the full list):
-
-| Option | Default | Notes |
-|---|---|---|
-| `BUILD_THUNKS` | OFF | Build the thunk libraries (GL/Vulkan/EGL/etc.). Gates everything below. |
-| `BUILD_THUNKS_32BIT` | ON | Build the 32-bit **host-side** thunk halves, into `HostThunks_32/`. |
-| `BUILD_GUEST_THUNKS` | ON | Cross-build the 64-bit guest stub libraries. Needs an x86-64 cross toolchain. |
-| `BUILD_GUEST_THUNKS_32` | ON | Cross-build the 32-bit guest stubs. Needs `X86_DEV_ROOTFS_32` pointed at a multilib x86 sysroot; the x86-64 cross sysroot alone has no 32-bit libc. |
-| `X86_DEV_ROOTFS` | `/` | Sysroot for the x86 cross builds and interface parses. `/` means "unset": the build then looks for the `x86_64-pc-linux-gnu` cross toolchain and uses its sysroot. |
-| `ENABLE_CLANG_THUNKS` | OFF | Build the host thunks with clang instead of the configured cross-GCC. |
-| `ENABLE_CLANG_GUEST_THUNKS` | OFF | Build the guest stubs with clang. Off deliberately: clang cannot alias to a static function, so the generated `fexfn_pack_*` symbols become non-static and a clang-built stub exports ~2400 extra symbols into the guest's global namespace. |
-| `ENABLE_ZYDIS` | OFF | Required for `FEX_X86DISASSEMBLE` guest disassembly output. |
-| `ENABLE_JIT_OPSIZE_PROFILE` | OFF | Compiles in the PPC64LE per-IR-op host-code-size profiler; runtime opt-in is separate (`FEX_JITOPSIZEPROFILE`, see below). Fork-specific. |
-| `ENABLE_GDB_SYMBOLS` | auto-detected | GDB JIT-interface integration. |
-| `ENABLE_FEXCORE_PROFILER` | OFF | Timeline profiling support. |
-
-x86_64/x86 guest-side stub libraries (`libGL-guest.so`, `libvulkan-guest.so`, etc., when
-`BUILD_THUNKS`/`BUILD_THUNKS_32BIT` are enabled) are cross-compiled for the guest architecture and
-need an x86 toolchain and sysroot; see `Data/CMake/toolchain_x86_64.cmake` and
-`ThunkLibs/GuestLibs/CMakeLists.txt`.
-
-## Configuration
-
-Every option below is settable as an environment variable `FEX_<NAME>` (the option name upper-cased,
-no separators, so `SMCStoreEmulation` becomes `FEX_SMCSTOREEMULATION=1`), or via JSON config layers
-loaded in this order (later layers override earlier ones): global main config, per-user main
-config, global/local Steam-app config, global/local per-app config, command-line arguments, a
-user-override layer, then environment variables, then a final top layer.
-
-Config file locations follow XDG conventions, with a legacy fallback:
-
-- If `$HOME/.fex-emu/` exists, it is used directly (legacy layout).
-- Otherwise the config directory is `$XDG_CONFIG_HOME/fex-emu/` (default `~/.config/fex-emu/`) and
-  the data directory is `$XDG_DATA_HOME/fex-emu/` (default `~/.local/share/fex-emu/`).
-- The main config file is `Config.json` in the config directory.
-- Per-application overrides live in `AppConfig/<program-name>.json` under the config directory.
-  This is what lets you enable a flag (e.g. `SMCLazyInval`) for one game without affecting every
-  other guest process.
-
-## Running games: Mono/Unity titles require a CPU cage
-
-**Always launch Mono/Unity games under `taskset`** (or another affinity cage) on many-core hosts.
-Unity sizes its worker/job pools from the reported CPU count; on an 80-thread POWER8 an uncaged
-guest builds ~79-worker pools whose quiesce/park handshakes are statistically unreachable at that
-scale. The pool spins instead of parking, saturating the machine while the game crawls (Hard
-West: 79 workers, park gate `[obj+0x74]==0` never satisfied, ~2 fps). Since commit `9a0f8e1be`
-the emulated `/proc/cpuinfo` is bounded by the process affinity mask, so the cage also shrinks
-the guest-visible CPU count and the pools stay sane.
-
-Recommended launch shape (POWER8 in SMT4; 8 cores by 2 threads). Online CPU numbering is sparse
-(`0-3,8-11,...`), so list explicit thread pairs:
-
-```sh
-taskset -c 0-1,8-9,16-17,24-25,32-33,40-41,48-49,56-57 FEX <game>
-```
-
-- `FEX_REPORTED_CPUS=N` forces the guest-visible count regardless of cage. Use it when you want
-  a small pool but a wide cage, or on pre-`9a0f8e1be` builds.
-- One thread per core (`taskset -c 0,8,16,...`) trades parallelism for POWER8 single-thread mode
-  throughput. Worth trying for main-thread-bound titles.
-- Host clock matters: the `ondemand` governor often never ramps under JIT'd load (observed parked
-  at 59% of max mid-game). Set `performance` while gaming:
-  `sudo cpupower frequency-set -g performance` (or via sysfs `scaling_governor`).
-- AVX is hidden from the guest by default, because SSE paths emulate much faster on 128-bit vector
-  hardware (36 to 67% measured on glibc string routines). `FEX_HOSTFEATURES=enableavx` turns it
-  back on for titles that need it, such as Cyberpunk 2077.
-- SMC recipe is per-title: `lazy` batches invalidation (best where Mono churns code) but disables
-  block linking; `strict`/`off` keep linking. Profile before assuming: a flat guest profile means
-  raw throughput, not recipe overhead, is the limit.
-- `SpinLoopClampAuto=1` short-circuits recognized library spin-wait loops. No longer needed for
-  correctness anywhere, but measurable as a perf opt-in.
-
-[`docs/GAMING.md`](docs/GAMING.md) is the full launch guide: prerequisites, launch shapes, SMC
-recipes, Steam, and where the logs actually go.
-
-## Flags reference
-
-Grouped by area. **Fork** marks an option added in this port and not present upstream;
-everything else is inherited from upstream, though some upstream options (SMCChecks, TSOEnabled,
-the vector/memcpy TSO knobs, MonoHacks) carry PPC64LE-specific behavior or caveats noted inline.
-Types: bool options accept 0/1/true/false; `strenum` options take one of the listed string values.
-
-### CPU / codegen
-
-| Flag | Type (default) | Description |
-|---|---|---|
-| `Multiblock` | bool (true) | Compile multiple basic blocks per JIT compilation unit. Improves codegen quality; can increase JIT stutter on first hit. |
-| `MaxInst` | int32 (5000) | Maximum guest instructions per compiled block. |
-| `EnableCodeCachingWIP` | bool (false) | Master switch for the (work-in-progress) on-disk code cache subsystem. With it off, nothing is loaded or written no matter what `CodeCacheScope` says. Cache files are named `<content-hash of the guest file>-<hash of the FEX build + every codegen-affecting option>`, so a rebuilt library, a rebuilt FEX or a flipped codegen flag is a cache *miss*, never a mismatched load. |
-| `CodeCacheScope` | str ("off") | **Fork.** Which guest files may be cached, and whether the running process writes cache files at all. `off` (default) is the legacy behaviour: caches are loaded for any file but only `FEXOfflineCompiler` ever writes them. `rootfs` loads *and writes* caches only for files under the configured `RootFS`; system libraries, which are immutable in practice and shared between titles, so their translations are the ones worth keeping across runs. `all` extends that to game-side native libraries and the main executable. Anything other than `off` makes the process a cache generator: FEX retains FEX relocations and decodes section-bounded for every block (costing memory and forbidding cross-file multiblock), checkpoints caches periodically from the memory-management syscalls, and writes a final checkpoint at exit. Writes go to a temp file plus `rename(2)`, so a process killed mid-save can only lose translations made since the last checkpoint; never an existing cache. Files carrying code relocations FEX cannot normalize, and files this process itself loaded a cache for, are never written. Requires `EnableCodeCachingWIP`. |
-| `EnableCodeCacheValidation` | bool (false) | Expensive validation pass when loading a code cache. Recompiles every cached block and compares: the guest→host block-mapping table against the fresh compile's, then the code bytes. Mismatches are fatal. Only meaningful for caches produced by `FEXOfflineCompiler`; it recompiles in ascending guest order, whereas a runtime-generated cache (`CodeCacheScope != off`) is laid out in execution order, so the two legitimately differ. |
-| `HostFeatures` | strenum (off) | Force-enable or force-disable individual host ISA feature bits used by the JIT, overriding autodetection. Values are `enable<feat>`/`disable<feat>` for ISA30, SVE, AVX, AFP, LRCPC/LRCPC2, CSSC, PMULL128, RNG, CLZERO, atomics, FCMA, FLAGM/FLAGM2, FRINTTS, crypto, RPRES, SVE bit-permute, preserve-all ABI, WFXT, 3DNow, SSE4a and MOPS. Mostly a testing knob, with one production use: **AVX is forced off by default on this port** (256-bit YMM ops decompose into 128-bit pairs plus spill traffic, which loses to the guest's own SSE paths), so `FEX_HOSTFEATURES=enableavx` is how you re-advertise it to a title that requires AVX to launch. |
-| `SmallTSCScale` | bool (true) | Scales the emulated cycle counter down on hosts with a low native timebase frequency. |
-| `HideHybrid` | bool (true) | Hides a hybrid (big.LITTLE-style) core arrangement from the guest's CPU topology view. |
-| `CPUFeatureRegisters` | str ("") | Manual override string for CPU feature registers, for testing. |
-
-### Runtime / emulation environment
-
-| Flag | Type (default) | Description |
-|---|---|---|
-| `RootFS` | str ("") | Guest root filesystem: a path, or a name resolved under the FEX data folder's `RootFS/` directory. |
-| `ThunkHostLibs` | str (install libdir `/fex-emu/HostThunks`) | Directory containing host-side thunk libraries. |
-| `ThunkGuestLibs` | str (install prefix `/share/fex-emu/GuestThunks`) | Directory containing guest-side thunk libraries. |
-| `ThunkConfig` | str ("") | JSON file describing thunk library overlay/mapping; path or named config under the data folder. |
-| `Env` | strarray | Environment variable(s) to inject into the emulated (guest) process. |
-| `HostEnv` | strarray | Environment variable(s) to inject into the host process; useful for variables a thunk's host side needs to see. |
-| `AdditionalArguments` | strarray | Extra arguments appended to the guest application's argv. |
-| `DisableL2Cache` | bool (true) | Disables the JIT's L2 block-lookup cache to save memory; can increase stutter. |
-| `DynamicL1Cache` | bool (true) | Lets the JIT's L1 lookup cache resize dynamically to save memory. |
-| `DynamicL1CacheIncreaseCountHeuristic` | uint64 (250) | Lookups/sec threshold above which the dynamic L1 cache grows. Lower = more aggressive growth. |
-| `DynamicL1CacheDecreaseCountHeuristic` | uint64 (50) | Lookups/sec threshold below which the dynamic L1 cache shrinks. Must stay ≤ the increase threshold. |
-
-### Memory model / TSO / atomics
-
-| Flag | Type (default) | Fork? | Description |
-|---|---|---|---|
-| `TSOEnabled` | bool (true) | | Emits x86 TSO-preserving memory ordering. Disabling it will break almost any multithreaded guest. |
-| `HWTSO` | bool (false) | **Fork** | Hardware TSO via `PROT_SAO` pages instead of per-access barrier emulation. Every guest-visible mapping is created Strongly Access Ordered and the JIT stops emitting TSO IR ops entirely (scalar, vector and memcpy barriers all vanish). **Sound**, unlike `LockOnlyTSO`: the MP litmus that fires ~1.2% per round on ordinary POWER8 pages showed 0 violations in 16.3M rounds on SAO pages (`notes/tools/sao_litmus.c`, 2026-08-13). Experimental because it depends on the host honouring `PROT_SAO`; FEX probes at startup and, if the kernel refuses (radix MMU, missing CPU feature), warns once and falls back to barrier emulation. Litmus-proven on the 4K-page box only: re-run the litmus on any new host class before enabling. Inert when off or when `TSOEnabled` is false. |
-| `LockOnlyTSO` | bool (false) | **Fork** | Opt-in relaxation for weakly-ordered hosts (PPC64LE): with TSO enabled, only emit the acquire/release dance for instructions actually carrying `LOCK` (or explicitly forced via `MonoHacks`/volatile-metadata ranges); plain `mov reg,[mem]` uses a cheap load instead. Meant to remove per-load ordering overhead that dominates tight libc/pthread loops. **Unsound, measured:** the x86-forbidden `MP` litmus outcome fired 659/12/51 per 30,000 rounds with it on versus 0/150,000 with it off, same guest binary; a seq_cst-shaped test does not detect it. Lock-free or `volatile`-based guest code can silently compute wrong results. glibc futex/PLT lazy-resolve are `LOCK CMPXCHG`-backed and stay correct, which is the limit of what is safe. FEX warns once at startup. See `docs/GAMING.md` &sect; "Knobs that are known-unsound". No effect if `TSOEnabled` is false. |
-| `NonTSORBP` | bool (false) | **Fork** | Extends the `RSP` thread-private-stack TSO exemption to `RBP`-addressed accesses. Accesses through `RSP` already skip TSO barriers on the assumption that the stack is thread-private; titles that keep frame pointers reach the same stack slots through `RBP` and otherwise pay full barriers on every local-variable access (which is all `EBP` frame chains in 32-bit code). Same soundness class as the `RSP` exemption it extends: unsound if the guest shares stack memory between threads and relies on x86 ordering for it. Per-app opt-in. |
-| `VectorTSOEnabled` | bool (false) | | Also makes vector load/store TSO-atomic when TSO is enabled. |
-| `MemcpySetTSOEnabled` | bool (false) | | Also makes `REP MOVS`/`REP STOS` (memcpy/memset) TSO-atomic when TSO is enabled. |
-| `HalfBarrierTSOEnabled` | bool (true) | | Backpatches unaligned loads/stores to half-barrier atomics under TSO. Can make aligned load/stores through the same patched code non-atomic; read the upstream caveat before disabling. |
-| `StrictInProcessSplitLocks` | bool (false) | | Global lock around unaligned atomics that cross a 16-byte/cacheline boundary, to stop them from tearing within the process. |
-| `KernelUnalignedAtomicBackpatching` | bool (true) | | When the kernel unaligned-atomic handler is active, backpatch call sites to cut kernel context-switch overhead. |
-| `VolatileMetadata` | bool (true) | | Use PE volatile-metadata (when present) to decide per-instruction TSO needs; falls back to the other TSO flags when metadata is absent. |
-| `ExtendedVolatileMetadata` | str ("") | | (Misc group) Manually specified volatile-metadata ranges (module/offset/instruction syntax), for WoW64/arm64ec-style TSO exemptions. |
-
-### Self-modifying code (SMC): fork-specific subsystem
-
-Upstream has one SMC knob (`SMCChecks`). This fork adds a family of PPC64LE-oriented SMC
-mechanisms layered on top of it, aimed at cutting the cost of mprotect-fault-driven invalidation
-for guests that write frequently near their own code (JIT runtimes, packers/DRM, Mono AOT). Most
-are off by default and must be opted into (globally or per-app).
-
-| Flag | Type (default) | Fork? | Description |
-|---|---|---|---|
-| `SMCChecks` | uint8 (mtrack) | | Base SMC detection mode: `none` (no checks), `mtrack` (page-tracking-based invalidation, default), `full` (validate code before every run; slow, and the correctness fallback on a 64K-page host where mtrack thrashes on mixed code/data granules). |
-| `HostPageMode` | string (abort) | **Fork** | What to do on a host whose page is larger than the guest's 4K: `abort` (default for the `FEX` launcher: refuse with an explanation), `degrade` (continue and force `SMCChecks=full`), `force` (continue, force nothing). FexBridge defaults to `force`: in the native-wine lane Wine owns every guest mapping. Env `FEX_HOSTPAGEMODE`; `FEX_ALLOW_UNSUPPORTED_PAGE_SIZE=1` is an alias for `force`. |
-| `FEX_SMCGRANULEPOLICY` | env (invalidate) | **Fork** | 64K hosts only. What happens to the tracked siblings of a faulting guest page when mtrack opens a granule: `invalidate` (sound: the invalidation is widened to the granule) or `rearm` (unsound measurement mode: invalidate the page, soft-invalidate the granule at the next drain). |
-| `FEX_SMCGRANULEFLIPLOG` | env (64) | **Fork** | 64K hosts only. Faults per granule per second above which one rate-limited line names the granule and its tracked-page count; `0` disables. |
-| `SMCSoftInvalidate` | bool (false) | **Fork** | On an SMC write fault, soft-invalidate the page's blocks (unlink from lookup caches, sever inbound links) but keep the compiled code and a hash of its source bytes instead of discarding it. The next dispatch re-hashes and relinks if unchanged; only genuinely modified blocks recompile. |
-| `SMCFileImmutable` | bool (false) | **Fork** | Treats code from a private file-backed mapping (Wine DLLs, libc, an executable's own `.text`) as immutable and skips mtrack write-protection on it, since such mappings are normally only written at load time. Guest mmap/munmap/mprotect still invalidate unconditionally. **Known breakage:** in-place patching of file-backed `.text` through an already-writable mapping (some DRM/packers, some Mono AOT fixups) goes undetected. Only meaningful with `SMCChecks=mtrack`; opt in per application. |
-| `SMCLazyInval` | bool (false) | **Fork** | On an SMC write fault, unprotect the page and mark it dirty but invalidate nothing immediately; the writer runs at native speed. Soft-invalidation is deferred to the next drain point (a thread entering the block compiler, a guest syscall, guest signal delivery, or a guest `mprotect` granting `PROT_EXEC`). **Sound by default** for same-thread self-modifying code: `SMCLazyScrub` (below, on by default) scrubs the faulting thread's block-lookup fast path so that thread cannot re-enter translated code without draining first. What remains deferred is cross-thread modification, which x86 does not guarantee either; the reading thread must serialize, and every way it can (syscall, signal, dispatching new code) is a drain point. Setting `SMCLazyScrub=0` restores the older, faster, **deliberately unsound** behaviour in which a thread can execute a stale translation of code it just wrote. Requires `SMCSoftInvalidate` and `SMCChecks=mtrack`. |
-| `SMCLazyScrub` | bool (**true**) | **Fork** | Only meaningful with `SMCLazyInval=1`. When an SMC write fault takes the lazy route, zero the faulting thread's L1 block-lookup cache and flag that thread as owing a drain. With no block linking on this backend, an empty L1 forces the thread's very next dispatch through the C++ lookup slow path, which runs the deferred soft-invalidation *before* consulting the shared L2/L3 caches; so the thread that patched the code cannot reach a stale translation. Costs one `madvise` on the writer per fault plus one drain at its next dispatch; writers that never re-dispatch into the page they dirtied (false-sharing storms) keep lazy's full speedup. Set to `0` to A/B against the original unsound-but-faster lazy behaviour. |
-| `SMCLazyLink` | bool (false) | **Fork** | Only meaningful with `SMCLazyInval=1` + `SMCLazyScrub=1`. Keep block linking (direct block-to-block branches) enabled under lazy invalidation instead of interlocking it off. The same-thread guarantee is rebuilt on a trap a linked chain cannot skip: the SMC fault handler additionally arms the writer's `InterruptFaultPage`, and the fault-page poke every block entry executes (linked arrivals included; links target block entries) faults the thread into a drain at its next block transfer. Costs one `mprotect` + one extra fault per lazy SMC fault, writer only. Motivation: with linking interlocked off, `ExitFunctionLink` measured as the single hottest symbol (7.3%) in Unity combat profiling. Refused with `SMCSemanticPatch` (a patched destination-RIP immediate cannot retarget an already-linked branch). |
-| `SMCStoreEmulation` | bool (false) | **Fork** | On a fault from a guest store to an SMC-tracked page, emulate the store via `/proc/self/mem` in the signal handler when the written bytes don't overlap any compiled block, instead of invalidating and re-protecting the page. Removes false-sharing invalidation storms (code and unrelated data sharing a guest page). Stores that do overlap compiled code still fall back to normal invalidation. |
-| `SMCSemanticPatch` | bool (false) | **Fork** | Recognizes a guest store that rewrites only a patchable immediate inside an already-compiled block and patches the translated code directly instead of invalidating; the page stays protected and the block stays live. Two shapes: the rel32 target of a direct call/jmp/jcc (patches the destination RIP baked into the block's translated exit), and the immediate of `mov r32, imm32` / `mov r64, imm64` / `C7 /0 reg, imm32` (patches the fixed-width materialization window the backend emitted for that immediate, located by provenance carried through the IR, not by value). The store may lie inside the immediate field or cover it entirely as long as the bytes it writes outside the field are unchanged. Anything else (partial/oversized writes, writes that also change instruction bytes, ambiguous or non-atomically publishable constants) falls back to the normal path. |
-| `SMCStoreBackpatch` | bool (false) | **Fork** | When an SMC fault lands on a decodable host store instruction, rewrites that store site to branch to a generated stub instead of faulting again on every hit. The stub recomputes the effective address, checks a lock-free filter of mtrack-protected pages, and either performs the store natively or routes through the `/proc/self/mem` helper. Removes the ~17 µs signal round-trip that otherwise dominates repeated-fault SMC storms. Requires `SMCStoreEmulation`. |
-| `SMCCheapTier` | bool (false) | **Fork** | Compiles blocks on pages that keep getting invalidated with a cheap, disposable tier (small instruction cap, no multiblock) instead of full-quality codegen, since repeatedly-overwritten runtime-codegen pages throw most of that compile work away anyway. |
-| `SMCCheapTierThreshold` | uint32 (8) | **Fork** | Number of invalidations of a page before its blocks drop to the cheap tier. Only meaningful with `SMCCheapTier`. |
-| `SMCCheapTierMaxInst` | uint32 (500) | **Fork** | Max guest instructions per block in the cheap tier. Only meaningful with `SMCCheapTier`. |
-| `SMCMprotectDefer` | bool (false) | **Fork** | Treats a guest `mprotect` that removes `PROT_EXEC` (but adds write) from a tracked page as the real invalidation point rather than invalidating immediately: the page is marked deferred-dirty and left unprotected so guest writes run at full speed, with invalidation actually applied when/if the guest mprotects it back to `PROT_EXEC`. Only sound because the guest cannot execute code through the intermediate non-exec mapping; a W+X mprotect keeps legacy (immediate) behavior. |
-| `MonoHacks` | bool (true) | | Upstream option enabling a hook-based SMC approach and smaller JIT blocks specifically for Mono-hosted guests; several of this fork's SMC mechanisms (e.g. `LockOnlyTSO`'s forced-TSO ranges) key off it. |
-
-`MonoHacks`' dynamic-library detection (`libmono*.so`/`libmonobdwgc-2.0.so`/etc.) never fires for a
-statically-linked Mono runtime (MonoKickstart, the scheme Stardew Valley-class titles use to bundle
-mono directly into the game executable). Two raw environment variables, **not** part of the
-`FEX_<Name>` config-layering system above and so with no JSON-config equivalent, extend detection to that
-case by registering the main executable's own mapped range as the backpatcher range instead of a
-library's:
-
-| Variable | Default | Fork? | Description |
-|---|---|---|---|
-| `FEX_MONO_DETECT` | on (`1`) | **Fork** | Set to `0` to disable the statically-linked-Mono fallback: watching guest `open`/`openat`/`openat2` calls for a path ending in `/mscorlib.dll` or `/machine.config` (mono's own canonical data files) and, on the first match, treating the main executable as the mono runtime. Does not affect dynamic `libmono*.so` detection. |
-| `FEX_FORCE_MONO_DETECT` | off | **Fork** | Set to `1` to unconditionally treat the main executable as the mono runtime from the first guest syscall on, bypassing both the dynamic-library and data-file signals; for experiments where neither is reachable. |
-
-### Raw environment kill switches and triage knobs
-
-Also outside the config-layering system, so environment-only. Each either disables an
-optimization that is on by default, or enables logging that is off by default. They exist to
-bisect a regression, not to tune.
-
-| Variable | Default | Fork? | Description |
-|---|---|---|---|
-| `FEX_TSOPAIRELIDE` | on | **Fork** | Set to `0` to disable elision of the leading barrier in an adjacent TSO load/store pair. Reads its value, so only `0` disables. |
-| `FEX_NO_THUNK_PARTIAL_FILL` | off | **Fork** | Set to disable the sentinel-guarded partial GPR refill on Thunk and FABI host-call crossings, restoring the full refill. |
-| `FEX_X11_SYNC_EVERY_CALL` | off | **Fork** | Set to `1` to restore a guest `XSync` on every Display-taking call. First-only sync became the default on 2026-08-13, which is what makes the display lookup lock-free on the hot path. For bisecting `BadDrawable`/`BadMatch` at GL bootstrap or mode change. |
-| `FEX_VK_PROCADDR_TRACE` | off | **Fork** | Set to log every successfully linked Vulkan proc-address. |
-
-`FEX_NO_THUNK_PARTIAL_FILL` and `FEX_VK_PROCADDR_TRACE` are tested for presence, not value, so
-`=0` enables them exactly as `=1` does. Unset them to turn them off.
-
-### Concurrency diagnostics: fork-specific
-
-| Flag | Type (default) | Fork? | Description |
-|---|---|---|---|
-| `SyscallObserve` | bool (false) | **Fork** | Wraps pathology-prone passthrough syscalls (`futex`, `tgkill`) with per-thread state tracking and structured logging. Zero cost when disabled. Currently detects futex EAGAIN-storms (same addr/op/val repeated in a short window) and logs cross-thread `tgkill` signal delivery (useful for Mono GC stop-the-world diagnosis). |
-| `FutexMitigate` | bool (false) | **Fork** | Companion to `SyscallObserve`: when a futex EAGAIN-storm is detected for the current thread, emits `sched_yield()` before returning to the guest, to let a competing waker thread make progress and break userspace-mutex livelock that can occur when a guest assumes x86-TSO visibility on PPC64LE's weaker ordering. Inert unless `SyscallObserve` is also set. |
-
-### Debug / JIT introspection
-
-| Flag | Type (default) | Fork? | Description |
-|---|---|---|---|
-| `SingleStep` | bool (false) | | Single-steps guest execution. |
-| `GdbServer` | bool (false) | | Enables the GDB remote-serial-protocol server. |
-| `DumpIR` | str (no) | | Dump FEX's IR: `no`, `stdout`, `stderr`, `server`, or a folder path. |
-| `PassManagerDumpIR` | strenum (off) | | When to dump IR relative to optimization passes: `beforeopt`, `afteropt`, `beforepass`, `afterpass`. |
-| `DumpGPRs` | bool (false) | | Print GPR state when the test harness ends. |
-| `O0` | bool (false) | | Disables IR optimization passes, for debugging. |
-| `GlobalJITNaming` | bool (false) | | Names all JIT code as a single symbol (`FEXJIT`), useful for measuring aggregate time-in-JIT with a profiler. |
-| `LibraryJITNaming` | bool (false) | | Names JIT symbols grouped by guest library, useful for per-library time breakdown and guiding thunk work. |
-| `BlockJITNaming` | bool (false) | | Names JIT symbols per compiled block (hot-block identification); has file-writing overhead per block. |
-| `GDBSymbols` | bool (false) | | Integrates with GDB's JIT interface (needs FEX's GDB JIT reader loaded and `x86_64-linux-gnu-objdump` in `PATH`). Can be slow. |
-| `JITOpSizeProfile` | bool (false) | **Fork** | PPC64LE-only: measures how many host bytes each IR op expands to, accumulating count/total/max per `IROps` value and periodically rewriting `/tmp/fex-jit-opsize-<pid>.txt`. Used to validate the JIT's per-op code-buffer size budget. Requires building with `ENABLE_JIT_OPSIZE_PROFILE=ON`. |
-| `InjectLibSegFault` | bool (false) | | Sets `LD_PRELOAD=libSegFault.so` in the guest environment automatically. Requires x86/x86_64 `libSegFault.so` to be installed in the guest rootfs. |
-| `Disassemble` | strenum (off) | | vixl disassembler output for generated host code: `dispatcher`, `blocks`, or `stats`. |
-| `X86Disassemble` | bool (false) | | Guest x86/x86-64 disassembly for compiled blocks. Requires building with `ENABLE_ZYDIS=ON`. |
-| `ForceSVEWidth` | uint32 (0) | | Overrides the SVE vector width in the vixl simulator, for debugging. |
-| `DisableTelemetry` | bool (false) | | Disables telemetry at runtime (mainly for `instcountCI`). |
-| `StallProcess` | bool (false) | | Stalls the process on startup; useful for attaching a debugger to something that would otherwise crash too fast. |
-| `StartupSleep` | uint32 (0) | | Sleeps the process N seconds at startup. |
-| `StartupSleepProcName` | str ("") | | Restricts `StartupSleep` to processes whose name matches. |
-| `HideHypervisorBit` | bool (false) | | Hides the hypervisor CPUID bit for guests that misbehave when they see it. |
-| `X87ReducedPrecision` | bool (false) | | Emulates x87 using 64-bit precision instead of full 80-bit; faster, less accurate, can cause rendering bugs. |
-| `NeedsSeccomp` | str→bool (false) | | Disables inline (fast-path) syscalls so seccomp filtering sees every syscall. |
-
-### Logging
-
-| Flag | Type (default) | Description |
-|---|---|---|
-| `SilentLog` | bool (true) | Disables FEX's own logging output. |
-| `OutputLog` | str (server) | Where FEX writes its output: `stderr`, `server`, or a filename. |
-| `TelemetryDirectory` | str ("") | Overrides where telemetry data is written (default under the data directory's `Telemetry/`). |
-| `ProfileStats` | bool (false) | Enables low-overhead sampling profile statistics; requires a Mangohud build that understands them to view. |
-| `EnableGpuvisProfiling` | bool (false) | Enables gpuvis-backend profiling, if FEX was built with it. |
-| `ThreadCensus` | str ("") | **Fork.** Diagnostic. Appends a plain-text thread census to the given path, one line per event: `<monotonic-ms> tid=<n> event=<type> <key=val>...`. Events: `thread_create` (guest/host TID, parent TID, raw guest RIP of the clone caller, clone flags), `set_name` (`prctl(PR_SET_NAME)`), `sched_setscheduler`/`sched_setattr`/`sched_setparam` (policy, priority, and what FEX did with the request; always `passthrough-ok`/`passthrough-fail`; FEX fakes none of them), `sched_setaffinity` (mask popcount plus lowest/highest set CPU), and `sched_boost` (the `SchedPassthrough` ladder). Observation only; never changes a guest-visible return value. |
-| `SchedPassthrough` | bool (false) | **Fork.** FEX forwards guest scheduler calls to the host verbatim, so an unprivileged host refuses guest `SCHED_FIFO`/`SCHED_RR` requests with `EPERM` and audio/render threads end up at plain `SCHED_OTHER`. With this set, an `EPERM`'d RT request is retried on the host with progressively weaker boosts: `SCHED_RR` at the lowest permitted priority, then a niceness boost to −10 (clamped by `RLIMIT_NICE`), then give up. Changes real host scheduling only; the guest still receives exactly the value it would have without the flag. Log the ladder with `ThreadCensus`. |
-
-### Misc
-
-| Flag | Type (default) | Description |
-|---|---|---|
-| `ServerSocketPath` | str ("") | Overrides the FEXServer socket path; mainly for chroot setups. |
-
-## License
-
-MIT. See [`LICENSE`](LICENSE), which is preserved unmodified, original copyright notice
-included. The PPC64LE backend and the SMC/memory-model work in this repository are additional
-contributions under the same terms. See [Provenance](#provenance).
+Arm is a trademark of Arm Limited and POWER is a trademark of IBM. POWERarm is an independent project, not affiliated with or endorsed by either.
