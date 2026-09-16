@@ -124,7 +124,7 @@ void DeparentSelf() {
  * @brief Detaches the daemon from any pipe or socket it inherited on stdin/stdout/stderr.
  *
  * FEX spawns FEXServer with a plain fork+exec, so the daemon inherits whatever
- * fds 0-2 the first guest process had. When that is a pipe (`claude -p ... |
+ * fds 0-2 the first guest process had. When that is a pipe (`some-driver ... |
  * tail`, any SDK/script driver, a tee'd play log) the daemon keeps the write
  * end open for as long as ANY FEX client is connected, hours for a game, and
  * the reader hangs long after the guest itself has exited.
