@@ -49,7 +49,7 @@ rootfs_args() {
     n=$(sed -n 's/^name //p' "$idf")
     [ "$(sed -n 's/^location //p' "$idf")" = bundle ] && printf ' --rootfs %s=%s' "$n" "$root/rootfs/$n"
   done
-  printf ' --rootfs-exec %s' "$here/a64diff-rootfs-exec.sh"
+  printf ' --rootfs-exec %s --workroot %s' "$here/rootfs/run-in-sysroot.sh" "/tmp/a64diff-work/$(basename "$root")/rootfs"
 }
 
 rootfsjobs() { # NAME WANT_EXIT CTL [run args]

@@ -22,7 +22,7 @@ tool/broken-runner.sh      deliberately wrong "emulator" for negative controls
 programs/                  hello.c, build-programs.sh, programs.jobs, rootfs.jobs, applets.sh, corpus/
 rootfs/a64diff-rootfs.py   rootfs content hash (same definition as the sysroot builder)
 rootfs/mkrootfs-minimal.sh the "minimal-debian" prototype rootfs
-../../Scripts/powerarm/a64diff-rootfs-exec.sh  native rootfs runner (bwrap, unprivileged)
+../../Scripts/powerarm/rootfs/run-in-sysroot.sh  native rootfs runner (from the sysroot work)
 vm/a64diff-init.c          /init for the 4K KVM guest
 ../../Scripts/powerarm/a64diff-golden.sh    golden side (Pi)
 ../../Scripts/powerarm/a64diff-selftest.sh  negative controls (Pi)
@@ -194,8 +194,10 @@ job     ID  CLASS  REQUIRED
 end
 ```
 
-A step's stdin, and any relative path, resolves in the working directory. For example, a build
-job for M2:
+A step's stdin, and any relative path, resolves in the working directory. An `input` directory
+is copied as its contents, and an `input` file keeps its name. With `--workroot DIR`, a block
+job works in `DIR/<id>`, which is emptied first; otherwise it uses `<out>/<id>.cwd`. For
+example, a build job for M2:
 
 ```
 job     zlib.build  zlib  1
@@ -219,15 +221,26 @@ A block job is compared on these parts:
 
 Each output is recorded as `sha256 size path` in `<id>.outputs`, with a copy kept in
 `<id>.files/`, so a mismatch report gives the first differing byte. A missing output is recorded
-as `missing`, and a symlink as `link TARGET`. Jobs must not print or embed the absolute path of
-their working directory, because it differs between the Pi and the POWER9. For builds, keep
-`-g` paths out with `-ffile-prefix-map`, or leave out debug info.
+as `missing`, and a symlink as `link TARGET`.
+
+The scripts run every job suite with `--workroot /tmp/a64diff-work/<bundle>/<suite>`: on the Pi,
+on the 64K host and in the 4K guest. A job's working directory therefore has the same absolute
+path everywhere, as the sysroot runner and byte-identical builds require. Still use
+`-ffile-prefix-map=$PWD=.` with `-g`. Two runs of the same bundle on one machine at the same
+time would share that directory; don't do that.
 
 ## Rootfs jobs
 
 A block with `rootfs NAME` runs dynamically linked programs inside an AArch64 root filesystem.
 Guest absolute paths (`/usr/bin/gcc`, `/lib/ld-linux-aarch64.so.1`) resolve inside the rootfs,
 and relative paths resolve in the working directory.
+
+**Rootfs names.** The golden script builds `minimal-debian` into the bundle. Every other name a
+jobs file uses is external. The golden script finds it in `~/.local/share/powerarm/RootFS/NAME`
+or through `--rootfs NAME=DIR`, and records only its hash. `ArchLinuxARM-m2` (the pinned Arch
+Linux ARM sysroot from `Scripts/powerarm/rootfs`) is found this way, with content hash
+`sha256:0f4a923096d21697dab39bc13172118a5db96b6ce3c2a6e998a270001bf577d5`. It must be present
+at the same path on the POWER9.
 
 **Identity.** A bundle records each rootfs in `rootfs/<name>.id` (name, entry count,
 `content-hash sha256:…` and location) and in `rootfs/<name>.contents`. The content hash is the
@@ -242,8 +255,19 @@ NAME=DIR`, e.g. the Arch Linux ARM sysroot) is found on the POWER9 under
 
 | Side | How |
 |---|---|
-| Pi (golden) | `a64diff run --rootfs NAME=DIR --rootfs-exec a64diff-rootfs-exec.sh`. Each step runs as `a64diff-rootfs-exec.sh DIR WORKDIR -- argv...`: bwrap in a user namespace, no root, an empty tmpfs `/` with the rootfs's top-level entries bound read-only, fresh `/dev`, `/proc` and `/tmp`, and the working directory bound read-write. Any runner with that calling convention (for example the sysroot work's Pi runner) can replace the adapter |
+| Pi (golden) | `a64diff run --rootfs NAME=DIR --rootfs-exec Scripts/powerarm/rootfs/run-in-sysroot.sh`. Each step runs as `run-in-sysroot.sh --env K=V... DIR WORKDIR -- argv...`: bwrap (or unshare) in a user namespace, no root, the rootfs read-only as `/`, and the working directory bound read-write at its real path |
 | POWER9 `64k` | `a64diff run --rootfs NAME=DIR -- POWERarm`. Each step runs as `POWERarm argv...` with `POWERARM_ROOTFS=DIR` |
+
+A rootfs step's environment is the sysroot runner's fixed set on every side, plus the job's
+`env` lines:
+
+```
+PATH=/usr/local/sbin:/usr/local/bin:/usr/bin  LC_ALL=C  LANG=C  TZ=UTC  SOURCE_DATE_EPOCH=0
+HOME=/tmp  TMPDIR=/tmp  SHELL=/bin/sh  TERM=dumb  PWD=<workdir>
+```
+
+a64diff hands the job's variables to the runner with `--env`, because the runner clears the
+environment. Under POWERarm, the emulator's own `POWERARM_*`/`FEX_*` knobs are added.
 | POWER9 `4k-kvm` | The rootfs is attached as a read-only virtio-blk disk image and mounted in the guest (below); the guest runs the steps as in `64k` |
 
 **4K guest transport.** The rootfs is too big for the initramfs, and the 4K kernel
@@ -258,7 +282,7 @@ squashfs (a module, with zlib/lzo/xz and single-threaded decompression). Both im
 without root (`mke2fs -d`, `mksquashfs -all-root`) from the verified tree and cached in
 `~/.cache/a64diff/rootfs-img/` by content hash.
 
-Measured on a 765 MB, 66k-file tree (larger than the 595 MB, 27k-entry Arch Linux ARM M2
+Measured on a 765 MB, 66k-file tree (larger than the 670 MB, 27k-entry Arch Linux ARM M2
 sysroot), with an 8-vCPU, 4 GB guest and a cold cache:
 
 | Transport | Image | Build (once per hash) | Mounted after boot | Read every file |
@@ -285,6 +309,13 @@ libc6 and gcc versions. `programs/rootfs.jobs` runs the following against it:
 - a six-step busybox sequence with inputs, `env`, a `try` step and declared output files, one of
   them in a subdirectory
 - a job whose declared output is never written
+
+`programs/alarm.jobs` runs the following in the Arch Linux ARM sysroot:
+
+- `/usr/bin/true`
+- `gcc --version`
+- a build sequence: `gcc -O2 -c hello.c`, `gcc -o hello hello.o`, then running `./hello`,
+  with `hello.o`, `hello` and the run output byte-compared
 
 ## Classes
 

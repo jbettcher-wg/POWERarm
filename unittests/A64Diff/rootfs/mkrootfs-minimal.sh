@@ -7,7 +7,7 @@
 # The smallest tree that runs a dynamically linked glibc program: the golden
 # machine's own ld-linux-aarch64.so.1 and libc.so.6 in Debian's multiarch
 # layout, plus hello linked against them (PIE and non-PIE) and a static
-# busybox for multi-step jobs.  It stands in for the pinned Arch Linux ARM
+# busybox (also /usr/bin/sh) for multi-step jobs.  It stands in for the pinned Arch Linux ARM
 # sysroot until that exists; a64diff only sees a directory and its content
 # hash, so the real sysroot drops in under another name.  OUT_DIR.sources
 # records where every file came from.
@@ -39,7 +39,10 @@ for b in hello-dyn hello-dyn-nopie; do
 done
 # Only libc may be needed: the rootfs holds nothing else.
 readelf -dW "$out/usr/bin/hello-dyn" | grep NEEDED | grep -v 'libc.so.6' && { echo "mkrootfs-minimal: unexpected NEEDED" >&2; exit 1; }
-if [ -n "${A64DIFF_BUSYBOX:-}" ]; then install -m 755 "$A64DIFF_BUSYBOX" "$out/usr/bin/busybox"; fi
+# busybox also provides /usr/bin/sh, which run-in-sysroot.sh expects of a rootfs.
+[ -n "${A64DIFF_BUSYBOX:-}" ] || { echo "mkrootfs-minimal: set A64DIFF_BUSYBOX to a static busybox" >&2; exit 1; }
+install -m 755 "$A64DIFF_BUSYBOX" "$out/usr/bin/busybox"
+ln -s busybox "$out/usr/bin/sh"
 # The tree must not depend on the host: run hello through the rootfs's own loader.
 "$out/$multi/ld-linux-aarch64.so.1" --library-path "$out/$multi" "$out/usr/bin/hello-dyn" >/dev/null 2>&1 || [ $? = 7 ] ||
   { echo "mkrootfs-minimal: hello-dyn does not run with the rootfs loader" >&2; exit 1; }
@@ -49,5 +52,5 @@ if [ -n "${A64DIFF_BUSYBOX:-}" ]; then install -m 755 "$A64DIFF_BUSYBOX" "$out/u
   echo "libc:    $libc"
   echo "libc6:   $(dpkg-query -W -f='${Version}' libc6 2>/dev/null)"
   echo "gcc:     $(gcc --version | head -n 1)"
-  echo "busybox: ${A64DIFF_BUSYBOX:-none}"
+  echo "busybox: $(sha256sum < "$A64DIFF_BUSYBOX" | cut -d" " -f1)"
 } > "$out.sources"

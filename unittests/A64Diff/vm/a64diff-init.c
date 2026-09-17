@@ -252,6 +252,18 @@ int main(void) {
       cat("insn.report", "/tmp/r/insn.report");
       sprintf(exitline + strlen(exitline), " insn=%d", rc);
     }
+    /* Block jobs work in /tmp/a64diff-work/<bundle>/<suite>/<id>, the path the
+     * golden side used, so absolute working-directory paths agree. */
+    char bundle[512] = "bundle";
+    FILE* vf = fopen(B "/VERSION", "r");
+    char vl[512];
+    while (vf && fgets(vl, sizeof vl, vf))
+      if (!strncmp(vl, "name ", 5)) {
+        snprintf(bundle, sizeof bundle, "%s", vl + 5);
+        bundle[strcspn(bundle, "\n")] = 0;
+      }
+    if (vf) fclose(vf);
+    mkdir("/tmp/a64diff-work", 01777);
     char* names[64];
     int nn = 0;
     DIR* d = opendir(B "/programs");
@@ -265,15 +277,16 @@ int main(void) {
     for (int i = 0; i < nn; i++) {
       const char* suite = names[i];
       if (!wanted(suites, suite)) continue;
-      char jobsf[256], golden[256], out[256], log[256], report[256], m1[128], m2[128];
+      char jobsf[256], golden[256], out[256], log[256], report[256], m1[128], m2[128], workroot[600];
+      snprintf(workroot, sizeof workroot, "/tmp/a64diff-work/%s/%s", bundle, suite);
       snprintf(jobsf, sizeof jobsf, B "/programs/%s.jobs", suite);
       snprintf(golden, sizeof golden, B "/golden-%s", suite);
       snprintf(out, sizeof out, "/tmp/r/%s", suite);
       snprintf(log, sizeof log, "/tmp/r/%s.log", suite);
       snprintf(report, sizeof report, "/tmp/r/%s.report", suite);
       char* r2[64] = {TOOL, "run", "--jobs", jobsf, "--root", B, "--out", out, "-j", (char*)jobs, "--timeout", (char*)timeout,
-                      "--deadline", left(dl)};
-      int k = 14;
+                      "--deadline", left(dl), "--workroot", workroot};
+      int k = 16;
       for (int j = 0; j < nrootfs; j++) r2[k++] = rootfs_args[j];
       r2[k++] = "--";
       r2[k++] = EMU;

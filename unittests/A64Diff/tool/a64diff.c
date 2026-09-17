@@ -329,7 +329,8 @@ struct opts {
   char* rootfs_names[16];
   char* rootfs_paths[16];
   int nrootfs;
-  const char* rootfs_exec; /* native: wrapper ROOTFS CWD -- argv... */
+  const char* rootfs_exec; /* native: wrapper [--env K=V]... ROOTFS CWD -- argv... */
+  const char* workroot;    /* block jobs work in WORKROOT/<id> (same path on every machine) */
   int break_outputs;       /* test-only: damage declared outputs before hashing */
 };
 
@@ -633,6 +634,42 @@ static void collect_outputs(const struct opts* o, const struct row* r, const cha
   free(keep);
 }
 
+static void rm_tree(const char* path) {
+  struct stat st;
+  if (lstat(path, &st)) return;
+  if (S_ISDIR(st.st_mode)) {
+    DIR* d = opendir(path);
+    struct dirent* e;
+    while (d && (e = readdir(d))) {
+      if (!strcmp(e->d_name, ".") || !strcmp(e->d_name, "..")) continue;
+      char* c = path2(path, e->d_name, "");
+      rm_tree(c);
+      free(c);
+    }
+    if (d) closedir(d);
+    rmdir(path);
+  } else {
+    unlink(path);
+  }
+}
+
+/* The environment of a rootfs job's steps.  It matches the fixed environment
+ * of Scripts/powerarm/rootfs/run-in-sysroot.sh, the native runner, so the Pi
+ * and POWERarm see the same variables; the emulator's own knobs pass through. */
+static char** rootfs_env(const char* cwd) {
+  static char* fixed[] = {"PATH=/usr/local/sbin:/usr/local/bin:/usr/bin", "LC_ALL=C", "LANG=C", "TZ=UTC", "SOURCE_DATE_EPOCH=0",
+                          "HOME=/tmp", "TMPDIR=/tmp", "SHELL=/bin/sh", "TERM=dumb"};
+  char** env = NULL;
+  int n = 0;
+  for (size_t i = 0; i < sizeof fixed / sizeof fixed[0]; i++) push_str(&env, &n, fixed[i]);
+  char* pwd = xmalloc(strlen(cwd) + 5);
+  sprintf(pwd, "PWD=%s", cwd);
+  push_str(&env, &n, pwd);
+  for (char** e = environ; *e; e++)
+    if (!strncmp(*e, "POWERARM_", 9) || !strncmp(*e, "FEX_", 4)) push_str(&env, &n, *e);
+  return env;
+}
+
 /* A block job runs in a supervisor process (its own process group, so a
  * timeout kills every step).  It prepares the working directory, runs the
  * steps, records "<k> exit N" / "<k> signal N" lines in <id>.steps, collects
@@ -648,8 +685,9 @@ static pid_t spawn_block(const struct opts* o, const struct row* r) {
   sigemptyset(&all);
   sigprocmask(SIG_SETMASK, &all, NULL);
   umask(022);
-  char* cwd = path2(o->out, r->id, ".cwd");
+  char* cwd = o->workroot ? path2(o->workroot, r->id, "") : path2(o->out, r->id, ".cwd");
   char* stepsp = path2(o->out, r->id, ".steps");
+  rm_tree(cwd);
   FILE* steps = fopen(stepsp, "w");
   if (!steps) _exit(125);
   setvbuf(steps, NULL, _IOLBF, 0);
@@ -669,8 +707,15 @@ static pid_t spawn_block(const struct opts* o, const struct row* r) {
       _exit(125);
     }
   }
-  for (int i = 0; i < r->ninputs; i++)
-    if (copy_tree(r->inputs[i], cwd)) {
+  for (int i = 0; i < r->ninputs; i++) {
+    /* A directory's contents go into the working directory; a file keeps its name. */
+    struct stat ist;
+    char* dst = cwd;
+    if (!stat(r->inputs[i], &ist) && !S_ISDIR(ist.st_mode)) {
+      const char* base = strrchr(r->inputs[i], '/');
+      dst = path2(cwd, base ? base + 1 : r->inputs[i], "");
+    }
+    if (copy_tree(r->inputs[i], dst)) {
       FILE* e = fopen(err1, "w");
       if (e) {
         fprintf(e, "a64diff: cannot copy input %s\n", r->inputs[i]);
@@ -679,8 +724,9 @@ static pid_t spawn_block(const struct opts* o, const struct row* r) {
       fprintf(steps, "setup error\n");
       _exit(125);
     }
+  }
   /* environment: fixed base + job env (+ POWERARM_ROOTFS under an emulator) */
-  char** base = child_env();
+  char** base = r->rootfs ? rootfs_env(cwd) : child_env();
   char** env = NULL;
   int nenv = 0;
   for (char** e = base; *e; e++) {
@@ -711,6 +757,12 @@ static pid_t spawn_block(const struct opts* o, const struct row* r) {
     int na = 0;
     if (rootfs && o->rootfs_exec) {
       push_str(&argv, &na, (char*)o->rootfs_exec);
+      /* The runner clears the environment: hand it the job's variables. */
+      for (int i = 0; i < nenv; i++)
+        if (strncmp(env[i], "POWERARM_", 9) && strncmp(env[i], "FEX_", 4)) {
+          push_str(&argv, &na, "--env");
+          push_str(&argv, &na, env[i]);
+        }
       push_str(&argv, &na, (char*)rootfs);
       push_str(&argv, &na, cwd);
       push_str(&argv, &na, "--");
@@ -781,6 +833,12 @@ static int cmd_run(struct opts* o) {
   char* absout = realpath(o->out, NULL);
   if (!absout) die("cannot resolve %s", o->out);
   o->out = absout;
+  if (o->workroot) {
+    mkdir_p(o->workroot);
+    char* w = realpath(o->workroot, NULL);
+    if (!w) die("cannot resolve %s", o->workroot);
+    o->workroot = w;
+  }
   int j = o->jobsn > 0 ? o->jobsn : 4;
   struct slot* slots = xmalloc(sizeof(struct slot) * j);
   int next = 0, running = 0, done = 0, total = 0, notrun = 0;
@@ -1759,7 +1817,7 @@ static void usage(void) {
         "  a64diff compare  --manifest M --golden DIR --actual DIR [--report FILE] [--max-detail N]\n"
         "                   [--only C,..] [--skip C,..] [--require C,..] [--optional C,..] [--seed N]\n"
         "  a64diff pcompare --jobs FILE --golden DIR --actual DIR [same options]\n"
-        "  program runs: [--rootfs NAME=PATH ...] [--rootfs-exec WRAPPER] [--break-outputs (test only)]\n"
+        "  program runs: [--rootfs NAME=PATH ...] [--rootfs-exec WRAPPER] [--workroot DIR] [--break-outputs (test only)]\n"
         "                a rootfs job runs as WRAPPER PATH CWD -- argv (native), or as PREFIX argv with\n"
         "                POWERARM_ROOTFS=PATH (emulator prefix)\n"
         "exit: 0 pass, 1 required tests failed, 2 harness error or a control did not fire, 3 deadline hit\n",
@@ -1808,6 +1866,7 @@ int main(int argc, char** argv) {
       o.rootfs_paths[o.nrootfs++] = abs ? abs : eq + 1;
     }
     else if (ARG("--rootfs-exec")) o.rootfs_exec = argv[++i];
+    else if (ARG("--workroot")) o.workroot = argv[++i];
     else if (!strcmp(a, "--break-outputs")) {
       o.break_outputs = 1;
       fprintf(stderr, "a64diff: TEST MODE: declared output files are damaged before hashing\n");

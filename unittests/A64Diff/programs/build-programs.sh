@@ -68,7 +68,7 @@ nm "$out/bin/hello-glibc" | grep -q ' __init_libc$' && { echo "build-programs: h
 
 rm -rf "$out/corpus"
 cp -R "$here/corpus" "$out/corpus"
-cp "$here/applets.sh" "$here/"*.jobs "$out/"
+cp "$here/applets.sh" "$here/hello.c" "$here/"*.jobs "$out/"
 
 {
   echo "busybox: Debian busybox-static 1:1.37.0-6+b9 arm64"

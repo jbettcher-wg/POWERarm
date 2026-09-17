@@ -187,7 +187,9 @@ if [ "$mode" = 64k ]; then
     else
       step "job suite $su"
       nice -n 10 "$tool" run --jobs "$root/programs/$su.jobs" --root "$root" --out "$res/$su" -j "$jobs" \
-        --timeout "$timeout" --deadline "$(left)" "${rargs[@]+"${rargs[@]}"}" -- "$emu"
+        --timeout "$timeout" --deadline "$(left)" "${rargs[@]+"${rargs[@]}"}" \
+        --workroot "/tmp/a64diff-work/$name/$su" -- "$emu"
+      rm -rf "/tmp/a64diff-work/$name/$su"
       "$tool" pcompare --jobs "$root/programs/$su.jobs" --golden "$root/golden-$su" --actual "$res/$su" \
         --report "$res/$su.report" --max-detail 5 > "$res/$su.log" 2>&1
     fi

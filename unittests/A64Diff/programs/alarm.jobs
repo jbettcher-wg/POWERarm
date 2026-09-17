@@ -1,0 +1,20 @@
+# A64Diff jobs in the Arch Linux ARM M2 sysroot (Scripts/powerarm/rootfs,
+# ~/.local/share/powerarm/RootFS/ArchLinuxARM-m2).  Block form: see README.
+job	alarm.true	alarm	1
+	rootfs	ArchLinuxARM-m2
+	run	-	/usr/bin/true
+end
+job	alarm.gcc-version	alarm	1
+	rootfs	ArchLinuxARM-m2
+	run	-	/usr/bin/gcc	--version
+end
+job	alarm.hello-build	alarm	1
+	rootfs	ArchLinuxARM-m2
+	input	@ROOT@/programs/hello.c
+	run	-	/usr/bin/gcc	-O2	-c	hello.c	-o	hello.o
+	run	-	/usr/bin/gcc	-O2	-o	hello	hello.o
+	run	-	/usr/bin/sh	-c	./hello one 'two words' > run.txt 2>&1; echo rc=$? >> run.txt
+	output	hello.o
+	output	hello
+	output	run.txt
+end

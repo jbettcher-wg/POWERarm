@@ -18,10 +18,13 @@
 # runs the negative controls (a64diff-selftest.sh).  --push scps the tarball.
 #
 # Rootfs jobs (programs/*.jobs blocks with "rootfs NAME") run natively through
-# a64diff-rootfs-exec.sh.  The prototype rootfs "minimal-debian" is assembled
-# here and shipped inside the bundle.  --rootfs NAME=DIR adds an external
-# rootfs (e.g. the Arch Linux ARM sysroot): it is not copied, only its content
-# hash is recorded, and the compare side must find the same tree.
+# rootfs/run-in-sysroot.sh in /tmp/a64diff-work/<bundle>/<suite>/<id>, the same
+# absolute path the compare side uses.  The prototype rootfs "minimal-debian"
+# is assembled here and shipped inside the bundle.  Any other rootfs a jobs
+# file names (e.g. ArchLinuxARM-m2) is external: it is looked up in
+# ${XDG_DATA_HOME:-~/.local/share}/powerarm/RootFS/NAME or given with
+# --rootfs NAME=DIR, is not copied, and only its content hash is recorded; the
+# compare side must find the same tree.
 set -eu
 umask 022
 
@@ -102,6 +105,7 @@ record_rootfs() { # NAME DIR LOCATION
   { echo "name $1"; cat "$work/rootfs-$1.hash"; echo "location $3"; } > "$root/rootfs/$1.id"
   echo "  $1: $(grep content-hash "$root/rootfs/$1.id") ($3)"
 }
+runner=$here/rootfs/run-in-sysroot.sh
 A64DIFF_BUSYBOX=$root/programs/bin/busybox sh "$src/rootfs/mkrootfs-minimal.sh" "$root/rootfs/minimal-debian"
 record_rootfs minimal-debian "$root/rootfs/minimal-debian" bundle
 # Isolation check: through the native runner, the rootfs's multiarch directory
@@ -109,25 +113,31 @@ record_rootfs minimal-debian "$root/rootfs/minimal-debian" bundle
 # /usr/lib/aarch64-linux-gnu has hundreds of files).  A runner that leaked the
 # host tree would make every rootfs golden meaningless.
 iso=$(mktemp -d)
-seen=$("$here/a64diff-rootfs-exec.sh" "$root/rootfs/minimal-debian" "$iso" -- /usr/bin/busybox ls /usr/lib/aarch64-linux-gnu | tr '\n' ' ')
+seen=$("$runner" "$root/rootfs/minimal-debian" "$iso" -- /usr/bin/busybox ls /usr/lib/aarch64-linux-gnu | tr '\n' ' ')
 rm -rf "$iso"
 [ "$seen" = "ld-linux-aarch64.so.1 libc.so.6 " ] ||
   { echo "a64diff-golden: rootfs runner is not isolated: sees '$seen'" >&2; exit 1; }
 echo "  isolation: runner sees only the rootfs ($seen)"
 rootfs_args="--rootfs minimal-debian=$root/rootfs/minimal-debian"
-for spec in $extra_rootfs; do
-  n=${spec%%=*} d=$(cd "${spec#*=}" && pwd -P)
+for n in $(sed -n 's/^[[:space:]]*rootfs[[:space:]]\{1,\}\([^[:space:]]*\).*/\1/p' "$root"/programs/*.jobs | sort -u); do
+  [ "$n" != minimal-debian ] || continue
+  d=${XDG_DATA_HOME:-$HOME/.local/share}/powerarm/RootFS/$n
+  for spec in $extra_rootfs; do [ "${spec%%=*}" = "$n" ] && d=${spec#*=}; done
+  [ -d "$d" ] || { echo "a64diff-golden: jobs need rootfs $n, not found at $d (use --rootfs $n=DIR)" >&2; exit 1; }
+  d=$(cd "$d" && pwd -P)
   record_rootfs "$n" "$d" external
   rootfs_args="$rootfs_args --rootfs $n=$d"
 done
-rootfs_args="$rootfs_args --rootfs-exec $here/a64diff-rootfs-exec.sh"
+rootfs_args="$rootfs_args --rootfs-exec $runner"
+workroot=/tmp/a64diff-work/$name
 
 suites=$(cd "$root/programs" && ls *.jobs | sed 's/\.jobs$//')
 for suite in $suites; do
   step "golden run: $suite"
   # shellcheck disable=SC2086
-  "$tool" run --jobs "$root/programs/$suite.jobs" --root "$root" --out "$root/golden-$suite" -j "$jobs" --timeout 600 $rootfs_args
-  rm -rf "$root/golden-$suite/"*.cwd
+  "$tool" run --jobs "$root/programs/$suite.jobs" --root "$root" --out "$root/golden-$suite" -j "$jobs" --timeout 600 $rootfs_args \
+    --workroot "$workroot/$suite"
+  rm -rf "$root/golden-$suite/"*.cwd "$workroot/$suite"
 done
 
 step "determinism: second native run must match the goldens"
@@ -139,7 +149,9 @@ grep -v '^CONTROL-FIRED' "$work/native/insn.log"
 grep -q 'RESULT=PASS$' "$work/native/insn.log" || { echo "a64diff-golden: native re-run does not match the goldens" >&2; exit 1; }
 for suite in $suites; do
   # shellcheck disable=SC2086
-  "$tool" run --jobs "$root/programs/$suite.jobs" --root "$root" --out "$work/native/$suite" -j "$jobs" --timeout 600 $rootfs_args >/dev/null
+  "$tool" run --jobs "$root/programs/$suite.jobs" --root "$root" --out "$work/native/$suite" -j "$jobs" --timeout 600 $rootfs_args \
+    --workroot "$workroot/$suite" >/dev/null
+  rm -rf "$workroot/$suite"
   "$tool" pcompare --jobs "$root/programs/$suite.jobs" --golden "$root/golden-$suite" --actual "$work/native/$suite" \
     --report "$work/native/$suite.report" --max-detail 5 > "$work/native/$suite.log" || true
   grep -v '^CONTROL-FIRED' "$work/native/$suite.log"
