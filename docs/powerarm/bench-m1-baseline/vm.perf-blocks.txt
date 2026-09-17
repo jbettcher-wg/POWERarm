@@ -1,0 +1,10 @@
+    57.78%  [JIT] tid 4014042    [.] out/aarch64/vm+0x688 (0x800045402ea0)
+    11.89%  [JIT] tid 4014042    [.] out/aarch64/vm+0x6d8 (0x800045404460)
+    11.78%  [JIT] tid 4014042    [.] out/aarch64/vm+0x678 (0x800045402bd0)
+     8.64%  [JIT] tid 4014042    [.] out/aarch64/vm+0x65c (0x8000454039d0)
+     3.99%  [JIT] tid 4014042    [.] out/aarch64/vm+0x6fc (0x800045404b70)
+     2.75%  [JIT] tid 4014042    [.] out/aarch64/vm+0x7a0 (0x800045404030)
+     2.01%  [JIT] tid 4014042    [.] out/aarch64/vm+0x66c (0x800045403260)
+     0.58%  [JIT] tid 4014042    [.] out/aarch64/vm+0x6e4 (0x800045404720)
+
+
