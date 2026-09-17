@@ -219,6 +219,16 @@ A block job is compared on these parts:
 - the final status
 - the declared outputs
 
+**Emulator text.** The emulator must never write to a guest's stdout or stderr: its diagnostics go
+to its log. `pcompare` scans every step's stdout and stderr, in both job forms, for lines that look
+like emulator output and aren't lines of the golden stream: a product or component name
+(`POWERarm`, `FEXServer`, `FEXCore`, `FEX:`), the log's colour escapes, `unimplemented A64
+instruction`, or the log's `<level> message` shape (`A`, `E`, `D` or `I` and a space). Such a line
+fails the job even when everything else matches, is printed as `EMULATOR-TEXT <id> step <k>
+<stream>: <line>` and counted in `emulator text in guest output: N jobs`. Before comparing, the
+scanner is checked against known emulator messages and ordinary compiler output; if it misses one,
+the run exits 2 with `CONTROL-FAIL`.
+
 Each output is recorded as `sha256 size path` in `<id>.outputs`, with a copy kept in
 `<id>.files/`, so a mismatch report gives the first differing byte. A missing output is recorded
 as `missing`, and a symlink as `link TARGET`.

@@ -1634,6 +1634,87 @@ static void report_prog(FILE* f, const struct row* r, const char* what, const st
   if (d & PD_OUTPUTS) report_outputs(f, r, g, a, o->golden, o->actual);
 }
 
+/* Emulator text in a guest stream.  The emulator must never write to the
+ * guest's stdout or stderr (its diagnostics go to its log), so a line that
+ * looks like an emulator message and isn't in the golden stream fails the job
+ * even where the rest of the compare would pass (a `try` step, say), and the
+ * report names it.  A line is emulator text if it contains a product or
+ * component name or the log's colour escape, or has the log's "<level> "
+ * shape (A, E, D or I, as LogMan::DebugLevelStr prints them). */
+static const char* const emulator_markers[] = {"POWERarm", "FEXServer", "FEXCore", "FEX:", "FEX ", "\033[38;2;", "\033[48;2;",
+                                               "unimplemented A64 instruction"};
+
+static int line_is_emulator_text(const char* l, size_t n) {
+  for (size_t i = 0; i < sizeof emulator_markers / sizeof emulator_markers[0]; i++)
+    if (memmem(l, n, emulator_markers[i], strlen(emulator_markers[i]))) return 1;
+  return n >= 2 && strchr("AEDI", l[0]) && l[1] == ' ';
+}
+
+static int buf_has_line(const char* b, size_t bl, const char* l, size_t n) {
+  for (size_t i = 0; b && i + n <= bl;) {
+    const char* e = memchr(b + i, '\n', bl - i);
+    size_t ll = e ? (size_t)(e - (b + i)) : bl - i;
+    if (ll == n && !memcmp(b + i, l, n)) return 1;
+    if (!e) break;
+    i += ll + 1;
+  }
+  return 0;
+}
+
+/* The first emulator-text line of A that isn't a line of G, or NULL; its
+ * length goes to *len. */
+static const char* emulator_text(const char* g, size_t gl, const char* a, size_t al, size_t* len) {
+  for (size_t i = 0; a && i < al;) {
+    const char* e = memchr(a + i, '\n', al - i);
+    size_t ll = e ? (size_t)(e - (a + i)) : al - i;
+    if (line_is_emulator_text(a + i, ll) && !buf_has_line(g, gl, a + i, ll)) {
+      *len = ll;
+      return a + i;
+    }
+    i += ll + 1;
+  }
+  return NULL;
+}
+
+/* Steps whose actual stdout or stderr carries emulator text, as a bit set
+ * (bit 2k: step k+1 stdout, bit 2k+1: its stderr); the first line found and
+ * its place go to *line, *len, *where. */
+static unsigned long prog_emulator_text(const struct presult* g, const struct presult* a, const char** line, size_t* len, char* where,
+                                        size_t wn) {
+  unsigned long bits = 0;
+  for (int k = 0; k < a->nsteps && k < 32; k++)
+    for (int e = 0; e < 2; e++) {
+      size_t n;
+      const char* l = e ? emulator_text(g->err[k], g->errlen[k], a->err[k], a->errlen[k], &n)
+                        : emulator_text(g->out[k], g->outlen[k], a->out[k], a->outlen[k], &n);
+      if (!l) continue;
+      if (!bits) {
+        *line = l;
+        *len = n;
+        snprintf(where, wn, "step %d %s", k + 1, e ? "stderr" : "stdout");
+      }
+      bits |= 1ul << (2 * k + e);
+    }
+  return bits;
+}
+
+/* The scanner must flag known emulator messages and pass ordinary output; a
+ * blind scanner would make the check meaningless. */
+static int emulator_text_selftest(void) {
+  static const char* const hits[] = {"\033[38;2;255;000;000mE\033[0m Couldn't connect to server socket 111\n",
+                                     "ok\nE Failed to remap /proc/pid/cmdline data\n", "POWERarm: FATAL: host page size\n",
+                                     "I PPC64 JIT: code caching off\n"};
+  static const char* const misses[] = {"", "hello\n", "Error: 1\nIn file included from a.c:1:\n", "a.c:3: warning: unused\n"};
+  size_t n;
+  for (size_t i = 0; i < sizeof hits / sizeof hits[0]; i++)
+    if (!emulator_text(NULL, 0, hits[i], strlen(hits[i]), &n)) return 0;
+  for (size_t i = 0; i < sizeof misses / sizeof misses[0]; i++)
+    if (emulator_text(NULL, 0, misses[i], strlen(misses[i]), &n)) return 0;
+  /* The same line in the golden stream is the program's own output. */
+  if (emulator_text(hits[2], strlen(hits[2]), hits[2], strlen(hits[2]), &n)) return 0;
+  return 1;
+}
+
 static enum cat classify_prog(const struct presult* a) {
   char* all = NULL;
   size_t n = 0;
@@ -1693,6 +1774,8 @@ static int cmd_pcompare(struct opts* o) {
   struct classsum* cs = xmalloc(sizeof(struct classsum) * 64);
   int ncs = 0, golden_bad = 0, ctl_total = 0, ctl_fired = 0;
   struct sink s = {open_report(o), 0, o->max_detail};
+  int emulator_text_jobs = 0, scanner_ok = emulator_text_selftest();
+  if (!scanner_ok) printf("CONTROL-FAIL emulator-text scanner does not flag known emulator messages\n");
   for (int i = 0; i < t.n; i++) {
     struct row* r = &t.rows[i];
     if (!selected(o, r)) continue;
@@ -1708,14 +1791,31 @@ static int cmd_pcompare(struct opts* o) {
       c->ncat[C_CRASH]++;
     } else {
       int d = prog_diff(&g, &a);
-      if (!d) {
+      const char* eline = NULL;
+      size_t elen = 0;
+      char ewhere[64] = "";
+      unsigned long etext = a.st.present ? prog_emulator_text(&g, &a, &eline, &elen, ewhere, sizeof ewhere) : 0;
+      if (etext) {
+        emulator_text_jobs++;
+        printf("EMULATOR-TEXT %s %s: ", r->id, ewhere);
+        for (size_t q = 0; q < elen && q < 160; q++) putchar((unsigned char)eline[q] >= 0x20 ? eline[q] : '.');
+        putchar('\n');
+      }
+      if (!d && !etext) {
         c->ncat[C_PASS]++;
       } else {
-        enum cat k = classify_prog(&a);
+        enum cat k = d ? classify_prog(&a) : C_MISMATCH;
         c->ncat[k]++;
         FILE* outs[2] = {s.report, s.shown < s.max ? stdout : NULL};
         for (int q = 0; q < 2; q++)
-          if (outs[q]) report_prog(outs[q], r, cat_text[k], &g, &a, d, o);
+          if (outs[q]) {
+            report_prog(outs[q], r, etext && !d ? "emulator text in guest output" : cat_text[k], &g, &a, d, o);
+            if (etext) {
+              fprintf(outs[q], "    emulator text in %s: ", ewhere);
+              for (size_t e = 0; e < elen && e < 160; e++) fputc((unsigned char)eline[e] >= 0x20 ? eline[e] : '.', outs[q]);
+              fputc('\n', outs[q]);
+            }
+          }
         s.shown++;
       }
     }
@@ -1799,11 +1899,12 @@ static int cmd_pcompare(struct opts* o) {
     }
   }
   if (s.report) fclose(s.report);
-  print_summary(cs, ncs, ctl_fired, ctl_total, golden_bad, 1);
+  printf("emulator text in guest output: %d job%s\n", emulator_text_jobs, emulator_text_jobs == 1 ? "" : "s");
+  print_summary(cs, ncs, ctl_fired, ctl_total, golden_bad || !scanner_ok, 1);
   int req_fail = 0;
   for (int i = 0; i < ncs; i++)
     if (cs[i].required) req_fail += cs[i].tests - cs[i].ncat[C_PASS];
-  if (golden_bad || ctl_fired != ctl_total || ctl_total == 0) return 2;
+  if (golden_bad || !scanner_ok || ctl_fired != ctl_total || ctl_total == 0) return 2;
   return req_fail ? 1 : 0;
 }
 
