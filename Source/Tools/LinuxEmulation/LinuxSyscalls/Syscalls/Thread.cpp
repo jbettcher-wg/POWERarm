@@ -863,6 +863,9 @@ void RegisterThread(FEX::HLE::SyscallHandler* Handler) {
 
   REGISTER_SYSCALL_IMPL(exit_group, [](FEXCore::Core::CpuStateFrame* Frame, int status) -> uint64_t {
     FEX::HLE::VForkChildSync();
+    if ((status & 0xff) != 0 && FEX::HLE::GuestErrorExitHook) {
+      FEX::HLE::GuestErrorExitHook();
+    }
     // Keep what this process compiled (a no-op unless it writes code caches).
     FEX::HLE::_SyscallHandler->CodeCacheImageExit(Frame->Thread);
     // Release this thread's shared-lock holdings before the kernel kills it
