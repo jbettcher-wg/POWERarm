@@ -98,6 +98,53 @@ const IRBuilder::HandlerEntry IRBuilder::HandlerTable[] = {
   {"SMADDL", &IRBuilder::SMADDL}, {"SMSUBL", &IRBuilder::SMSUBL},
   {"UMADDL", &IRBuilder::UMADDL}, {"UMSUBL", &IRBuilder::UMSUBL},
   {"SMULH", &IRBuilder::SMULH}, {"UMULH", &IRBuilder::UMULH},
+  // SIMD&FP register loads and stores.
+  {"LDR_lit_fpsimd", &IRBuilder::LDR_lit_fpsimd}, {"STP_LDP_fpsimd", &IRBuilder::STP_LDP_fpsimd},
+  {"STUR_fpsimd", &IRBuilder::STUR_LDUR_fpsimd}, {"LDUR_fpsimd", &IRBuilder::STUR_LDUR_fpsimd},
+  {"STR_imm_fpsimd_1", &IRBuilder::STR_LDR_imm_fpsimd_1}, {"LDR_imm_fpsimd_1", &IRBuilder::STR_LDR_imm_fpsimd_1},
+  {"STR_imm_fpsimd_2", &IRBuilder::STR_LDR_imm_fpsimd_2}, {"LDR_imm_fpsimd_2", &IRBuilder::STR_LDR_imm_fpsimd_2},
+  {"STR_reg_fpsimd", &IRBuilder::STR_LDR_reg_fpsimd}, {"LDR_reg_fpsimd", &IRBuilder::STR_LDR_reg_fpsimd},
+  {"STx_mult_1", &IRBuilder::LDx_STx_mult}, {"STx_mult_2", &IRBuilder::LDx_STx_mult},
+  {"LDx_mult_1", &IRBuilder::LDx_STx_mult}, {"LDx_mult_2", &IRBuilder::LDx_STx_mult},
+  // Advanced SIMD: copy.
+  {"DUP_gen", &IRBuilder::DUP_gen}, {"DUP_elt_1", &IRBuilder::DUP_elt_1}, {"DUP_elt_2", &IRBuilder::DUP_elt_2},
+  {"UMOV", &IRBuilder::UMOV}, {"SMOV", &IRBuilder::SMOV}, {"INS_gen", &IRBuilder::INS_gen}, {"INS_elt", &IRBuilder::INS_elt},
+  // Advanced SIMD: modified immediate.
+  {"MOVI", &IRBuilder::MOVI}, {"FMOV_2", &IRBuilder::FMOV_vec_imm},
+  // Advanced SIMD: three same.
+  {"ADD_vector", &IRBuilder::ADD_vector}, {"SUB_2", &IRBuilder::SUB_2},
+  {"CMEQ_reg_2", &IRBuilder::CMEQ_reg_2}, {"CMGT_reg_2", &IRBuilder::CMGT_reg_2}, {"CMGE_reg_2", &IRBuilder::CMGE_reg_2},
+  {"CMHS_2", &IRBuilder::CMHS_2}, {"CMHI_2", &IRBuilder::CMHI_2}, {"CMTST_2", &IRBuilder::CMTST_2},
+  {"UMAX", &IRBuilder::UMAX}, {"UMIN", &IRBuilder::UMIN}, {"SMAX", &IRBuilder::SMAX}, {"SMIN", &IRBuilder::SMIN},
+  {"ADD_1", &IRBuilder::ADD_1}, {"SUB_1", &IRBuilder::SUB_1},
+  {"CMEQ_reg_1", &IRBuilder::CMEQ_reg_1}, {"CMGT_reg_1", &IRBuilder::CMGT_reg_1}, {"CMGE_reg_1", &IRBuilder::CMGE_reg_1},
+  {"CMHS_1", &IRBuilder::CMHS_1}, {"CMHI_1", &IRBuilder::CMHI_1}, {"CMTST_1", &IRBuilder::CMTST_1},
+  {"AND_asimd", &IRBuilder::SIMDLogical}, {"BIC_asimd_reg", &IRBuilder::SIMDLogical},
+  {"ORR_asimd_reg", &IRBuilder::SIMDLogical}, {"ORN_asimd", &IRBuilder::SIMDLogical},
+  {"EOR_asimd", &IRBuilder::SIMDLogical}, {"BSL", &IRBuilder::SIMDLogical},
+  {"BIT", &IRBuilder::SIMDLogical}, {"BIF", &IRBuilder::SIMDLogical},
+  {"ADDP_vec", &IRBuilder::ADDP_vec}, {"UMAXP", &IRBuilder::UMAXP}, {"UMINP", &IRBuilder::UMINP},
+  // Advanced SIMD: across lanes.
+  {"ADDV", &IRBuilder::ADDV}, {"UMAXV", &IRBuilder::UMAXV}, {"UMINV", &IRBuilder::UMINV},
+  // Advanced SIMD: two-register misc.
+  {"CMEQ_zero_2", &IRBuilder::CMEQ_zero_2}, {"CMGT_zero_2", &IRBuilder::CMGT_zero_2}, {"CMGE_zero_2", &IRBuilder::CMGE_zero_2},
+  {"CMLE_2", &IRBuilder::CMLE_2}, {"CMLT_2", &IRBuilder::CMLT_2},
+  {"CMEQ_zero_1", &IRBuilder::CMEQ_zero_1}, {"CMGT_zero_1", &IRBuilder::CMGT_zero_1}, {"CMGE_zero_1", &IRBuilder::CMGE_zero_1},
+  {"CMLE_1", &IRBuilder::CMLE_1}, {"CMLT_1", &IRBuilder::CMLT_1},
+  {"CNT", &IRBuilder::CNT}, {"NOT", &IRBuilder::NOT}, {"NEG_2", &IRBuilder::NEG_2}, {"ABS_2", &IRBuilder::ABS_2},
+  {"REV64_asimd", &IRBuilder::REV64_asimd}, {"REV32_asimd", &IRBuilder::REV32_asimd},
+  {"XTN", &IRBuilder::XTN},
+  // Advanced SIMD: three different.
+  {"SADDL", &IRBuilder::SADDL}, {"UADDL", &IRBuilder::UADDL}, {"SSUBL", &IRBuilder::SSUBL}, {"USUBL", &IRBuilder::USUBL},
+  {"SADDW", &IRBuilder::SADDW}, {"UADDW", &IRBuilder::UADDW}, {"ADDHN", &IRBuilder::ADDHN}, {"SUBHN", &IRBuilder::SUBHN},
+  // Advanced SIMD: shift by immediate.
+  {"SSHR_2", &IRBuilder::SSHR_2}, {"USHR_2", &IRBuilder::USHR_2}, {"SHL_2", &IRBuilder::SHL_2},
+  {"SSHR_1", &IRBuilder::SSHR_1}, {"USHR_1", &IRBuilder::USHR_1}, {"SHL_1", &IRBuilder::SHL_1},
+  {"SHRN", &IRBuilder::SHRN}, {"SSHLL", &IRBuilder::SSHLL}, {"USHLL", &IRBuilder::USHLL},
+  // Advanced SIMD: extract and permute.
+  {"EXT", &IRBuilder::EXT},
+  {"UZP1", &IRBuilder::UZP1}, {"UZP2", &IRBuilder::UZP2}, {"ZIP1", &IRBuilder::ZIP1}, {"ZIP2", &IRBuilder::ZIP2},
+  {"TRN1", &IRBuilder::TRN1}, {"TRN2", &IRBuilder::TRN2},
 };
 // clang-format on
 
@@ -300,6 +347,22 @@ void IRBuilder::StoreW(uint32_t Reg, Ref Value) {
 
 void IRBuilder::StoreWSP(uint32_t Reg, Ref Value) {
   StoreGPRSlot(Reg, ZeroExtend32(Value));
+}
+
+Ref IRBuilder::LoadV(uint32_t Reg) {
+  if (Reg < FEXCore::Core::NumStaticVectorRegs) {
+    return _LoadRegister(Reg, RegClass::FPR, OpSize::i128Bit);
+  }
+  return _LoadContext(OpSize::i128Bit, RegClass::FPR, FEXCore::Core::CPUState::VectorOffset(Reg));
+}
+
+void IRBuilder::StoreV(uint32_t Reg, Ref Value) {
+  if (Reg < FEXCore::Core::NumStaticVectorRegs) {
+    Ref Store = _StoreRegister(Value, OpSize::i128Bit);
+    Store->Reg = PhysicalRegister(RegClass::FPRFixed, Reg).Raw;
+  } else {
+    _StoreContext(OpSize::i128Bit, RegClass::FPR, Value, FEXCore::Core::CPUState::VectorOffset(Reg));
+  }
 }
 
 // ---------------------------------------------------------------------------

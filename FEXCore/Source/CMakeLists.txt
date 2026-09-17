@@ -27,7 +27,9 @@ set(SRCS
   Interface/Core/A64Frontend/IRBuilder.cpp
   Interface/Core/A64Frontend/TranslateBranchSystem.cpp
   Interface/Core/A64Frontend/TranslateDataProcessing.cpp
-  Interface/Core/A64Frontend/TranslateLoadStore.cpp)
+  Interface/Core/A64Frontend/TranslateLoadStore.cpp
+  Interface/Core/A64Frontend/TranslateSIMD.cpp
+  Interface/Core/A64Frontend/TranslateSIMDLoadStore.cpp)
 
 # PPC64LE JIT backend. This fork targets PPC64LE hosts only; the ARM64 JIT
 # and its Dispatcher have been removed.
