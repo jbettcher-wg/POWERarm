@@ -1914,6 +1914,29 @@
         "ElementSize": "ElementSize"
       },
 
+      "FPR = VCLZ OpSize:#RegisterSize, OpSize:#ElementSize, FPR:$Vector": {
+        "Desc": ["Counts the leading zero bits of each element of the register"
+                ],
+        "DestSize": "RegisterSize",
+        "ElementSize": "ElementSize"
+      },
+
+      "FPR = VUDot OpSize:#RegisterSize, FPR:$Vector1, FPR:$Vector2, FPR:$Addend": {
+        "Desc": ["A64 UDOT: each 32-bit element of Addend plus the sum of the four unsigned byte",
+                 "products of the corresponding bytes of Vector1 and Vector2, modulo 2^32"
+                ],
+        "DestSize": "RegisterSize",
+        "ElementSize": "OpSize::i32Bit"
+      },
+
+      "FPR = VPMullB OpSize:#RegisterSize, FPR:$Vector1, FPR:$Vector2, i1:$Upper": {
+        "Desc": ["A64 PMULL/PMULL2 on bytes: the carry-less products of the eight low (Upper false)",
+                 "or high (Upper true) byte elements, widened to 16-bit elements"
+                ],
+        "DestSize": "RegisterSize",
+        "ElementSize": "OpSize::i16Bit"
+      },
+
       "FPR = VAddV OpSize:#RegisterSize, OpSize:#ElementSize, FPR:$Vector": {
         "Desc": ["Does a horizontal vector add of elements across the source vector",
                  "Result is a zero extended scalar"

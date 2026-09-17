@@ -1561,6 +1561,11 @@ public:
   void vncipherlast(VR vrt, VR vra, VR vrb)           { EmitVX(vrt.idx, vra.idx, vrb.idx, 1353); }
   void vsbox      (VR vrt, VR vra)                    { EmitVX(vrt.idx, vra.idx, 0,        1480); }
   void vpmsumb    (VR vrt, VR vra, VR vrb)            { EmitVX(vrt.idx, vra.idx, vrb.idx, 1032); }
+  // Vector count leading zeros (ISA 2.07): VX form, VRA field 0, XO 1794/1858/1922/1986.
+  void vclzb(VR vrt, VR vrb) { Emit32((4u<<26)|(vrt.idx<<21)|(vrb.idx<<11)|1794u); }
+  void vclzh(VR vrt, VR vrb) { Emit32((4u<<26)|(vrt.idx<<21)|(vrb.idx<<11)|1858u); }
+  void vclzw(VR vrt, VR vrb) { Emit32((4u<<26)|(vrt.idx<<21)|(vrb.idx<<11)|1922u); }
+  void vclzd(VR vrt, VR vrb) { Emit32((4u<<26)|(vrt.idx<<21)|(vrb.idx<<11)|1986u); }
   void vpmsumh    (VR vrt, VR vra, VR vrb)            { EmitVX(vrt.idx, vra.idx, vrb.idx, 1096); }
   void vpmsumw    (VR vrt, VR vra, VR vrb)            { EmitVX(vrt.idx, vra.idx, vrb.idx, 1160); }
   void vpmsumd    (VR vrt, VR vra, VR vrb)            { EmitVX(vrt.idx, vra.idx, vrb.idx, 1224); }

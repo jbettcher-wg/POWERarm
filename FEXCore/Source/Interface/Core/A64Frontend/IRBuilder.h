@@ -229,6 +229,31 @@ public:
   bool FCVTMS_2(uint32_t Word); bool FCVTMU_2(uint32_t Word); bool FCVTAS_2(uint32_t Word); bool FCVTAU_2(uint32_t Word);
   bool SCVTF_fix_2(uint32_t Word); bool UCVTF_fix_2(uint32_t Word); bool FCVTZS_fix_2(uint32_t Word); bool FCVTZU_fix_2(uint32_t Word);
   bool SCVTF_fix_1(uint32_t Word); bool UCVTF_fix_1(uint32_t Word); bool FCVTZS_fix_1(uint32_t Word); bool FCVTZU_fix_1(uint32_t Word);
+  // Advanced SIMD saturating, rounding and halving families (TranslateSIMDSaturate.cpp).
+  bool SQADD_2(uint32_t Word); bool SQSUB_2(uint32_t Word); bool UQADD_2(uint32_t Word); bool UQSUB_2(uint32_t Word);
+  bool SQADD_1(uint32_t Word); bool SQSUB_1(uint32_t Word); bool UQADD_1(uint32_t Word);
+  bool SQABS_2(uint32_t Word); bool SQNEG_2(uint32_t Word); bool SQABS_1(uint32_t Word); bool SQNEG_1(uint32_t Word);
+  bool SQXTN_2(uint32_t Word); bool UQXTN_2(uint32_t Word); bool SQXTUN_2(uint32_t Word);
+  bool SQXTN_1(uint32_t Word); bool UQXTN_1(uint32_t Word); bool SQXTUN_1(uint32_t Word);
+  bool RSHRN(uint32_t Word); bool SQSHRN_2(uint32_t Word); bool SQRSHRN_2(uint32_t Word); bool UQSHRN_2(uint32_t Word);
+  bool UQRSHRN_2(uint32_t Word); bool SQSHRUN_2(uint32_t Word); bool SQRSHRUN_2(uint32_t Word);
+  bool SQSHRN_1(uint32_t Word); bool UQSHRN_1(uint32_t Word); bool SQSHRUN_1(uint32_t Word);
+  bool SRSHR_2(uint32_t Word); bool URSHR_2(uint32_t Word); bool SRSRA_2(uint32_t Word); bool URSRA_2(uint32_t Word);
+  bool SRSHR_1(uint32_t Word); bool URSHR_1(uint32_t Word); bool SRSRA_1(uint32_t Word); bool URSRA_1(uint32_t Word);
+  bool SQSHL_imm_2(uint32_t Word); bool UQSHL_imm_2(uint32_t Word); bool SQSHLU_2(uint32_t Word);
+  bool SQSHL_imm_1(uint32_t Word); bool UQSHL_imm_1(uint32_t Word); bool SQSHLU_1(uint32_t Word);
+  bool UHADD(uint32_t Word); bool SHADD(uint32_t Word); bool URHADD(uint32_t Word); bool SRHADD(uint32_t Word);
+  bool UHSUB(uint32_t Word); bool SHSUB(uint32_t Word);
+  bool UABD(uint32_t Word); bool SABD(uint32_t Word); bool UABA(uint32_t Word); bool SABA(uint32_t Word);
+  bool UABDL(uint32_t Word); bool SABDL(uint32_t Word); bool UABAL(uint32_t Word); bool SABAL(uint32_t Word);
+  bool RADDHN(uint32_t Word); bool RSUBHN(uint32_t Word);
+  bool SQDMULH_vec_2(uint32_t Word); bool SQRDMULH_vec_2(uint32_t Word); bool SQDMULH_vec_1(uint32_t Word); bool SQRDMULH_vec_1(uint32_t Word);
+  bool SQDMULH_elt_2(uint32_t Word); bool SQRDMULH_elt_2(uint32_t Word); bool SQDMULH_elt_1(uint32_t Word); bool SQRDMULH_elt_1(uint32_t Word);
+  bool MLA_elt(uint32_t Word); bool MLS_elt(uint32_t Word);
+  bool SMULL_elt(uint32_t Word); bool UMULL_elt(uint32_t Word); bool SMLAL_elt(uint32_t Word); bool UMLAL_elt(uint32_t Word);
+  bool SMLSL_elt(uint32_t Word); bool UMLSL_elt(uint32_t Word);
+  bool UADDLV(uint32_t Word); bool SADDLV(uint32_t Word); bool SMAXV(uint32_t Word); bool SMINV(uint32_t Word);
+  bool CLZ_asimd(uint32_t Word); bool CLS_asimd(uint32_t Word); bool UDOT_vec(uint32_t Word);
   // clang-format on
 
 private:
@@ -384,6 +409,38 @@ private:
   bool SIMDHalfSign(uint32_t Word, bool IsNeg);
   bool SIMDFloatToInt(uint32_t Word, uint8_t Rounding, bool Signed, bool Scalar);
   bool SIMDFixedConvert(uint32_t Word, bool ToFloat, bool Signed, bool Scalar);
+
+  // Advanced SIMD saturating families (TranslateSIMDSaturate.cpp).
+  enum class NarrowKind { Truncate, SignedToSigned, UnsignedToUnsigned, SignedToUnsigned };
+  enum class ShiftLeftKind { Signed, Unsigned, SignedToUnsigned };
+  enum class HalvingOp { UHAdd, SHAdd, URHAdd, SRHAdd, UHSub, SHSub };
+  // Every ES lane holds Value.
+  Ref LaneConstant(uint64_t Value, OpSize ES);
+  // FPSR.QC |= (any bit of Mask set).
+  void SetQCIfAny(Ref Mask);
+  Ref UsedLanes(Ref Mask, bool Scalar, bool Q, OpSize ES);
+  void StoreIntLanes(uint32_t Word, bool Scalar, OpSize ES, Ref Result);
+  Ref SaturatingAddSub(OpSize ES, Ref A, Ref B, bool Sub, bool Signed, Ref* Saturated);
+  Ref SaturateNarrow(Ref V, OpSize WideES, NarrowKind Kind, Ref* Saturated);
+  Ref RoundingShiftRight(Ref V, OpSize ES, uint32_t Shift, bool Signed);
+  Ref AbsoluteDifference(OpSize ES, Ref A, Ref B, bool Signed);
+  Ref DoublingMultiplyHigh(OpSize ES, Ref A, Ref B, bool Rounding, Ref* Saturated);
+  bool IntElementOperand(uint32_t Word, Ref* Element);
+  bool SIMDSaturatingAddSub(uint32_t Word, bool Sub, bool Signed, bool Scalar);
+  bool SIMDSaturatingAbsNeg(uint32_t Word, bool IsNeg, bool Scalar);
+  bool SIMDSaturatingExtractNarrow(uint32_t Word, NarrowKind Kind, bool Scalar);
+  bool SIMDShiftRightNarrow(uint32_t Word, NarrowKind Kind, bool Rounding, bool SignedShift, bool Scalar);
+  bool SIMDRoundingShiftRight(uint32_t Word, bool Signed, bool Accumulate, bool Scalar);
+  bool SIMDSaturatingShiftLeft(uint32_t Word, ShiftLeftKind Kind, bool Scalar);
+  bool SIMDHalving(uint32_t Word, HalvingOp Op);
+  bool SIMDAbsoluteDifference(uint32_t Word, bool Signed, bool Accumulate, bool Long);
+  bool SIMDRoundingHighNarrow(uint32_t Word, bool Sub);
+  bool SIMDDoublingMultiplyHigh(uint32_t Word, bool Rounding, bool Scalar, bool ByElement);
+  bool SIMDMultiplyElement(uint32_t Word, int Accumulate);
+  bool SIMDMultiplyLongElement(uint32_t Word, bool Signed, int Accumulate);
+  bool SIMDAddLongAcrossLanes(uint32_t Word, bool Signed);
+  bool SIMDSignedAcrossLanesMinMax(uint32_t Word, bool IsMax);
+  bool SIMDCountLeading(uint32_t Word, bool Sign);
 
   struct JumpTargetInfo {
     Ref BlockEntry;

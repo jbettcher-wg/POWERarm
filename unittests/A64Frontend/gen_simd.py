@@ -1144,6 +1144,180 @@ def gen_simd_float(p):
                 p.vcase([f"{op} v5.{t}, v20.{t}"], {5: p.vec(), 20: reg}, fpcr=p.rng.choice(RMODES))
 
 
+# ---------------------------------------------------------------------------
+# Saturating, rounding, halving and by-element integer families
+# ---------------------------------------------------------------------------
+
+def lane_vec(p, bits):
+    """A 128-bit register whose lanes are drawn from the signed/unsigned boundaries."""
+    mask = (1 << bits) - 1
+    edges = [0, 1, 2, mask, mask - 1, 1 << (bits - 1), (1 << (bits - 1)) + 1, (1 << (bits - 1)) - 1,
+             (1 << (bits - 1)) - 2, mask >> 2, (mask >> 2) + 1]
+    full = 0
+    for i in range(128 // bits):
+        v = p.rng.choice(edges) if p.rng.random() < 0.6 else p.rng.getrandbits(bits)
+        full |= v << (bits * i)
+    return (full & M64, full >> 64)
+
+
+def gen_simd_sat(p):
+    scal = [("b", 8), ("h", 16), ("s", 32), ("d", 64)]
+    vt_of = {8: ("8b", "16b"), 16: ("4h", "8h"), 32: ("2s", "4s"), 64: (None, "2d")}
+    nar = {8: ("8b", "16b", "8h"), 16: ("4h", "8h", "4s"), 32: ("2s", "4s", "2d")}
+    clr = "msr fpsr, xzr"
+    for _ in range(2200):
+        d, n, m = p.vreg(), p.vreg(), p.vreg()
+        kind = p.rng.randrange(19)
+        if kind <= 1:
+            op = p.rng.choice(["sqadd", "sqsub", "uqadd", "uqsub"])
+            if p.rng.random() < 0.3:
+                r, bits = p.rng.choice(scal)
+                v = {d: p.vec(), n: lane_vec(p, bits), m: lane_vec(p, bits)}
+                p.vcase([clr, f"{op} {r}{d}, {r}{n}, {r}{m}"], v)
+            else:
+                vt, bits, q = vtypes(p)
+                v = {d: p.vec(), n: lane_vec(p, bits), m: lane_vec(p, bits)}
+                p.vcase([clr, f"{op} v{d}.{vt}, v{n}.{vt}, v{m}.{vt}"], v)
+        elif kind == 2:
+            op = p.rng.choice(["sqabs", "sqneg"])
+            if p.rng.random() < 0.3:
+                r, bits = p.rng.choice(scal)
+                p.vcase([clr, f"{op} {r}{d}, {r}{n}"], {d: p.vec(), n: lane_vec(p, bits)})
+            else:
+                vt, bits, q = vtypes(p)
+                p.vcase([clr, f"{op} v{d}.{vt}, v{n}.{vt}"], {d: p.vec(), n: lane_vec(p, bits)})
+        elif kind == 3:
+            op = p.rng.choice(["sqxtn", "uqxtn", "sqxtun"])
+            bits = p.rng.choice([8, 16, 32])
+            nt, nt2, wt = nar[bits]
+            v = {d: p.vec(), n: lane_vec(p, bits * 2)}
+            form = p.rng.randrange(3)
+            if form == 0:
+                p.vcase([clr, f"{op} v{d}.{nt}, v{n}.{wt}"], v)
+            elif form == 1:
+                p.vcase([clr, f"{op}2 v{d}.{nt2}, v{n}.{wt}"], v)
+            else:
+                rn = {8: "b", 16: "h", 32: "s"}[bits]
+                rw = {8: "h", 16: "s", 32: "d"}[bits]
+                p.vcase([clr, f"{op} {rn}{d}, {rw}{n}"], v)
+        elif kind <= 5:
+            op = p.rng.choice(["rshrn", "sqshrn", "sqrshrn", "uqshrn", "uqrshrn", "sqshrun", "sqrshrun"])
+            bits = p.rng.choice([8, 16, 32])
+            nt, nt2, wt = nar[bits]
+            sh = p.rng.choice([1, 2, bits - 1, bits, p.rng.randrange(1, bits + 1)])
+            v = {d: p.vec(), n: lane_vec(p, bits * 2)}
+            form = p.rng.randrange(3)
+            if form == 2 and op in ("sqshrn", "uqshrn", "sqshrun"):
+                rn = {8: "b", 16: "h", 32: "s"}[bits]
+                rw = {8: "h", 16: "s", 32: "d"}[bits]
+                p.vcase([clr, f"{op} {rn}{d}, {rw}{n}, #{sh}"], v)
+            elif form == 1:
+                p.vcase([clr, f"{op}2 v{d}.{nt2}, v{n}.{wt}, #{sh}"], v)
+            else:
+                p.vcase([clr, f"{op} v{d}.{nt}, v{n}.{wt}, #{sh}"], v)
+        elif kind == 6:
+            op = p.rng.choice(["srshr", "urshr", "srsra", "ursra"])
+            if p.rng.random() < 0.25:
+                sh = p.rng.choice([1, 2, 63, 64, p.rng.randrange(1, 65)])
+                p.vcase([f"{op} d{d}, d{n}, #{sh}"], {d: lane_vec(p, 64), n: lane_vec(p, 64)})
+            else:
+                vt, bits, q = vtypes(p)
+                sh = p.rng.choice([1, 2, bits - 1, bits, p.rng.randrange(1, bits + 1)])
+                p.vcase([f"{op} v{d}.{vt}, v{n}.{vt}, #{sh}"], {d: lane_vec(p, bits), n: lane_vec(p, bits)})
+        elif kind == 7:
+            op = p.rng.choice(["sqshl", "uqshl", "sqshlu"])
+            if p.rng.random() < 0.3:
+                r, bits = p.rng.choice(scal)
+                sh = p.rng.choice([0, 1, bits - 1, p.rng.randrange(bits)])
+                p.vcase([clr, f"{op} {r}{d}, {r}{n}, #{sh}"], {d: p.vec(), n: lane_vec(p, bits)})
+            else:
+                vt, bits, q = vtypes(p)
+                sh = p.rng.choice([0, 1, bits - 1, p.rng.randrange(bits)])
+                p.vcase([clr, f"{op} v{d}.{vt}, v{n}.{vt}, #{sh}"], {d: p.vec(), n: lane_vec(p, bits)})
+        elif kind == 8:
+            op = p.rng.choice(["uhadd", "shadd", "urhadd", "srhadd", "uhsub", "shsub"])
+            vt, bits, q = vtypes(p, False)
+            p.vcase([f"{op} v{d}.{vt}, v{n}.{vt}, v{m}.{vt}"], {d: p.vec(), n: lane_vec(p, bits), m: lane_vec(p, bits)})
+        elif kind == 9:
+            op = p.rng.choice(["uabd", "sabd", "uaba", "saba"])
+            vt, bits, q = vtypes(p, False)
+            p.vcase([f"{op} v{d}.{vt}, v{n}.{vt}, v{m}.{vt}"], {d: lane_vec(p, bits), n: lane_vec(p, bits), m: lane_vec(p, bits)})
+        elif kind == 10:
+            op = p.rng.choice(["uabdl", "sabdl", "uabal", "sabal"])
+            bits = p.rng.choice([8, 16, 32])
+            nt, nt2, wt = nar[bits]
+            v = {d: lane_vec(p, bits * 2), n: lane_vec(p, bits), m: lane_vec(p, bits)}
+            if p.rng.random() < 0.5:
+                p.vcase([f"{op} v{d}.{wt}, v{n}.{nt}, v{m}.{nt}"], v)
+            else:
+                p.vcase([f"{op}2 v{d}.{wt}, v{n}.{nt2}, v{m}.{nt2}"], v)
+        elif kind == 11:
+            op = p.rng.choice(["raddhn", "rsubhn"])
+            bits = p.rng.choice([8, 16, 32])
+            nt, nt2, wt = nar[bits]
+            v = {d: p.vec(), n: lane_vec(p, bits * 2), m: lane_vec(p, bits * 2)}
+            if p.rng.random() < 0.5:
+                p.vcase([f"{op} v{d}.{nt}, v{n}.{wt}, v{m}.{wt}"], v)
+            else:
+                p.vcase([f"{op}2 v{d}.{nt2}, v{n}.{wt}, v{m}.{wt}"], v)
+        elif kind <= 13:
+            op = p.rng.choice(["sqdmulh", "sqrdmulh"])
+            bits = p.rng.choice([16, 32])
+            e = "h" if bits == 16 else "s"
+            vt = p.rng.choice(vt_of[bits])
+            mreg = p.rng.choice([r for r in VREGS if r < 16]) if bits == 16 else p.vreg()
+            v = {d: p.vec(), n: lane_vec(p, bits), m: lane_vec(p, bits), mreg: lane_vec(p, bits)}
+            idx = p.rng.randrange(128 // bits)
+            form = p.rng.randrange(4)
+            if form == 0:
+                p.vcase([clr, f"{op} v{d}.{vt}, v{n}.{vt}, v{m}.{vt}"], v)
+            elif form == 1:
+                p.vcase([clr, f"{op} {e}{d}, {e}{n}, {e}{m}"], v)
+            elif form == 2:
+                p.vcase([clr, f"{op} v{d}.{vt}, v{n}.{vt}, v{mreg}.{e}[{idx}]"], v)
+            else:
+                p.vcase([clr, f"{op} {e}{d}, {e}{n}, v{mreg}.{e}[{idx}]"], v)
+        elif kind == 14:
+            op = p.rng.choice(["mla", "mls", "smull", "umull", "smlal", "umlal", "smlsl", "umlsl"])
+            bits = p.rng.choice([16, 32])
+            e = "h" if bits == 16 else "s"
+            mreg = p.rng.choice([r for r in VREGS if r < 16]) if bits == 16 else p.vreg()
+            idx = p.rng.randrange(128 // bits)
+            v = {d: lane_vec(p, bits), n: lane_vec(p, bits), mreg: lane_vec(p, bits)}
+            if op in ("mla", "mls"):
+                vt = p.rng.choice(vt_of[bits])
+                p.vcase([f"{op} v{d}.{vt}, v{n}.{vt}, v{mreg}.{e}[{idx}]"], v)
+            else:
+                nt, nt2, wt = {16: ("4h", "8h", "4s"), 32: ("2s", "4s", "2d")}[bits]
+                if p.rng.random() < 0.5:
+                    p.vcase([f"{op} v{d}.{wt}, v{n}.{nt}, v{mreg}.{e}[{idx}]"], v)
+                else:
+                    p.vcase([f"{op}2 v{d}.{wt}, v{n}.{nt2}, v{mreg}.{e}[{idx}]"], v)
+        elif kind == 15:
+            op = p.rng.choice(["uaddlv", "saddlv"])
+            r, vt, bits = p.rng.choice([("h", "8b", 8), ("h", "16b", 8), ("s", "4h", 16), ("s", "8h", 16), ("d", "4s", 32)])
+            p.vcase([f"{op} {r}{d}, v{n}.{vt}"], {d: p.vec(), n: lane_vec(p, bits)})
+        elif kind == 16:
+            op = p.rng.choice(["smaxv", "sminv"])
+            r, vt, bits = p.rng.choice([("b", "8b", 8), ("b", "16b", 8), ("h", "4h", 16), ("h", "8h", 16), ("s", "4s", 32)])
+            p.vcase([f"{op} {r}{d}, v{n}.{vt}"], {d: p.vec(), n: lane_vec(p, bits)})
+        elif kind == 17:
+            op = p.rng.choice(["clz", "cls"])
+            vt, bits, q = vtypes(p, False)
+            full = 0
+            for i in range(128 // bits):
+                full |= (p.rng.getrandbits(bits) >> p.rng.randrange(bits + 1)) << (bits * i)
+            vals = (full & M64, full >> 64) if p.rng.random() < 0.6 else lane_vec(p, bits)
+            p.vcase([f"{op} v{d}.{vt}, v{n}.{vt}"], {d: p.vec(), n: vals})
+        else:
+            q = p.rng.random() < 0.5
+            p.vcase([f"udot v{d}.{'4s' if q else '2s'}, v{n}.{'16b' if q else '8b'}, v{m}.{'16b' if q else '8b'}"],
+                    {d: p.vec(), n: lane_vec(p, 8), m: lane_vec(p, 8)})
+    # QC stays set across instructions until cleared.
+    p.vcase(["msr fpsr, xzr", "sqadd v1.16b, v2.16b, v3.16b", "add v4.16b, v2.16b, v3.16b"],
+            {1: p.vec(), 2: (0x7F7F7F7F7F7F7F7F, 0), 3: (0x0101010101010101, 0)})
+
+
 GROUPS = {
     "simd_loadstore": gen_simd_loadstore,
     "simd_copy": gen_simd_copy,
@@ -1162,6 +1336,7 @@ GROUPS = {
     "simd_gaps": gen_simd_gaps,
     "simd_projects": gen_simd_projects,
     "simd_float": gen_simd_float,
+    "simd_sat": gen_simd_sat,
 }
 
 
