@@ -44,9 +44,17 @@ cherry-pick; patches for them go in `docs/powerarm/outgoing-patches/fastppcx86/`
   config `"RootFS": "ArchLinuxARM-m2"` resolves to nothing and guest paths silently fall through to
   host ppc64le binaries ("not a supported ELF"). Pass `POWERARM_ROOTFS=<absolute path>` with it.
   **Open item: make that combination fail loudly.**
-- **binfmt pins the interpreter's inode.** Register the stable install
+- **binfmt pins the interpreter's inode, and the entry lies about it.** Register the stable install
   (`~/.local/opt/powerarm-stable/Bin/POWERarm`, refreshed by `promote-powerarm-stable.sh`), never a
-  build directory, and re-register after promoting.
+  build directory, and re-register after promoting. Skip the re-register and the entry still
+  *prints* the stable path while running the previous build out of `powerarm-stable.prev`; `ps` and
+  the process's own argv show the stable path too, because the kernel passes the registered string
+  as argv[0] whatever inode it opened. Only `/proc/<pid>/exe` (or `maps`) tells the truth, which is
+  what `Scripts/powerarm/check-binfmt-inode.sh` reads. Run it after every promote: a bug that
+  "came back" after a fix is this until proven otherwise.
+- **A process started before a promote keeps the old emulator.** Long-lived guests (an editor, a
+  `claude` session, a terminal left open) hold the binary they started with. Compare the process
+  start time against the promote time before believing a bug report.
 - **A rebuild invalidates the code cache**, so the first run after building is cold. Discard the
   first run after a link.
 - **`perf` leaks its environment into the guest.** Wrap workloads in
