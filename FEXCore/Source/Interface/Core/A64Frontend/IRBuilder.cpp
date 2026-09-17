@@ -353,7 +353,7 @@ void IRBuilder::RaiseGuestSignal(uint64_t PC, BreakDefinition Reason) {
 bool IRBuilder::TranslateInstruction(const Decoder::DecodedInst& Inst) {
   CurrentPC = Inst.PC;
 
-  const auto* Matcher = DecodeInstruction(Inst.Word);
+  const auto* Matcher = Inst.Matcher;
   if (!Matcher || !Matcher->Handler || !(this->*(Matcher->Handler))(Inst.Word)) {
     // Handlers reject before emitting anything, so the signal is the whole
     // translation of this instruction.

@@ -40,6 +40,7 @@ struct InternalThreadState;
 }
 
 namespace FEXCore::A64 {
+struct InstMatcher;
 constexpr uint64_t INSTRUCTION_SIZE = 4;
 // Upper bound on instructions in one block, below the MaxInst config.
 constexpr uint64_t DEFAULT_MAX_INSTRUCTIONS = 1024;
@@ -55,6 +56,9 @@ public:
   struct DecodedInst final {
     uint64_t PC {};
     uint32_t Word {};
+    // DecodeInstruction(Word), looked up once by the decoder and reused by the
+    // IR builder.
+    const InstMatcher* Matcher {};
   };
 
   struct DecodedBlocks final {
@@ -114,6 +118,7 @@ private:
   // Region discovery scratch (DecodeInstructionsAtEntry), kept to reuse storage.
   fextl::vector<uint32_t> SlotStamp;
   fextl::vector<uint32_t> SlotWord;
+  fextl::vector<const InstMatcher*> SlotMatcher;
   uint32_t Generation {};
   fextl::vector<uint64_t> Leaders;
   fextl::vector<uint64_t> Worklist;
