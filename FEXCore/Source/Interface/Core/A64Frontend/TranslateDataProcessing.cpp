@@ -475,16 +475,8 @@ bool IRBuilder::AddSubCarry(uint32_t Word, bool IsSub, bool SetFlags) {
   if (SetFlags) {
     Result = IsSub ? _SbbWithFlags(Size, Src1, Src2) : _AdcWithFlags(Size, Src1, Src2);
   } else {
-    // POWERARM-M1-TODO(backend): DEF_OP(Adc)/DEF_OP(Sbb) (JIT/PPC64LE/ALUOps.cpp) lower to adde/subfe and write XER.CA; use them here once they are flag-neutral.
-    // Not _Adc/_Sbb: their ppc64le lowerings (adde/subfe) write XER.CA, which
-    // is the guest C flag, and ADC/SBC must leave NZCV alone. The carry is
-    // materialised with a flag-neutral select instead:
-    //   ADC = Src1 + Src2 + C,  SBC = Src1 - Src2 - !C.
-    if (IsSub) {
-      Result = _Sub(Size, _Sub(Size, Src1, Src2), _NZCVSelect01(CondClass::ULT));
-    } else {
-      Result = _Add(Size, _Add(Size, Src1, Src2), _NZCVSelect01(CondClass::UGE));
-    }
+    // Adc and Sbb are value-only: they read C and leave NZCV alone.
+    Result = IsSub ? _Sbb(Size, Src1, Src2) : _Adc(Size, Src1, Src2);
   }
   StoreReg(Rd, Is64, Result);
   return true;
@@ -522,12 +514,7 @@ bool IRBuilder::CondCompare(uint32_t Word) {
   Ref Src1 = LoadX(Bits(Word, 9, 5));
   Ref Src2 {};
   if (IsImm) {
-    // POWERARM-M1-TODO(backend): DEF_OP(CondAddNZCV)'s 64-bit inline-constant path (JIT/PPC64LE/ALUOps.cpp, addic_ + SetOVConstant(false)) forces V=0, wrong for CCMN x, #imm with x near INT64_MAX; drop this Copy once the lowering computes V.
-    // The Copy keeps the constant out of that path; the CCMN edge cases at the end of gen.py's csel group cover it.
     Src2 = Constant(Bits(Word, 20, 16));
-    if (!IsSub && Is64) {
-      Src2 = _Copy(Src2);
-    }
   } else {
     Src2 = LoadX(Bits(Word, 20, 16));
   }

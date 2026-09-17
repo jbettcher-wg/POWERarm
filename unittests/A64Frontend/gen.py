@@ -172,6 +172,19 @@ def gen_adc(p):
             p.case([f"{op} {rn(d)}, {rn(m)}"], loads, nzcv)
         else:
             p.case([f"{op} {rn(d)}, {rn(n)}, {rn(m)}"], loads, nzcv)
+    # C stays live across flag-neutral ADC/SBC and is consumed later in the
+    # same block (dump reads NZCV only after a block exit).
+    for _ in range(40):
+        loads = {1: p.value(), 2: p.value()}
+        nzcv = p.rng.choice([0x0, 0x2, 0xF, 0xD])
+        p.case(["adc x3, x1, x2", "sbc w4, w1, w2", "cset x5, cs", "adc w6, w1, w2", "sbc x7, x1, x2",
+                "csetm x8, hs", "adcs x9, x1, x2", "sbc x10, x2, x1", "adc x15, x1, x1", "cset x18, cs"], loads, nzcv)
+    # XZR as the first operand (IR inline zero).
+    for _ in range(20):
+        loads = {2: p.value()}
+        nzcv = p.rng.choice([0x0, 0x2, 0xF, 0xD])
+        p.case(["adc x3, xzr, x2", "adc w4, wzr, w2", "sbc x5, xzr, x2", "sbc w7, wzr, w2", "cset x8, cs",
+                "adcs x9, xzr, x2", "sbcs w10, wzr, w2"], loads, nzcv)
 
 
 LOGIC_IMM32 = [0x1, 0xFF, 0xFFFF, 0x7FFFFFFF, 0x80000000, 0xF0F0F0F0, 0x55555555, 0xFFFFFFFE, 0x3C, 0xFFF0000F]
