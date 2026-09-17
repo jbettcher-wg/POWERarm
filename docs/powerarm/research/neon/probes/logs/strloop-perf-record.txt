@@ -1,0 +1,24 @@
+163860000
+wall 102 ms
+== perf stat strloop 4096 x 20000 (cpu 112)
+== perf record
+    80.10%  [JIT] tid 4150104 
+    16.82%  POWERarm          
+     1.49%  ld64.so.2         
+     0.73%  libc.so.6         
+    22.72%  [.] /mnt/arch/home/jbettcher/Development/POWERarm-wt/research-neon/docs/powerarm/research/neon/probes/workloads/strloop+0xffe8 (0x8000454471d0)
+    21.88%  [.] /mnt/arch/home/jbettcher/Development/POWERarm-wt/research-neon/docs/powerarm/research/neon/probes/workloads/strloop+0x11860 (0x80004547bba0)
+    19.28%  [.] /mnt/arch/home/jbettcher/Development/POWERarm-wt/research-neon/docs/powerarm/research/neon/probes/workloads/strloop+0x10260 (0x80004547d200)
+     8.14%  [.] /mnt/arch/home/jbettcher/Development/POWERarm-wt/research-neon/docs/powerarm/research/neon/probes/workloads/strloop+0xffd0 (0x800045446ef0)
+     4.47%  [.] /mnt/arch/home/jbettcher/Development/POWERarm-wt/research-neon/docs/powerarm/research/neon/probes/workloads/strloop+0x10284 (0x80004547cf40)
+     3.54%  [.] FEXCore::A64::(anonymous namespace)::BuildTable() [clone .llvm.4670297999205070594]
+     2.67%  [.] FEXCore::CPU::PPC64JITCore::CompileCode(unsigned long, unsigned long, bool, FEXCore::IR::IRListView const*, FEXCore::Core::DebugData*, bool)
+     0.95%  [.] FEXCore::Context::ContextImpl::GenerateIR(FEXCore::Core::InternalThreadState*, unsigned long, bool, unsigned long)
+     0.95%  [.] FEXCore::Context::ContextImpl::CompileBlock(FEXCore::Core::CpuStateFrame*, unsigned long, unsigned long)
+     0.84%  [.] /mnt/arch/home/jbettcher/Development/POWERarm-wt/research-neon/docs/powerarm/research/neon/probes/workloads/strloop+0x1188c (0x800045442020)
+     0.84%  [.] /mnt/arch/home/jbettcher/Development/POWERarm-wt/research-neon/docs/powerarm/research/neon/probes/workloads/strloop+0x2d0 (0x80004543b950)
+     0.72%  [.] PPC64Emitter::Emitter::b(PPC64Emitter::Label*)
+     0.56%  [.] /mnt/arch/home/jbettcher/Development/POWERarm-wt/research-neon/docs/powerarm/research/neon/probes/workloads/strloop+0x10290 (0x80004547d4d0)
+     0.56%  [.] /mnt/arch/home/jbettcher/Development/POWERarm-wt/research-neon/docs/powerarm/research/neon/probes/workloads/strloop+0x10000 (0x8000454474b0)
+     0.51%  [.] FEXCore::A64::IRBuilder::BeginFunction(unsigned long, std::vector<FEXCore::A64::Decoder::DecodedBlocks, fextl::FEXAlloc<FEXCore::A64::Decoder::DecodedBlocks> > const*, unsigned int)
+     0.51%  [.] FEXCore::IR::ConstrainedRAPass::Run(FEXCore::IR::IREmitter*)

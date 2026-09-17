@@ -1,0 +1,31 @@
+wall 607 ms (POWERarm)
+cycles:u                         2171821637 49.00%
+instructions:u                   3752601962 74.00%
+branches:u                        584379745 75.00%
+branch-misses:u                      819628 24.00%
+pm_run_cyc:u                     2172178272 49.00%
+pm_vsu_fin:u                     4056295320 75.00%
+pm_vector_ld_cmpl:u               153796504 75.00%
+pm_vector_st_cmpl:u                  271680 24.00%
+pm_cmplu_stall:u                  766597883 49.00%
+pm_cmplu_stall_st_fwd:u             2111532 75.00%
+pm_cmplu_stall_lsu:u              132922895 75.00%
+pm_cmplu_stall_exec_unit:u        633463500 24.00%
+pm_cmplu_stall_fxu:u              575840074 100.00%
+pm_flush_mpred:u                    1021642 100.00%
+pm_br_mpred_cmpl:u                   950139 100.00%
+pm_lsu_flush_lhs:u                        0 100.00%
+== host code of the hot blocks
+-- guest strloop+0xffe8 host 0x0x800045447930 size 0x2a0
+objdump: '/tmp/blk_0xffe8.bin': No such file
+
+
+-- guest strloop+0x10260 host 0x0x80004547df90 size 0x2a0
+objdump: '/tmp/blk_0x10260.bin': No such file
+
+
+-- guest strloop+0x11860 host 0x0x80004547c930 size 0x230
+
+
+objdump: '/tmp/blk_0x11860.bin': No such file
+done
