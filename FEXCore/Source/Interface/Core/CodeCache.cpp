@@ -787,6 +787,17 @@ namespace {
     }
   };
 
+  // Only POWERARM_CODECACHESTATS=1 prints the timers. The load timer runs once
+  // per installed block, and its two clock_gettime calls were 1.2% of a warm
+  // `gcc -c empty.c`.
+  bool StatsTimersEnabled() {
+    static const bool Enabled = [] {
+      const char* Env = getenv("FEX_CODECACHESTATS");
+      return Env && *Env == '1';
+    }();
+    return Enabled;
+  }
+
   uint64_t MonotonicSeconds() {
     struct timespec TS {};
     if (::clock_gettime(CLOCK_MONOTONIC, &TS) != 0) {
@@ -1316,7 +1327,10 @@ std::optional<CodeCache::LoadedBlock> CodeCache::TryLoadBlock(Core::InternalThre
   if (File->BasePath.empty()) {
     return std::nullopt;
   }
-  ScopedNS Timer {Stats.LoadNS};
+  std::optional<ScopedNS> Timer;
+  if (StatsTimersEnabled()) [[unlikely]] {
+    Timer.emplace(Stats.LoadNS);
+  }
 
 
   const uint64_t GuestOffset = GuestRIP - Section->FileStartVA;
