@@ -3767,8 +3767,18 @@ DEF_OP(VFCADD) {
 // PowerISA VSX a-form FMA (T as the addend) maps these directly:
 //   xvmaddasp  : T <- (A * B) + T            → VFMLA  with T = Add
 //   xvmsubasp  : T <- (A * B) - T            → VFMLS
-//   xvnmsubasp : T <- -((A * B) - T) = -A*B+T → VFNMLA
-//   xvnmaddasp : T <- -((A * B) + T) = -A*B-T → VFNMLS
+//
+// The negated-product forms must NOT use xvnmsub*/xvnmadd*: the ISA applies
+// the negation *after* rounding (`result <- NegateDP(RoundToDP(RN, v))`,
+// ISA 3.0 p.613/624), while VFNMLA/VFNMLS negate the product before the single
+// rounding.  That differs in the sign of an exact zero (V1=0, V2=0, Add=+0:
+// VFNMLA is -0*0 + 0 = +0, xvnmsub gives -(0 - 0) = -0), in the magnitudes of
+// the directed rounding modes (-round_up(x) != round_up(-x)) and in the sign
+// of a NaN — 412 979 of 1 000 188 corpus triples for FMSUB, 520 932 for
+// FNMADD [FP research §6.2, §10.1].  Negate the multiplicand instead, which is
+// exact, and use the plain fused forms:
+//   xvnegdp t,V1; xvmaddadp T(=Add),t,V2  : T <- (-V1)*V2 + Add  → VFNMLA
+//   xvnegdp t,V1; xvmsubadp T(=Add),t,V2  : T <- (-V1)*V2 - Add  → VFNMLS
 //
 // So Dst must hold Add on entry. RA usually ties Dst==Add, but if not we
 // vmr Add → Dst first. If Dst aliases V1 or V2 we stash that source into a
@@ -3822,16 +3832,18 @@ DEF_OP(VFNMLA) {
   const auto V1   = GetVReg(Op->Vector1);
   const auto V2   = GetVReg(Op->Vector2);
   const auto Add  = GetVReg(Op->Addend);
-  VR A = V1, B = V2;
-  if (Dst != Add) {
-    if (Dst == V1) { vmr(VTMP1, V1); A = VTMP1; }
-    if (Dst == V2) { vmr(VTMP2, V2); B = VTMP2; }
-    vmr(Dst, Add);
+  if (ElemSz != IR::OpSize::i32Bit && ElemSz != IR::OpSize::i64Bit) {
+    Op_Unhandled(IROp, Node);
+    return;
   }
+  // -V1 into VTMP1 first: that also serves as the stash when Dst == V1.
+  VR B = V2;
+  if (Dst != Add && Dst == V2) { vmr(VTMP2, V2); B = VTMP2; }
+  if (ElemSz == IR::OpSize::i32Bit) xvnegsp(VTMP1, V1); else xvnegdp(VTMP1, V1);
+  if (Dst != Add) vmr(Dst, Add);
   switch (ElemSz) {
-  case IR::OpSize::i32Bit: xvnmsubasp(Dst, A, B); break;
-  case IR::OpSize::i64Bit: xvnmsubadp(Dst, A, B); break;
-  default: Op_Unhandled(IROp, Node); break;
+  case IR::OpSize::i32Bit: xvmaddasp(Dst, VTMP1, B); break;
+  default:                 xvmaddadp(Dst, VTMP1, B); break;
   }
 }
 
@@ -3842,16 +3854,17 @@ DEF_OP(VFNMLS) {
   const auto V1   = GetVReg(Op->Vector1);
   const auto V2   = GetVReg(Op->Vector2);
   const auto Add  = GetVReg(Op->Addend);
-  VR A = V1, B = V2;
-  if (Dst != Add) {
-    if (Dst == V1) { vmr(VTMP1, V1); A = VTMP1; }
-    if (Dst == V2) { vmr(VTMP2, V2); B = VTMP2; }
-    vmr(Dst, Add);
+  if (ElemSz != IR::OpSize::i32Bit && ElemSz != IR::OpSize::i64Bit) {
+    Op_Unhandled(IROp, Node);
+    return;
   }
+  VR B = V2;
+  if (Dst != Add && Dst == V2) { vmr(VTMP2, V2); B = VTMP2; }
+  if (ElemSz == IR::OpSize::i32Bit) xvnegsp(VTMP1, V1); else xvnegdp(VTMP1, V1);
+  if (Dst != Add) vmr(Dst, Add);
   switch (ElemSz) {
-  case IR::OpSize::i32Bit: xvnmaddasp(Dst, A, B); break;
-  case IR::OpSize::i64Bit: xvnmaddadp(Dst, A, B); break;
-  default: Op_Unhandled(IROp, Node); break;
+  case IR::OpSize::i32Bit: xvmsubasp(Dst, VTMP1, B); break;
+  default:                 xvmsubadp(Dst, VTMP1, B); break;
   }
 }
 
@@ -4399,7 +4412,14 @@ DEF_OP(VFCMPScalarInsert) {
 //
 // XT is the accumulator here, matching the non-scalar VFMLA path a few lines
 // up (Dst <- Add, then xvmaddasp(Dst, V1, V2) == V1*V2 + Add).
-#define DEF_FMA_SCALAR_INSERT(NAME, XVOP_S, XVOP_D, FOP_S, FOP_D)              \
+//
+// NEGA negates the multiplicand before the fused op (VFNMLA/VFNMLS).  The
+// xvnmadd*/xvnmsub* forms would be one instruction shorter but negate *after*
+// rounding, which is a different function — see the DEF_OP(VFNMLA) comment and
+// FP research §6.2.  The negate lands in VTMP2, which is either already the
+// splat scratch for SrcA (negate in place) or unused because SrcA passed
+// through in splat form.
+#define DEF_FMA_SCALAR_INSERT(NAME, XVOP_S, XVOP_D, FOP_S, FOP_D, NEGA)        \
 DEF_OP(NAME) {                                                                 \
   const auto Op     = IROp->C<IR::IROp_##NAME>();                              \
   const auto ElemSz = Op->Header.ElementSize;                                  \
@@ -4425,6 +4445,10 @@ DEF_OP(NAME) {                                                                 \
       SrcA = toVSX(V1);                                                        \
     } else {                                                                   \
       xxspltw(toVSX(VTMP2), toVSX(V1), 3);                                     \
+    }                                                                          \
+    if (NEGA) {                                                                \
+      xvnegsp(toVSX(VTMP2), SrcA);                                             \
+      SrcA = toVSX(VTMP2);                                                     \
     }                                                                          \
     PPC64Emitter::VSXR SrcB = VTMP3_VSX;                                       \
     if (IsSplatFormValue(Op->Vector2, ElemSz)) {                               \
@@ -4456,6 +4480,10 @@ DEF_OP(NAME) {                                                                 \
       SrcA = toVSX(V1);                                                        \
     } else {                                                                   \
       xxpermdi(toVSX(VTMP2), toVSX(V1), toVSX(V1), 3);                         \
+    }                                                                          \
+    if (NEGA) {                                                                \
+      xvnegdp(toVSX(VTMP2), SrcA);                                             \
+      SrcA = toVSX(VTMP2);                                                     \
     }                                                                          \
     PPC64Emitter::VSXR SrcB = VTMP3_VSX;                                       \
     if (IsSplatFormValue(Op->Vector2, ElemSz) ||                               \
@@ -4497,12 +4525,12 @@ DEF_OP(NAME) {                                                                 \
 // Vector op pairing mirrors the non-scalar DEF_OP(VFMLA/VFMLS/VFNMLA/VFNMLS)
 // handlers exactly, so the FEX-vs-PPC naming inversion is inherited from a
 // path that is already proven rather than re-derived here.
-DEF_FMA_SCALAR_INSERT(VFMLAScalarInsert,  xvmaddasp,  xvmaddadp,  fmadds,  fmadd)
-DEF_FMA_SCALAR_INSERT(VFMLSScalarInsert,  xvmsubasp,  xvmsubadp,  fmsubs,  fmsub)
-// VFNMLA: -(V1*V2) + Add → fnmsub: -A*C + B = -V1*V2 + Add  ✓
-DEF_FMA_SCALAR_INSERT(VFNMLAScalarInsert, xvnmsubasp, xvnmsubadp, fnmsubs, fnmsub)
-// VFNMLS: -(V1*V2) - Add → fnmadd: -(A*C+B) = -V1*V2 - Add  ✓
-DEF_FMA_SCALAR_INSERT(VFNMLSScalarInsert, xvnmaddasp, xvnmaddadp, fnmadds, fnmadd)
+DEF_FMA_SCALAR_INSERT(VFMLAScalarInsert,  xvmaddasp,  xvmaddadp,  fmadds,  fmadd,  false)
+DEF_FMA_SCALAR_INSERT(VFMLSScalarInsert,  xvmsubasp,  xvmsubadp,  fmsubs,  fmsub,  false)
+// VFNMLA: -(V1*V2) + Add → negate the multiplicand, then the plain a-form add
+DEF_FMA_SCALAR_INSERT(VFNMLAScalarInsert, xvmaddasp,  xvmaddadp,  fmadds,  fmadd,  true)
+// VFNMLS: -(V1*V2) - Add → negate the multiplicand, then the plain a-form sub
+DEF_FMA_SCALAR_INSERT(VFNMLSScalarInsert, xvmsubasp,  xvmsubadp,  fmsubs,  fmsub,  true)
 #undef DEF_FMA_SCALAR_INSERT
 // VFCopySign — magnitude from V1, sign from V2.
 DEF_OP(VFCopySign) {
