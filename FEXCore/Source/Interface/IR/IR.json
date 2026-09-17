@@ -2830,8 +2830,9 @@
         "DestSize": "FEXCore::IR::OpSize::i128Bit",
         "TiedSource": 0
       },
-      "GPR = CRC32 GPR:$Src1, GPR:$Src2, OpSize:$SrcSize": {
-        "Desc": ["CRC32 using polynomial 0x1EDC6F41"
+      "GPR = CRC32 GPR:$Src1, GPR:$Src2, OpSize:$SrcSize, i1:$Castagnoli{true}": {
+        "Desc": ["Reflected CRC-32 of the low SrcSize bytes of Src2 into the accumulator Src1, no inversion:",
+                 "polynomial 0x1EDC6F41 (CRC-32C) when Castagnoli, else 0x04C11DB7 (A64 CRC32B/H/W/X)"
                 ],
         "DestSize": "OpSize::i32Bit"
       },

@@ -5269,6 +5269,11 @@ static const ::FEXCore::CPU::PPC64RuntimeTables PPC64Tables = {
     [2 * ::FEXCore::CPU::PPC64_VCONST_CRC32C_MU + 1]     = 0xA434F61C6F5389F8ULL,
     [2 * ::FEXCore::CPU::PPC64_VCONST_CRC32C_P + 0]      = 0x0000000000000000ULL,
     [2 * ::FEXCore::CPU::PPC64_VCONST_CRC32C_P + 1]      = 0x0000000105EC76F1ULL,
+    // CRC-32 (0x04C11DB7) Barrett constants, same layout.
+    [2 * ::FEXCore::CPU::PPC64_VCONST_CRC32_MU + 0]      = 0x0000000000000000ULL,
+    [2 * ::FEXCore::CPU::PPC64_VCONST_CRC32_MU + 1]      = 0x5A72D812FB808B20ULL,
+    [2 * ::FEXCore::CPU::PPC64_VCONST_CRC32_P + 0]       = 0x0000000000000000ULL,
+    [2 * ::FEXCore::CPU::PPC64_VCONST_CRC32_P + 1]       = 0x00000001DB710641ULL,
     // VAddP vperm controls (values verbatim from the old inline builds).
     [2 * ::FEXCore::CPU::PPC64_VCONST_ADDP_EVEN_B + 0]   = 0x01030507090B0D0FULL,
     [2 * ::FEXCore::CPU::PPC64_VCONST_ADDP_EVEN_B + 1]   = 0x11131517191B1D1FULL,

@@ -254,6 +254,13 @@ public:
   bool SMLSL_elt(uint32_t Word); bool UMLSL_elt(uint32_t Word);
   bool UADDLV(uint32_t Word); bool SADDLV(uint32_t Word); bool SMAXV(uint32_t Word); bool SMINV(uint32_t Word);
   bool CLZ_asimd(uint32_t Word); bool CLS_asimd(uint32_t Word); bool UDOT_vec(uint32_t Word);
+  // Cryptographic extension and CRC32 (TranslateCrypto.cpp).
+  bool AESE(uint32_t Word); bool AESD(uint32_t Word); bool AESMC(uint32_t Word); bool AESIMC(uint32_t Word);
+  bool PMULL(uint32_t Word);
+  bool SHA1C(uint32_t Word); bool SHA1M(uint32_t Word); bool SHA1P(uint32_t Word); bool SHA1H(uint32_t Word);
+  bool SHA1SU0(uint32_t Word); bool SHA1SU1(uint32_t Word);
+  bool SHA256H(uint32_t Word); bool SHA256H2(uint32_t Word); bool SHA256SU0(uint32_t Word); bool SHA256SU1(uint32_t Word);
+  bool CRC32(uint32_t Word); bool CRC32C(uint32_t Word);
   // clang-format on
 
 private:
@@ -410,6 +417,7 @@ private:
   bool SIMDFloatToInt(uint32_t Word, uint8_t Rounding, bool Signed, bool Scalar);
   bool SIMDFixedConvert(uint32_t Word, bool ToFloat, bool Signed, bool Scalar);
 
+  bool CRC32Common(uint32_t Word, bool Castagnoli);
   // Advanced SIMD saturating families (TranslateSIMDSaturate.cpp).
   enum class NarrowKind { Truncate, SignedToSigned, UnsignedToUnsigned, SignedToUnsigned };
   enum class ShiftLeftKind { Signed, Unsigned, SignedToUnsigned };
