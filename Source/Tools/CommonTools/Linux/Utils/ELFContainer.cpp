@@ -31,15 +31,10 @@ static ELFContainer::ELFType CheckELFType(uint8_t* Data) {
     return ELFContainer::ELFType::TYPE_NONE;
   }
 
-  if (Data[EI_CLASS] == ELFCLASS32) {
-    Elf32_Ehdr* Header = reinterpret_cast<Elf32_Ehdr*>(Data);
-    if (Header->e_machine == EM_386) {
-      return ELFContainer::ELFType::TYPE_X86_32;
-    }
-  } else if (Data[EI_CLASS] == ELFCLASS64) {
+  if (Data[EI_CLASS] == ELFCLASS64 && Data[EI_DATA] == ELFDATA2LSB) {
     Elf64_Ehdr* Header = reinterpret_cast<Elf64_Ehdr*>(Data);
-    if (Header->e_machine == EM_X86_64) {
-      return ELFContainer::ELFType::TYPE_X86_64;
+    if (Header->e_machine == EM_AARCH64 && (Header->e_type == ET_EXEC || Header->e_type == ET_DYN)) {
+      return ELFContainer::ELFType::TYPE_AARCH64;
     }
   }
 
@@ -166,52 +161,12 @@ bool ELFContainer::LoadELF(const fextl::string& Filename) {
     return false;
   }
 
-  if (Ident[EI_CLASS] == ELFCLASS32) {
-    return LoadELF_32();
-  } else if (Ident[EI_CLASS] == ELFCLASS64) {
+  if (Ident[EI_CLASS] == ELFCLASS64) {
     return LoadELF_64();
   }
 
-  LogMan::Msg::EFmt("Unknown ELF type");
+  LogMan::Msg::EFmt("Unsupported ELF class {}: only ELFCLASS64 AArch64 is supported", Ident[EI_CLASS]);
   return false;
-}
-
-bool ELFContainer::LoadELF_32() {
-  Mode = MODE_32BIT;
-
-  memcpy(&Header, reinterpret_cast<Elf32_Ehdr*>(RawFile.data()), sizeof(Elf32_Ehdr));
-  LOGMAN_THROW_A_FMT(Header._32.e_phentsize == sizeof(Elf32_Phdr), "PH Entry size wasn't correct size");
-  LOGMAN_THROW_A_FMT(Header._32.e_shentsize == sizeof(Elf32_Shdr), "PH Entry size wasn't correct size");
-
-  if (Header._32.e_machine != EM_386) {
-    LogMan::Msg::DFmt("32bit ELF wasn't x86 based");
-    return false;
-  }
-
-  SectionHeaders.resize(Header._32.e_shnum);
-  ProgramHeaders.resize(Header._32.e_phnum);
-
-  Elf32_Shdr* RawShdrs = reinterpret_cast<Elf32_Shdr*>(&RawFile.at(Header._32.e_shoff));
-  Elf32_Phdr* RawPhdrs = reinterpret_cast<Elf32_Phdr*>(&RawFile.at(Header._32.e_phoff));
-
-  for (uint32_t i = 0; i < Header._32.e_shnum; ++i) {
-    SectionHeaders[i]._32 = &RawShdrs[i];
-  }
-
-  for (uint32_t i = 0; i < Header._32.e_phnum; ++i) {
-    ProgramHeaders[i]._32 = &RawPhdrs[i];
-    if (ProgramHeaders[i]._32->p_type == PT_INTERP) {
-      InterpreterHeader = ProgramHeaders[i];
-      DynamicLinker = reinterpret_cast<const char*>(&RawFile.at(InterpreterHeader._32->p_offset));
-    }
-  }
-
-  DynamicProgram = Header._32.e_type != ET_EXEC;
-
-  // Default BRK size
-  BRKSize = FEXCore::Utils::FEX_GUEST_PAGE_SIZE;
-
-  return true;
 }
 
 bool ELFContainer::LoadELF_64() {
@@ -221,8 +176,9 @@ bool ELFContainer::LoadELF_64() {
   LOGMAN_THROW_A_FMT(Header._64.e_phentsize == 56, "PH Entry size wasn't 56");
   LOGMAN_THROW_A_FMT(Header._64.e_shentsize == 64, "PH Entry size wasn't 64");
 
-  if (Header._64.e_machine != EM_X86_64) {
-    LogMan::Msg::DFmt("64bit ELF wasn't x86-64 based");
+  // POWERARM-M0-TODO(loader): ELFContainer is only used for GetELFType now; its MODE_32BIT parsing branches are dead and should go with the class.
+  if (Header._64.e_machine != EM_AARCH64) {
+    LogMan::Msg::DFmt("64bit ELF wasn't AArch64 based");
     return false;
   }
 

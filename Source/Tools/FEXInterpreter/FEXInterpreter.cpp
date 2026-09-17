@@ -22,8 +22,7 @@ $end_info$
 #include "LinuxSyscalls/LinuxAllocator.h"
 #include "LinuxSyscalls/Syscalls.h"
 #include "LinuxSyscalls/Utils/Threads.h"
-#include "LinuxSyscalls/x32/Syscalls.h"
-#include "LinuxSyscalls/x64/Syscalls.h"
+#include "LinuxSyscalls/Arm64/Syscalls.h"
 #include "LinuxSyscalls/SignalDelegator.h"
 #include "Linux/Utils/ELFContainer.h"
 #include "Thunks.h"
@@ -156,66 +155,18 @@ void Init() {
 
 namespace FEX::Allocator {
 
-fextl::vector<FEXCore::Allocator::MemoryRegion> InitMemoryRegions(bool Is64Bit) {
+fextl::vector<FEXCore::Allocator::MemoryRegion> InitMemoryRegions() {
   const auto PageSize = sysconf(_SC_PAGESIZE);
-  if (Is64Bit) {
-    // Destroy the 48th bit if it exists
-    return FEXCore::Allocator::Setup48BitAllocatorIfExists(PageSize > 0 ? static_cast<size_t>(PageSize) : FEXCore::HostPage::Size());
-  }
-
-  // Reserve [0x1_0000_0000, 0x2_0000_0000).
-  // Safety net if 32-bit address calculation overflows in to 64-bit range.
-  constexpr uint64_t First64BitAddr = 0x1'0000'0000ULL;
-  return FEXCore::Allocator::StealMemoryRegion(First64BitAddr, First64BitAddr + First64BitAddr);
+  // Destroy the 48th bit if it exists
+  return FEXCore::Allocator::Setup48BitAllocatorIfExists(PageSize > 0 ? static_cast<size_t>(PageSize) : FEXCore::HostPage::Size());
 }
 
-fextl::unique_ptr<FEX::HLE::MemAllocator> InitAllocator(bool Is64Bit) {
+void InitAllocator() {
   const auto PageSize = sysconf(_SC_PAGESIZE);
-
-  if (Is64Bit) {
-    // A 64-bit guest doesn't need the 4 GiB-constrained allocator, but the
-    // bundled allocator still has to be configured: without this rpmalloc uses
-    // its own mapper, ignores FEX's placement hint, and strews its arenas
-    // (~45 GiB under Unity) through the guest's address space.
-    FEXCore::Allocator::InitializeAllocator(PageSize > 0 ? static_cast<size_t>(PageSize) : FEXCore::HostPage::Size());
-    return {};
-  }
-
-
-  // Setup our userspace allocator
-  FEXCore::Allocator::SetupHooks(PageSize > 0 ? static_cast<size_t>(PageSize) : FEXCore::HostPage::Size());
-  // PassthroughAllocator delegates straight to ::mmap, which on PPC64LE
-  // (and any host whose default mmap base sits above 4 GiB) returns
-  // addresses outside the 32-bit guest address space. glibc i686 then
-  // truncates those pointers when calling through *gs:0x10 (AT_SYSINFO) and
-  // SEGVs on first syscall. The real 32-bit allocator tracks a 4 GiB
-  // bitmap and only hands out low addresses, which is required for any
-  // 32-bit guest binary that consumes AT_SYSINFO.
-  auto Allocator = FEX::HLE::Create32BitAllocator();
-
-  // Now that the upper 32-bit address space is blocked for future allocations,
-  // exhaust all of jemalloc's remaining internal allocations that it reserved before.
-  // TODO: It's unclear how reliably this exhausts those reserves
-  // TODO: This will likely consume one arena inside the 32-bit VA space.
-  //   - (HdkR): I've noticed jemalloc consuming an 8MB arena commonly.
-  //
-  // PPC64LE-host caveat: Linux on PPC64LE puts userspace heap entirely in the
-  // 0x3fff_xxxx_xxxx range, so jemalloc never returns a low-4 GiB address and
-  // the unbounded loop spins forever. Cap the iteration count so we drain
-  // whatever's available below 4 GiB and bail out otherwise.
-  FEXCore::Allocator::YesIKnowImNotSupposedToUseTheGlibcAllocator glibc;
-  void* data = nullptr;
-  for (int i = 0; i < (1 << 20); ++i) {
-    data = malloc(0x1);
-    if (reinterpret_cast<uintptr_t>(data) >> 32 == 0) {
-      break;
-    }
-  }
-  if (data) {
-    free(data);
-  }
-
-  return Allocator;
+  // The bundled allocator still has to be configured: without this rpmalloc
+  // uses its own mapper, ignores FEX's placement hint, and strews its arenas
+  // through the guest's address space.
+  FEXCore::Allocator::InitializeAllocator(PageSize > 0 ? static_cast<size_t>(PageSize) : FEXCore::HostPage::Size());
 }
 
 void Shutdown(fextl::vector<FEXCore::Allocator::MemoryRegion>&& MemoryRegions) {
@@ -405,7 +356,7 @@ namespace UnalignedAtomic {
   }
 } // namespace UnalignedAtomic
 
-void Init(bool Is64Bit, FEXCore::Context::Context* CTX) {
+void Init(FEXCore::Context::Context* CTX) {
   // The host-page-size gate used to be called here. It moved to main(), right
   // after the config reload and BEFORE CreateNewContext: the context caches
   // SMCChecks (FEX_CONFIG_OPT) at construction, so a degrade-mode
@@ -416,15 +367,8 @@ void Init(bool Is64Bit, FEXCore::Context::Context* CTX) {
   TSO::SetupTSOEmulation(CTX);
   UnalignedAtomic::SetupKernelUnalignedAtomics();
 
-  if (!Is64Bit) {
-    // Tell the kernel we want to use the compat input syscalls even though we're
-    // a 64 bit process.
-    CompatInput::SetupCompatInput(true);
-  } else {
-    // Our parent could be an instance running a 32 bit application, so we need
-    // to disable compat input if we're running a 64 bit one ourselves.
-    CompatInput::SetupCompatInput(false);
-  }
+  // The parent could have enabled compat input; an AArch64 guest is always a 64-bit process.
+  CompatInput::SetupCompatInput(false);
 }
 
 } // namespace FEX::Kernel
@@ -575,21 +519,12 @@ int main(int argc, char** argv, char** const envp) {
   }
 
   ELFCodeLoader Loader {Program.ProgramPath, FEXFD, LDPath(), Args, ParsedArgs, envp, &Environment};
-  FEXCore::Config::Set(FEXCore::Config::CONFIG_IS64BIT_MODE, Loader.Is64BitMode() ? "1" : "0");
 
   if (!Loader.ELFWasLoaded()) {
     // Loader couldn't load this program for some reason
-    fextl::fmt::print(stderr, "Invalid or Unsupported elf file.\n");
-#ifndef ARCHITECTURE_x86_64
-    fextl::fmt::print(stderr, "This is likely due to a misconfigured x86-64 RootFS\n");
-    fextl::fmt::print(stderr, "Current RootFS path set to '{}'\n", LDPath());
-    if (LDPath().empty() || FHU::Filesystem::Exists(LDPath()) == false) {
-      fextl::fmt::print(stderr, "RootFS path doesn't exist. This is required on non-x86-64 hosts\n");
-#ifdef ARCHITECTURE_arm64
-      fextl::fmt::print(stderr, "Use FEXRootFSFetcher to download a RootFS\n");
-#endif
-    }
-#endif
+    fextl::fmt::print(stderr, "POWERarm: '{}' is not a supported ELF: only ELFCLASS64, ELFDATA2LSB, EM_AARCH64, ET_EXEC or ET_DYN binaries can run\n",
+                      Program.ProgramPath);
+    // POWERARM-M0-TODO(loader): an unloadable PT_INTERP lands here too; report the interpreter/RootFS separately once dynamic binaries are supported.
     return -ENOEXEC;
   }
 
@@ -619,8 +554,8 @@ int main(int argc, char** argv, char** const envp) {
   // Setup Thread handlers, so FEXCore can create threads.
   auto StackTracker = FEX::LinuxEmulation::Threads::SetupThreadHandlers();
 
-  auto MemoryRegions = FEX::Allocator::InitMemoryRegions(Loader.Is64BitMode());
-  auto Allocator = FEX::Allocator::InitAllocator(Loader.Is64BitMode());
+  auto MemoryRegions = FEX::Allocator::InitMemoryRegions();
+  FEX::Allocator::InitAllocator();
 
   FEXCore::Profiler::Init(Program.ProgramName, Program.ProgramPath);
 
@@ -632,7 +567,7 @@ int main(int argc, char** argv, char** const envp) {
     SupportsAVX = HostFeatures.SupportsAVX;
   }
 
-  FEX::Kernel::Init(Loader.Is64BitMode(), CTX.get());
+  FEX::Kernel::Init(CTX.get());
 
   auto SignalDelegation = FEX::HLE::CreateSignalDelegator(CTX.get(), Program.ProgramName, SupportsAVX);
   auto ThunkHandler = FEX::HLE::CreateThunkHandler();
@@ -645,9 +580,7 @@ int main(int argc, char** argv, char** const envp) {
   // necessity.
   FEX::HLE::HostOwnedRanges::SnapshotSelf();
 
-  auto SyscallHandler = Loader.Is64BitMode() ?
-                          FEX::HLE::x64::CreateHandler(CTX.get(), SignalDelegation.get(), ThunkHandler.get()) :
-                          FEX::HLE::x32::CreateHandler(CTX.get(), SignalDelegation.get(), ThunkHandler.get(), std::move(Allocator));
+  auto SyscallHandler = FEX::HLE::Arm64::CreateHandler(CTX.get(), SignalDelegation.get(), ThunkHandler.get());
   SyscallHandler->SetCodeLoader(&Loader);
   CTX->SetSignalDelegator(SignalDelegation.get());
   CTX->SetSyscallHandler(SyscallHandler.get());
@@ -698,10 +631,10 @@ int main(int argc, char** argv, char** const envp) {
   SyscallHandler->DeserializeSeccompFD(ParentThread, FEXSeccompFD);
 
   // Load VDSO in to memory prior to mapping our ELFs.
-  auto VDSOMapping = FEX::VDSO::LoadVDSOThunks(ParentThread->Thread, Loader.Is64BitMode(), SyscallHandler.get());
+  auto VDSOMapping = FEX::VDSO::LoadVDSOThunks(ParentThread->Thread, SyscallHandler.get());
 
   // Pass in our VDSO thunks
-  ThunkHandler->AppendThunkDefinitions(FEX::VDSO::GetVDSOThunkDefinitions(Loader.Is64BitMode()));
+  ThunkHandler->AppendThunkDefinitions(FEX::VDSO::GetVDSOThunkDefinitions());
   SignalDelegation->SetVDSOSymbols();
 
   {
@@ -710,7 +643,7 @@ int main(int argc, char** argv, char** const envp) {
 
     if (!Loader.MapMemory(SyscallHandler.get(), ParentThread->Thread)) {
       // failed to map
-      LogMan::Msg::EFmt("Failed to map {}-bit elf file.", Loader.Is64BitMode() ? 64 : 32);
+      LogMan::Msg::EFmt("Failed to map elf file.");
       return -ENOEXEC;
     }
   }
@@ -741,9 +674,9 @@ int main(int argc, char** argv, char** const envp) {
     }
   }
 
-  // Pull RIP and stack pointer from loader and set the thread data to it.
-  ParentThread->Thread->CurrentFrame->State.rip = Loader.DefaultRIP();
-  ParentThread->Thread->CurrentFrame->State.gregs[FEXCore::X86State::REG_RSP] = Loader.GetStackPointer();
+  // Pull PC and stack pointer from loader and set the thread data to it.
+  ParentThread->Thread->CurrentFrame->State.pc = Loader.DefaultRIP();
+  ParentThread->Thread->CurrentFrame->State.sp = Loader.GetStackPointer();
 
   // Close the loader FDs after everything has been parsed and mapped.
   Loader.CloseFDs();

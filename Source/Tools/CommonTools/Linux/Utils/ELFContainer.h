@@ -128,20 +128,18 @@ public:
 
   enum ELFType {
     TYPE_NONE,
-    TYPE_X86_64,
-    TYPE_X86_32,
+    TYPE_AARCH64,
     TYPE_OTHER_ELF,
   };
   static ELFType GetELFType(const fextl::string& Filename);
   static ELFType GetELFType(int FD);
   static bool IsSupportedELF(const fextl::string& Filename) {
     ELFType Type = GetELFType(Filename);
-    return Type == TYPE_X86_64 || Type == TYPE_X86_32;
+    return Type == TYPE_AARCH64;
   }
 
 private:
   bool LoadELF(const fextl::string& Filename);
-  bool LoadELF_32();
   bool LoadELF_64();
   void CalculateMemoryLayouts();
   void CalculateSymbols();

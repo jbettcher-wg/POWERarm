@@ -93,32 +93,8 @@ struct std::hash<FEXCore::ExecutableFileInfo> {
   }
 };
 
-// Placeholder data to ensure the compile thread doesn't de-reference nullptr data
-static FEXCore::Core::CPUState::gdt_segment gdt[32] {};
-
-static FEXCore::Core::InternalThreadState* SetupCompileThread(FEXCore::Context::Context& CTX, bool Is64Bit) {
-  auto Thread = CTX.CreateThread(0, 0);
-
-  auto Frame = Thread->CurrentFrame;
-  Frame->State.segment_arrays[FEXCore::Core::CPUState::SEGMENT_ARRAY_INDEX_GDT] = &gdt[0];
-  Frame->State.segment_arrays[FEXCore::Core::CPUState::SEGMENT_ARRAY_INDEX_LDT] = &gdt[0];
-
-  Frame->State.cs_idx = FEXCore::Core::CPUState::DEFAULT_USER_CS << 3;
-  auto GDT = FEXCore::Core::CPUState::GetSegmentFromIndex(Frame->State, Frame->State.cs_idx);
-  FEXCore::Core::CPUState::SetGDTBase(GDT, 0);
-  FEXCore::Core::CPUState::SetGDTLimit(GDT, 0xFFFFFU);
-  Frame->State.cs_cached =
-    FEXCore::Core::CPUState::CalculateGDTBase(*FEXCore::Core::CPUState::GetSegmentFromIndex(Frame->State, Frame->State.cs_idx));
-
-  if (Is64Bit) {
-    GDT->L = 1; // L = Long Mode = 64-bit
-    GDT->D = 0; // D = Default Operand SIze = Reserved
-  } else {
-    GDT->L = 0; // L = Long Mode = 32-bit
-    GDT->D = 1; // D = Default Operand Size = 32-bit
-  }
-
-  return Thread;
+static FEXCore::Core::InternalThreadState* SetupCompileThread(FEXCore::Context::Context& CTX) {
+  return CTX.CreateThread(0, 0);
 }
 
 // Returns filename of generated cache on success
@@ -134,9 +110,7 @@ static std::optional<std::string> GenerateSingleCache(FEXCore::ExecutableFileInf
     return std::nullopt;
   }
 
-  const bool Is64Bit = Loader.Is64BitMode();
-  auto SyscallOSABI = Is64Bit ? FEXCore::HLE::SyscallOSABI::OS_LINUX64 : FEXCore::HLE::SyscallOSABI::OS_LINUX32;
-  auto SyscallHandler = std::make_unique<AOTSyscallHandler>(SyscallOSABI);
+  auto SyscallHandler = std::make_unique<AOTSyscallHandler>(FEXCore::HLE::SyscallOSABI::OS_LINUX64);
 
   // Populate relocations from ELF file
   {
@@ -145,8 +119,6 @@ static std::optional<std::string> GenerateSingleCache(FEXCore::ExecutableFileInf
     Binary.Relocations = RelocParser.PopulateRelocations();
     SyscallHandler->FileInfo.Relocations = Binary.Relocations;
   }
-
-  FEXCore::Config::Set(FEXCore::Config::CONFIG_IS64BIT_MODE, Is64Bit ? "1" : "0");
 
   // Load HostFeatures
   auto HostFeatures = FEX::FetchHostFeatures();
@@ -171,13 +143,7 @@ static std::optional<std::string> GenerateSingleCache(FEXCore::ExecutableFileInf
     return std::nullopt;
   }
 
-  if (!Is64Bit) {
-    const auto PageSize = sysconf(_SC_PAGESIZE);
-    // Block upper address space
-    FEXCore::Allocator::SetupHooks(PageSize > 0 ? PageSize : FEXCore::HostPage::Size());
-  }
-
-  auto Thread = SetupCompileThread(*CTX, Is64Bit);
+  auto Thread = SetupCompileThread(*CTX);
 
   {
     auto ElfBase = Loader.LoadMainElfFile(nullptr, SyscallHandler.get(), Thread);
@@ -185,24 +151,7 @@ static std::optional<std::string> GenerateSingleCache(FEXCore::ExecutableFileInf
       ERROR_AND_DIE_FMT("Failed to load ELF file {} ({})", Binary.Filename, Binary.FileId);
     }
 
-    {
-      ELFParser RelocParser;
-      RelocParser.ReadElf(Binary.Filename);
-      auto relocs32 = RelocParser.ReadRawRelocations32();
-
-      for (auto& reloc : relocs32) {
-        if (ELF32_R_TYPE(reloc.r_info) == R_386_RELATIVE) {
-          // The FEX-relocation is applied on top of this during cache serialization, so this must be countered
-          uint32_t val = *reinterpret_cast<uint32_t*>(SyscallHandler->VAFileStart + reloc.r_offset) + SyscallHandler->VAFileStart;
-          memcpy(reinterpret_cast<uint32_t*>(SyscallHandler->VAFileStart + reloc.r_offset), &val, sizeof(val));
-        } else if (ELF32_R_TYPE(reloc.r_info) == R_386_32) {
-          // The FEX-relocation is applied on top of this during cache serialization, so this must be countered
-          uint32_t* orig = reinterpret_cast<uint32_t*>(SyscallHandler->VAFileStart + reloc.r_offset);
-          uint32_t val = *orig + reloc.r_addend + SyscallHandler->VAFileStart;
-          memcpy(orig, &val, sizeof(val));
-        }
-      }
-    }
+    // POWERARM-M0-TODO(smc): the offline compiler only countered 32-bit x86 relocations here; decide whether AArch64 RELATIVE/ABS64 data needs the same treatment.
   }
 
   CTX->GetCodeCache().InitiateCacheGeneration();
@@ -259,7 +208,7 @@ static std::optional<std::string> GenerateSingleCache(FEXCore::ExecutableFileInf
   }
 }
 
-// Command handler that parses the given code map and generates a code cache for the selected x86 binary.
+// Command handler that parses the given code map and generates a code cache for the selected guest binary.
 // If no binary is selected explicitly, it is inferred from the code map ExecutableFileId block.
 static int GenerateCache(int argc, const char** argv) {
   optparse::OptionParser Parser {};

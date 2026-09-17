@@ -7,7 +7,8 @@
 // Host page size (64K port, stage S2)
 // ---------------------------------------------------------------------------
 // The FEX_GUEST_PAGE_* uses here are guest ELF quantities (p_offset/p_vaddr
-// congruence, AT_PAGESZ, the guest BRK base, the ASLR slide unit) and stay 4K.
+// congruence, the guest BRK base, the ASLR slide unit) and stay 4K. AT_PAGESZ
+// is the exception: it reports the host page size (see SetupAuxv).
 //
 // MapFile's `off = p_offset - PAGE_OFFSET(p_vaddr)` is 4K-congruent by construction
 // and a host mmap requires `offset % hostpage == 0`, so FEX's own loader is the
@@ -33,7 +34,6 @@
 
 #include <FEXCore/Core/CoreState.h>
 #include <FEXCore/Utils/MathUtils.h>
-#include <FEXCore/Core/X86Enums.h>
 #include <FEXCore/Utils/LogManager.h>
 #include <FEXCore/Utils/TypeDefines.h>
 #include <FEXCore/Utils/FileLoading.h>
@@ -521,11 +521,6 @@ public:
     return Entrypoint;
   }
 
-  struct auxv32_t {
-    uint32_t key;
-    uint32_t val;
-  };
-
   struct auxv_t {
     uint64_t key;
     uint64_t val;
@@ -551,12 +546,6 @@ public:
 
       // We ignore LOPROC..HIPROC here, kernel has a platform specific hook about it
       // Both for the main and the interpreter elf
-    }
-
-    if (!HasStackHeader && !Is64BitMode()) {
-      // 32-bit behavior
-      ExecutableStack = true;
-      ExecuteAll = true;
     }
 
     // Set the process personality here
@@ -607,18 +596,13 @@ public:
     void* StackPointerBase {};
     auto VASize = FEXCore::Allocator::DetermineVASize();
     uint64_t StackHint {};
-    if (Is64BitMode()) {
-      if (VASize > 47) {
-        // If VA size is at least as large as minimum x86 specification, then set to max.
-        VASize = 47;
-      }
-
-      // Calculate the highest point the stack could go.
-      StackHint = (1ULL << VASize) - FULL_STACK_SIZE;
-    } else {
-      // Needs to be under the 4GB VA space.
-      StackHint = 0x1'0000'0000ULL - FULL_STACK_SIZE;
+    // POWERARM-M0-TODO(loader): the 47-bit clamp is the x86-64 user VA limit; an AArch64 Linux guest expects 48-bit VA (DESIGN.md guest VA size).
+    if (VASize > 47) {
+      VASize = 47;
     }
+
+    // Calculate the highest point the stack could go.
+    StackHint = (1ULL << VASize) - FULL_STACK_SIZE;
 
     auto PageSize = sysconf(_SC_PAGESIZE);
     PageSize = PageSize > 0 ? PageSize : static_cast<long>(FEXCore::HostPage::Size());
@@ -700,19 +684,12 @@ public:
       // It then also offsets by a random number for ASLR purposes.
       //
       // Random number that gets added to the base needs to be in the number of bits (multiplied by pages):
-      // 64-bit: [28, 32] bits
-      // 32-bit: [8, 16] bits
-      // By default the /minimum/ number of bits is used here.
+      // [28, 32] bits. By default the /minimum/ number of bits is used here.
       constexpr uint64_t TASK_SIZE_64 = (1ULL << 47);
-      constexpr uint64_t TASK_SIZE_32 = (1ULL << 32);
-      if (Is64BitMode()) {
-        // Ensure that if we are running on a 36-bit VA system, we don't try hinting that an ELF should
-        // live way outside the VA space.
-        uint64_t HostVASize = 1ULL << FEXCore::Allocator::DetermineVASize();
-        ELFLoadHint = std::min(HostVASize, TASK_SIZE_64) / 3 * 2;
-      } else {
-        ELFLoadHint = TASK_SIZE_32 / 3 * 2;
-      }
+      // Ensure that if we are running on a 36-bit VA system, we don't try hinting that an ELF should
+      // live way outside the VA space.
+      uint64_t HostVASize = 1ULL << FEXCore::Allocator::DetermineVASize();
+      ELFLoadHint = std::min(HostVASize, TASK_SIZE_64) / 3 * 2;
 #define ASLR_LOAD
 #ifdef ASLR_LOAD
       // Only enable ASLR randomization if the personality has it enabled.
@@ -720,7 +697,6 @@ public:
 
       if (!NoRandomize) {
         constexpr uint64_t ASLR_BITS_64 = 28;
-        constexpr uint64_t ASLR_BITS_32 = 8;
         uint64_t ASLR_Offset {};
         if (!GetRandom(&ASLR_Offset, sizeof(ASLR_Offset))) {
           // getrandom failed for some reason.
@@ -728,11 +704,7 @@ public:
           LogMan::Msg::EFmt("RNG failed. ASLR will not work.");
         }
 
-        if (Is64BitMode()) {
-          ASLR_Offset &= (1ULL << ASLR_BITS_64) - 1;
-        } else {
-          ASLR_Offset &= (1ULL << ASLR_BITS_32) - 1;
-        }
+        ASLR_Offset &= (1ULL << ASLR_BITS_64) - 1;
 
         // The slide is generated in guest pages (that is what the 28/8-bit entropy
         // figures are denominated in, and it keeps the slide range identical on
@@ -790,7 +762,9 @@ public:
     AuxVariables.emplace_back(auxv_t {13, getauxval(AT_GID)});            // AT_GID
     AuxVariables.emplace_back(auxv_t {14, getauxval(AT_EGID)});           // AT_EGID
     AuxVariables.emplace_back(auxv_t {17, getauxval(AT_CLKTCK)});         // AT_CLKTIK
-    AuxVariables.emplace_back(auxv_t {6, FEXCore::Utils::FEX_GUEST_PAGE_SIZE}); // AT_PAGESIZE
+    // AT_PAGESZ is the HOST page size: guest mappings are made with host-granular mmap, so a guest libc must round to it.
+    // POWERARM-M0-TODO(loader): fallback to 4K granule emulation for binaries whose PT_LOAD p_align < host page
+    AuxVariables.emplace_back(auxv_t {6, FEXCore::HostPage::Size()}); // AT_PAGESIZE
     AuxRandom = &AuxVariables.emplace_back(auxv_t {25, ~0ULL});           // AT_RANDOM
     AuxVariables.emplace_back(auxv_t {23, getauxval(AT_SECURE)});         // AT_SECURE
     AuxVariables.emplace_back(auxv_t {8, 0});                             // AT_FLAGS
@@ -801,32 +775,7 @@ public:
     AuxPlatform = &AuxVariables.emplace_back(auxv_t {24, ~0ULL});         // AT_PLATFORM
     AuxExecFN = &AuxVariables.emplace_back(auxv_t {AT_EXECFN, ~0ULL});    // AT_EXECFN
 
-    if (Is64BitMode()) {
-      AuxVariables.emplace_back(auxv_t {4, 0x38}); // AT_PHENT
-    } else {
-      AuxVariables.emplace_back(auxv_t {4, 0x20}); // AT_PHENT
-
-      auto VSyscallEntry = FEX::VDSO::GetVSyscallEntry(VDSOBase);
-      if (!VSyscallEntry) [[unlikely]] {
-        // If the VDSO thunk doesn't exist then we might not have a vsyscall entry.
-        // Newer glibc requires vsyscall to exist now. So let's allocate a buffer and stick a vsyscall in to it.
-        // HOST: a whole host page of its own. The guest only ever sees the entry
-        // point, so there is no reason to squeeze this into a guest page it would
-        // have to share -- and protecting a shared host page read-only below would
-        // take whatever the guest allocator put next to it with it.
-        auto VSyscallPage =
-          Handler->GuestMmap(Thread, nullptr, FEXCore::HostPage::Size(), PROT_READ | PROT_WRITE, MAP_ANONYMOUS | MAP_PRIVATE, -1, 0);
-        constexpr static uint8_t VSyscallCode[] = {
-          0xcd, 0x80, // int 0x80
-          0xc3,       // ret
-        };
-        memcpy(VSyscallPage, VSyscallCode, sizeof(VSyscallCode));
-        Handler->GuestMprotect(Thread, VSyscallPage, FEXCore::HostPage::Size(), PROT_READ);
-        VSyscallEntry = reinterpret_cast<uint64_t>(VSyscallPage);
-      }
-
-      AuxVariables.emplace_back(auxv_t {32, VSyscallEntry}); // AT_SYSINFO - Entry point to syscall
-    }
+    AuxVariables.emplace_back(auxv_t {4, sizeof(Elf64_Phdr)}); // AT_PHENT
 
     if (VDSOBase) {
       AuxVariables.emplace_back(auxv_t {33, reinterpret_cast<uint64_t>(VDSOBase)}); // AT_SYSINFO_EHDR - Address of the start of VDSO
@@ -978,7 +927,7 @@ public:
   void SetupStack() {
     StackPointer += StackSize();
     // Set up our initial CPU state
-    uint64_t SizeOfPointer = Is64BitMode() ? 8 : 4;
+    uint64_t SizeOfPointer = 8;
 
     uint64_t TotalArgumentMemSize {};
 
@@ -989,11 +938,7 @@ public:
     TotalArgumentMemSize += SizeOfPointer;                               // envp nullptr ender
 
     uint64_t AuxVOffset = TotalArgumentMemSize;
-    if (SizeOfPointer == 8) {
-      TotalArgumentMemSize += sizeof(auxv_t) * AuxVariables.size();
-    } else {
-      TotalArgumentMemSize += sizeof(auxv32_t) * AuxVariables.size();
-    }
+    TotalArgumentMemSize += sizeof(auxv_t) * AuxVariables.size();
 
     ArgumentOffset = TotalArgumentMemSize;
     TotalArgumentMemSize += ArgumentBackingSize;
@@ -1021,11 +966,7 @@ public:
     AuxPlatform->val = StackPointer + PlatformNameLocation;
     char* PlatformLoc = reinterpret_cast<char*>(AuxPlatform->val);
     memset(PlatformLoc, 0, platform_string_max_size);
-    if (Is64BitMode()) {
-      strncpy(PlatformLoc, platform_name_x86_64.data(), platform_string_max_size);
-    } else {
-      strncpy(PlatformLoc, platform_name_i686.data(), platform_string_max_size);
-    }
+    strncpy(PlatformLoc, platform_name_aarch64.data(), platform_string_max_size);
 
     // Random value is always 128bits
     AuxRandom->val = StackPointer + RandomNumberLocation;
@@ -1064,13 +1005,8 @@ public:
     // ...
     // [envpend, +8): nullptr
 
-    if (SizeOfPointer == 8) {
-      SetupPointers<uint64_t, auxv_t, 8>(StackPointer, AuxVOffset, ArgumentOffset, EnvpOffset, ApplicationArgs, EnvironmentVariables,
-                                         AuxVariables, &AuxTabBase, &AuxTabSize);
-    } else {
-      SetupPointers<uint32_t, auxv32_t, 4>(StackPointer, AuxVOffset, ArgumentOffset, EnvpOffset, ApplicationArgs, EnvironmentVariables,
-                                           AuxVariables, &AuxTabBase, &AuxTabSize);
-    }
+    SetupPointers<uint64_t, auxv_t, 8>(StackPointer, AuxVOffset, ArgumentOffset, EnvpOffset, ApplicationArgs, EnvironmentVariables,
+                                       AuxVariables, &AuxTabBase, &AuxTabSize);
 
     RemapArgumentData(StackPointer + ArgumentOffset, ArgumentBackingSize);
 #if defined(HAS_PROGRAM_INVOCATION_NAME) && HAS_PROGRAM_INVOCATION_NAME
@@ -1109,10 +1045,6 @@ public:
     return MainElfBase;
   }
 
-  bool Is64BitMode() const {
-    return MainElf.type == ::ELFLoader::ELFContainer::TYPE_X86_64;
-  }
-
   ::ELFLoader::ELFContainer::BRKInfo GetBRKInfo() {
     return ::ELFLoader::ELFContainer::BRKInfo {BrkStart, BRK_SIZE};
   }
@@ -1129,52 +1061,15 @@ public:
     // POWERARM-M0-TODO(cpustate): hwcap profile per DESIGN §4.8; AT_HWCAP/AT_HWCAP2 stay 0 until the A64 feature profile is decided.
     HWCap = 0;
     HWCap2 = 0;
-    SupportsAVX = false;
   }
 
   uint64_t CalculateSignalStackSize() const {
-    // We must calculate the required signal stack size that the "kernel" consumes.
-    // For FEX this means the amount of state we store in to the guest stack, not including the amount
-    // that FEX stores in to the host stack as well.
-    //
-    // This needs to match what we do in FEXCore's dispatcher (Which should at some point be moved to the frontend).
-    //
-    // This roughly means that we need to calculate the combined size of:
-    // - xstate or _libc_fstate depending on AVX support
-    // - ucontext_t
-    // - siginfo_t
-    // Size of state requiring to be stored is different between 32-bit and 64-bit.
-
-    uint64_t Result {};
-    if (Is64BitMode()) {
-      Result += sizeof(FEXCore::x86_64::ucontext_t);
-      Result = FEXCore::AlignUp(Result, alignof(FEXCore::x86_64::ucontext_t));
-      if (SupportsAVX) {
-        Result += sizeof(FEXCore::x86_64::xstate);
-        Result = FEXCore::AlignUp(Result, alignof(FEXCore::x86_64::xstate));
-      } else {
-        Result += sizeof(FEXCore::x86_64::_libc_fpstate);
-        Result = FEXCore::AlignUp(Result, alignof(FEXCore::x86_64::_libc_fpstate));
-      }
-
-      Result += sizeof(siginfo_t);
-      Result = FEXCore::AlignUp(Result, alignof(siginfo_t));
-    } else {
-      Result += sizeof(FEXCore::x86::ucontext_t);
-      Result = FEXCore::AlignUp(Result, alignof(FEXCore::x86::ucontext_t));
-      if (SupportsAVX) {
-        Result += sizeof(FEXCore::x86::xstate);
-        Result = FEXCore::AlignUp(Result, alignof(FEXCore::x86::xstate));
-      } else {
-        Result += sizeof(FEXCore::x86::_libc_fpstate);
-        Result = FEXCore::AlignUp(Result, alignof(FEXCore::x86::_libc_fpstate));
-      }
-
-      Result += sizeof(FEXCore::x86::siginfo_t);
-      Result = FEXCore::AlignUp(Result, alignof(FEXCore::x86::siginfo_t));
-    }
-
-    return Result;
+    // AT_MINSIGSTKSZ: what SignalDelegator::SetupFrame_Arm64 pushes on the guest stack
+    // (rt_sigframe plus the frame record and FEX's host-context slot), rounded to the
+    // AArch64 16-byte stack alignment.
+    // POWERARM-M0-TODO(signals): grow this with the fpsimd/esr/SVE records once the signal frame carries them.
+    uint64_t Result = sizeof(FEXCore::arm64::rt_sigframe) + 32;
+    return FEXCore::AlignUp(Result, 16);
   }
 
   constexpr static uint64_t BRK_SIZE = 8 * 1024 * 1024;
@@ -1193,16 +1088,14 @@ public:
   void* VDSOBase {};
   uint64_t HWCap {};
   uint64_t HWCap2 {};
-  bool SupportsAVX {};
 
   auxv_t* AuxRandom {};
   auxv_t* AuxPlatform {};
   auxv_t* AuxExecFN {};
 
-  static constexpr std::string_view platform_name_x86_64 = "x86_64";
-  static constexpr std::string_view platform_name_i686 = "i686";
+  static constexpr std::string_view platform_name_aarch64 = "aarch64";
   // Need to include null character.
-  static constexpr size_t platform_string_max_size = std::max(platform_name_x86_64.size(), platform_name_i686.size()) + 1;
+  static constexpr size_t platform_string_max_size = platform_name_aarch64.size() + 1;
 
   FEX_CONFIG_OPT(AdditionalArguments, ADDITIONALARGUMENTS);
   FEX_CONFIG_OPT(InjectLibSegFault, INJECTLIBSEGFAULT);

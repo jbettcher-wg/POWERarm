@@ -106,9 +106,10 @@ inline void CheckHostPageSize(bool ConfigAvailable = false, Mode DefaultMode = M
     return;
   }
 
+  // POWERARM-M0-TODO(loader): an AArch64 guest built for 64K pages (PT_LOAD p_align >= host page) needs none of the granule emulation below; skip this gate for it once the loader records p_align.
   fextl::fmt::print(stderr,
-                    "FEX: {}: host page size is {}; the guest is told AT_PAGESZ={} and this binary\n"
-                    "emulates that contract on top of the larger host page (docs/PAGE_SIZE_64K_EXECUTION.md):\n"
+                    "FEX: {}: host page size is {}; guest mappings still go through the {}-byte granule\n"
+                    "emulation on top of the larger host page, although AT_PAGESZ reports the host page (docs/PAGE_SIZE_64K_EXECUTION.md):\n"
                     "  * loader, brk, ASLR and the allocators are host-granular (S2/S4a),\n"
                     "  * guest mmap/mprotect/munmap below the host page go through the granule table\n"
                     "    in the permissive tier: a granule is mapped/protected as the union of its\n"
