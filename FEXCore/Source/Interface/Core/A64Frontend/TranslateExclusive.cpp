@@ -89,4 +89,72 @@ bool IRBuilder::LoadStoreAtomicWidth(uint32_t Word) {
   return true;
 }
 
+
+// FEAT_LSE atomic memory operations: LDADD/LDCLR/LDEOR/LDSET and SWP, in all
+// four widths and all four ordering variants. The guest picks these over the
+// LDXR/STXR loop through libgcc/compiler-rt's outline-atomics flag
+// (__aarch64_have_lse_atomics), and some builds - the Bun-based Claude Code
+// executable among them - set that flag unconditionally instead of reading
+// AT_HWCAP, so leaving these unimplemented is a SIGILL in ordinary programs
+// however the emulator advertises itself.
+//
+// Ordering: A and R (bits 23 and 22) are ignored here for the same reason the
+// rest of the frontend ignores acquire/release - the JIT's atomics already
+// carry the barriers the memory model needs.
+//
+// Rs == 31 is the zero register, so LDADD with Rs == 31 is a plain load.
+// Rt == 31 is the ST<op> alias: StoreReg drops the write.
+bool IRBuilder::AtomicMemOp(uint32_t Word) {
+  const uint32_t Size = Bits(Word, 31, 30);
+  const auto MemSize = IR::SizeToOpSize(1U << Size);
+  const bool Is64 = Size == 3;
+  const uint32_t Op = Bits(Word, 15, 12); // o3:opc
+  const uint32_t Rs = Bits(Word, 20, 16);
+  const uint32_t Rn = Bits(Word, 9, 5);
+  const uint32_t Rt = Bits(Word, 4, 0);
+
+  Ref Address = LoadXSP(Rn);
+  Ref Value = LoadX(Rs);
+  Ref Old {};
+  switch (Op) {
+  case 0b0000: Old = _AtomicFetchAdd(MemSize, Value, Address); break;
+  case 0b0001: Old = _AtomicFetchCLR(MemSize, Value, Address); break;
+  case 0b0010: Old = _AtomicFetchXor(MemSize, Value, Address); break;
+  case 0b0011: Old = _AtomicFetchOr(MemSize, Value, Address); break;
+  case 0b1000: Old = _AtomicSwap(MemSize, Value, Address); break;
+  // LDSMAX/LDSMIN/LDUMAX/LDUMIN (opc 010x/011x) need a CAS retry loop and are
+  // still unimplemented; the outline-atomics helpers never emit them.
+  default: return false;
+  }
+  StoreReg(Rt, Is64, Old);
+  return true;
+}
+
+// LDAPRB/LDAPRH/LDAPR: an acquire load of the access width, no monitor.
+bool IRBuilder::LDAPR(uint32_t Word) {
+  const uint32_t Size = Bits(Word, 31, 30);
+  LoadStoreSingle(true, IR::SizeToOpSize(1U << Size), false, Size == 3, Bits(Word, 4, 0), LoadXSP(Bits(Word, 9, 5)));
+  return true;
+}
+
+// FEAT_LSE CASB/CASH/CAS. CASP is still unimplemented: the pair form needs the
+// two-result CASPair op, and no outline-atomics helper emits it.
+//
+// CAS compares [Xn] against Rs and stores Rt on a match; Rs is overwritten with
+// the value that was in memory either way. The CAS lowering clobbers the host
+// flags that hold NZCV, as it does in StoreExclusive.
+bool IRBuilder::CompareAndSwap(uint32_t Word) {
+  const uint32_t Size = Bits(Word, 31, 30);
+  const auto MemSize = IR::SizeToOpSize(1U << Size);
+  const uint32_t Rs = Bits(Word, 20, 16);
+  const uint32_t Rn = Bits(Word, 9, 5);
+  const uint32_t Rt = Bits(Word, 4, 0);
+
+  Ref NZCV = _LoadNZCV();
+  Ref Old = _CAS(MemSize, LoadX(Rs), LoadX(Rt), LoadXSP(Rn));
+  _StoreNZCV(NZCV);
+  StoreReg(Rs, Size == 3, Old);
+  return true;
+}
+
 } // namespace FEXCore::A64

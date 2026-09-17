@@ -78,6 +78,12 @@ const IRBuilder::HandlerEntry IRBuilder::HandlerTable[] = {
   {"LDXR", &IRBuilder::LoadExclusive}, {"LDAXR", &IRBuilder::LoadExclusive},
   {"STXR", &IRBuilder::StoreExclusive}, {"STLXR", &IRBuilder::StoreExclusive},
   {"LDAR", &IRBuilder::LoadStoreAtomicWidth}, {"LDLAR", &IRBuilder::LoadStoreAtomicWidth},
+  // FEAT_LSE atomic memory operations, compare-and-swap and acquire load.
+  {"LDADDB", &IRBuilder::AtomicMemOp}, {"LDCLRB", &IRBuilder::AtomicMemOp}, {"LDEORB", &IRBuilder::AtomicMemOp}, {"LDSETB", &IRBuilder::AtomicMemOp}, {"SWPB", &IRBuilder::AtomicMemOp},
+  {"LDADDH", &IRBuilder::AtomicMemOp}, {"LDCLRH", &IRBuilder::AtomicMemOp}, {"LDEORH", &IRBuilder::AtomicMemOp}, {"LDSETH", &IRBuilder::AtomicMemOp}, {"SWPH", &IRBuilder::AtomicMemOp},
+  {"LDADD", &IRBuilder::AtomicMemOp}, {"LDCLR", &IRBuilder::AtomicMemOp}, {"LDEOR", &IRBuilder::AtomicMemOp}, {"LDSET", &IRBuilder::AtomicMemOp}, {"SWP", &IRBuilder::AtomicMemOp},
+  {"LDAPRB", &IRBuilder::LDAPR}, {"LDAPRH", &IRBuilder::LDAPR}, {"LDAPR", &IRBuilder::LDAPR},
+  {"CASB", &IRBuilder::CompareAndSwap}, {"CASH", &IRBuilder::CompareAndSwap}, {"CAS", &IRBuilder::CompareAndSwap},
   {"STLR", &IRBuilder::LoadStoreAtomicWidth}, {"STLLR", &IRBuilder::LoadStoreAtomicWidth},
   // Data processing (register): 2 source, 1 source.
   {"UDIV", &IRBuilder::UDIV}, {"SDIV", &IRBuilder::SDIV},
