@@ -375,14 +375,9 @@ bool IRBuilder::ADDV(uint32_t Word) {
     V = _VMov(OpSize::i64Bit, V);
   }
   Ref Result {};
-  if (Size == 2) {
-    // VAddV's 32-bit lowering saturates; add the rotated vector lane-wise
-    // instead. Element 0 of A + rot(A, 2) is a0+a2 and element 1 is a1+a3.
-    Ref Sum = _VAdd(RS, ES, V, _VExtr(RS, OpSize::i8Bit, V, V, 8));
-    Result = _VAdd(RS, ES, Sum, _VExtr(RS, OpSize::i8Bit, Sum, Sum, 4));
-  } else {
-    Result = _VAddV(RS, ES, V);
-  }
+  // The 32-bit VAddV lowering used to saturate (vsumsws), so this went
+  // through an open-coded rotate-add; the backend now folds modularly.
+  Result = _VAddV(RS, ES, V);
   StoreVSized(Bits(Word, 4, 0), ES, Result);
   return true;
 }

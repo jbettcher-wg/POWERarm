@@ -4667,8 +4667,12 @@ DEF_OP(Float_FromGPR_S) {
       std(TMP2, -8, r1);
       lfd(f0, -8, r1);
     }
-    fcfid(f0, f0);
-    frsp(f0, f0);
+    // fcfids rounds i64 -> f32 once.  `fcfid; frsp` rounds twice and is not the
+    // same function: 0x8000004000000001 (-2^63 + 2^38 + 1) double-rounds to
+    // 0xdf000000 (-2^63) where the single rounding gives 0xdeffffff
+    // [FP research §10.2].  i32 sources are exact in f64 so they were never
+    // affected, but fcfids is correct for both and is one instruction.
+    fcfids(f0, f0);
     // Store f0 back as a 4-byte float, then bring it in through a GPR: the
     // value reaches the vector via mtvsrd below, so neither an lvx of the
     // spill slot nor a pre-zeroed Dst is needed. vspltw overwrites all 128

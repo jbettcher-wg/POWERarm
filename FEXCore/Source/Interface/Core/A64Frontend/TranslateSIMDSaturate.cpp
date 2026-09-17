@@ -622,14 +622,7 @@ bool IRBuilder::SIMDAddLongAcrossLanes(uint32_t Word, bool Signed) {
     }
     return Upper ? _VUXTL2(RS, ES, V).Node : _VUXTL(RS, ES, V).Node;
   };
-  auto SumLanes = [&](Ref W) -> Ref {
-    if (WideES == OpSize::i32Bit) {
-      // VAddV saturates 32-bit lanes; rotate-add as ADDV does.
-      Ref Sum = _VAdd(RS, WideES, W, _VExtr(RS, OpSize::i8Bit, W, W, 8));
-      return _VAdd(RS, WideES, Sum, _VExtr(RS, OpSize::i8Bit, Sum, Sum, 4));
-    }
-    return _VAddV(RS, WideES, W);
-  };
+  auto SumLanes = [&](Ref W) -> Ref { return _VAddV(RS, WideES, W); };
   Ref Result = SumLanes(Widen(false));
   if (Q) {
     Result = _VAdd(RS, WideES, Result, SumLanes(Widen(true)));
