@@ -5,7 +5,6 @@
 
 #include <FEXCore/Core/CoreState.h>
 #include <FEXCore/Core/SignalDelegator.h>
-#include <FEXCore/Utils/LogManager.h>
 
 #include <array>
 
@@ -313,6 +312,10 @@ bool IRBuilder::TranslateInstruction(const Decoder::DecodedInst& Inst) {
 }
 
 void IRBuilder::UnimplementedInstruction(const Decoder::DecodedInst& Inst) {
+  // A guest that installs a SIGILL handler (cc1 does) never reaches the
+  // emulator's own "unimplemented A64 instruction" line, so name the word
+  // here for POWERARM_SILENTLOG=0 runs.
+  LogMan::Msg::IFmt("Unimplemented A64 instruction 0x{:08x} at pc 0x{:x}", Inst.Word, Inst.PC);
   RaiseGuestSignal(Inst.PC, BreakDefinition {
                               .ErrorRegister = 0,
                               .Signal = FEXCore::Core::FAULT_SIGILL,
