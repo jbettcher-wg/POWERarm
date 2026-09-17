@@ -54,6 +54,17 @@
           "address loads (about 4% slower steady-state code, measured on cc1 -O2)."
         ]
       },
+      "CodeCacheMaxSize": {
+        "Type": "int32",
+        "Default": "2048",
+        "Desc": [
+          "Size cap of the code cache directory in MiB; 0 means no cap.",
+          "After writing, a process sweeps the directory at most once a minute:",
+          "caches written by other POWERarm builds and unused for an hour are",
+          "removed, and while the rest exceeds the cap, whole per-file caches are",
+          "removed in least-recently-used order until they fit in 90% of it."
+        ]
+      },
       "EnableCodeCacheValidation": {
         "Type": "bool",
         "Default": "false",
