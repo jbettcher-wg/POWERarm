@@ -44,6 +44,35 @@ code in every new process.
 
 Local tag `m2`.
 
+## Optimization round 1 (2026-09-17)
+
+Merged at `2c1d36246`:
+- **OPT-BRANCHES:** link-first exits, call/return pairing, BR compare cache, direct not-taken exits.
+- **OPT-REGALLOC:** small multiblock regions, context-register load reuse.
+- **OPT-CODECACHE and OPT2-CACHEDEFAULT:** correct, keyed code cache; variable-width relocations; size cap and eviction; **on by default** for rootfs binaries.
+- **OPT2-CODESHAPE:** direct in-unit conditional branches, displacement loads and stores.
+- **OPT2-XLATE:** single decode lookup, early-out passes, shared backend walks.
+
+Plus these fixes: `siglongjmp` host-frame leak, vfork copy-back with SMC, fast path copy, bounded fd table, NULL envp.
+
+Same method as the baseline (`m2time.sh`, CPU 100, one run each; cache off via
+`POWERARM_ENABLECODECACHINGWIP=0`; private cache directory):
+
+| Build | Pi 5 native | Baseline (cache off) | Now, cache off | Now, cache cold | **Now, cache warm** |
+|---|---|---|---|---|---|
+| zlib | 12.6 s | 133.6 s (10.6×) | 92.4 s (7.3×) | 49.6 s (3.9×) | **46.6 s (3.7×)** |
+| Lua | 12.6 s | 118.3 s (9.4×) | 79.0 s (6.3×) | 42.1 s (3.3×) | **41.3 s (3.3×)** |
+
+- JIT alone (cache off): 1.45× / 1.50× faster than the baseline.
+- Default configuration (cache on, warm): 2.9× faster than the baseline on both projects.
+
+Remaining costs and next targets are in `OPTIMIZATION-CHECKLIST.md`:
+- merging the register allocator, flag elimination and compare-branch fusion IR walks (translation);
+- scalar FP F1–F8;
+- NEON N1 (string early-exit fusion);
+- P1(b) (context registers across blocks);
+- memory/issue-queue stalls.
+
 ## Exit criteria
 
 All must hold on **both** the 64K host and the 4K kernel in KVM:
