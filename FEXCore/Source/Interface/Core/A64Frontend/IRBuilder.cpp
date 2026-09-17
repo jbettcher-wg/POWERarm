@@ -62,6 +62,17 @@ const IRBuilder::HandlerEntry IRBuilder::HandlerTable[] = {
   {"DC_ZVA", &IRBuilder::DC_ZVA},
   {"DC_CVAU", &IRBuilder::CacheMaintenanceNop}, {"IC_IVAU", &IRBuilder::CacheMaintenanceNop},
   {"UnallocatedEncoding", &IRBuilder::UnallocatedEncoding},
+  // Loads and stores.
+  {"LDR_lit_gen", &IRBuilder::LDR_lit_gen}, {"LDRSW_lit", &IRBuilder::LDRSW_lit}, {"PRFM_lit", &IRBuilder::PRFM_lit},
+  {"STP_LDP_gen", &IRBuilder::STP_LDP_gen},
+  {"STURx_LDURx", &IRBuilder::LoadStoreImm9}, {"STRx_LDRx_imm_1", &IRBuilder::LoadStoreImm9},
+  {"STRx_LDRx_imm_2", &IRBuilder::STRx_LDRx_imm_2},
+  {"PRFM_imm", &IRBuilder::PRFM_imm}, {"PRFM_unscaled_imm", &IRBuilder::PRFM_imm},
+  // Unprivileged loads and stores behave as the unscaled forms at EL0.
+  {"STTRB", &IRBuilder::LoadStoreImm9}, {"LDTRB", &IRBuilder::LoadStoreImm9}, {"LDTRSB", &IRBuilder::LoadStoreImm9},
+  {"STTRH", &IRBuilder::LoadStoreImm9}, {"LDTRH", &IRBuilder::LoadStoreImm9}, {"LDTRSH", &IRBuilder::LoadStoreImm9},
+  {"STTR", &IRBuilder::LoadStoreImm9}, {"LDTR", &IRBuilder::LoadStoreImm9}, {"LDTRSW", &IRBuilder::LoadStoreImm9},
+  {"STRx_reg", &IRBuilder::LoadStoreRegOffset}, {"LDRx_reg", &IRBuilder::LoadStoreRegOffset},
   // Data processing (register): 2 source, 1 source.
   {"UDIV", &IRBuilder::UDIV}, {"SDIV", &IRBuilder::SDIV},
   {"LSLV", &IRBuilder::LSLV}, {"LSRV", &IRBuilder::LSRV}, {"ASRV", &IRBuilder::ASRV}, {"RORV", &IRBuilder::RORV},
