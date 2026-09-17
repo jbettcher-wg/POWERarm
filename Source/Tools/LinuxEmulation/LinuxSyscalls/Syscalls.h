@@ -81,6 +81,11 @@ class SyscallHandler;
 class SignalDelegator;
 class ThunkHandler;
 
+// Called by exit_group with a nonzero status, before the process ends. The
+// frontend uses it to report errors it held back while the log destination was
+// unknown (FEXInterpreter's FlushHeldErrorsToStderr).
+inline void (*GuestErrorExitHook)() {};
+
 void RegisterEpoll(FEX::HLE::SyscallHandler* Handler);
 void RegisterFD(FEX::HLE::SyscallHandler* Handler);
 void RegisterFS(FEX::HLE::SyscallHandler* Handler);
@@ -533,6 +538,13 @@ public:
 
   ///// VMA (Virtual Memory Area) tracking /////
   static bool HandleSegfault(FEXCore::Core::InternalThreadState* Thread, int Signal, void* info, void* ucontext);
+  // For the emulator's own writes into guest memory that may be SMC-protected
+  // (the vfork copy-back): does what a guest write fault on [Start, Start +
+  // Length) does, outside a signal handler. Every granule the range touches is
+  // disarmed, its translated code invalidated, and its protection lifted to
+  // read/write, so a host write to it cannot fault. The caller must not hold
+  // VMATracking.Mutex, and the range must lie in writable guest mappings.
+  void UnprotectGuestRangeForHostWrite(FEXCore::Core::InternalThreadState* Thread, uint64_t Start, uint64_t Length);
   void MarkGuestExecutableRange(FEXCore::Core::InternalThreadState* Thread, uint64_t Start, uint64_t Length) override;
   bool GuestCodePageValidateOnly(uint64_t Page) override;
 
@@ -1212,6 +1224,8 @@ namespace FaultSafeUserMemAccess {
   }
 #endif
   bool IsFaultLocation(uint64_t PC);
+  // A fault inside CopyStringFromUser, which returns -EFAULT rather than EFAULT.
+  bool IsStringFaultLocation(uint64_t PC);
 
   // Copies a NUL-terminated guest string into Dest, like the kernel's
   // strncpy_from_user. Returns its length, -EFAULT if a byte before the NUL
@@ -1235,6 +1249,12 @@ namespace FaultSafeUserMemAccess {
   }
 
   static inline bool TryHandleSafeFault(int Signal, const siginfo_t& SigInfo, void* UContext) {
+    if (Signal == SIGSEGV && (SigInfo.si_code == SEGV_MAPERR || SigInfo.si_code == SEGV_ACCERR) &&
+        FaultSafeUserMemAccess::IsStringFaultLocation(ArchHelpers::Context::GetPc(UContext))) {
+      ArchHelpers::Context::SetArmReg(UContext, 0, static_cast<uint64_t>(-EFAULT));
+      ArchHelpers::Context::SetPc(UContext, ArchHelpers::Context::GetArmReg(UContext, 30));
+      return true;
+    }
     if (Signal == SIGSEGV && (SigInfo.si_code == SEGV_MAPERR || SigInfo.si_code == SEGV_ACCERR) &&
         FaultSafeUserMemAccess::IsFaultLocation(ArchHelpers::Context::GetPc(UContext))) {
       // Return from the subroutine, returning EFAULT.

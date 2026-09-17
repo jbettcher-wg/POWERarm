@@ -1,0 +1,1191 @@
+From 8491e9ef76afc93a36cd0aa8f03689b074ee5dd4 Mon Sep 17 00:00:00 2001
+From: Jordan Bettcher <thebettcher@gmail.com>
+Date: Thu, 17 Sep 2026 04:49:01 -0600
+Subject: [PATCH v2 18/21] Syscalls: return EFAULT for bad guest path, utsname
+ and sigset pointers
+
+Several shared syscall handlers dereference guest pointers in FEX's own C++
+code, so a bad pointer kills FEX with a host fault in the syscall's
+deferred-signal section, where Linux returns EFAULT. The VerifyIs* helpers
+some of them call are no-ops in release builds (they only abort on NULL).
+
+Trigger: any guest syscall with an unmapped pointer, e.g. from a static
+x86-64 test:
+  uname((void *)1)
+  rt_sigprocmask(SIG_BLOCK, (void *)8, NULL, 8)
+  openat(AT_FDCWD, (void *)1, O_RDONLY)
+Before, each died with "FEX: FATAL host fault: signal 11 ... raised in a
+deferred-signal section" (the openat one in strlen under the FileManager).
+After, each returns -1/EFAULT, as it does on Linux (the same test on an
+aarch64 Raspberry Pi 5).
+
+Changes:
+- FaultSafeUserMemAccess::CopyStringFromUser, which is strncpy_from_user
+  semantics and copies up to each 4K boundary so a string that ends just
+  before an unmapped page still reads. There are also ReadFromUser and
+  WriteToUser helpers.
+- GuestPath copies a path argument into host memory before anything looks
+  at it, like getname(): EFAULT for a bad or NULL pointer, ENAMETOOLONG at
+  PATH_MAX. NULL keeps its meaning where the syscall defines one
+  (utimensat, newfstatat, statx, *xattrat). It is used by every
+  FileManager-backed handler in Syscalls/FS.cpp, Syscalls/FD.cpp,
+  x64/FD.cpp and x32/FD.cpp.
+- uname fills a local utsname and copies it out.
+- rt_sigprocmask, rt_sigpending, rt_sigsuspend and signalfd(4) copy the
+  sigset in and out around the SignalDelegator and check sigsetsize as the
+  kernel does (it was ignored).
+- readlink/readlinkat of /proc/self/exe copy the path out with CopyToUser
+  instead of strncpy into the guest buffer.
+
+Relies on "SignalDelegator: return EFAULT from a faulting
+FaultSafeUserMemAccess copy" for the fault to become EFAULT.
+
+Ubuntu 24.04 bash from the RootFS still does mktemp/ln/readlink/mv/ls -R/
+stat and readlink /proc/self/exe correctly.
+
+v2, replacing held patch 0009. Review: "correct but the ppc64le copy helper
+is a byte loop that copies the rest of a 4K page per path argument, about a
+microsecond on every open or stat." CopyStringFromUser is now a naked
+ppc64le routine: bytes until the source is 8-aligned, then 8-byte loads
+with the has-zero-byte test, stopping at the NUL. An aligned load never
+crosses a page, so it faults only when the page holding the next string
+byte is unreadable, where the kernel's strncpy_from_user fails; its three
+load sites return -EFAULT through TryHandleSafeFault (new
+IsStringFaultLocation). Other hosts keep the chunked copy.
+
+1e6 stat("/tmp") from a static x86-64 guest, 64K host, FEX_HOSTPAGEMODE=force,
+CPU 4, one run each: v1 3.913 s, v2 1.287 s. stat of a path whose NUL is
+the last byte before an unmapped host page: ENOENT; running into it: EFAULT
+(both versions, and on Linux).
+---
+ .../LinuxSyscalls/FaultSafeUserMemAccess.cpp  | 123 ++++++++++
+ .../LinuxSyscalls/FileManagement.cpp          |  18 +-
+ .../LinuxEmulation/LinuxSyscalls/Syscalls.h   |  66 ++++++
+ .../LinuxSyscalls/Syscalls/FD.cpp             |  76 ++++--
+ .../LinuxSyscalls/Syscalls/FS.cpp             | 218 +++++++++++++++---
+ .../LinuxSyscalls/Syscalls/Info.cpp           |  13 +-
+ .../LinuxSyscalls/Syscalls/Signals.cpp        |  63 ++++-
+ .../LinuxEmulation/LinuxSyscalls/x32/FD.cpp   |  54 ++++-
+ .../LinuxEmulation/LinuxSyscalls/x64/FD.cpp   |  24 +-
+ 9 files changed, 575 insertions(+), 80 deletions(-)
+
+diff --git a/Source/Tools/LinuxEmulation/LinuxSyscalls/FaultSafeUserMemAccess.cpp b/Source/Tools/LinuxEmulation/LinuxSyscalls/FaultSafeUserMemAccess.cpp
+index 3978a535e..b054507ce 100644
+--- a/Source/Tools/LinuxEmulation/LinuxSyscalls/FaultSafeUserMemAccess.cpp
++++ b/Source/Tools/LinuxEmulation/LinuxSyscalls/FaultSafeUserMemAccess.cpp
+@@ -1,6 +1,9 @@
+ // SPDX-License-Identifier: MIT
+ #include "LinuxSyscalls/Syscalls.h"
+ 
++#include <algorithm>
++#include <cstring>
++
+ namespace FEX::HLE::FaultSafeUserMemAccess {
+ #ifdef ARCHITECTURE_arm64
+ __attribute__((naked)) size_t CopyFromUser(void* Dest, const void* Src, size_t Size) {
+@@ -219,6 +222,102 @@ void* const CopyFromUser_FaultLocation = &CopyFromUser_FaultInst;
+ extern "C" uint64_t CopyToUser_FaultInst;
+ void* const CopyToUser_FaultLocation = &CopyToUser_FaultInst;
+ 
++// strncpy_from_user for path arguments (GuestPath): copies the guest string
++// at Src into Dest up to its NUL or Size bytes. Returns the string's length,
++// -1 when there is no NUL in the first Size bytes, or -EFAULT (set by
++// TryHandleSafeFault) when a byte before the NUL is unreadable.
++//
++// Bytes one at a time until Src is 8-aligned, then 8 at a time: an aligned
++// 8-byte load never crosses a page boundary, so it faults only when the page
++// holding the next string byte is unreadable, exactly where the kernel's
++// strncpy_from_user fails. The NUL test is the (w - 0x01..) & ~w & 0x80..
++// trick; its lowest set bit marks the first zero byte (little-endian).
++// r3=Dest r4=Src r5=Size; r7 keeps Dest; r8/r9 hold the constants.
++__attribute__((naked, used)) int64_t CopyStringFromUserFast(char* Dest, const char* Src, size_t Size) {
++  __asm volatile(R"(
++    mr      7, 3
++    cmpldi  5, 0
++    beq     9f
++  1:
++    andi.   0, 4, 7
++    beq     3f
++    .globl CopyStringFromUser_FaultByte
++    CopyStringFromUser_FaultByte:
++    lbz     6, 0(4)          # <- can fault on a bad guest Src.
++    stb     6, 0(3)
++    cmpdi   6, 0
++    beq     8f
++    addi    3, 3, 1
++    addi    4, 4, 1
++    addic.  5, 5, -1
++    bne     1b
++    b       9f
++  3:
++    lis     8, 0x0101
++    ori     8, 8, 0x0101
++    sldi    9, 8, 32
++    or      8, 8, 9
++    sldi    9, 8, 7
++  4:
++    cmpldi  5, 8
++    blt     6f
++    .globl CopyStringFromUser_FaultWord
++    CopyStringFromUser_FaultWord:
++    ld      6, 0(4)          # <- can fault on a bad guest Src.
++    std     6, 0(3)
++    subf    10, 8, 6
++    andc    10, 10, 6
++    and.    10, 10, 9
++    bne     5f
++    addi    3, 3, 8
++    addi    4, 4, 8
++    addi    5, 5, -8
++    b       4b
++  5:
++    neg     11, 10
++    and     11, 10, 11
++    addi    11, 11, -1
++    popcntd 11, 11
++    srdi    11, 11, 3
++    add     3, 3, 11
++    b       8f
++  6:
++    cmpldi  5, 0
++    beq     9f
++    .globl CopyStringFromUser_FaultTail
++    CopyStringFromUser_FaultTail:
++    lbz     6, 0(4)          # <- can fault on a bad guest Src.
++    stb     6, 0(3)
++    cmpdi   6, 0
++    beq     8f
++    addi    3, 3, 1
++    addi    4, 4, 1
++    addi    5, 5, -1
++    b       6b
++  8:
++    subf    3, 7, 3
++    blr
++  9:
++    li      3, -1
++    blr
++  )" ::
++                   : "memory");
++}
++
++extern "C" uint64_t CopyStringFromUser_FaultByte;
++extern "C" uint64_t CopyStringFromUser_FaultWord;
++extern "C" uint64_t CopyStringFromUser_FaultTail;
++
++bool IsStringFaultLocation(uint64_t PC) {
++  const auto* P = reinterpret_cast<void*>(PC);
++  return P == &CopyStringFromUser_FaultByte || P == &CopyStringFromUser_FaultWord || P == &CopyStringFromUser_FaultTail;
++}
++
++ssize_t CopyStringFromUser(char* Dest, const char* Src, size_t DestSize) {
++  const int64_t Len = CopyStringFromUserFast(Dest, Src, DestSize);
++  return Len == -1 ? -ENAMETOOLONG : Len;
++}
++
+ // NOTE: ARM64 also implements VerifyIsReadable/Writable/StringReadable as
+ // naked-asm probes for assertion-only builds, with matching fault locations
+ // in IsFaultLocation. On PPC64LE the corresponding wrappers in
+@@ -250,4 +349,28 @@ bool IsFaultLocation(uint64_t PC) {
+   return false;
+ }
+ #endif
++#ifndef ARCHITECTURE_ppc64le
++ssize_t CopyStringFromUser(char* Dest, const char* Src, size_t DestSize) {
++  // Copy up to each 4K boundary at a time: a string that ends just before an
++  // unmapped page is still valid, so nothing past a found NUL may be touched.
++  size_t Copied = 0;
++  while (Copied < DestSize) {
++    const uintptr_t Addr = reinterpret_cast<uintptr_t>(Src) + Copied;
++    const size_t ToBoundary = 4096 - (Addr & 4095);
++    const size_t Chunk = std::min(DestSize - Copied, ToBoundary);
++    if (CopyFromUser(Dest + Copied, reinterpret_cast<const void*>(Addr), Chunk) != 0) {
++      return -EFAULT;
++    }
++    if (const auto* Nul = static_cast<const char*>(memchr(Dest + Copied, 0, Chunk))) {
++      return Nul - Dest;
++    }
++    Copied += Chunk;
++  }
++  return -ENAMETOOLONG;
++}
++
++bool IsStringFaultLocation(uint64_t PC) {
++  return false;
++}
++#endif
+ } // namespace FEX::HLE::FaultSafeUserMemAccess
+diff --git a/Source/Tools/LinuxEmulation/LinuxSyscalls/FileManagement.cpp b/Source/Tools/LinuxEmulation/LinuxSyscalls/FileManagement.cpp
+index e1bbb0d24..0b46c5ea3 100644
+--- a/Source/Tools/LinuxEmulation/LinuxSyscalls/FileManagement.cpp
++++ b/Source/Tools/LinuxEmulation/LinuxSyscalls/FileManagement.cpp
+@@ -1207,8 +1207,13 @@ uint64_t FileManager::Readlink(const char* pathname, char* buf, size_t bufsiz) {
+ 
+   if (strcmp(pathname, "/proc/self/exe") == 0 || strcmp(pathname, "/proc/thread-self/exe") == 0 || strcmp(pathname, PidSelfPath) == 0) {
+     const auto& App = Filename();
+-    strncpy(buf, App.c_str(), bufsiz);
+-    return std::min(bufsiz, App.size());
++    // readlink doesn't NUL-terminate; a bad buffer is EFAULT.
++    const size_t Len = std::min(bufsiz, App.size());
++    if (FaultSafeUserMemAccess::CopyToUser(buf, App.c_str(), Len) != 0) {
++      errno = EFAULT;
++      return -1;
++    }
++    return Len;
+   }
+ 
+   FDPathTmpData TmpFilename;
+@@ -1322,8 +1327,13 @@ uint64_t FileManager::Readlinkat(int dirfd, const char* pathname, char* buf, siz
+ 
+   if (Path == "/proc/self/exe" || Path == "/proc/thread-self/exe" || Path == PidSelfPath) {
+     const auto& App = Filename();
+-    strncpy(buf, App.c_str(), bufsiz);
+-    return std::min(bufsiz, App.size());
++    // readlink doesn't NUL-terminate; a bad buffer is EFAULT.
++    const size_t Len = std::min(bufsiz, App.size());
++    if (FaultSafeUserMemAccess::CopyToUser(buf, App.c_str(), Len) != 0) {
++      errno = EFAULT;
++      return -1;
++    }
++    return Len;
+   }
+ 
+   FDPathTmpData TmpFilename;
+diff --git a/Source/Tools/LinuxEmulation/LinuxSyscalls/Syscalls.h b/Source/Tools/LinuxEmulation/LinuxSyscalls/Syscalls.h
+index 6f456ded9..c10a63203 100644
+--- a/Source/Tools/LinuxEmulation/LinuxSyscalls/Syscalls.h
++++ b/Source/Tools/LinuxEmulation/LinuxSyscalls/Syscalls.h
+@@ -40,6 +40,7 @@ $end_info$
+ #include <shared_mutex>
+ 
+ #include <errno.h>
++#include <limits.h>
+ #include <fcntl.h>
+ #include <stdint.h>
+ #include <sys/socket.h>
+@@ -1246,8 +1247,37 @@ namespace FaultSafeUserMemAccess {
+   }
+ #endif
+   bool IsFaultLocation(uint64_t PC);
++  // A fault inside CopyStringFromUser, which returns -EFAULT rather than EFAULT.
++  bool IsStringFaultLocation(uint64_t PC);
++
++  // Copies a NUL-terminated guest string into Dest, like the kernel's
++  // strncpy_from_user. Returns its length, -EFAULT if a byte before the NUL
++  // is unreadable, or -ENAMETOOLONG if there is no NUL in the first DestSize
++  // bytes.
++  [[nodiscard]]
++  ssize_t CopyStringFromUser(char* Dest, const char* Src, size_t DestSize);
++
++  // Writes a guest value; true on success.
++  template<typename T>
++  [[nodiscard]]
++  inline bool WriteToUser(T* Dest, const T& Value) {
++    return CopyToUser(Dest, &Value, sizeof(T)) == 0;
++  }
++
++  // Reads a guest value; true on success.
++  template<typename T>
++  [[nodiscard]]
++  inline bool ReadFromUser(T* Dest, const T* Src) {
++    return CopyFromUser(Dest, Src, sizeof(T)) == 0;
++  }
+ 
+   static inline bool TryHandleSafeFault(int Signal, const siginfo_t& SigInfo, void* UContext) {
++    if (Signal == SIGSEGV && (SigInfo.si_code == SEGV_MAPERR || SigInfo.si_code == SEGV_ACCERR) &&
++        FaultSafeUserMemAccess::IsStringFaultLocation(ArchHelpers::Context::GetPc(UContext))) {
++      ArchHelpers::Context::SetArmReg(UContext, 0, static_cast<uint64_t>(-EFAULT));
++      ArchHelpers::Context::SetPc(UContext, ArchHelpers::Context::GetArmReg(UContext, 30));
++      return true;
++    }
+     if (Signal == SIGSEGV && (SigInfo.si_code == SEGV_MAPERR || SigInfo.si_code == SEGV_ACCERR) &&
+         FaultSafeUserMemAccess::IsFaultLocation(ArchHelpers::Context::GetPc(UContext))) {
+       // Return from the subroutine, returning EFAULT.
+@@ -1260,6 +1290,42 @@ namespace FaultSafeUserMemAccess {
+   }
+ } // namespace FaultSafeUserMemAccess
+ 
++// A guest path argument copied into host memory before anything looks at it,
++// as the kernel's getname() does: a bad pointer is EFAULT and a path without a
++// NUL in PATH_MAX bytes is ENAMETOOLONG, instead of a host fault inside the
++// emulator. A NULL pointer is EFAULT unless the syscall gives NULL a meaning
++// (AllowNull), in which case c_str() is NULL too.
++class GuestPath final {
++public:
++  explicit GuestPath(const char* Guest, bool AllowNull = false) {
++    if (!Guest) {
++      Error = AllowNull ? 0 : -EFAULT;
++      return;
++    }
++    const ssize_t Len = FaultSafeUserMemAccess::CopyStringFromUser(Buffer, Guest, sizeof(Buffer));
++    if (Len < 0) {
++      Error = Len;
++      return;
++    }
++    Ptr = Buffer;
++  }
++  GuestPath(const GuestPath&) = delete;
++  GuestPath& operator=(const GuestPath&) = delete;
++
++  // 0, or the negative errno the syscall must return.
++  int64_t error() const {
++    return Error;
++  }
++  const char* c_str() const {
++    return Ptr;
++  }
++
++private:
++  const char* Ptr {};
++  int64_t Error {};
++  char Buffer[PATH_MAX];
++};
++
+ 
+ template<typename T>
+ inline static uint64_t futimesat_compat(int dirfd, const char* pathname, const T times[2]) {
+diff --git a/Source/Tools/LinuxEmulation/LinuxSyscalls/Syscalls/FD.cpp b/Source/Tools/LinuxEmulation/LinuxSyscalls/Syscalls/FD.cpp
+index 5d766e254..813878b03 100644
+--- a/Source/Tools/LinuxEmulation/LinuxSyscalls/Syscalls/FD.cpp
++++ b/Source/Tools/LinuxEmulation/LinuxSyscalls/Syscalls/FD.cpp
+@@ -41,9 +41,13 @@ void RegisterFD(FEX::HLE::SyscallHandler* Handler) {
+   });
+ 
+   REGISTER_SYSCALL_IMPL(open, [](FEXCore::Core::CpuStateFrame* Frame, const char* pathname, int flags, uint32_t mode) -> uint64_t {
++    GuestPath Guest_pathname(pathname);
++    if (Guest_pathname.error()) {
++      return Guest_pathname.error();
++    }
+     flags = FEX::HLE::RemapFromX86Flags(flags);
+-    FEX::HLE::_SyscallHandler->MaybeDetectMonoFallbackFromPath(pathname);
+-    uint64_t Result = FEX::HLE::_SyscallHandler->FM.Open(pathname, flags, mode);
++    FEX::HLE::_SyscallHandler->MaybeDetectMonoFallbackFromPath(Guest_pathname.c_str());
++    uint64_t Result = FEX::HLE::_SyscallHandler->FM.Open(Guest_pathname.c_str(), flags, mode);
+     SYSCALL_ERRNO();
+   });
+ 
+@@ -53,22 +57,38 @@ void RegisterFD(FEX::HLE::SyscallHandler* Handler) {
+   });
+ 
+   REGISTER_SYSCALL_IMPL(chown, [](FEXCore::Core::CpuStateFrame* Frame, const char* pathname, uid_t owner, gid_t group) -> uint64_t {
+-    uint64_t Result = FEX::HLE::_SyscallHandler->FM.Chown(pathname, owner, group);
++    GuestPath Guest_pathname(pathname);
++    if (Guest_pathname.error()) {
++      return Guest_pathname.error();
++    }
++    uint64_t Result = FEX::HLE::_SyscallHandler->FM.Chown(Guest_pathname.c_str(), owner, group);
+     SYSCALL_ERRNO();
+   });
+ 
+   REGISTER_SYSCALL_IMPL(lchown, [](FEXCore::Core::CpuStateFrame* Frame, const char* pathname, uid_t owner, gid_t group) -> uint64_t {
+-    uint64_t Result = FEX::HLE::_SyscallHandler->FM.Lchown(pathname, owner, group);
++    GuestPath Guest_pathname(pathname);
++    if (Guest_pathname.error()) {
++      return Guest_pathname.error();
++    }
++    uint64_t Result = FEX::HLE::_SyscallHandler->FM.Lchown(Guest_pathname.c_str(), owner, group);
+     SYSCALL_ERRNO();
+   });
+ 
+   REGISTER_SYSCALL_IMPL(access, [](FEXCore::Core::CpuStateFrame* Frame, const char* pathname, int mode) -> uint64_t {
+-    uint64_t Result = FEX::HLE::_SyscallHandler->FM.Access(pathname, mode);
++    GuestPath Guest_pathname(pathname);
++    if (Guest_pathname.error()) {
++      return Guest_pathname.error();
++    }
++    uint64_t Result = FEX::HLE::_SyscallHandler->FM.Access(Guest_pathname.c_str(), mode);
+     SYSCALL_ERRNO();
+   });
+ 
+   REGISTER_SYSCALL_IMPL(chdir, [](FEXCore::Core::CpuStateFrame* Frame, const char* path) -> uint64_t {
+-    uint64_t Result = FEX::HLE::_SyscallHandler->FM.Chdir(path);
++    GuestPath Guest_path(path);
++    if (Guest_path.error()) {
++      return Guest_path.error();
++    }
++    uint64_t Result = FEX::HLE::_SyscallHandler->FM.Chdir(Guest_path.c_str());
+     SYSCALL_ERRNO();
+   });
+ 
+@@ -89,38 +109,58 @@ void RegisterFD(FEX::HLE::SyscallHandler* Handler) {
+   });
+ 
+   REGISTER_SYSCALL_IMPL(openat, [](FEXCore::Core::CpuStateFrame* Frame, int dirfs, const char* pathname, int flags, uint32_t mode) -> uint64_t {
++    GuestPath Guest_pathname(pathname);
++    if (Guest_pathname.error()) {
++      return Guest_pathname.error();
++    }
+     flags = FEX::HLE::RemapFromX86Flags(flags);
+-    FEX::HLE::_SyscallHandler->MaybeDetectMonoFromPath(pathname);
+-    FEX::HLE::_SyscallHandler->MaybeDetectMonoFallbackFromPath(pathname);
+-    uint64_t Result = FEX::HLE::_SyscallHandler->FM.Openat(dirfs, pathname, flags, mode);
++    FEX::HLE::_SyscallHandler->MaybeDetectMonoFromPath(Guest_pathname.c_str());
++    FEX::HLE::_SyscallHandler->MaybeDetectMonoFallbackFromPath(Guest_pathname.c_str());
++    uint64_t Result = FEX::HLE::_SyscallHandler->FM.Openat(dirfs, Guest_pathname.c_str(), flags, mode);
+     SYSCALL_ERRNO();
+   });
+ 
+   REGISTER_SYSCALL_IMPL(readlinkat, [](FEXCore::Core::CpuStateFrame* Frame, int dirfd, const char* pathname, char* buf, size_t bufsiz) -> uint64_t {
+-    uint64_t Result = FEX::HLE::_SyscallHandler->FM.Readlinkat(dirfd, pathname, buf, bufsiz);
++    GuestPath Guest_pathname(pathname);
++    if (Guest_pathname.error()) {
++      return Guest_pathname.error();
++    }
++    uint64_t Result = FEX::HLE::_SyscallHandler->FM.Readlinkat(dirfd, Guest_pathname.c_str(), buf, bufsiz);
+     SYSCALL_ERRNO();
+   });
+ 
+   REGISTER_SYSCALL_IMPL(faccessat, [](FEXCore::Core::CpuStateFrame* Frame, int dirfd, const char* pathname, int mode) -> uint64_t {
+-    uint64_t Result = FEX::HLE::_SyscallHandler->FM.FAccessat(dirfd, pathname, mode);
++    GuestPath Guest_pathname(pathname);
++    if (Guest_pathname.error()) {
++      return Guest_pathname.error();
++    }
++    uint64_t Result = FEX::HLE::_SyscallHandler->FM.FAccessat(dirfd, Guest_pathname.c_str(), mode);
+     SYSCALL_ERRNO();
+   });
+ 
+   REGISTER_SYSCALL_IMPL(faccessat2, [](FEXCore::Core::CpuStateFrame* Frame, int dirfd, const char* pathname, int mode, int flags) -> uint64_t {
+-    uint64_t Result = FEX::HLE::_SyscallHandler->FM.FAccessat2(dirfd, pathname, mode, flags);
++    GuestPath Guest_pathname(pathname);
++    if (Guest_pathname.error()) {
++      return Guest_pathname.error();
++    }
++    uint64_t Result = FEX::HLE::_SyscallHandler->FM.FAccessat2(dirfd, Guest_pathname.c_str(), mode, flags);
+     SYSCALL_ERRNO();
+   });
+ 
+   REGISTER_SYSCALL_IMPL(
+     openat2, [](FEXCore::Core::CpuStateFrame* Frame, int dirfs, const char* pathname, struct open_how* how, size_t usize) -> uint64_t {
++      GuestPath Guest_pathname(pathname);
++      if (Guest_pathname.error()) {
++        return Guest_pathname.error();
++      }
+       open_how HostHow {};
+       size_t HostSize = std::min(sizeof(open_how), usize);
+       memcpy(&HostHow, how, HostSize);
+ 
+       HostHow.flags = FEX::HLE::RemapFromX86Flags(HostHow.flags);
+-      FEX::HLE::_SyscallHandler->MaybeDetectMonoFromPath(pathname);
+-      FEX::HLE::_SyscallHandler->MaybeDetectMonoFallbackFromPath(pathname);
+-      uint64_t Result = FEX::HLE::_SyscallHandler->FM.Openat2(dirfs, pathname, &HostHow, HostSize);
++      FEX::HLE::_SyscallHandler->MaybeDetectMonoFromPath(Guest_pathname.c_str());
++      FEX::HLE::_SyscallHandler->MaybeDetectMonoFallbackFromPath(Guest_pathname.c_str());
++      uint64_t Result = FEX::HLE::_SyscallHandler->FM.Openat2(dirfs, Guest_pathname.c_str(), &HostHow, HostSize);
+       SYSCALL_ERRNO();
+     });
+ 
+@@ -137,8 +177,12 @@ void RegisterFD(FEX::HLE::SyscallHandler* Handler) {
+ 
+   REGISTER_SYSCALL_IMPL(
+     statx, [](FEXCore::Core::CpuStateFrame* Frame, int dirfd, const char* pathname, int flags, uint32_t mask, struct statx* statxbuf) -> uint64_t {
++      GuestPath Guest_pathname(pathname, true);
++      if (Guest_pathname.error()) {
++        return Guest_pathname.error();
++      }
+       // Flags don't need remapped
+-      uint64_t Result = FEX::HLE::_SyscallHandler->FM.Statx(dirfd, pathname, flags, mask, statxbuf);
++      uint64_t Result = FEX::HLE::_SyscallHandler->FM.Statx(dirfd, Guest_pathname.c_str(), flags, mask, statxbuf);
+       SYSCALL_ERRNO();
+     });
+ 
+diff --git a/Source/Tools/LinuxEmulation/LinuxSyscalls/Syscalls/FS.cpp b/Source/Tools/LinuxEmulation/LinuxSyscalls/Syscalls/FS.cpp
+index 8d45cc58f..c78a2ec5e 100644
+--- a/Source/Tools/LinuxEmulation/LinuxSyscalls/Syscalls/FS.cpp
++++ b/Source/Tools/LinuxEmulation/LinuxSyscalls/Syscalls/FS.cpp
+@@ -26,123 +26,223 @@ void RegisterFS(FEX::HLE::SyscallHandler* Handler) {
+   using namespace FEXCore::IR;
+ 
+   REGISTER_SYSCALL_IMPL(rename, [](FEXCore::Core::CpuStateFrame* Frame, const char* oldpath, const char* newpath) -> uint64_t {
+-    uint64_t Result = FEX::HLE::_SyscallHandler->FM.Rename(oldpath, newpath);
++    GuestPath Guest_oldpath(oldpath);
++    if (Guest_oldpath.error()) {
++      return Guest_oldpath.error();
++    }
++    GuestPath Guest_newpath(newpath);
++    if (Guest_newpath.error()) {
++      return Guest_newpath.error();
++    }
++    uint64_t Result = FEX::HLE::_SyscallHandler->FM.Rename(Guest_oldpath.c_str(), Guest_newpath.c_str());
+     SYSCALL_ERRNO();
+   });
+ 
+   REGISTER_SYSCALL_IMPL(mkdir, [](FEXCore::Core::CpuStateFrame* Frame, const char* pathname, mode_t mode) -> uint64_t {
+-    uint64_t Result = FEX::HLE::_SyscallHandler->FM.Mkdir(pathname, mode);
++    GuestPath Guest_pathname(pathname);
++    if (Guest_pathname.error()) {
++      return Guest_pathname.error();
++    }
++    uint64_t Result = FEX::HLE::_SyscallHandler->FM.Mkdir(Guest_pathname.c_str(), mode);
+     SYSCALL_ERRNO();
+   });
+ 
+   REGISTER_SYSCALL_IMPL(rmdir, [](FEXCore::Core::CpuStateFrame* Frame, const char* pathname) -> uint64_t {
+-    uint64_t Result = FEX::HLE::_SyscallHandler->FM.Rmdir(pathname);
++    GuestPath Guest_pathname(pathname);
++    if (Guest_pathname.error()) {
++      return Guest_pathname.error();
++    }
++    uint64_t Result = FEX::HLE::_SyscallHandler->FM.Rmdir(Guest_pathname.c_str());
+     SYSCALL_ERRNO();
+   });
+ 
+   REGISTER_SYSCALL_IMPL(link, [](FEXCore::Core::CpuStateFrame* Frame, const char* oldpath, const char* newpath) -> uint64_t {
+-    uint64_t Result = FEX::HLE::_SyscallHandler->FM.Link(oldpath, newpath);
++    GuestPath Guest_oldpath(oldpath);
++    if (Guest_oldpath.error()) {
++      return Guest_oldpath.error();
++    }
++    GuestPath Guest_newpath(newpath);
++    if (Guest_newpath.error()) {
++      return Guest_newpath.error();
++    }
++    uint64_t Result = FEX::HLE::_SyscallHandler->FM.Link(Guest_oldpath.c_str(), Guest_newpath.c_str());
+     SYSCALL_ERRNO();
+   });
+ 
+   REGISTER_SYSCALL_IMPL(unlink, [](FEXCore::Core::CpuStateFrame* Frame, const char* pathname) -> uint64_t {
+-    uint64_t Result = FEX::HLE::_SyscallHandler->FM.Unlink(pathname);
++    GuestPath Guest_pathname(pathname);
++    if (Guest_pathname.error()) {
++      return Guest_pathname.error();
++    }
++    uint64_t Result = FEX::HLE::_SyscallHandler->FM.Unlink(Guest_pathname.c_str());
+     SYSCALL_ERRNO();
+   });
+ 
+   REGISTER_SYSCALL_IMPL(symlink, [](FEXCore::Core::CpuStateFrame* Frame, const char* target, const char* linkpath) -> uint64_t {
+-    uint64_t Result = FEX::HLE::_SyscallHandler->FM.Symlink(target, linkpath);
++    GuestPath Guest_linkpath(linkpath);
++    if (Guest_linkpath.error()) {
++      return Guest_linkpath.error();
++    }
++    uint64_t Result = FEX::HLE::_SyscallHandler->FM.Symlink(target, Guest_linkpath.c_str());
+     SYSCALL_ERRNO();
+   });
+ 
+   REGISTER_SYSCALL_IMPL(readlink, [](FEXCore::Core::CpuStateFrame* Frame, const char* pathname, char* buf, size_t bufsiz) -> uint64_t {
+-    uint64_t Result = FEX::HLE::_SyscallHandler->FM.Readlink(pathname, buf, bufsiz);
++    GuestPath Guest_pathname(pathname);
++    if (Guest_pathname.error()) {
++      return Guest_pathname.error();
++    }
++    uint64_t Result = FEX::HLE::_SyscallHandler->FM.Readlink(Guest_pathname.c_str(), buf, bufsiz);
+     SYSCALL_ERRNO();
+   });
+ 
+   REGISTER_SYSCALL_IMPL(chmod, [](FEXCore::Core::CpuStateFrame* Frame, const char* pathname, mode_t mode) -> uint64_t {
+-    uint64_t Result = FEX::HLE::_SyscallHandler->FM.Chmod(pathname, mode);
++    GuestPath Guest_pathname(pathname);
++    if (Guest_pathname.error()) {
++      return Guest_pathname.error();
++    }
++    uint64_t Result = FEX::HLE::_SyscallHandler->FM.Chmod(Guest_pathname.c_str(), mode);
+     SYSCALL_ERRNO();
+   });
+ 
+   REGISTER_SYSCALL_IMPL(mknod, [](FEXCore::Core::CpuStateFrame* Frame, const char* pathname, mode_t mode, dev_t dev) -> uint64_t {
+-    uint64_t Result = FEX::HLE::_SyscallHandler->FM.Mknod(pathname, mode, dev);
++    GuestPath Guest_pathname(pathname);
++    if (Guest_pathname.error()) {
++      return Guest_pathname.error();
++    }
++    uint64_t Result = FEX::HLE::_SyscallHandler->FM.Mknod(Guest_pathname.c_str(), mode, dev);
+     SYSCALL_ERRNO();
+   });
+ 
+   REGISTER_SYSCALL_IMPL(creat, [](FEXCore::Core::CpuStateFrame* Frame, const char* pathname, mode_t mode) -> uint64_t {
+-    uint64_t Result = FEX::HLE::_SyscallHandler->FM.Creat(pathname, mode);
++    GuestPath Guest_pathname(pathname);
++    if (Guest_pathname.error()) {
++      return Guest_pathname.error();
++    }
++    uint64_t Result = FEX::HLE::_SyscallHandler->FM.Creat(Guest_pathname.c_str(), mode);
+     SYSCALL_ERRNO();
+   });
+ 
+   REGISTER_SYSCALL_IMPL(truncate, [](FEXCore::Core::CpuStateFrame* Frame, const char* pathname, off_t length) -> uint64_t {
+-    uint64_t Result = FEX::HLE::_SyscallHandler->FM.Truncate(pathname, length);
++    GuestPath Guest_pathname(pathname);
++    if (Guest_pathname.error()) {
++      return Guest_pathname.error();
++    }
++    uint64_t Result = FEX::HLE::_SyscallHandler->FM.Truncate(Guest_pathname.c_str(), length);
+     SYSCALL_ERRNO();
+   });
+ 
+   REGISTER_SYSCALL_IMPL(
+     setxattr, [](FEXCore::Core::CpuStateFrame* Frame, const char* path, const char* name, const void* value, size_t size, int flags) -> uint64_t {
+-      uint64_t Result = FEX::HLE::_SyscallHandler->FM.Setxattr(path, name, value, size, flags);
++      GuestPath Guest_path(path);
++      if (Guest_path.error()) {
++        return Guest_path.error();
++      }
++      uint64_t Result = FEX::HLE::_SyscallHandler->FM.Setxattr(Guest_path.c_str(), name, value, size, flags);
+       SYSCALL_ERRNO();
+     });
+ 
+   REGISTER_SYSCALL_IMPL(
+     lsetxattr, [](FEXCore::Core::CpuStateFrame* Frame, const char* path, const char* name, const void* value, size_t size, int flags) -> uint64_t {
+-      uint64_t Result = FEX::HLE::_SyscallHandler->FM.LSetxattr(path, name, value, size, flags);
++      GuestPath Guest_path(path);
++      if (Guest_path.error()) {
++        return Guest_path.error();
++      }
++      uint64_t Result = FEX::HLE::_SyscallHandler->FM.LSetxattr(Guest_path.c_str(), name, value, size, flags);
+       SYSCALL_ERRNO();
+     });
+ 
+   REGISTER_SYSCALL_IMPL(getxattr, [](FEXCore::Core::CpuStateFrame* Frame, const char* path, const char* name, void* value, size_t size) -> uint64_t {
+-    uint64_t Result = FEX::HLE::_SyscallHandler->FM.Getxattr(path, name, value, size);
++    GuestPath Guest_path(path);
++    if (Guest_path.error()) {
++      return Guest_path.error();
++    }
++    uint64_t Result = FEX::HLE::_SyscallHandler->FM.Getxattr(Guest_path.c_str(), name, value, size);
+     SYSCALL_ERRNO();
+   });
+ 
+   REGISTER_SYSCALL_IMPL(lgetxattr, [](FEXCore::Core::CpuStateFrame* Frame, const char* path, const char* name, void* value, size_t size) -> uint64_t {
+-    uint64_t Result = FEX::HLE::_SyscallHandler->FM.LGetxattr(path, name, value, size);
++    GuestPath Guest_path(path);
++    if (Guest_path.error()) {
++      return Guest_path.error();
++    }
++    uint64_t Result = FEX::HLE::_SyscallHandler->FM.LGetxattr(Guest_path.c_str(), name, value, size);
+     SYSCALL_ERRNO();
+   });
+ 
+   REGISTER_SYSCALL_IMPL(listxattr, [](FEXCore::Core::CpuStateFrame* Frame, const char* path, char* list, size_t size) -> uint64_t {
+-    uint64_t Result = FEX::HLE::_SyscallHandler->FM.Listxattr(path, list, size);
++    GuestPath Guest_path(path);
++    if (Guest_path.error()) {
++      return Guest_path.error();
++    }
++    uint64_t Result = FEX::HLE::_SyscallHandler->FM.Listxattr(Guest_path.c_str(), list, size);
+     SYSCALL_ERRNO();
+   });
+ 
+   REGISTER_SYSCALL_IMPL(llistxattr, [](FEXCore::Core::CpuStateFrame* Frame, const char* path, char* list, size_t size) -> uint64_t {
+-    uint64_t Result = FEX::HLE::_SyscallHandler->FM.LListxattr(path, list, size);
++    GuestPath Guest_path(path);
++    if (Guest_path.error()) {
++      return Guest_path.error();
++    }
++    uint64_t Result = FEX::HLE::_SyscallHandler->FM.LListxattr(Guest_path.c_str(), list, size);
+     SYSCALL_ERRNO();
+   });
+ 
+   REGISTER_SYSCALL_IMPL(removexattr, [](FEXCore::Core::CpuStateFrame* Frame, const char* path, const char* name) -> uint64_t {
+-    uint64_t Result = FEX::HLE::_SyscallHandler->FM.Removexattr(path, name);
++    GuestPath Guest_path(path);
++    if (Guest_path.error()) {
++      return Guest_path.error();
++    }
++    uint64_t Result = FEX::HLE::_SyscallHandler->FM.Removexattr(Guest_path.c_str(), name);
+     SYSCALL_ERRNO();
+   });
+ 
+   REGISTER_SYSCALL_IMPL(lremovexattr, [](FEXCore::Core::CpuStateFrame* Frame, const char* path, const char* name) -> uint64_t {
+-    uint64_t Result = FEX::HLE::_SyscallHandler->FM.LRemovexattr(path, name);
++    GuestPath Guest_path(path);
++    if (Guest_path.error()) {
++      return Guest_path.error();
++    }
++    uint64_t Result = FEX::HLE::_SyscallHandler->FM.LRemovexattr(Guest_path.c_str(), name);
+     SYSCALL_ERRNO();
+   });
+   if (Handler->IsHostKernelVersionAtLeast(6, 13, 0)) {
+     REGISTER_SYSCALL_IMPL(setxattrat,
+                           [](FEXCore::Core::CpuStateFrame* Frame, int dfd, const char* pathname, uint32_t at_flags, const char* name,
+                              const FileManager::xattr_args* uargs, size_t usize) -> uint64_t {
+-                            uint64_t Result = FEX::HLE::_SyscallHandler->FM.SetxattrAt(dfd, pathname, at_flags, name, uargs, usize);
++                            GuestPath Guest_pathname(pathname, true);
++                            if (Guest_pathname.error()) {
++                              return Guest_pathname.error();
++                            }
++                            uint64_t Result = FEX::HLE::_SyscallHandler->FM.SetxattrAt(dfd, Guest_pathname.c_str(), at_flags, name, uargs, usize);
+                             SYSCALL_ERRNO();
+                           });
+     REGISTER_SYSCALL_IMPL(getxattrat,
+                           [](FEXCore::Core::CpuStateFrame* Frame, int dfd, const char* pathname, uint32_t at_flags, const char* name,
+                              const FileManager::xattr_args* uargs, size_t usize) -> uint64_t {
+-                            uint64_t Result = FEX::HLE::_SyscallHandler->FM.GetxattrAt(dfd, pathname, at_flags, name, uargs, usize);
++                            GuestPath Guest_pathname(pathname, true);
++                            if (Guest_pathname.error()) {
++                              return Guest_pathname.error();
++                            }
++                            uint64_t Result = FEX::HLE::_SyscallHandler->FM.GetxattrAt(dfd, Guest_pathname.c_str(), at_flags, name, uargs, usize);
+                             SYSCALL_ERRNO();
+                           });
+ 
+     REGISTER_SYSCALL_IMPL(
+       listxattrat, [](FEXCore::Core::CpuStateFrame* Frame, int dfd, const char* pathname, uint32_t at_flags, char* list, size_t size) -> uint64_t {
+-        uint64_t Result = FEX::HLE::_SyscallHandler->FM.ListxattrAt(dfd, pathname, at_flags, list, size);
++        GuestPath Guest_pathname(pathname, true);
++        if (Guest_pathname.error()) {
++          return Guest_pathname.error();
++        }
++        uint64_t Result = FEX::HLE::_SyscallHandler->FM.ListxattrAt(dfd, Guest_pathname.c_str(), at_flags, list, size);
+         SYSCALL_ERRNO();
+       });
+     REGISTER_SYSCALL_IMPL(
+       removexattrat, [](FEXCore::Core::CpuStateFrame* Frame, int dfd, const char* pathname, uint32_t at_flags, const char* name) -> uint64_t {
+-        uint64_t Result = FEX::HLE::_SyscallHandler->FM.RemovexattrAt(dfd, pathname, at_flags, name);
++        GuestPath Guest_pathname(pathname, true);
++        if (Guest_pathname.error()) {
++          return Guest_pathname.error();
++        }
++        uint64_t Result = FEX::HLE::_SyscallHandler->FM.RemovexattrAt(dfd, Guest_pathname.c_str(), at_flags, name);
+         SYSCALL_ERRNO();
+       });
+   } else {
+@@ -156,23 +256,39 @@ void RegisterFS(FEX::HLE::SyscallHandler* Handler) {
+   // registrations in Passthrough.cpp (which were causing split state between
+   // file-creation paths and *at() resolution targets).
+   REGISTER_SYSCALL_IMPL(fchmodat, [](FEXCore::Core::CpuStateFrame* Frame, int dirfd, const char* pathname, mode_t mode) -> uint64_t {
+-    uint64_t Result = FEX::HLE::_SyscallHandler->FM.Fchmodat(dirfd, pathname, mode, 0);
++    GuestPath Guest_pathname(pathname);
++    if (Guest_pathname.error()) {
++      return Guest_pathname.error();
++    }
++    uint64_t Result = FEX::HLE::_SyscallHandler->FM.Fchmodat(dirfd, Guest_pathname.c_str(), mode, 0);
+     SYSCALL_ERRNO();
+   });
+ 
+   REGISTER_SYSCALL_IMPL(fchownat,
+                         [](FEXCore::Core::CpuStateFrame* Frame, int dirfd, const char* pathname, uid_t owner, gid_t group, int flags) -> uint64_t {
+-                          uint64_t Result = FEX::HLE::_SyscallHandler->FM.Fchownat(dirfd, pathname, owner, group, flags);
++                          GuestPath Guest_pathname(pathname);
++                          if (Guest_pathname.error()) {
++                            return Guest_pathname.error();
++                          }
++                          uint64_t Result = FEX::HLE::_SyscallHandler->FM.Fchownat(dirfd, Guest_pathname.c_str(), owner, group, flags);
+                           SYSCALL_ERRNO();
+                         });
+ 
+   REGISTER_SYSCALL_IMPL(unlinkat, [](FEXCore::Core::CpuStateFrame* Frame, int dirfd, const char* pathname, int flags) -> uint64_t {
+-    uint64_t Result = FEX::HLE::_SyscallHandler->FM.Unlinkat(dirfd, pathname, flags);
++    GuestPath Guest_pathname(pathname);
++    if (Guest_pathname.error()) {
++      return Guest_pathname.error();
++    }
++    uint64_t Result = FEX::HLE::_SyscallHandler->FM.Unlinkat(dirfd, Guest_pathname.c_str(), flags);
+     SYSCALL_ERRNO();
+   });
+ 
+   REGISTER_SYSCALL_IMPL(mkdirat, [](FEXCore::Core::CpuStateFrame* Frame, int dirfd, const char* pathname, mode_t mode) -> uint64_t {
+-    uint64_t Result = FEX::HLE::_SyscallHandler->FM.Mkdirat(dirfd, pathname, mode);
++    GuestPath Guest_pathname(pathname);
++    if (Guest_pathname.error()) {
++      return Guest_pathname.error();
++    }
++    uint64_t Result = FEX::HLE::_SyscallHandler->FM.Mkdirat(dirfd, Guest_pathname.c_str(), mode);
+     SYSCALL_ERRNO();
+   });
+ 
+@@ -187,37 +303,73 @@ void RegisterFS(FEX::HLE::SyscallHandler* Handler) {
+   // timespec32 conversion is not lost.
+   REGISTER_SYSCALL_IMPL_X64(utimensat,
+                         [](FEXCore::Core::CpuStateFrame* Frame, int dirfd, const char* pathname, const struct timespec* times, int flags) -> uint64_t {
+-                          uint64_t Result = FEX::HLE::_SyscallHandler->FM.Utimensat(dirfd, pathname, times, flags);
++                          GuestPath Guest_pathname(pathname, true);
++                          if (Guest_pathname.error()) {
++                            return Guest_pathname.error();
++                          }
++                          uint64_t Result = FEX::HLE::_SyscallHandler->FM.Utimensat(dirfd, Guest_pathname.c_str(), times, flags);
+                           SYSCALL_ERRNO();
+                         });
+ 
+   REGISTER_SYSCALL_IMPL(linkat,
+                         [](FEXCore::Core::CpuStateFrame* Frame, int olddirfd, const char* oldpath, int newdirfd, const char* newpath, int flags) -> uint64_t {
+-                          uint64_t Result = FEX::HLE::_SyscallHandler->FM.Linkat(olddirfd, oldpath, newdirfd, newpath, flags);
++                          GuestPath Guest_oldpath(oldpath);
++                          if (Guest_oldpath.error()) {
++                            return Guest_oldpath.error();
++                          }
++                          GuestPath Guest_newpath(newpath);
++                          if (Guest_newpath.error()) {
++                            return Guest_newpath.error();
++                          }
++                          uint64_t Result = FEX::HLE::_SyscallHandler->FM.Linkat(olddirfd, Guest_oldpath.c_str(), newdirfd, Guest_newpath.c_str(), flags);
+                           SYSCALL_ERRNO();
+                         });
+ 
+   REGISTER_SYSCALL_IMPL(symlinkat,
+                         [](FEXCore::Core::CpuStateFrame* Frame, const char* target, int newdirfd, const char* linkpath) -> uint64_t {
+-                          uint64_t Result = FEX::HLE::_SyscallHandler->FM.Symlinkat(target, newdirfd, linkpath);
++                          GuestPath Guest_linkpath(linkpath);
++                          if (Guest_linkpath.error()) {
++                            return Guest_linkpath.error();
++                          }
++                          uint64_t Result = FEX::HLE::_SyscallHandler->FM.Symlinkat(target, newdirfd, Guest_linkpath.c_str());
+                           SYSCALL_ERRNO();
+                         });
+ 
+   REGISTER_SYSCALL_IMPL(renameat,
+                         [](FEXCore::Core::CpuStateFrame* Frame, int olddirfd, const char* oldpath, int newdirfd, const char* newpath) -> uint64_t {
+-                          uint64_t Result = FEX::HLE::_SyscallHandler->FM.Renameat(olddirfd, oldpath, newdirfd, newpath);
++                          GuestPath Guest_oldpath(oldpath);
++                          if (Guest_oldpath.error()) {
++                            return Guest_oldpath.error();
++                          }
++                          GuestPath Guest_newpath(newpath);
++                          if (Guest_newpath.error()) {
++                            return Guest_newpath.error();
++                          }
++                          uint64_t Result = FEX::HLE::_SyscallHandler->FM.Renameat(olddirfd, Guest_oldpath.c_str(), newdirfd, Guest_newpath.c_str());
+                           SYSCALL_ERRNO();
+                         });
+ 
+   REGISTER_SYSCALL_IMPL(renameat2,
+                         [](FEXCore::Core::CpuStateFrame* Frame, int olddirfd, const char* oldpath, int newdirfd, const char* newpath, unsigned int flags) -> uint64_t {
+-                          uint64_t Result = FEX::HLE::_SyscallHandler->FM.Renameat2(olddirfd, oldpath, newdirfd, newpath, flags);
++                          GuestPath Guest_oldpath(oldpath);
++                          if (Guest_oldpath.error()) {
++                            return Guest_oldpath.error();
++                          }
++                          GuestPath Guest_newpath(newpath);
++                          if (Guest_newpath.error()) {
++                            return Guest_newpath.error();
++                          }
++                          uint64_t Result = FEX::HLE::_SyscallHandler->FM.Renameat2(olddirfd, Guest_oldpath.c_str(), newdirfd, Guest_newpath.c_str(), flags);
+                           SYSCALL_ERRNO();
+                         });
+ 
+   REGISTER_SYSCALL_IMPL_X64(fchmodat2,
+                             [](FEXCore::Core::CpuStateFrame* Frame, int dirfd, const char* pathname, mode_t mode, unsigned int flags) -> uint64_t {
+-                              uint64_t Result = FEX::HLE::_SyscallHandler->FM.Fchmodat2(dirfd, pathname, mode, flags);
++                              GuestPath Guest_pathname(pathname);
++                              if (Guest_pathname.error()) {
++                                return Guest_pathname.error();
++                              }
++                              uint64_t Result = FEX::HLE::_SyscallHandler->FM.Fchmodat2(dirfd, Guest_pathname.c_str(), mode, flags);
+                               SYSCALL_ERRNO();
+                             });
+ }
+diff --git a/Source/Tools/LinuxEmulation/LinuxSyscalls/Syscalls/Info.cpp b/Source/Tools/LinuxEmulation/LinuxSyscalls/Syscalls/Info.cpp
+index b985713fd..34f9e293a 100644
+--- a/Source/Tools/LinuxEmulation/LinuxSyscalls/Syscalls/Info.cpp
++++ b/Source/Tools/LinuxEmulation/LinuxSyscalls/Syscalls/Info.cpp
+@@ -37,13 +37,13 @@ using cap_user_data_t = void*;
+ void RegisterInfo(FEX::HLE::SyscallHandler* Handler) {
+   using namespace FEXCore::IR;
+ 
+-  REGISTER_SYSCALL_IMPL(uname, [](FEXCore::Core::CpuStateFrame* Frame, struct utsname* buf) -> uint64_t {
++  REGISTER_SYSCALL_IMPL(uname, [](FEXCore::Core::CpuStateFrame* Frame, struct utsname* GuestBuf) -> uint64_t {
+     auto Thread = FEX::HLE::ThreadManager::GetStateObjectFromCPUState(Frame);
+ 
+-    // Verify writability before doing any strcpy/memcpy into the guest buffer.
+-    // A bad guest pointer would otherwise cause a host SEGV in the first write
+-    // (the kernel returns -EFAULT in that case, which is what we want to mimic).
+-    FaultSafeUserMemAccess::VerifyIsWritable(buf, sizeof(*buf));
++    // Filled in host memory and copied out once, so a bad guest pointer is
++    // EFAULT as on the kernel. VerifyIsWritable is a no-op in release builds.
++    struct utsname LocalBuf {};
++    auto* buf = &LocalBuf;
+ 
+     struct utsname Local {};
+     if (::uname(&Local) == 0) {
+@@ -74,6 +74,9 @@ void RegisterInfo(FEX::HLE::SyscallHandler* Handler) {
+       // Tell the guest that we are a 64bit kernel
+       strcpy(buf->machine, "x86_64");
+     }
++    if (FaultSafeUserMemAccess::CopyToUser(GuestBuf, buf, sizeof(*buf)) != 0) {
++      return -EFAULT;
++    }
+     return 0;
+   });
+ 
+diff --git a/Source/Tools/LinuxEmulation/LinuxSyscalls/Syscalls/Signals.cpp b/Source/Tools/LinuxEmulation/LinuxSyscalls/Syscalls/Signals.cpp
+index b59d9bf06..05f2e8880 100644
+--- a/Source/Tools/LinuxEmulation/LinuxSyscalls/Syscalls/Signals.cpp
++++ b/Source/Tools/LinuxEmulation/LinuxSyscalls/Syscalls/Signals.cpp
+@@ -24,19 +24,50 @@ struct GuestSigAction;
+ 
+ namespace FEX::HLE {
+ void RegisterSignals(FEX::HLE::SyscallHandler* Handler) {
+-  REGISTER_SYSCALL_IMPL(rt_sigprocmask, [](FEXCore::Core::CpuStateFrame* Frame, int how, const uint64_t* set, uint64_t* oldset) -> uint64_t {
+-    return FEX::HLE::_SyscallHandler->GetSignalDelegator()->GuestSigProcMask(FEX::HLE::ThreadManager::GetStateObjectFromCPUState(Frame),
+-                                                                             how, set, oldset);
+-  });
++  // The guest sigset_t is copied in and out here, as the kernel does, so a bad
++  // pointer is EFAULT and the delegator only sees host memory. The kernel
++  // requires sigsetsize to be exactly sizeof(sigset_t) (rt_sigpending: at most).
++  REGISTER_SYSCALL_IMPL(rt_sigprocmask,
++                        [](FEXCore::Core::CpuStateFrame* Frame, int how, const uint64_t* set, uint64_t* oldset, size_t sigsetsize) -> uint64_t {
++                          if (sigsetsize != sizeof(uint64_t)) {
++                            return -EINVAL;
++                          }
++                          uint64_t NewSet {};
++                          if (set && !FaultSafeUserMemAccess::ReadFromUser(&NewSet, set)) {
++                            return -EFAULT;
++                          }
++                          uint64_t OldSet {};
++                          const uint64_t Result = FEX::HLE::_SyscallHandler->GetSignalDelegator()->GuestSigProcMask(
++                            FEX::HLE::ThreadManager::GetStateObjectFromCPUState(Frame), how, set ? &NewSet : nullptr, oldset ? &OldSet : nullptr);
++                          if (Result == 0 && oldset && !FaultSafeUserMemAccess::WriteToUser(oldset, OldSet)) {
++                            return -EFAULT;
++                          }
++                          return Result;
++                        });
+ 
+   REGISTER_SYSCALL_IMPL(rt_sigpending, [](FEXCore::Core::CpuStateFrame* Frame, uint64_t* set, size_t sigsetsize) -> uint64_t {
+-    return FEX::HLE::_SyscallHandler->GetSignalDelegator()->GuestSigPending(FEX::HLE::ThreadManager::GetStateObjectFromCPUState(Frame), set,
+-                                                                            sigsetsize);
++    if (sigsetsize > sizeof(uint64_t)) {
++      return -EINVAL;
++    }
++    uint64_t Pending {};
++    const uint64_t Result = FEX::HLE::_SyscallHandler->GetSignalDelegator()->GuestSigPending(
++      FEX::HLE::ThreadManager::GetStateObjectFromCPUState(Frame), &Pending, sizeof(Pending));
++    if (Result == 0 && FaultSafeUserMemAccess::CopyToUser(set, &Pending, sigsetsize) != 0) {
++      return -EFAULT;
++    }
++    return Result;
+   });
+ 
+   REGISTER_SYSCALL_IMPL(rt_sigsuspend, [](FEXCore::Core::CpuStateFrame* Frame, uint64_t* unewset, size_t sigsetsize) -> uint64_t {
++    if (sigsetsize != sizeof(uint64_t)) {
++      return -EINVAL;
++    }
++    uint64_t NewSet {};
++    if (!FaultSafeUserMemAccess::ReadFromUser(&NewSet, unewset)) {
++      return -EFAULT;
++    }
+     return FEX::HLE::_SyscallHandler->GetSignalDelegator()->GuestSigSuspend(FEX::HLE::ThreadManager::GetStateObjectFromCPUState(Frame),
+-                                                                            unewset, sigsetsize);
++                                                                            &NewSet, sigsetsize);
+   });
+ 
+   REGISTER_SYSCALL_IMPL(userfaultfd, [](FEXCore::Core::CpuStateFrame* Frame, int flags) -> uint64_t {
+@@ -48,11 +79,25 @@ void RegisterSignals(FEX::HLE::SyscallHandler* Handler) {
+   });
+ 
+   REGISTER_SYSCALL_IMPL(signalfd, [](FEXCore::Core::CpuStateFrame* Frame, int fd, const uint64_t* mask, size_t sigsetsize) -> uint64_t {
+-    return FEX::HLE::_SyscallHandler->GetSignalDelegator()->GuestSignalFD(fd, mask, sigsetsize, 0);
++    if (sigsetsize != sizeof(uint64_t)) {
++      return -EINVAL;
++    }
++    uint64_t Mask {};
++    if (!FaultSafeUserMemAccess::ReadFromUser(&Mask, mask)) {
++      return -EFAULT;
++    }
++    return FEX::HLE::_SyscallHandler->GetSignalDelegator()->GuestSignalFD(fd, &Mask, sigsetsize, 0);
+   });
+ 
+   REGISTER_SYSCALL_IMPL(signalfd4, [](FEXCore::Core::CpuStateFrame* Frame, int fd, const uint64_t* mask, size_t sigsetsize, int flags) -> uint64_t {
+-    return FEX::HLE::_SyscallHandler->GetSignalDelegator()->GuestSignalFD(fd, mask, sigsetsize, flags);
++    if (sigsetsize != sizeof(uint64_t)) {
++      return -EINVAL;
++    }
++    uint64_t Mask {};
++    if (!FaultSafeUserMemAccess::ReadFromUser(&Mask, mask)) {
++      return -EFAULT;
++    }
++    return FEX::HLE::_SyscallHandler->GetSignalDelegator()->GuestSignalFD(fd, &Mask, sigsetsize, flags);
+   });
+ }
+ } // namespace FEX::HLE
+diff --git a/Source/Tools/LinuxEmulation/LinuxSyscalls/x32/FD.cpp b/Source/Tools/LinuxEmulation/LinuxSyscalls/x32/FD.cpp
+index 11164ba40..c8400f586 100644
+--- a/Source/Tools/LinuxEmulation/LinuxSyscalls/x32/FD.cpp
++++ b/Source/Tools/LinuxEmulation/LinuxSyscalls/x32/FD.cpp
+@@ -334,8 +334,12 @@ void RegisterFD(FEX::HLE::SyscallHandler* Handler) {
+   });
+ 
+   REGISTER_SYSCALL_IMPL_X32(oldstat, [](FEXCore::Core::CpuStateFrame* Frame, const char* pathname, oldstat32* buf) -> uint64_t {
++    GuestPath Guest_pathname(pathname);
++    if (Guest_pathname.error()) {
++      return Guest_pathname.error();
++    }
+     struct stat host_stat;
+-    uint64_t Result = FEX::HLE::_SyscallHandler->FM.Stat(pathname, &host_stat);
++    uint64_t Result = FEX::HLE::_SyscallHandler->FM.Stat(Guest_pathname.c_str(), &host_stat);
+     if (Result != -1) {
+       if (host_stat.st_ino > std::numeric_limits<decltype(buf->st_ino)>::max()) {
+         return -EOVERFLOW;
+@@ -368,8 +372,12 @@ void RegisterFD(FEX::HLE::SyscallHandler* Handler) {
+   });
+ 
+   REGISTER_SYSCALL_IMPL_X32(oldlstat, [](FEXCore::Core::CpuStateFrame* Frame, const char* path, oldstat32* buf) -> uint64_t {
++    GuestPath Guest_path(path);
++    if (Guest_path.error()) {
++      return Guest_path.error();
++    }
+     struct stat host_stat;
+-    uint64_t Result = FEX::HLE::_SyscallHandler->FM.Lstat(path, &host_stat);
++    uint64_t Result = FEX::HLE::_SyscallHandler->FM.Lstat(Guest_path.c_str(), &host_stat);
+     if (Result != -1) {
+       if (host_stat.st_ino > std::numeric_limits<decltype(buf->st_ino)>::max()) {
+         return -EOVERFLOW;
+@@ -385,8 +393,12 @@ void RegisterFD(FEX::HLE::SyscallHandler* Handler) {
+   });
+ 
+   REGISTER_SYSCALL_IMPL_X32(stat, [](FEXCore::Core::CpuStateFrame* Frame, const char* pathname, stat32* buf) -> uint64_t {
++    GuestPath Guest_pathname(pathname);
++    if (Guest_pathname.error()) {
++      return Guest_pathname.error();
++    }
+     struct stat host_stat;
+-    uint64_t Result = FEX::HLE::_SyscallHandler->FM.Stat(pathname, &host_stat);
++    uint64_t Result = FEX::HLE::_SyscallHandler->FM.Stat(Guest_pathname.c_str(), &host_stat);
+     if (Result != -1) {
+       FaultSafeUserMemAccess::VerifyIsWritable(buf, sizeof(*buf));
+       *buf = host_stat;
+@@ -405,8 +417,12 @@ void RegisterFD(FEX::HLE::SyscallHandler* Handler) {
+   });
+ 
+   REGISTER_SYSCALL_IMPL_X32(lstat, [](FEXCore::Core::CpuStateFrame* Frame, const char* path, stat32* buf) -> uint64_t {
++    GuestPath Guest_path(path);
++    if (Guest_path.error()) {
++      return Guest_path.error();
++    }
+     struct stat host_stat;
+-    uint64_t Result = FEX::HLE::_SyscallHandler->FM.Lstat(path, &host_stat);
++    uint64_t Result = FEX::HLE::_SyscallHandler->FM.Lstat(Guest_path.c_str(), &host_stat);
+     if (Result != -1) {
+       FaultSafeUserMemAccess::VerifyIsWritable(buf, sizeof(*buf));
+       *buf = host_stat;
+@@ -415,8 +431,12 @@ void RegisterFD(FEX::HLE::SyscallHandler* Handler) {
+   });
+ 
+   REGISTER_SYSCALL_IMPL_X32(stat64, [](FEXCore::Core::CpuStateFrame* Frame, const char* pathname, stat64_32* buf) -> uint64_t {
++    GuestPath Guest_pathname(pathname);
++    if (Guest_pathname.error()) {
++      return Guest_pathname.error();
++    }
+     struct stat host_stat;
+-    uint64_t Result = FEX::HLE::_SyscallHandler->FM.Stat(pathname, &host_stat);
++    uint64_t Result = FEX::HLE::_SyscallHandler->FM.Stat(Guest_pathname.c_str(), &host_stat);
+     if (Result != -1) {
+       FaultSafeUserMemAccess::VerifyIsWritable(buf, sizeof(*buf));
+       *buf = host_stat;
+@@ -425,8 +445,12 @@ void RegisterFD(FEX::HLE::SyscallHandler* Handler) {
+   });
+ 
+   REGISTER_SYSCALL_IMPL_X32(lstat64, [](FEXCore::Core::CpuStateFrame* Frame, const char* path, stat64_32* buf) -> uint64_t {
++    GuestPath Guest_path(path);
++    if (Guest_path.error()) {
++      return Guest_path.error();
++    }
+     struct stat host_stat;
+-    uint64_t Result = FEX::HLE::_SyscallHandler->FM.Lstat(path, &host_stat);
++    uint64_t Result = FEX::HLE::_SyscallHandler->FM.Lstat(Guest_path.c_str(), &host_stat);
+ 
+     if (Result != -1) {
+       FaultSafeUserMemAccess::VerifyIsWritable(buf, sizeof(*buf));
+@@ -446,8 +470,12 @@ void RegisterFD(FEX::HLE::SyscallHandler* Handler) {
+   });
+ 
+   REGISTER_SYSCALL_IMPL_X32(statfs, [](FEXCore::Core::CpuStateFrame* Frame, const char* path, statfs32_32* buf) -> uint64_t {
++    GuestPath Guest_path(path);
++    if (Guest_path.error()) {
++      return Guest_path.error();
++    }
+     struct statfs host_stat;
+-    uint64_t Result = FEX::HLE::_SyscallHandler->FM.Statfs(path, &host_stat);
++    uint64_t Result = FEX::HLE::_SyscallHandler->FM.Statfs(Guest_path.c_str(), &host_stat);
+     if (Result != -1) {
+       FaultSafeUserMemAccess::VerifyIsWritable(buf, sizeof(*buf));
+       *buf = host_stat;
+@@ -478,10 +506,14 @@ void RegisterFD(FEX::HLE::SyscallHandler* Handler) {
+   });
+ 
+   REGISTER_SYSCALL_IMPL_X32(statfs64, [](FEXCore::Core::CpuStateFrame* Frame, const char* path, size_t sz, struct statfs64_32* buf) -> uint64_t {
++    GuestPath Guest_path(path);
++    if (Guest_path.error()) {
++      return Guest_path.error();
++    }
+     LOGMAN_THROW_A_FMT(sz == sizeof(struct statfs64_32), "This needs to match");
+ 
+     struct statfs host_stat;
+-    uint64_t Result = FEX::HLE::_SyscallHandler->FM.Statfs(path, &host_stat);
++    uint64_t Result = FEX::HLE::_SyscallHandler->FM.Statfs(Guest_path.c_str(), &host_stat);
+     if (Result != -1) {
+       FaultSafeUserMemAccess::VerifyIsWritable(buf, sizeof(*buf));
+       *buf = host_stat;
+@@ -589,8 +621,12 @@ void RegisterFD(FEX::HLE::SyscallHandler* Handler) {
+                             });
+ 
+   REGISTER_SYSCALL_IMPL_X32(fstatat_64, [](FEXCore::Core::CpuStateFrame* Frame, int dirfd, const char* pathname, stat64_32* buf, int flag) -> uint64_t {
++    GuestPath Guest_pathname(pathname);
++    if (Guest_pathname.error()) {
++      return Guest_pathname.error();
++    }
+     struct stat64 host_stat;
+-    uint64_t Result = FEX::HLE::_SyscallHandler->FM.NewFSStatAt64(dirfd, pathname, &host_stat, flag);
++    uint64_t Result = FEX::HLE::_SyscallHandler->FM.NewFSStatAt64(dirfd, Guest_pathname.c_str(), &host_stat, flag);
+     if (Result != -1) {
+       FaultSafeUserMemAccess::VerifyIsWritable(buf, sizeof(*buf));
+       *buf = host_stat;
+diff --git a/Source/Tools/LinuxEmulation/LinuxSyscalls/x64/FD.cpp b/Source/Tools/LinuxEmulation/LinuxSyscalls/x64/FD.cpp
+index 262da6731..52dc621f6 100644
+--- a/Source/Tools/LinuxEmulation/LinuxSyscalls/x64/FD.cpp
++++ b/Source/Tools/LinuxEmulation/LinuxSyscalls/x64/FD.cpp
+@@ -63,10 +63,14 @@ void RegisterFD(FEX::HLE::SyscallHandler* Handler) {
+     });
+ 
+   REGISTER_SYSCALL_IMPL_X64(stat, [](FEXCore::Core::CpuStateFrame* Frame, const char* pathname, FEX::HLE::x64::guest_stat* buf) -> uint64_t {
++    GuestPath Guest_pathname(pathname);
++    if (Guest_pathname.error()) {
++      return Guest_pathname.error();
++    }
+     FaultSafeUserMemAccess::VerifyIsStringReadableMaxSize(pathname, PATH_MAX);
+     FaultSafeUserMemAccess::VerifyIsWritable(buf, sizeof(*buf));
+     struct stat host_stat;
+-    uint64_t Result = FEX::HLE::_SyscallHandler->FM.Stat(pathname, &host_stat);
++    uint64_t Result = FEX::HLE::_SyscallHandler->FM.Stat(Guest_pathname.c_str(), &host_stat);
+     if (Result != -1) {
+       *buf = host_stat;
+     }
+@@ -84,10 +88,14 @@ void RegisterFD(FEX::HLE::SyscallHandler* Handler) {
+   });
+ 
+   REGISTER_SYSCALL_IMPL_X64(lstat, [](FEXCore::Core::CpuStateFrame* Frame, const char* path, FEX::HLE::x64::guest_stat* buf) -> uint64_t {
++    GuestPath Guest_path(path);
++    if (Guest_path.error()) {
++      return Guest_path.error();
++    }
+     FaultSafeUserMemAccess::VerifyIsStringReadableMaxSize(path, PATH_MAX);
+     FaultSafeUserMemAccess::VerifyIsWritable(buf, sizeof(*buf));
+     struct stat host_stat;
+-    uint64_t Result = FEX::HLE::_SyscallHandler->FM.Lstat(path, &host_stat);
++    uint64_t Result = FEX::HLE::_SyscallHandler->FM.Lstat(Guest_path.c_str(), &host_stat);
+     if (Result != -1) {
+       *buf = host_stat;
+     }
+@@ -96,10 +104,14 @@ void RegisterFD(FEX::HLE::SyscallHandler* Handler) {
+ 
+   REGISTER_SYSCALL_IMPL_X64(
+     newfstatat, [](FEXCore::Core::CpuStateFrame* Frame, int dirfd, const char* pathname, FEX::HLE::x64::guest_stat* buf, int flag) -> uint64_t {
++      GuestPath Guest_pathname(pathname, true);
++      if (Guest_pathname.error()) {
++        return Guest_pathname.error();
++      }
+       FaultSafeUserMemAccess::VerifyIsStringReadableMaxSize(pathname, PATH_MAX);
+       FaultSafeUserMemAccess::VerifyIsWritable(buf, sizeof(*buf));
+       struct stat host_stat;
+-      uint64_t Result = FEX::HLE::_SyscallHandler->FM.NewFSStatAt(dirfd, pathname, &host_stat, flag);
++      uint64_t Result = FEX::HLE::_SyscallHandler->FM.NewFSStatAt(dirfd, Guest_pathname.c_str(), &host_stat, flag);
+       if (Result != -1) {
+         *buf = host_stat;
+       }
+@@ -133,9 +145,13 @@ void RegisterFD(FEX::HLE::SyscallHandler* Handler) {
+   });
+ 
+   REGISTER_SYSCALL_IMPL_X64(statfs, [](FEXCore::Core::CpuStateFrame* Frame, const char* path, struct statfs* buf) -> uint64_t {
++    GuestPath Guest_path(path);
++    if (Guest_path.error()) {
++      return Guest_path.error();
++    }
+     FaultSafeUserMemAccess::VerifyIsStringReadableMaxSize(path, PATH_MAX);
+     FaultSafeUserMemAccess::VerifyIsWritable(buf, sizeof(*buf));
+-    uint64_t Result = FEX::HLE::_SyscallHandler->FM.Statfs(path, buf);
++    uint64_t Result = FEX::HLE::_SyscallHandler->FM.Statfs(Guest_path.c_str(), buf);
+     SYSCALL_ERRNO();
+   });
+ }
+-- 
+2.55.0
+

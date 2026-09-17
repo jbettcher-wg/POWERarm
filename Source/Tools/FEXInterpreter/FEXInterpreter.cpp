@@ -85,9 +85,16 @@ static bool DisableOutputColors {};
 // the destination isn't known, and stderr belongs to the guest: writing there
 // breaks programs that capture or compare it (a server start race once put
 // "Couldn't connect to ...Server socket" into a compiler's stderr). Init()
-// replays these to the configured log, or drops them when logging is silent.
+// replays these to the configured log. When logging is silent (the default)
+// it drops the debug and info ones but keeps holding the errors: they are
+// written to stderr if the process then fails (FlushHeldErrorsToStderr), so a
+// FEXServer or rootfs problem that stops the guest is still explained, while a
+// successful run prints nothing.
 // A fixed buffer: this runs before the allocator is set up.
 static bool Initialized {};
+// The process that ran Init(); a forked child inherits the held errors but
+// must not report them a second time.
+static pid_t HeldErrorsPID {};
 static char EarlyMessages[8192];
 static size_t EarlyMessagesUsed {};
 
@@ -112,6 +119,21 @@ static void ReplayEarlyMessages(void (*Handler)(LogMan::DebugLevels, const char*
     Offset += strlen(Message) + 2;
   }
   EarlyMessagesUsed = 0;
+}
+
+// Drops the held messages below error level, keeping ERROR and ASSERT.
+static void KeepEarlyErrors() {
+  size_t Kept = 0;
+  for (size_t Offset = 0; Offset < EarlyMessagesUsed;) {
+    const auto Level = static_cast<LogMan::DebugLevels>(EarlyMessages[Offset]);
+    const size_t EntryLen = strlen(EarlyMessages + Offset + 1) + 2;
+    if (Level == LogMan::ERROR || Level == LogMan::ASSERT) {
+      memmove(EarlyMessages + Kept, EarlyMessages + Offset, EntryLen);
+      Kept += EntryLen;
+    }
+    Offset += EntryLen;
+  }
+  EarlyMessagesUsed = Kept;
 }
 
 void MsgHandler(LogMan::DebugLevels Level, const char* Message) {
@@ -148,6 +170,26 @@ void FlushEarlyMessagesToStderr() {
   OutputFD = STDERR_FILENO;
   DisableOutputColors = !isatty(OutputFD);
   ReplayEarlyMessages(MsgHandler);
+}
+
+// The process is failing (start-up could not finish, or the guest exits with a
+// nonzero status) while logging is silent: write the errors held from before
+// Init() to stderr, since they may be the only explanation. Nothing is held,
+// and nothing is written, unless something logged an error before Init().
+void FlushHeldErrorsToStderr() {
+  if (EarlyMessagesUsed == 0 || getpid() != HeldErrorsPID) {
+    return;
+  }
+  const bool Colors = isatty(STDERR_FILENO);
+  for (size_t Offset = 0; Offset < EarlyMessagesUsed;) {
+    const auto Level = static_cast<LogMan::DebugLevels>(EarlyMessages[Offset]);
+    const char* Message = EarlyMessages + Offset + 1;
+    const auto Style = Colors ? LogMan::DebugLevelStyle(Level) : fmt::text_style {};
+    const auto Output = fextl::fmt::format("{} {}\n", fmt::styled(LogMan::DebugLevelStr(Level), Style), Message);
+    (void)!write(STDERR_FILENO, Output.c_str(), Output.size());
+    Offset += strlen(Message) + 2;
+  }
+  EarlyMessagesUsed = 0;
 }
 
 namespace FEXServer {
@@ -211,7 +253,8 @@ void Init() {
   Initialized = true;
 
   if (SilentLog) {
-    ReplayEarlyMessages(nullptr);
+    HeldErrorsPID = getpid();
+    KeepEarlyErrors();
   } else if (FEXServer::FEXServerFD != -1) {
     ReplayEarlyMessages(FEXServer::MsgHandler);
   } else {
@@ -576,6 +619,7 @@ int main(int argc, char** argv, char** const envp) {
     // Early exit if the program passed in doesn't exist
     // Will prevent a crash later
     fextl::fmt::print(stderr, "{}: command not found\n", Program.ProgramPath);
+    FEX::Logging::FlushHeldErrorsToStderr();
     return -ENOEXEC;
   }
 
@@ -602,6 +646,7 @@ int main(int argc, char** argv, char** const envp) {
     fextl::fmt::print(stderr, "POWERarm: '{}' is not a supported ELF: only ELFCLASS64, ELFDATA2LSB, EM_AARCH64, ET_EXEC or ET_DYN binaries can run\n",
                       Program.ProgramPath);
     // POWERARM-M0-TODO(loader): an unloadable PT_INTERP lands here too; report the interpreter/RootFS separately once dynamic binaries are supported.
+    FEX::Logging::FlushHeldErrorsToStderr();
     return -ENOEXEC;
   }
 
@@ -670,6 +715,7 @@ int main(int argc, char** argv, char** const envp) {
 
   auto SyscallHandler = FEX::HLE::Arm64::CreateHandler(CTX.get(), SignalDelegation.get(), ThunkHandler.get());
   SyscallHandler->SetCodeLoader(&Loader);
+  FEX::HLE::GuestErrorExitHook = FEX::Logging::FlushHeldErrorsToStderr;
   CTX->SetSignalDelegator(SignalDelegation.get());
   CTX->SetSyscallHandler(SyscallHandler.get());
   CTX->SetThunkHandler(ThunkHandler.get());
@@ -714,6 +760,7 @@ int main(int argc, char** argv, char** const envp) {
   }
 
   if (!CTX->InitCore()) {
+    FEX::Logging::FlushHeldErrorsToStderr();
     return 1;
   }
 
@@ -739,6 +786,7 @@ int main(int argc, char** argv, char** const envp) {
     if (!Loader.MapMemory(SyscallHandler.get(), ParentThread->Thread)) {
       // failed to map
       LogMan::Msg::EFmt("Failed to map elf file.");
+      FEX::Logging::FlushHeldErrorsToStderr();
       return -ENOEXEC;
     }
   }
@@ -792,6 +840,9 @@ int main(int argc, char** argv, char** const envp) {
   SyscallHandler->SaveCodeCaches(ParentThread->Thread, true);
 
   auto ProgramStatus = ParentThread->StatusCode;
+  if (ProgramStatus & 0xff) {
+    FEX::Logging::FlushHeldErrorsToStderr();
+  }
 
   FEX::VDSO::UnloadVDSOMapping(ParentThread->Thread, SyscallHandler.get(), VDSOMapping);
 
