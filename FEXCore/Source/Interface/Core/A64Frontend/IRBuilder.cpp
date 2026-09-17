@@ -173,6 +173,7 @@ const IRBuilder::HandlerEntry IRBuilder::HandlerTable[] = {
   {"FCVTZS_float_fix", &IRBuilder::FCVTZS_float_fix}, {"FCVTZU_float_fix", &IRBuilder::FCVTZU_float_fix},
   {"FCVTZS_int_2", &IRBuilder::FCVTZS_int_2}, {"FCVTZU_int_2", &IRBuilder::FCVTZU_int_2},
   {"SCVTF_int_2", &IRBuilder::SCVTF_int_2}, {"UCVTF_int_2", &IRBuilder::UCVTF_int_2},
+  {"FCVTL", &IRBuilder::FCVTL}, {"FCVTN", &IRBuilder::FCVTN},
 };
 // clang-format on
 

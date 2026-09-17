@@ -31,10 +31,9 @@ inline constexpr uint64_t CTR_EL0 = 0x9444C004;
 // Pi 5: 0x4. DZP=0, BlockSize=4: DC ZVA zeroes 64 bytes.
 inline constexpr uint64_t DCZID_EL0 = 0x4;
 
-// ID_AA64PFR0_EL1. Pi 5: 0x110011 (FP=1 and AdvSIMD=1 advertise half
-// precision). M1: EL0 and EL1 AArch64-only (1), FP=0 and AdvSIMD=0
-// (implemented, no FP16: fphp/asimdhp stay clear).
-inline constexpr uint64_t ID_AA64PFR0_EL1 = 0x0000000000000011;
+// ID_AA64PFR0_EL1. Pi 5: 0x110011. EL0 and EL1 AArch64-only (1), FP=1 and
+// AdvSIMD=1: implemented with half precision (fphp/asimdhp), as on the Pi.
+inline constexpr uint64_t ID_AA64PFR0_EL1 = 0x0000000000110011;
 // Pi 5: 0.
 inline constexpr uint64_t ID_AA64PFR1_EL1 = 0;
 // Pi 5: 0x6 (DebugVer only).

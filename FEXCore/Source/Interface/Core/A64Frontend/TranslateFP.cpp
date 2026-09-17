@@ -17,7 +17,15 @@
 //    ordered compares and selects.
 //  * Conversions saturate and convert NaN to 0 (A64FloatToGPR).
 //
-// Half precision (type 11) is not translated yet.
+//  * Half precision has no host arithmetic. Operands are widened to double
+//    (exact), the operation runs in double precision, and the result is
+//    rounded once to half precision with the FPCR rounding mode (see
+//    HalfToDouble/DoubleToHalf for FZ16). Addition, subtraction,
+//    multiplication, division and square root of half-precision values are
+//    exact or cannot land within 2^-53 of a half-precision rounding boundary,
+//    so the double step never changes the rounded result; only the fused
+//    multiply-add of widely separated magnitudes can lose a sticky bit.
+//    POWERARM-M1-TODO(fpu): FPCR.AHP (alternative half-precision format) is stored but not emulated.
 #include "Interface/Core/A64Frontend/IRBuilder.h"
 #include "Interface/Core/A64Frontend/TranslateCommon.h"
 
@@ -28,24 +36,25 @@ using namespace FEXCore::IR;
 
 namespace {
   // FP type field (bits 23:22) -> element size. Returns false for the
-  // unallocated type and, for now, half precision.
+  // unallocated type.
   bool FPTypeSize(uint32_t Type, OpSize* Size) {
     switch (Type) {
     case 0b00: *Size = OpSize::i32Bit; return true;
     case 0b01: *Size = OpSize::i64Bit; return true;
-    // POWERARM-M1-TODO(fpu): half precision (type 11) is not translated; FP16 is to be presented once it is.
+    case 0b11: *Size = OpSize::i16Bit; return true;
     default: return false;
     }
   }
 
-  // A64 VFPExpandImm for single or double precision.
-  uint64_t VFPExpandImm(uint64_t Imm8, bool IsDouble) {
+  // A64 VFPExpandImm for half, single or double precision.
+  uint64_t VFPExpandImm(uint64_t Imm8, OpSize Size) {
     const uint64_t Sign = (Imm8 >> 7) & 1;
     const uint64_t B6 = (Imm8 >> 6) & 1;
-    if (IsDouble) {
-      return (Sign << 63) | ((B6 ^ 1) << 62) | ((B6 ? 0xFFULL : 0) << 54) | ((Imm8 & 0x3F) << 48);
+    switch (Size) {
+    case OpSize::i64Bit: return (Sign << 63) | ((B6 ^ 1) << 62) | ((B6 ? 0xFFULL : 0) << 54) | ((Imm8 & 0x3F) << 48);
+    case OpSize::i32Bit: return (Sign << 31) | ((B6 ^ 1) << 30) | ((B6 ? 0x1FULL : 0) << 25) | ((Imm8 & 0x3F) << 19);
+    default: return (Sign << 15) | ((B6 ^ 1) << 14) | ((B6 ? 0x3ULL : 0) << 12) | ((Imm8 & 0x3F) << 6);
     }
-    return (Sign << 31) | ((B6 ^ 1) << 30) | ((B6 ? 0x1FULL : 0) << 25) | ((Imm8 & 0x3F) << 19);
   }
 
   uint64_t QuietBit(OpSize ElementSize) {
@@ -53,8 +62,14 @@ namespace {
   }
 
   uint64_t Replicate(uint64_t Value, OpSize ElementSize) {
-    return ElementSize == OpSize::i64Bit ? Value : (Value << 32) | Value;
+    switch (ElementSize) {
+    case OpSize::i64Bit: return Value;
+    case OpSize::i32Bit: return (Value << 32) | Value;
+    default: return Value * 0x0001000100010001ULL;
+    }
   }
+
+  constexpr uint64_t DOUBLE_QUIET_BIT = 1ULL << 51;
 
   // A64 FPRounding for the FCVT* opcode groups: rmode (bits 20:19) with the
   // A variants (ties away) selected separately.
@@ -71,6 +86,50 @@ namespace {
 
 Ref IRBuilder::FPConstant(uint64_t Bits, OpSize ElementSize) {
   return VectorConstant64(Replicate(Bits, ElementSize));
+}
+
+Ref IRBuilder::FZ16Mask() {
+  Ref FPCR = _LoadContext(OpSize::i32Bit, RegClass::GPR, offsetof(FEXCore::Core::CPUState, fpcr));
+  return _VDupFromGPR(OpSize::i128Bit, OpSize::i64Bit, _Neg(OpSize::i64Bit, _Bfe(OpSize::i64Bit, 1, 19, FPCR)));
+}
+
+Ref IRBuilder::HalfToDouble(Ref V, bool KeepSignalling, bool ApplyFZ16) {
+  const auto RS = OpSize::i128Bit;
+  // FPUnpack with FPCR.FZ16 set reads a half-precision denormal as a zero of
+  // the same sign. FP-to-FP conversions unpack with FZ16 ignored
+  // (FPUnpackCV), which the Pi confirms.
+  Ref H = V;
+  if (ApplyFZ16) {
+    Ref Denormal = _VAnd(RS, RS, _VCMPEQZ(RS, OpSize::i16Bit, _VAnd(RS, RS, V, FPConstant(0x7C00, OpSize::i16Bit))), FZ16Mask());
+    H = _VBSL(RS, Denormal, _VAnd(RS, RS, V, FPConstant(0x8000, OpSize::i16Bit)), V);
+  }
+  Ref D = _A64FToF(OpSize::i64Bit, OpSize::i16Bit, H);
+  if (!KeepSignalling) {
+    return D;
+  }
+  // The widening quiets a signalling NaN; arithmetic operand precedence
+  // needs to see it, so clear the quiet bit again for those.
+  Ref Bits16 = _VExtractToGPR(RS, OpSize::i16Bit, H, 0);
+  Ref TopMatch = _Select(OpSize::i64Bit, OpSize::i64Bit, CondClass::EQ, _And(OpSize::i64Bit, Bits16, Constant(0x7E00)),
+                         Constant(0x7C00), Constant(1), Constant(0));
+  Ref Signalling = _Select(OpSize::i64Bit, OpSize::i64Bit, CondClass::NEQ, _And(OpSize::i64Bit, Bits16, Constant(0x1FF)), Constant(0),
+                           TopMatch, Constant(0));
+  Ref ClearQuiet = _VDupFromGPR(RS, OpSize::i64Bit, _And(OpSize::i64Bit, _Neg(OpSize::i64Bit, Signalling), Constant(DOUBLE_QUIET_BIT)));
+  return _VAndn(RS, RS, D, ClearQuiet);
+}
+
+Ref IRBuilder::DoubleToHalf(Ref D, bool ApplyFZ16) {
+  const auto RS = OpSize::i128Bit;
+  // FPRound with FPCR.FZ16 set turns a result below the smallest normal
+  // half-precision magnitude (2^-14), before rounding, into a zero of the
+  // same sign. FP-to-FP conversions round with FZ16 ignored (FPRoundCV).
+  if (!ApplyFZ16) {
+    return _A64FToF(OpSize::i16Bit, OpSize::i64Bit, D);
+  }
+  Ref Tiny = _VAnd(RS, RS, _VFCMPLT(RS, OpSize::i64Bit, _VFAbs(RS, OpSize::i64Bit, D), FPConstant(0x3F10000000000000ULL, OpSize::i64Bit)),
+                   FZ16Mask());
+  Ref Flushed = _VBSL(RS, Tiny, _VAnd(RS, RS, D, FPConstant(0x8000000000000000ULL, OpSize::i64Bit)), D);
+  return _A64FToF(OpSize::i16Bit, OpSize::i64Bit, Flushed);
 }
 
 Ref IRBuilder::PropagateNaNOperand(OpSize ElementSize, Ref A, Ref B) {
@@ -135,8 +194,9 @@ bool IRBuilder::FMOV_float_gen(uint32_t Word) {
   } else if (Sf && Type == 0b10 && RMode1) {
     Size = OpSize::i64Bit;
     Index = 1;
+  } else if (Type == 0b11 && !RMode1) {
+    Size = OpSize::i16Bit;
   } else {
-    // POWERARM-M1-TODO(fpu): FMOV between general-purpose and half-precision registers.
     return false;
   }
 
@@ -167,7 +227,7 @@ bool IRBuilder::FMOV_float_imm(uint32_t Word) {
   if (!FPTypeSize(Bits(Word, 23, 22), &Size) || Bits(Word, 9, 5) != 0) {
     return false;
   }
-  const uint64_t Bits64 = VFPExpandImm(Bits(Word, 20, 13), Size == OpSize::i64Bit);
+  const uint64_t Bits64 = VFPExpandImm(Bits(Word, 20, 13), Size);
   StoreV(Bits(Word, 4, 0), _VCastFromGPR(OpSize::i128Bit, Size, Constant(Bits64)));
   return true;
 }
@@ -184,6 +244,16 @@ bool IRBuilder::FPOneRegister(uint32_t Word, FPUnaryOp Op) {
   const auto RS = OpSize::i128Bit;
   Ref V = LoadV(Bits(Word, 9, 5));
   Ref Result {};
+  if (Size == OpSize::i16Bit) {
+    // FABS and FNEG are sign-bit operations with no unpacking.
+    switch (Op) {
+    case FPUnaryOp::Abs: Result = _VAnd(RS, RS, V, FPConstant(0x7FFF, Size)); break;
+    case FPUnaryOp::Neg: Result = _VXor(RS, RS, V, FPConstant(0x8000, Size)); break;
+    case FPUnaryOp::Sqrt: Result = DoubleToHalf(_VFSqrt(RS, OpSize::i64Bit, HalfToDouble(V, false, true)), true); break;
+    }
+    StoreVSized(Bits(Word, 4, 0), Size, Result);
+    return true;
+  }
   switch (Op) {
   case FPUnaryOp::Abs: Result = _VFAbs(RS, Size, V); break;
   case FPUnaryOp::Neg: Result = _VFNeg(RS, Size, V); break;
@@ -202,7 +272,22 @@ bool IRBuilder::FCVT_float(uint32_t Word) {
   if (!FPTypeSize(Bits(Word, 23, 22), &SrcSize) || !FPTypeSize(Bits(Word, 16, 15), &DstSize) || SrcSize == DstSize) {
     return false;
   }
-  StoreV(Bits(Word, 4, 0), _VMov(DstSize, _A64FToF(DstSize, SrcSize, LoadV(Bits(Word, 9, 5)))));
+  Ref V = LoadV(Bits(Word, 9, 5));
+  // Half precision goes through double: widening is exact and the narrowing
+  // to half rounds once.
+  Ref Double {};
+  switch (SrcSize) {
+  case OpSize::i16Bit: Double = HalfToDouble(V, false, false); break;
+  case OpSize::i32Bit: Double = _A64FToF(OpSize::i64Bit, OpSize::i32Bit, V); break;
+  default: Double = V; break;
+  }
+  Ref Result {};
+  switch (DstSize) {
+  case OpSize::i16Bit: Result = DoubleToHalf(Double, false); break;
+  case OpSize::i32Bit: Result = _A64FToF(OpSize::i32Bit, OpSize::i64Bit, Double); break;
+  default: Result = Double; break;
+  }
+  StoreVSized(Bits(Word, 4, 0), DstSize, Result);
   return true;
 }
 
@@ -218,6 +303,12 @@ bool IRBuilder::FPTwoRegister(uint32_t Word, FPBinaryOp Op) {
   const auto RS = OpSize::i128Bit;
   Ref A = LoadV(Bits(Word, 9, 5));
   Ref B = LoadV(Bits(Word, 20, 16));
+  const bool Half = Size == OpSize::i16Bit;
+  if (Half) {
+    A = HalfToDouble(A, true, true);
+    B = HalfToDouble(B, true, true);
+    Size = OpSize::i64Bit;
+  }
 
   Ref Result {};
   switch (Op) {
@@ -230,6 +321,10 @@ bool IRBuilder::FPTwoRegister(uint32_t Word, FPBinaryOp Op) {
   case FPBinaryOp::Max: Result = FPMinMax(Size, A, B, true, false); break;
   case FPBinaryOp::MinNum: Result = FPMinMax(Size, A, B, false, true); break;
   case FPBinaryOp::MaxNum: Result = FPMinMax(Size, A, B, true, true); break;
+  }
+  if (Half) {
+    StoreVSized(Bits(Word, 4, 0), OpSize::i16Bit, DoubleToHalf(Result, true));
+    return true;
   }
   StoreVSized(Bits(Word, 4, 0), Size, Result);
   return true;
@@ -266,6 +361,13 @@ bool IRBuilder::FPThreeRegister(uint32_t Word) {
   Ref N = LoadV(Bits(Word, 9, 5));
   Ref M = LoadV(Bits(Word, 20, 16));
   Ref A = LoadV(Bits(Word, 14, 10));
+  const bool Half = Size == OpSize::i16Bit;
+  if (Half) {
+    N = HalfToDouble(N, true, true);
+    M = HalfToDouble(M, true, true);
+    A = HalfToDouble(A, true, true);
+    Size = OpSize::i64Bit;
+  }
   if (NegateOperand) {
     N = _VFNeg(RS, Size, N);
   }
@@ -304,6 +406,10 @@ bool IRBuilder::FPThreeRegister(uint32_t Word) {
   Ref DefaultCase = _VAnd(RS, RS, _VAnd(RS, RS, NaNA, QBitA), InfTimesZero);
   Ref DefaultNaN = FPConstant(Is64 ? 0x7FF8000000000000ULL : 0x7FC00000ULL, Size);
   Result = _VBSL(RS, DefaultCase, DefaultNaN, Result);
+  if (Half) {
+    StoreVSized(Bits(Word, 4, 0), OpSize::i16Bit, DoubleToHalf(Result, true));
+    return true;
+  }
   StoreVSized(Bits(Word, 4, 0), Size, Result);
   return true;
 }
@@ -322,6 +428,11 @@ bool IRBuilder::FCMP_float(uint32_t Word) {
   const bool WithZero = Bit(Word, 3);
   Ref A = LoadV(Bits(Word, 9, 5));
   Ref B = WithZero ? _VectorImm(OpSize::i128Bit, OpSize::i8Bit, 0).Node : LoadV(Bits(Word, 20, 16));
+  if (Size == OpSize::i16Bit) {
+    A = HalfToDouble(A, false, true);
+    B = HalfToDouble(B, false, true);
+    Size = OpSize::i64Bit;
+  }
   _FCmp(Size, A, B);
   return true;
 }
@@ -335,6 +446,11 @@ bool IRBuilder::FCCMP_float(uint32_t Word) {
   const uint64_t FalseNZCV = Bits(Word, 3, 0);
   Ref A = LoadV(Bits(Word, 9, 5));
   Ref B = LoadV(Bits(Word, 20, 16));
+  if (Size == OpSize::i16Bit) {
+    A = HalfToDouble(A, false, true);
+    B = HalfToDouble(B, false, true);
+    Size = OpSize::i64Bit;
+  }
   if (Cond >= 0b1110) {
     _FCmp(Size, A, B);
     return true;
@@ -373,7 +489,12 @@ bool IRBuilder::FPConvertToInt(uint32_t Word, uint8_t Rounding, bool Signed) {
     return false;
   }
   const bool Sf = Bit(Word, 31);
-  Ref Result = _A64FloatToGPR(SizeFor(Sf), Size, LoadV(Bits(Word, 9, 5)), Rounding, Signed);
+  Ref V = LoadV(Bits(Word, 9, 5));
+  if (Size == OpSize::i16Bit) {
+    V = HalfToDouble(V, false, true);
+    Size = OpSize::i64Bit;
+  }
+  Ref Result = _A64FloatToGPR(SizeFor(Sf), Size, V, Rounding, Signed);
   StoreReg(Bits(Word, 4, 0), Sf, Result);
   return true;
 }
@@ -399,13 +520,21 @@ bool IRBuilder::FPConvertFromInt(uint32_t Word, bool Signed, bool Fixed) {
   if (Fixed && !Sf && Scale < 32) {
     return false;
   }
-  Ref Result = _A64FloatFromGPR(Size, SizeFor(Sf), LoadX(Bits(Word, 9, 5)), Signed);
+  // Half precision converts through double: every integer that can round to
+  // a finite half-precision value is exact in double.
+  // POWERARM-M1-TODO(fpu): a fixed-point SCVTF/UCVTF to half precision of an integer above 2^53 rounds twice.
+  const bool Half = Size == OpSize::i16Bit;
+  const auto ConvSize = Half ? OpSize::i64Bit : Size;
+  Ref Result = _A64FloatFromGPR(ConvSize, SizeFor(Sf), LoadX(Bits(Word, 9, 5)), Signed);
   if (Fixed && Scale != 64) {
     // Scaling by a power of two after the single rounding is exact.
     const uint32_t FBits = 64 - Scale;
-    const bool Is64 = Size == OpSize::i64Bit;
+    const bool Is64 = ConvSize == OpSize::i64Bit;
     const uint64_t InvScale = Is64 ? (static_cast<uint64_t>(1023 - FBits) << 52) : (static_cast<uint64_t>(127 - FBits) << 23);
-    Result = _VMov(Size, _VFMul(OpSize::i128Bit, Size, Result, FPConstant(InvScale, Size)));
+    Result = _VMov(ConvSize, _VFMul(OpSize::i128Bit, ConvSize, Result, FPConstant(InvScale, ConvSize)));
+  }
+  if (Half) {
+    Result = DoubleToHalf(Result, true);
   }
   StoreV(Bits(Word, 4, 0), Result);
   return true;
@@ -427,6 +556,10 @@ bool IRBuilder::FPConvertToFixed(uint32_t Word, bool Signed) {
     return false;
   }
   Ref V = LoadV(Bits(Word, 9, 5));
+  if (Size == OpSize::i16Bit) {
+    V = HalfToDouble(V, false, true);
+    Size = OpSize::i64Bit;
+  }
   if (Scale != 64) {
     // Multiplying by 2^fbits is exact or overflows to an infinity, which
     // saturates the same way the exact product would.
@@ -460,6 +593,52 @@ bool IRBuilder::FCVTZS_int_2(uint32_t Word) { return FPScalarSIMDConvert(Word, t
 bool IRBuilder::FCVTZU_int_2(uint32_t Word) { return FPScalarSIMDConvert(Word, true, false); }
 bool IRBuilder::SCVTF_int_2(uint32_t Word) { return FPScalarSIMDConvert(Word, false, true); }
 bool IRBuilder::UCVTF_int_2(uint32_t Word) { return FPScalarSIMDConvert(Word, false, false); }
+
+// ---------------------------------------------------------------------------
+// Vector FCVTL/FCVTN
+// ---------------------------------------------------------------------------
+
+bool IRBuilder::FCVTL(uint32_t Word) {
+  // z=0: half -> single, z=1: single -> double; Q selects the upper half of
+  // the source (FCVTL2).
+  const bool Q = Bit(Word, 30);
+  const bool Z = Bit(Word, 22);
+  const auto RS = OpSize::i128Bit;
+  const auto SrcES = Z ? OpSize::i32Bit : OpSize::i16Bit;
+  const auto DstES = Z ? OpSize::i64Bit : OpSize::i32Bit;
+  const uint8_t Count = Z ? 2 : 4;
+  Ref V = LoadV(Bits(Word, 9, 5));
+  Ref Result = _VectorImm(RS, OpSize::i8Bit, 0);
+  for (uint8_t i = 0; i < Count; ++i) {
+    Ref Element = _VDupElement(RS, SrcES, V, (Q ? Count : 0) + i);
+    Ref Converted = Z ? _A64FToF(OpSize::i64Bit, OpSize::i32Bit, Element).Node :
+                        _A64FToF(OpSize::i32Bit, OpSize::i64Bit, HalfToDouble(Element, false, false)).Node;
+    Result = _VInsElement(RS, DstES, i, 0, Result, Converted);
+  }
+  StoreV(Bits(Word, 4, 0), Result);
+  return true;
+}
+
+bool IRBuilder::FCVTN(uint32_t Word) {
+  // z=0: single -> half, z=1: double -> single; Q writes the upper half and
+  // keeps the lower (FCVTN2).
+  const bool Q = Bit(Word, 30);
+  const bool Z = Bit(Word, 22);
+  const auto RS = OpSize::i128Bit;
+  const auto SrcES = Z ? OpSize::i64Bit : OpSize::i32Bit;
+  const auto DstES = Z ? OpSize::i32Bit : OpSize::i16Bit;
+  const uint8_t Count = Z ? 2 : 4;
+  Ref V = LoadV(Bits(Word, 9, 5));
+  Ref Narrow = _VectorImm(RS, OpSize::i8Bit, 0);
+  for (uint8_t i = 0; i < Count; ++i) {
+    Ref Element = _VDupElement(RS, SrcES, V, i);
+    Ref Converted = Z ? _A64FToF(OpSize::i32Bit, OpSize::i64Bit, Element).Node :
+                        DoubleToHalf(_A64FToF(OpSize::i64Bit, OpSize::i32Bit, Element), false);
+    Narrow = _VInsElement(RS, DstES, i, 0, Narrow, Converted);
+  }
+  StoreNarrow(Bits(Word, 4, 0), Q, Narrow);
+  return true;
+}
 
 // ---------------------------------------------------------------------------
 // FPCR

@@ -181,6 +181,7 @@ public:
   bool SCVTF_float_int(uint32_t Word); bool UCVTF_float_int(uint32_t Word); bool SCVTF_float_fix(uint32_t Word); bool UCVTF_float_fix(uint32_t Word);
   bool FCVTZS_float_fix(uint32_t Word); bool FCVTZU_float_fix(uint32_t Word);
   bool FCVTZS_int_2(uint32_t Word); bool FCVTZU_int_2(uint32_t Word); bool SCVTF_int_2(uint32_t Word); bool UCVTF_int_2(uint32_t Word);
+  bool FCVTL(uint32_t Word); bool FCVTN(uint32_t Word);
   // clang-format on
 
 private:
@@ -292,6 +293,15 @@ private:
   // Operand 1 for a VSX arithmetic op so that the op propagates NaNs the A64 way.
   Ref PropagateNaNOperand(OpSize ElementSize, Ref A, Ref B);
   Ref FPMinMax(OpSize ElementSize, Ref A, Ref B, bool IsMax, bool IsNumber);
+  // All-ones 64-bit lanes when FPCR.FZ16 is set, zero otherwise.
+  Ref FZ16Mask();
+  // Element 0 half precision -> double, with the FZ16 input flush unless it
+  // is an FP-to-FP conversion. With KeepSignalling a signalling NaN stays
+  // signalling for operand precedence.
+  Ref HalfToDouble(Ref V, bool KeepSignalling, bool ApplyFZ16);
+  // Element 0 double -> half precision with one rounding, and the FZ16
+  // output flush unless it is an FP-to-FP conversion.
+  Ref DoubleToHalf(Ref D, bool ApplyFZ16);
   // Host rounding mode <- FPCR.RMode of the given FPCR value.
   void SyncHostRoundingMode(Ref FPCR);
 
