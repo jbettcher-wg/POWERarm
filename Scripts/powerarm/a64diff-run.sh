@@ -190,6 +190,7 @@ if [ "$mode" = 64k ]; then
         --timeout "$timeout" --deadline "$(left)" "${rargs[@]+"${rargs[@]}"}" \
         --workroot "/tmp/a64diff-work/$name/$su" -- "$emu"
       rm -rf "/tmp/a64diff-work/$name/$su"
+      rmdir "/tmp/a64diff-work/$name" "/tmp/a64diff-work" 2>/dev/null || true
       "$tool" pcompare --jobs "$root/programs/$su.jobs" --golden "$root/golden-$su" --actual "$res/$su" \
         --report "$res/$su.report" --max-detail 5 > "$res/$su.log" 2>&1
     fi

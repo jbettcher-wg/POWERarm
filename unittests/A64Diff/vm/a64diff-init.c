@@ -264,6 +264,7 @@ int main(void) {
       }
     if (vf) fclose(vf);
     mkdir("/tmp/a64diff-work", 01777);
+    chmod("/tmp/a64diff-work", 01777); /* mkdir is subject to the umask; the suites run as uid 65534 */
     char* names[64];
     int nn = 0;
     DIR* d = opendir(B "/programs");
