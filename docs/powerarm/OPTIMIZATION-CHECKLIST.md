@@ -168,6 +168,24 @@ effectively 0% of a warm one. Translation cost now only shows up in a first buil
 work has to be measured with `POWERARM_ENABLECODECACHINGWIP=0` (34.5 s slice) to be visible at all.
 The lever on a warm build is the quality of the emitted code, not the compiler.
 
+**2026-09-17 (q5/xlate2): the cold profile above is a `gcc -c empty.c` profile, not a slice profile.**
+The "82.6% POWERarm itself" table in the Q4 section was measured over a one-shot cold `empty.c`, where
+one process pays for all the translation. On the **slice** the 10 gcc invocations share one cache
+directory, so process 1 translates and the other 9 install from cache. `perf record -e cycles:u -F 999`
+over one cold slice (fresh cache dir, CPU 108) attributes cycles as: **JIT'd guest code 76.5%,
+POWERarm itself 20.6%, libc 1.5%, libxxhash 0.7%**. Inclusive shares of all cycles inside POWERarm:
+`ContextImpl::CompileBlock` 17.0%, of which **translation (`ContextImpl::CompileCode`) 8.6%**
+(backend `PPC64JITCore::CompileCode` 4.1%, `ConstrainedRAPass::Run` 1.6%, A64 decoder 0.5%, DFCE 0.4%),
+**cache load (`CodeCache::TryLoadBlock`) 5.3%**, **cache save (`SaveCodeCaches`) 1.5%**; outside it,
+**block install/link** `ExitFunctionLinkWithRecord` self 2.7% + `LookupCache::AddBlockMapping` 1.8% +
+`CacheBlockMapping`/`AddBlockExecutableRange` 1.1% + `FindBlock` 1.2%. So on the slice the whole
+translation budget is about **2.0 s of a 23.9 s cold run** and the cold-to-warm delta is 2.5 s: a 10%
+translation win is 0.2 s, at the edge of what this workload can resolve. Measure with own user CPU
+(`time -p` around `slice.sh`, children included) rather than wall, and discard the first run after a
+link (page-cache cold: one such run read 25.10 s against 23.78/23.81 s for the same binary).
+`ExitFunctionLinkWithRecord`'s self time is ~45% `lwarx`/`stwcx.` pairs -- it takes the
+`CodeInvalidationMutex` shared guard, drops it, and retakes it before the link section even when
+
 | ID | Item | Touches | Status | Result |
 |---|---|---|---|---|
 | X1 | A64 decoder: one decode-table lookup per instruction (was three: region walk, layout pass, IR builder); Mask/Expect inline in bucket entries; `CodePages` inserted on page change only | `A64Frontend/Decoder.*`, `DecodeTable.cpp`, `IRBuilder.cpp` | done bb6f6efc5 | with X2: slice 47.98 -> 43.21 s (one run each, not back to back); decoder plus `ContextImpl::CompileCode` 4.0% -> 3.4% of cycles |
@@ -176,6 +194,8 @@ The lever on a warm build is the quality of the emitted code, not the compiler.
 | X4 | Skip the per-block FPR live-mask and splat-candidate scan in units with no FPR/FPRFixed destination and no FMA op (masks filled with the zeros it computes) | `JIT/PPC64LE/JIT.cpp`, `JITClass.h` | done 7c821da56 | slice 42.80 -> 41.66 s. Pure backend; applies to fastppcx86 |
 | X5 | Overall X1-X4 | | done | `perf` samples for one slice 44.4k -> 41.0k (-7.7%); `CompileCode` 12.9% -> 10.2% (8.8% plus the now out-of-line high-zero walk 1.5%). Not done, next by size: RA (6.6%, two walks per block), flag elimination (2.8%) and compare-branch fusion (1.5%) are one walk each whose cost is the walk itself; merging them is the next step. Block linking (`AddBlockLink` 1.4%, `ExitFunctionLinkWithRecord` 1.3%) is install cost, not translation |
 | X6 | Merge the remaining IR walks: compare-branch fusion folded into DFCE's CFG-gather walk (one walk over the unit instead of two), standalone pass kept for `FEX_DISABLEDFCE=1` | `IR/Passes/CompareBranchFusion.*`, `RedundantFlagCalculationElimination.cpp`, `PassManager.cpp` | done (measured, dropped, powerarm-q3/compute-backend 2026-09-17) | Implemented and measured, then reverted: no win. Slice on CPU 108, `POWERARM_ENABLECODECACHINGWIP=0` (translation is ~13 s of the 34.5 s there, so a walk saving is visible): baseline 34.51/34.46 s, merged 34.50/34.51 s. Warm code cache: 21.24 -> 21.21 s. The X3/X4 merges paid because they removed whole per-op walks whose per-op bodies were also cheap; what is left of fusion, DFCE and RA is the per-op work itself (Classify, DecodeSRANode, kill bits), not the iteration, so merging the iteration buys nothing. **RA's two walks cannot be merged at all**: the first is a backwards walk computing kill bits and SRA affinities that the forward allocation walk consumes. Treat the X series as closed |
+| X7 | Backend P6 const-exit prepass: stop the per-block op walk once a second non-marker op is counted (only `CodeOps == 1` can mark a block) | `JIT/PPC64LE/JIT.cpp` | done c93fbf379 | slice cold 23.85 -> 23.71 s, warm 21.24 -> 21.19 s; own user CPU cold 23.21 -> 23.05 s, warm 20.74 -> 20.67 s. Pure backend prepass; applies to fastppcx86 |
+| X8 | RA per-op bodies: `Seen` bitvector -> byte vector, hoist the duplicated `GetID(CodeNode)` in the backwards pass, drop the `GetNode()`/`GetID()` round trip in the forward source loop | `IR/Passes/RegisterAllocationPass.cpp` | done (measured, dropped, powerarm-q5/xlate2 2026-09-17) | Implemented and reverted: **regression**. Own user CPU cold 23.05 -> 23.27/23.33 s, warm 20.67 -> 20.93/20.82 s. Warm runs barely enter the RA at all, so an equal-sized warm regression means this is code layout in `libPOWERarmCore.so`, not the pass. Micro-edits inside hot translation TUs move the slice by +/-0.25 s of layout noise, which is larger than the whole per-op saving they can buy -- do not chase RA per-op work by wall or CPU time on this workload |
 
 Gates at 7c821da56: A64Frontend 45/45 in default, `POWERARM_MAXINST=1` and
 `POWERARM_HOSTFEATURES=disableisa30`; a64diff (bundle 41c1f1e4dd1e, -j 16) on 64k and 4k-kvm:
@@ -188,6 +208,8 @@ Workload: 50 x `gcc -c empty.c` (driver, `cc1`, `as`) under POWERarm, warm priva
 CPU 100, wall time per invocation; one run per change. Before this series: 121.1 ms
 (0.078 s user, 0.025 s sys per invocation), native POWER9 12 ms, Pi 5 43 ms.
 `POWERARM_STARTUPTIMES=1` prints each process's phases to stderr.
+
+`FindBlock` hit and no `CompileBlock` ran. Holding it across the hit path is the next item by share.
 
 | ID | Item | Touches | Status | Result |
 |---|---|---|---|---|
