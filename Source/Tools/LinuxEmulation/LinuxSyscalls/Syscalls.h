@@ -40,6 +40,7 @@ $end_info$
 #include <shared_mutex>
 
 #include <errno.h>
+#include <limits.h>
 #include <fcntl.h>
 #include <stdint.h>
 #include <sys/socket.h>
@@ -1203,6 +1204,27 @@ namespace FaultSafeUserMemAccess {
 #endif
   bool IsFaultLocation(uint64_t PC);
 
+  // Copies a NUL-terminated guest string into Dest, like the kernel's
+  // strncpy_from_user. Returns its length, -EFAULT if a byte before the NUL
+  // is unreadable, or -ENAMETOOLONG if there is no NUL in the first DestSize
+  // bytes.
+  [[nodiscard]]
+  ssize_t CopyStringFromUser(char* Dest, const char* Src, size_t DestSize);
+
+  // Writes a guest value; true on success.
+  template<typename T>
+  [[nodiscard]]
+  inline bool WriteToUser(T* Dest, const T& Value) {
+    return CopyToUser(Dest, &Value, sizeof(T)) == 0;
+  }
+
+  // Reads a guest value; true on success.
+  template<typename T>
+  [[nodiscard]]
+  inline bool ReadFromUser(T* Dest, const T* Src) {
+    return CopyFromUser(Dest, Src, sizeof(T)) == 0;
+  }
+
   static inline bool TryHandleSafeFault(int Signal, const siginfo_t& SigInfo, void* UContext) {
     if (Signal == SIGSEGV && (SigInfo.si_code == SEGV_MAPERR || SigInfo.si_code == SEGV_ACCERR) &&
         FaultSafeUserMemAccess::IsFaultLocation(ArchHelpers::Context::GetPc(UContext))) {
@@ -1215,6 +1237,42 @@ namespace FaultSafeUserMemAccess {
     return false;
   }
 } // namespace FaultSafeUserMemAccess
+
+// A guest path argument copied into host memory before anything looks at it,
+// as the kernel's getname() does: a bad pointer is EFAULT and a path without a
+// NUL in PATH_MAX bytes is ENAMETOOLONG, instead of a host fault inside the
+// emulator. A NULL pointer is EFAULT unless the syscall gives NULL a meaning
+// (AllowNull), in which case c_str() is NULL too.
+class GuestPath final {
+public:
+  explicit GuestPath(const char* Guest, bool AllowNull = false) {
+    if (!Guest) {
+      Error = AllowNull ? 0 : -EFAULT;
+      return;
+    }
+    const ssize_t Len = FaultSafeUserMemAccess::CopyStringFromUser(Buffer, Guest, sizeof(Buffer));
+    if (Len < 0) {
+      Error = Len;
+      return;
+    }
+    Ptr = Buffer;
+  }
+  GuestPath(const GuestPath&) = delete;
+  GuestPath& operator=(const GuestPath&) = delete;
+
+  // 0, or the negative errno the syscall must return.
+  int64_t error() const {
+    return Error;
+  }
+  const char* c_str() const {
+    return Ptr;
+  }
+
+private:
+  const char* Ptr {};
+  int64_t Error {};
+  char Buffer[PATH_MAX];
+};
 
 
 template<typename T>

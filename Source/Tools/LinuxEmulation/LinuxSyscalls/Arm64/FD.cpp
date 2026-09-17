@@ -125,8 +125,12 @@ namespace {
 void RegisterFD(FEX::HLE::SyscallHandler* Handler) {
   REGISTER_SYSCALL_IMPL(
     newfstatat, [](FEXCore::Core::CpuStateFrame* Frame, int dirfd, const char* pathname, void* buf, int flag) -> uint64_t {
+      GuestPath Guest_pathname(pathname, true);
+      if (Guest_pathname.error()) {
+        return Guest_pathname.error();
+      }
       struct stat Host {};
-      uint64_t Result = FEX::HLE::_SyscallHandler->FM.NewFSStatAt(dirfd, pathname, &Host, flag);
+      uint64_t Result = FEX::HLE::_SyscallHandler->FM.NewFSStatAt(dirfd, Guest_pathname.c_str(), &Host, flag);
       return StatResultToGuest(Result, Host, buf);
     });
 

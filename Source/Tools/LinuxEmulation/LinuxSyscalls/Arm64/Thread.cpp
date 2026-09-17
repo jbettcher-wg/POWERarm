@@ -39,10 +39,6 @@ namespace {
     return true;
   }
 
-  // ExecveHandler dereferences the path before the host kernel sees it.
-  bool IsPathReadable(int dirfd, const char* pathname) {
-    return !(faccessat(dirfd, pathname, F_OK, AT_SYMLINK_NOFOLLOW) == -1 && errno == EFAULT);
-  }
 } // namespace
 
 void RegisterThread(FEX::HLE::SyscallHandler* Handler) {
@@ -73,19 +69,28 @@ void RegisterThread(FEX::HLE::SyscallHandler* Handler) {
   REGISTER_SYSCALL_IMPL(execve, [](FEXCore::Core::CpuStateFrame* Frame, const char* pathname, char* const argv[], char* const envp[]) -> uint64_t {
     fextl::vector<const char*> Args;
     fextl::vector<const char*> Envp;
-    if (!IsPathReadable(AT_FDCWD, pathname) || !CopyStringArray(argv, Args) || !CopyStringArray(envp, Envp)) {
+    // ExecveHandler dereferences the path before the host kernel sees it.
+    GuestPath Path(pathname);
+    if (Path.error()) {
+      return Path.error();
+    }
+    if (!CopyStringArray(argv, Args) || !CopyStringArray(envp, Envp)) {
       return -EFAULT;
     }
     auto* const* ArgsPtr = argv ? const_cast<char* const*>(Args.data()) : nullptr;
     auto* const* EnvpPtr = envp ? const_cast<char* const*>(Envp.data()) : nullptr;
-    return FEX::HLE::ExecveHandler(Frame, pathname, ArgsPtr, EnvpPtr, FEX::HLE::ExecveAtArgs::Empty());
+    return FEX::HLE::ExecveHandler(Frame, Path.c_str(), ArgsPtr, EnvpPtr, FEX::HLE::ExecveAtArgs::Empty());
   });
 
   REGISTER_SYSCALL_IMPL(execveat, ([](FEXCore::Core::CpuStateFrame* Frame, int dirfd, const char* pathname, char* const argv[],
                                       char* const envp[], int flags) -> uint64_t {
                           fextl::vector<const char*> Args;
                           fextl::vector<const char*> Envp;
-                          if (!IsPathReadable(dirfd, pathname) || !CopyStringArray(argv, Args) || !CopyStringArray(envp, Envp)) {
+                          GuestPath Path(pathname);
+                          if (Path.error()) {
+                            return Path.error();
+                          }
+                          if (!CopyStringArray(argv, Args) || !CopyStringArray(envp, Envp)) {
                             return -EFAULT;
                           }
                           auto* const* ArgsPtr = argv ? const_cast<char* const*>(Args.data()) : nullptr;
@@ -94,7 +99,7 @@ void RegisterThread(FEX::HLE::SyscallHandler* Handler) {
                             .dirfd = dirfd,
                             .flags = flags,
                           };
-                          return FEX::HLE::ExecveHandler(Frame, pathname, ArgsPtr, EnvpPtr, AtArgs);
+                          return FEX::HLE::ExecveHandler(Frame, Path.c_str(), ArgsPtr, EnvpPtr, AtArgs);
                         }));
 }
 } // namespace FEX::HLE::Arm64
