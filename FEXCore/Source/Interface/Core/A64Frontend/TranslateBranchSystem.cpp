@@ -153,7 +153,36 @@ bool IRBuilder::BRK(uint32_t) {
 
 bool IRBuilder::HINT(uint32_t) {
   // NOP, YIELD, WFE, WFI, SEV, SEVL, BTI, PACIASP and the rest of the hint
-  // space, plus the DSB/DMB/ISB barriers: no guest-visible effect at EL0 here.
+  // space, plus ISB: no guest-visible effect at EL0 here. DSB and DMB used to
+  // land here too -- see Barrier() for why that was wrong.
+  return true;
+}
+
+// DMB and DSB.
+//
+// These were NOPs until the Claude Code installer wedged: every guest thread
+// parked in an untimed futex on a word that no longer changed, because a
+// lock-free handoff had lost its wakeup. AArch64 and PPC64 are both weakly
+// ordered, but not equally: a guest DMB ISH that the JIT drops leaves the host
+// free to reorder exactly the accesses the guest asked it not to, and every
+// lock-free wakeup protocol in glibc, JSC and Bun's thread pool is built on
+// them. Dropping them is only safe on a host at least as strongly ordered as
+// the guest, which POWER9 is not.
+//
+// CRm bits 1:0 are the access types the barrier orders, and map onto what the
+// PPC64 backend emits for each FenceType (MemoryOps.cpp):
+//   0b01 (LD): loads before -> loads and stores after.   lwsync; isync
+//   0b10 (ST): stores before -> stores after.            lwsync
+//   else (SY): everything before -> everything after.    hwsync
+// The domain (CRm bits 3:2 -- OSH/NSH/ISH/SY) is not distinguished: every
+// domain is at least inner-shareable as far as a guest thread on this host can
+// observe, so the widest reading is the correct one.
+bool IRBuilder::Barrier(uint32_t Word) {
+  switch (Bits(Word, 9, 8)) {
+  case 0b01: _Fence(IR::FenceType::Load); break;
+  case 0b10: _Fence(IR::FenceType::Store); break;
+  default: _Fence(IR::FenceType::LoadStore); break;
+  }
   return true;
 }
 

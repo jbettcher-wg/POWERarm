@@ -84,8 +84,31 @@ bool IRBuilder::StoreExclusive(uint32_t Word) {
 bool IRBuilder::LoadStoreAtomicWidth(uint32_t Word) {
   // LDAR/LDLAR and STLR/STLLR: one load or store of the register width at
   // [Rn], no offset, no monitor. Bit 22 selects the load.
+  //
+  // The ordering is the whole point of these encodings and cannot be dropped.
+  // LDAR/STLR are RCsc, not merely acquire/release: an STLR followed by an
+  // LDAR to a DIFFERENT location may not be reordered, which is what makes a
+  // Dekker-shaped handoff ("publish, then check whether the peer parked" on
+  // one side, "park, then check whether the peer published" on the other)
+  // safe on AArch64. Every lock-free wakeup in glibc, JSC's ParkingLot and
+  // Bun's thread pool is that shape, and LLVM emits LDAR/STLR for exactly it.
+  // PPC64 does not order store-then-load on its own, so with plain loads and
+  // stores here both sides read stale, nobody issues the FUTEX_WAKE, and the
+  // guest deadlocks with every thread parked on a word that never changes.
+  //
+  // Use the standard leading-sync mapping: `hwsync` before the access, plus an
+  // acquire fence after the load. Leading sync on both sides is what forbids
+  // the store-then-load reordering; the trailing lwsync/isync is the acquire
+  // half. Both halves must use the same convention, so do not "optimise" one
+  // of them into a trailing sync without doing the other.
   const uint32_t Size = Bits(Word, 31, 30);
-  LoadStoreSingle(Bit(Word, 22), IR::SizeToOpSize(1U << Size), false, Size == 3, Bits(Word, 4, 0), LoadXSP(Bits(Word, 9, 5)));
+  const bool IsLoad = Bit(Word, 22);
+  Ref Address = LoadXSP(Bits(Word, 9, 5));
+  _Fence(IR::FenceType::LoadStore);
+  LoadStoreSingle(IsLoad, IR::SizeToOpSize(1U << Size), false, Size == 3, Bits(Word, 4, 0), Address);
+  if (IsLoad) {
+    _Fence(IR::FenceType::Load);
+  }
   return true;
 }
 
@@ -98,9 +121,12 @@ bool IRBuilder::LoadStoreAtomicWidth(uint32_t Word) {
 // AT_HWCAP, so leaving these unimplemented is a SIGILL in ordinary programs
 // however the emulator advertises itself.
 //
-// Ordering: A and R (bits 23 and 22) are ignored here for the same reason the
-// rest of the frontend ignores acquire/release - the JIT's atomics already
-// carry the barriers the memory model needs.
+// Ordering: A and R (bits 23 and 22) are ignored here because the PPC64
+// backend already brackets every atomic with hwsync/isync (AtomicOps.cpp),
+// which is at least as strong as any of the four variants asks for. That
+// reasoning covers the JIT's atomics ONLY -- LDAR/STLR and DMB are plain
+// accesses to the backend and need their barriers emitted explicitly, see
+// LoadStoreAtomicWidth above and Barrier() in TranslateBranchSystem.cpp.
 //
 // Rs == 31 is the zero register, so LDADD with Rs == 31 is a plain load.
 // Rt == 31 is the ST<op> alias: StoreReg drops the write.
@@ -132,8 +158,12 @@ bool IRBuilder::AtomicMemOp(uint32_t Word) {
 
 // LDAPRB/LDAPRH/LDAPR: an acquire load of the access width, no monitor.
 bool IRBuilder::LDAPR(uint32_t Word) {
+  // RCpc acquire, weaker than LDAR: it orders this load against everything
+  // after it, but carries no store-then-load guarantee, so it needs the
+  // trailing acquire fence only -- no leading hwsync.
   const uint32_t Size = Bits(Word, 31, 30);
   LoadStoreSingle(true, IR::SizeToOpSize(1U << Size), false, Size == 3, Bits(Word, 4, 0), LoadXSP(Bits(Word, 9, 5)));
+  _Fence(IR::FenceType::Load);
   return true;
 }
 
