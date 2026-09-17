@@ -64,6 +64,7 @@ by default and none with the knob set.
 | `fp_scalar` | differential, generated | FP arithmetic, FMIN/FMAX(NM), fused multiply-add group, FABS/FNEG/FSQRT, FCVT, FMOV forms, FCMP/FCMPE/FCCMP/FCSEL with every condition, under all four rounding modes, with NaN operand pairs |
 | `fp_convert` | differential, generated | FCVT{N,P,M,Z,A}{S,U} to W/X, SCVTF/UCVTF from integers and fixed point, FCVTZS/FCVTZU to fixed point, scalar SIMD conversions; every edge value through the rounding variants |
 | `fp_fpcr` | differential | FPCR round trip and the rounding mode reaching arithmetic and conversions |
+| `fp_half` | differential, generated | half precision: arithmetic, FMIN/FMAX(NM), fused group, FABS/FNEG/FSQRT, compares, FCSEL, FMOV forms, FCVT to/from single and double, conversions to/from integers and fixed point, vector FCVTL/FCVTN (half/single and single/double); every rounding mode with and without FZ16; double-to-half rounding and overflow boundaries |
 | `hello`, `printf_float`, `strmem`, `fpmath` (and `musl_*`) | differential | static glibc (and musl) programs: printf float formatting, the string/memory routines over lengths and alignments, scalar FP code |
 | `bb_*` | differential | busybox `echo`, `cat`, `wc`, `sort`, `sort -n`, `sha256sum`, `md5sum` |
 
@@ -81,9 +82,9 @@ context-backed ones (X9-X18, X25-X28).
 Every program switches SP to a static stack in `.bss`, so SP and all data
 addresses are identical on the Pi and under POWERarm and can be printed.
 
-`sysreg` is not compared with the Pi: the presented ID_AA64PFR0/ISAR0/ISAR1
-values differ from the Pi 5 by design (M1 HWCAP is fp|asimd|cpuid). On the Pi
-those checks print FAIL.
+`sysreg` is not compared with the Pi: the presented ID_AA64ISAR0/ISAR1 values
+differ from the Pi 5 by design (the presented profile leaves out the crypto,
+CRC32, atomics and later extensions). On the Pi those checks print FAIL.
 
 ## Positive controls
 

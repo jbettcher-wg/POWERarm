@@ -593,6 +593,119 @@ def gen_fp_fpcr(p):
                 {12: 0x7FFFFFBF, 14: 0x20000000000003}, fpcr=rm)
 
 
+F16_EDGE = [
+    0x0000, 0x8000, 0x7C00, 0xFC00, 0x7E00, 0xFE00, 0x7E01, 0x7C01, 0x7D55, 0xFC2A,
+    0x0001, 0x8001, 0x03FF, 0x0400, 0x7BFF, 0xFBFF, 0x3C00, 0xBC00, 0x3E00, 0x4100,
+    0xC100, 0x3BFF, 0x0200, 0x7A00, 0x4000, 0x3800,
+]
+
+
+def gen_fp_half(p):
+    def f16(): 
+        if p.rng.random() < 0.6:
+            return p.rng.choice(F16_EDGE)
+        return p.rng.getrandbits(16)
+
+    def hreg():
+        return ((p.rng.getrandbits(48) << 16) | f16(), p.rng.getrandbits(64))
+
+    # FPCR: every rounding mode, with and without FZ16.
+    fpcrs = [rm | fz for rm in RMODES for fz in (0, 0x80000)]
+    to_int = ["fcvtzs", "fcvtzu", "fcvtns", "fcvtnu", "fcvtps", "fcvtpu", "fcvtms", "fcvtmu", "fcvtas", "fcvtau"]
+    for _ in range(900):
+        d, n, m, a = p.vreg(), p.vreg(), p.vreg(), p.vreg()
+        x = p.xreg()
+        v = {d: p.vec(), n: hreg(), m: hreg(), a: hreg()}
+        fpcr = p.rng.choice(fpcrs)
+        nzcv = p.rng.randrange(16)
+        kind = p.rng.randrange(12)
+        if kind == 0:
+            op = p.rng.choice(["fadd", "fsub", "fmul", "fdiv", "fnmul", "fmin", "fmax", "fminnm", "fmaxnm"])
+            p.vcase([f"{op} h{d}, h{n}, h{m}"], v, fpcr=fpcr)
+        elif kind == 1:
+            op = p.rng.choice(["fabs", "fneg", "fsqrt", "fmov"])
+            p.vcase([f"{op} h{d}, h{n}"], v, fpcr=fpcr)
+        elif kind == 2:
+            op = p.rng.choice(["fmadd", "fmsub", "fnmadd", "fnmsub"])
+            p.vcase([f"{op} h{d}, h{n}, h{m}, h{a}"], v, fpcr=fpcr)
+        elif kind == 3:
+            op = p.rng.choice(["fcmp", "fcmpe"])
+            if p.rng.random() < 0.3:
+                p.vcase([f"{op} h{n}, #0.0"], v, nzcv=nzcv, fpcr=fpcr)
+            else:
+                p.vcase([f"{op} h{n}, h{m}"], v, nzcv=nzcv, fpcr=fpcr)
+        elif kind == 4:
+            cond = p.rng.choice(CONDS)
+            if p.rng.random() < 0.5:
+                p.vcase([f"fccmp h{n}, h{m}, #{p.rng.randrange(16)}, {cond}"], v, nzcv=nzcv, fpcr=fpcr)
+            else:
+                p.vcase([f"fcsel h{d}, h{n}, h{m}, {cond}"], v, nzcv=nzcv, fpcr=fpcr)
+        elif kind == 5:
+            src = p.rng.choice(["s", "d"])
+            v[n] = p.fp(src == "d")
+            p.vcase([f"fcvt h{d}, {src}{n}"], v, fpcr=fpcr)
+        elif kind == 6:
+            dst = p.rng.choice(["s", "d"])
+            p.vcase([f"fcvt {dst}{d}, h{n}"], v, fpcr=fpcr)
+        elif kind == 7:
+            g = p.rng.choice(["w", "x"])
+            p.vcase([f"{p.rng.choice(to_int)} {g}{x}, h{n}"], v, {x: p.rng.getrandbits(64)}, fpcr=fpcr)
+        elif kind == 8:
+            g = p.rng.choice(["w", "x"])
+            op = p.rng.choice(["scvtf", "ucvtf"])
+            ival = p.rng.choice([0, 1, 65504, 65519, 65520, 0xFFFFFFFF, M64, 0x8000000000000000, 3, 0x7FFF, p.rng.getrandbits(17),
+                                 p.rng.getrandbits(64)])
+            if p.rng.random() < 0.5:
+                p.vcase([f"{op} h{d}, {g}{x}"], v, {x: ival}, fpcr=fpcr)
+            else:
+                fbits = p.rng.choice([1, 8, 16, 31, 32] + ([33, 50, 64] if g == "x" else []))
+                p.vcase([f"{op} h{d}, {g}{x}, #{fbits}"], v, {x: ival}, fpcr=fpcr)
+        elif kind == 9:
+            g = p.rng.choice(["w", "x"])
+            fbits = p.rng.choice([1, 8, 16, 31, 32] + ([33, 63] if g == "x" else []))
+            p.vcase([f"{p.rng.choice(['fcvtzs', 'fcvtzu'])} {g}{x}, h{n}, #{fbits}"], v, {x: p.rng.getrandbits(64)}, fpcr=fpcr)
+        elif kind == 10:
+            form = p.rng.randrange(3)
+            g = p.rng.choice(["w", "x"])
+            if form == 0:
+                imm = p.rng.choice(["1.5", "-0.25", "2.0", "0.125", "-16.0", "31.0", "0.1875", "-7.75"])
+                p.vcase([f"fmov h{d}, #{imm}"], v)
+            elif form == 1:
+                p.vcase([f"fmov {g}{x}, h{n}"], v, {x: p.rng.getrandbits(64)})
+            else:
+                p.vcase([f"fmov h{d}, {g}{x}"], v, {x: p.rng.getrandbits(64)})
+        else:
+            form = p.rng.randrange(4)
+            half_vec = (sum(f16() << (16 * i) for i in range(4)), sum(f16() << (16 * i) for i in range(4)))
+            single_vec = tuple(sum(p.f32() << (32 * i) for i in range(2)) for _ in range(2))
+            double_vec = (p.f64(), p.f64())
+            if form == 0:
+                v[n] = half_vec
+                p.vcase([p.rng.choice([f"fcvtl v{d}.4s, v{n}.4h", f"fcvtl2 v{d}.4s, v{n}.8h"])], v, fpcr=fpcr)
+            elif form == 1:
+                v[n] = single_vec
+                p.vcase([p.rng.choice([f"fcvtn v{d}.4h, v{n}.4s", f"fcvtn2 v{d}.8h, v{n}.4s"])], v, fpcr=fpcr)
+            elif form == 2:
+                v[n] = single_vec
+                p.vcase([p.rng.choice([f"fcvtl v{d}.2d, v{n}.2s", f"fcvtl2 v{d}.2d, v{n}.4s"])], v, fpcr=fpcr)
+            else:
+                v[n] = double_vec
+                p.vcase([p.rng.choice([f"fcvtn v{d}.2s, v{n}.2d", f"fcvtn2 v{d}.4s, v{n}.2d"])], v, fpcr=fpcr)
+    # Every half edge value through every conversion and rounding mode.
+    for val in F16_EDGE:
+        for fpcr in fpcrs:
+            p.vcase(["fcvt d1, h20", "fcvt s2, h20", "fcvtns w3, h20", "fcvtau x4, h20", "fadd h5, h20, h21", "fmul h6, h20, h21"],
+                    {20: (val, 0), 21: ((p.rng.choice(F16_EDGE)), 0)}, fpcr=fpcr)
+    # Double -> half rounding and overflow boundaries.
+    for bits in [0x40EFFC0000000000, 0x40EFFD0000000000, 0x40EFFE0000000000, 0x40EFFF0000000000, 0x40F0000000000000,
+                 0x3F10000000000000, 0x3F0FFFFFFFFFFFFF, 0x3EF0000000000000, 0x3E70000000000000, 0x3E60000000000000,
+                 0x3E68000000000000, 0x3E78000000000000, 0x3FF0080000000000, 0x3FF0180000000000, 0xC0EFFE0000000000,
+                 0x7FF0000000000001, 0x7FF4000000000000, 0x800FFFFFFFFFFFFF, 0x0000000000000001, 0x7FEFFFFFFFFFFFFF]:
+        for fpcr in fpcrs:
+            p.vcase(["fcvt h1, d20", "fcvt h2, s21"], {20: (bits, 0), 21: (0x7F7FFFFF if bits == 0x7FEFFFFFFFFFFFFF else 0x3FFFFFFF, 0)},
+                    fpcr=fpcr)
+
+
 GROUPS = {
     "simd_loadstore": gen_simd_loadstore,
     "simd_copy": gen_simd_copy,
@@ -601,6 +714,7 @@ GROUPS = {
     "fp_scalar": gen_fp_scalar,
     "fp_convert": gen_fp_convert,
     "fp_fpcr": gen_fp_fpcr,
+    "fp_half": gen_fp_half,
 }
 
 

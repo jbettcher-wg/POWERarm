@@ -23,7 +23,7 @@ cp "$here"/*.S "$out"/
 cd "$out"
 for src in *.S; do
   [ "$src" = common.S ] && continue
-  gcc -nostdlib -static -o "${src%.S}" "$src"
+  gcc -march=armv8.2-a+fp16 -nostdlib -static -o "${src%.S}" "$src"
 done
 
 # Static libc programs.
