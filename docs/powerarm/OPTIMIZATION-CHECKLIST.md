@@ -119,6 +119,31 @@ directory private per series. "f470" is the M2 tree, "powerarm" is f0a9da187
 | C16 | Cache size cap, LRU sweep at compaction, stale build-id namespaces removed | CODE-CACHE.md "Default-on" | `Core/CodeCache.cpp` | default-on | not touched | |
 | C17 | `fork` of a large POWERarm process (`sh` subshells) | strace of zlib `configure` | kernel, allocator | 1.4 ms per fork, 218 ms of `configure` | not touched | |
 
+## X: translation (JIT compile) cost
+
+Workload: `~/Development/.powerarm-golden/slice.sh` (10 Lua objects plus ar/ld, cache off) on
+CPU 108, one run per change; shares are `perf record -e cycles:u` over one slice run.
+Translation was 53% of the Lua build's cycles. Before this series: backend `CompileCode`
+12.9%, RA 6.6% (`Run` + `AssignReg`), flag elimination 2.8%, ScalarSplatChain 2.5%, A64 decoder
+2.2%, `ContextImpl::CompileCode` 1.8%, compare-branch fusion 1.5%. Annotating `CompileCode`
+put 44% of its self time in three IR walks before emission (spin-loop analysis, consumer mask
+elision, producer high-zero elision) and 12% in the per-block FPR live-mask scan. The
+slice varies by several percent between single runs on the shared host, so the results below
+are A/B runs back to back.
+
+| ID | Item | Touches | Status | Result |
+|---|---|---|---|---|
+| X1 | A64 decoder: one decode-table lookup per instruction (was three: region walk, layout pass, IR builder); Mask/Expect inline in bucket entries; `CodePages` inserted on page change only | `A64Frontend/Decoder.*`, `DecodeTable.cpp`, `IRBuilder.cpp` | done bb6f6efc5 | with X2: slice 47.98 -> 43.21 s (one run each, not back to back); decoder plus `ContextImpl::CompileCode` 4.0% -> 3.4% of cycles |
+| X2 | ScalarSplatChain returns before any per-block work when the unit has no VF*ScalarInsert producer | `IR/Passes/ScalarSplatChain.cpp` | done 0831edf57 | pass 2.5% -> 0.75% of cycles. Also applies to fastppcx86 |
+| X3 | Backend prepasses: the producer (high-zero) elision walk shares the consumer/TSO-pair walk, one op behind; spin-loop analysis returns without a backedge before its per-op walk | `JIT/PPC64LE/JIT.cpp` | done ef0c55e7a | slice 45.40 -> 42.81 s. Pure backend; applies to fastppcx86 (x86 guests have backedges more often, so the spin prefilter will save less there) |
+| X4 | Skip the per-block FPR live-mask and splat-candidate scan in units with no FPR/FPRFixed destination and no FMA op (masks filled with the zeros it computes) | `JIT/PPC64LE/JIT.cpp`, `JITClass.h` | done 7c821da56 | slice 42.80 -> 41.66 s. Pure backend; applies to fastppcx86 |
+| X5 | Overall X1-X4 | | done | `perf` samples for one slice 44.4k -> 41.0k (-7.7%); `CompileCode` 12.9% -> 10.2% (8.8% plus the now out-of-line high-zero walk 1.5%). Not done, next by size: RA (6.6%, two walks per block), flag elimination (2.8%) and compare-branch fusion (1.5%) are one walk each whose cost is the walk itself; merging them is the next step. Block linking (`AddBlockLink` 1.4%, `ExitFunctionLinkWithRecord` 1.3%) is install cost, not translation |
+
+Gates at 7c821da56: A64Frontend 45/45 in default, `POWERARM_MAXINST=1` and
+`POWERARM_HOSTFEATURES=disableisa30`; a64diff (bundle 41c1f1e4dd1e, -j 16) on 64k and 4k-kvm:
+insn required-fail 0 (optional-fail 18), alarm 3/3, programs 25/25, projects 2/2, rootfs 6/6;
+`check-user-strings.sh` and `check-rootfs-server.sh` pass.
+
 ## Follow-ups to measure
 
 - Done f4aa730da (test 0442316d6): abandoning a guest signal handler (`siglongjmp`/`longjmp` out
