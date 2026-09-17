@@ -3,6 +3,7 @@
 #include "Common/Config.h"
 #include "FDUtils.h"
 #include "Common/FEXServerClient.h"
+#include "Common/FileFormatCheck.h"
 
 #include <FEXCore/Utils/CompilerDefs.h>
 #include <FEXCore/Utils/FileLoading.h>
@@ -223,7 +224,16 @@ bool SetupClient(std::string_view InterpreterPath) {
 
   // If we were started in a container then we want to use the rootfs that they provided.
   // In the pressure-vessel case this is a combination of our rootfs and the steam soldier runtime.
-  if (FEXCore::Config::FindContainer() != "pressure-vessel") {
+  //
+  // The server's rootfs is the one configured for the client that started it,
+  // and a server outlives that client while any other client is connected (and
+  // for a moment after the last one leaves). Its answer only applies to a
+  // client whose own rootfs is an image, which the server mounts. A client
+  // whose rootfs is a directory keeps it, or it would run in whatever rootfs
+  // an unrelated earlier client configured.
+  FEX_CONFIG_OPT(LDPath, ROOTFS);
+  const bool RootFSIsImage = FEX::FormatCheck::IsSquashFS(LDPath()) || FEX::FormatCheck::IsEroFS(LDPath());
+  if (RootFSIsImage && FEXCore::Config::FindContainer() != "pressure-vessel") {
     fextl::string RootFSPath = FEXServerClient::RequestRootFSPath(ServerFD);
 
     // Only overwrite the configured rootfs if the server returned a non-empty path. An empty response
