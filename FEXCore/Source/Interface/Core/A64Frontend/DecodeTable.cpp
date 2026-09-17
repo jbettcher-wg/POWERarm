@@ -14,11 +14,12 @@ namespace FEXCore::A64 {
 namespace {
   struct RawEntry {
     const char* Name;
+    const char* Description;
     const char* Bits;
   };
 
   constexpr RawEntry RawTable[] = {
-#define INST(fn, name, bitstring) {#fn, bitstring},
+#define INST(fn, name, bitstring) {#fn, name, bitstring},
 #include "Interface/Core/A64Frontend/a64.inc"
 #undef INST
   };
@@ -38,7 +39,8 @@ namespace {
     Table T;
     T.Matchers.reserve(std::size(RawTable));
 
-    for (const auto& Entry : RawTable) {
+    for (size_t Index = 0; Index < std::size(RawTable); ++Index) {
+      const auto& Entry = RawTable[Index];
       std::string_view Bits {Entry.Bits};
       LOGMAN_THROW_A_FMT(Bits.size() == 32, "A64 decode table entry {} is not 32 bits", Entry.Name);
 
@@ -58,15 +60,23 @@ namespace {
       if (Handler) {
         ++T.HandledEntries;
       }
-      T.Matchers.push_back({Entry.Name, Mask, Expect, Handler});
+      T.Matchers.push_back({Entry.Name, Mask, Expect, Handler, static_cast<uint32_t>(Index)});
     }
 
-    // More fixed bits is more specific, so it wins. dynarmic additionally
-    // hoists three SIMD modified-immediate entries; none of them has a
-    // translator here, so their relative order does not change any result.
+    // More fixed bits is more specific, so it wins.
     std::stable_sort(T.Matchers.begin(), T.Matchers.end(), [](const InstMatcher& A, const InstMatcher& B) {
       return std::popcount(A.Mask) > std::popcount(B.Mask);
     });
+
+    // dynarmic's exceptions, by description: the SIMD modified-immediate
+    // entries come before everything else. Without this MOVI/MVNI/BIC
+    // (vector) words decode as the shift-by-immediate entries whose
+    // immh=0000 space they occupy.
+    auto ComesFirst = [](const InstMatcher& M) {
+      const std::string_view D {RawTable[M.RawIndex].Description};
+      return D == "MOVI, MVNI, ORR, BIC (vector, immediate)" || D == "FMOV (vector, immediate)" || D == "Unallocated SIMD modified immediate";
+    };
+    std::stable_partition(T.Matchers.begin(), T.Matchers.end(), ComesFirst);
 
     for (size_t i = 0; i < T.Buckets.size(); ++i) {
       for (const auto& M : T.Matchers) {
