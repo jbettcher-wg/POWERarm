@@ -1,0 +1,227 @@
+From 403068e8d39ca8cd83d48b2529fa094b1d736909 Mon Sep 17 00:00:00 2001
+From: Jordan Bettcher <thebettcher@gmail.com>
+Date: Thu, 17 Sep 2026 00:26:10 -0600
+Subject: [PATCH 16/16] ELFCodeLoader: emulate /proc/self/cmdline when the
+ kernel can't be remapped
+
+The loader points the kernel's arg_start/arg_end at the guest's argument
+strings with prctl(PR_SET_MM_MAP), which needs CONFIG_CHECKPOINT_RESTORE.
+Without it (the 64K POWER9 kernel) the prctl fails with EPERM in every
+process, "Failed to remap /proc/pid/cmdline data" is logged at error
+level, and a guest reading /proc/self/cmdline gets FEX's command line
+instead of its own.
+
+The loader now records the argument area and whether the remap worked,
+and CodeLoader exposes it. When it didn't, EmulatedFDManager serves
+/proc/self/cmdline and /proc/thread-self/cmdline from the guest's
+strings, read at open time so a changed argv[0] shows. The failure is
+logged at info level.
+
+The table lookup also maps /proc/<own pid>/... to /proc/self/...: an
+opened /proc/self file reads back under the numeric pid, and after a
+fork that pid is no longer the one the table was keyed with at start-up.
+This also covers maps, smaps and auxv in forked children.
+
+Evidence, 64K host, FEX_HOSTPAGEMODE=force, a static x86-64 program that
+prints /proc/self/cmdline, run as `FEX ./cmdline64 one "two words"`:
+  before: fx86-before/FEX|./cmdline64|one|two words|
+  after:  ./cmdline64|one|two words|
+Linux prints the latter.
+
+Still not covered: another process's /proc/<pid>/cmdline shows that
+process's FEX command line.
+
+Found in POWERarm.
+---
+ Source/Tools/CommonTools/CodeLoader.h         | 12 +++++
+ Source/Tools/FEXInterpreter/ELFCodeLoader.h   | 20 ++++++-
+ .../EmulatedFiles/EmulatedFiles.cpp           | 53 +++++++++++++++++++
+ .../EmulatedFiles/EmulatedFiles.h             |  1 +
+ 4 files changed, 84 insertions(+), 2 deletions(-)
+
+diff --git a/Source/Tools/CommonTools/CodeLoader.h b/Source/Tools/CommonTools/CodeLoader.h
+index d77b2e031..5b0d51cf0 100644
+--- a/Source/Tools/CommonTools/CodeLoader.h
++++ b/Source/Tools/CommonTools/CodeLoader.h
+@@ -46,6 +46,18 @@ public:
+     return {};
+   }
+ 
++  // The guest's argument strings (argv[0] to the end of the last one), and
++  // whether the kernel's /proc/<pid>/cmdline was pointed at them.
++  struct ArgumentDataResult {
++    uint64_t address;
++    uint64_t size;
++    bool KernelRemapped;
++  };
++
++  virtual ArgumentDataResult GetArgumentData() const {
++    return {};
++  }
++
+   virtual uint64_t GetBaseOffset() const {
+     return 0;
+   }
+diff --git a/Source/Tools/FEXInterpreter/ELFCodeLoader.h b/Source/Tools/FEXInterpreter/ELFCodeLoader.h
+index 79269a5f6..36432afc0 100644
+--- a/Source/Tools/FEXInterpreter/ELFCodeLoader.h
++++ b/Source/Tools/FEXInterpreter/ELFCodeLoader.h
+@@ -960,17 +960,22 @@ public:
+ 
+   // Point the OS to our new stack's argument data
+   void RemapArgumentData(uintptr_t NewArgStart, uint64_t ArgSize) {
++    ArgumentDataStart = NewArgStart;
++    ArgumentDataSize = ArgSize;
+     struct prctl_mm_map map {};
+     if (GetCurrentMap(map)) {
+       map.arg_start = NewArgStart;
+       map.arg_end = NewArgStart + ArgSize;
+ 
+       int r = prctl(PR_SET_MM, PR_SET_MM_MAP, &map, sizeof(map), 0L);
++      ArgumentDataRemapped = r == 0;
+       if (r != 0) {
+-        LogMan::Msg::EFmt("Failed to remap /proc/pid/cmdline data (prctl failed: result {}, errno {})", r, errno);
++        // PR_SET_MM_MAP needs CONFIG_CHECKPOINT_RESTORE (EPERM without it).
++        // Not an error: /proc/self/cmdline is emulated instead.
++        LogMan::Msg::IFmt("/proc/pid/cmdline not remapped (prctl errno {}); emulating /proc/self/cmdline", errno);
+       }
+     } else {
+-      LogMan::Msg::EFmt("Failed to remap /proc/pid/cmdline data (GetCurrentMap failed)");
++      LogMan::Msg::IFmt("/proc/pid/cmdline not remapped (no current map); emulating /proc/self/cmdline");
+     }
+   }
+ 
+@@ -1094,6 +1099,14 @@ public:
+     return LoaderArgs;
+   }
+ 
++  ArgumentDataResult GetArgumentData() const override {
++    return {
++      .address = ArgumentDataStart,
++      .size = ArgumentDataSize,
++      .KernelRemapped = ArgumentDataRemapped,
++    };
++  }
++
+   AuxvResult GetAuxv() const override {
+     return {
+       .address = AuxTabBase,
+@@ -1198,6 +1211,9 @@ public:
+   uint64_t AuxTabBase {}, AuxTabSize {};
+   uint64_t ArgumentBackingSize {};
+   uint64_t ArgumentOffset {};
++  uint64_t ArgumentDataStart {};
++  uint64_t ArgumentDataSize {};
++  bool ArgumentDataRemapped {};
+   uint64_t EnvironmentBackingSize {};
+   uint64_t BaseOffset {};
+   void* VDSOBase {};
+diff --git a/Source/Tools/LinuxEmulation/LinuxSyscalls/EmulatedFiles/EmulatedFiles.cpp b/Source/Tools/LinuxEmulation/LinuxSyscalls/EmulatedFiles/EmulatedFiles.cpp
+index 51d6e9ae0..caf9163d9 100644
+--- a/Source/Tools/LinuxEmulation/LinuxSyscalls/EmulatedFiles/EmulatedFiles.cpp
++++ b/Source/Tools/LinuxEmulation/LinuxSyscalls/EmulatedFiles/EmulatedFiles.cpp
+@@ -25,11 +25,13 @@ $end_info$
+ 
+ #include <git_version.h>
+ 
++#include <climits>
+ #include <cstring>
+ #include <fcntl.h>
+ #include <filesystem>
+ #include <ostream>
+ #include <stdio.h>
++#include <string_view>
+ #include <system_error>
+ #include <unistd.h>
+ #include <utility>
+@@ -623,6 +625,14 @@ EmulatedFDManager::EmulatedFDManager(FEXCore::Context::Context* ctx)
+   FDReadCreators[procAuxv] = &EmulatedFDManager::ProcAuxv;
+   FDReadCreators["/proc/self/auxv"] = &EmulatedFDManager::ProcAuxv;
+ 
++  // /proc/self/cmdline shows the emulator's own command line (its path, the
++  // guest's resolved path, then the guest arguments) unless the loader could
++  // point the kernel at the guest's argument strings, which needs
++  // CONFIG_CHECKPOINT_RESTORE. Without it, serve the guest's strings, read
++  // live so later changes to argv[0] show as they would natively.
++  FDReadCreators["/proc/self/cmdline"] = &EmulatedFDManager::ProcCmdline;
++  FDReadCreators["/proc/thread-self/cmdline"] = &EmulatedFDManager::ProcCmdline;
++
+   if (ThreadsConfig > 1) {
+     cpus_online = fextl::fmt::format("0-{}", ThreadsConfig - 1);
+   } else {
+@@ -632,10 +642,39 @@ EmulatedFDManager::EmulatedFDManager(FEXCore::Context::Context* ctx)
+ 
+ EmulatedFDManager::~EmulatedFDManager() {}
+ 
++// "/proc/<our pid>/<rest>" as "/proc/self/<rest>" in Buffer, or nullptr. An
++// opened /proc/self file reads back as /proc/<pid>/..., and after a fork the
++// pid differs from the one the table was built with.
++static const char* ProcSelfPath(const char* pathname, char* Buffer, size_t BufferSize) {
++  constexpr std::string_view Proc {"/proc/"};
++  std::string_view Path {pathname};
++  if (!Path.starts_with(Proc)) {
++    return nullptr;
++  }
++  Path.remove_prefix(Proc.size());
++  const auto Slash = Path.find('/');
++  if (Slash == std::string_view::npos || Slash == 0) {
++    return nullptr;
++  }
++  const auto Pid = Path.substr(0, Slash);
++  if (Pid.find_first_not_of("0123456789") != std::string_view::npos || Pid != fextl::fmt::format("{}", ::getpid())) {
++    return nullptr;
++  }
++  const auto Rest = Path.substr(Slash);
++  const int Len = snprintf(Buffer, BufferSize, "/proc/self%.*s", static_cast<int>(Rest.size()), Rest.data());
++  return Len > 0 && static_cast<size_t>(Len) < BufferSize ? Buffer : nullptr;
++}
++
+ int32_t EmulatedFDManager::Open(const char* pathname, int flags, uint32_t mode) {
+   auto Creator = FDReadCreators.end();
+   if (pathname) {
+     Creator = FDReadCreators.find(pathname);
++    if (Creator == FDReadCreators.end()) {
++      char Buffer[PATH_MAX];
++      if (const char* SelfPath = ProcSelfPath(pathname, Buffer, sizeof(Buffer))) {
++        Creator = FDReadCreators.find(SelfPath);
++      }
++    }
+   }
+ 
+   if (Creator == FDReadCreators.end()) {
+@@ -645,6 +684,20 @@ int32_t EmulatedFDManager::Open(const char* pathname, int flags, uint32_t mode)
+   return Creator->second(CTX, AT_FDCWD, pathname, flags, mode);
+ }
+ 
++int32_t EmulatedFDManager::ProcCmdline(FEXCore::Context::Context* ctx, int32_t fd, const char* pathname, int32_t flags, mode_t mode) {
++  const auto Args = FEX::HLE::_SyscallHandler->GetCodeLoader()->GetArgumentData();
++  if (Args.KernelRemapped || Args.address == 0) {
++    // The kernel's own file is right.
++    return -1;
++  }
++
++  int FD = GenTmpFD(pathname, flags);
++  write(FD, reinterpret_cast<void*>(Args.address), Args.size);
++  lseek(FD, 0, SEEK_SET);
++  SealTmpFD(FD);
++  return FD;
++}
++
+ int32_t EmulatedFDManager::ProcAuxv(FEXCore::Context::Context* ctx, int32_t fd, const char* pathname, int32_t flags, mode_t mode) {
+   const auto [auxvBase, auxvSize] = FEX::HLE::_SyscallHandler->GetCodeLoader()->GetAuxv();
+   if (auxvBase == 0) {
+diff --git a/Source/Tools/LinuxEmulation/LinuxSyscalls/EmulatedFiles/EmulatedFiles.h b/Source/Tools/LinuxEmulation/LinuxSyscalls/EmulatedFiles/EmulatedFiles.h
+index 854232341..17c009582 100644
+--- a/Source/Tools/LinuxEmulation/LinuxSyscalls/EmulatedFiles/EmulatedFiles.h
++++ b/Source/Tools/LinuxEmulation/LinuxSyscalls/EmulatedFiles/EmulatedFiles.h
+@@ -33,6 +33,7 @@ private:
+   using FDReadStringFunc = std::function<int32_t(FEXCore::Context::Context* ctx, int32_t fd, const char* pathname, int32_t flags, mode_t mode)>;
+   fextl::unordered_map<fextl::string, FDReadStringFunc> FDReadCreators;
+ 
++  static int32_t ProcCmdline(FEXCore::Context::Context* ctx, int32_t fd, const char* pathname, int32_t flags, mode_t mode);
+   static int32_t ProcAuxv(FEXCore::Context::Context* ctx, int32_t fd, const char* pathname, int32_t flags, mode_t mode);
+   const uint32_t ThreadsConfig;
+ };
+-- 
+2.55.0
+
