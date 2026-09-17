@@ -1797,12 +1797,17 @@ uint64_t PPC64JITCore::ExitFunctionLinkWithRecord(FEXCore::Core::CpuStateFrame* 
   }
 
   const uintptr_t CallerAddress = reinterpret_cast<uintptr_t>(Record) + Record->CallerOffset;
-  // An inline-cache site is linked at most once per (un)link cycle: a
-  // polymorphic site's other targets arrive here through the probe's miss
-  // leg with the guard already live, and its constant words must not be
-  // rewritten under a thread that may be comparing against them. Dispatch
-  // without touching the site.
-  if (Indirect && std::atomic_ref<uint32_t>(*reinterpret_cast<uint32_t*>(CallerAddress)).load(std::memory_order_relaxed) != Record->OrigCallerWord) {
+  // A site is linked at most once per (un)link cycle. Every outcome below that
+  // registers a link also rewrites the caller word before this write lock is
+  // dropped, and a delink restores OrigCallerWord while dropping the
+  // registration, so a caller word that is not OrigCallerWord means the site
+  // is already linked (by another thread since the lookup above) or given up.
+  // GuestToHostMap::AddBlockLink relies on this to skip its duplicate scan.
+  // For an inline-cache site it also matters for safety: a polymorphic site's
+  // other targets arrive here through the probe's miss leg with the guard
+  // already live, and its constant words must not be rewritten under a thread
+  // that may be comparing against them. Dispatch without touching the site.
+  if (std::atomic_ref<uint32_t>(*reinterpret_cast<uint32_t*>(CallerAddress)).load(std::memory_order_relaxed) != Record->OrigCallerWord) {
     return HostCode;
   }
   const uintptr_t ThunkStart = reinterpret_cast<uintptr_t>(Record) - PPC64LinkRecordFromThunkStart;
