@@ -574,6 +574,32 @@ DEF_OP(UMulH) {
   }
 }
 
+// Div and UDiv are flag-neutral: IR.json gives them no flag semantics,
+// DeadFlagCalculationElimination does not classify them as flag writers, and
+// the upstream arm64 backend spills and refills NZCV around the long-division
+// helper call it makes. The 128/64 lowerings below use cmpdi/cmpld and
+// sradi/subfic/subfze/subfc/subfe, which write CR0 (guest N/Z) and XER.CA
+// (guest C). They never write OV or SO. So those two paths save CR0 and CA on
+// entry and put them back on exit, without an XER mtspr:
+//   save:    subfe TMP1, r0, r0 = CA - 1 (carry-out == carry-in), mfocrf CR0
+//   restore: addi +1 gives CA as 0/1, SetCAFromBit, mtocrf CR0
+// Red-zone slots -56/-64 hold them; -8..-24 are used by other ops and
+// -40/-48 by the signed path's sign masks.
+void PPC64JITCore::SaveCR0AndCA() {
+  subfe(TMP1, r0, r0);
+  std(TMP1, -56, r1);
+  mfocrf(TMP1, 0x80);
+  std(TMP1, -64, r1);
+}
+
+void PPC64JITCore::RestoreCR0AndCA() {
+  ld(TMP1, -56, r1);
+  addi(TMP1, TMP1, 1);
+  SetCAFromBit(TMP1, TMP1);
+  ld(TMP1, -64, r1);
+  mtocrf(0x80, TMP1);
+}
+
 DEF_OP(Div) {
   // x86 div/idiv: dividend = (Upper:Lower) at 2x op size, divisor at op size.
   // For 32-bit: 64-bit signed dividend / 32-bit signed divisor → 32-bit quotient/remainder.
@@ -647,6 +673,7 @@ DEF_OP(Div) {
     // -8/-16/-24 are reserved by other ops, so stay below -32.
     auto Upper = GetReg(Op->Upper);
 
+    SaveCR0AndCA();
     sradi(TMP1, Upper, 63);                   // dividend sign mask (-1 or 0)
     sradi(TMP2, Divisor, 63);                 // divisor  sign mask
     xor_(TMP3, TMP1, TMP2);                   // quotient sign mask
@@ -691,6 +718,7 @@ DEF_OP(Div) {
     subf(Quotient, TMP3, TMP1);
     xor_(TMP2, TMP2, TMP4);
     subf(Remainder, TMP4, TMP2);
+    RestoreCR0AndCA();
   } else {
     divd(Quotient, Lower, Divisor);
     mulld(TMP4, Quotient, Divisor);
@@ -754,6 +782,7 @@ DEF_OP(UDiv) {
     // quotient. One correction step (compare remainder against Divisor)
     // recovers the exact answer.
     auto Upper = GetReg(Op->Upper);
+    SaveCR0AndCA();
     divdeu(TMP1, Upper, Divisor);            // q1 = floor(Upper * 2^64 / Divisor)
     divdu(TMP2, Lower, Divisor);              // q2 = floor(Lower / Divisor)
     add(TMP1, TMP1, TMP2);                    // tentative = q1 + q2
@@ -801,6 +830,7 @@ DEF_OP(UDiv) {
 
     or_(Quotient,  TMP1, TMP1);               // mr Quotient,  TMP1
     or_(Remainder, TMP4, TMP4);               // mr Remainder, TMP4
+    RestoreCR0AndCA();
   } else {
     divdu(Quotient, Lower, Divisor);
     mulld(TMP4, Quotient, Divisor);
