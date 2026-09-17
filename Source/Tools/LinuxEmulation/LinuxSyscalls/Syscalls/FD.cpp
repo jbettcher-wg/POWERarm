@@ -98,6 +98,11 @@ void RegisterFD(FEX::HLE::SyscallHandler* Handler) {
   });
 
   REGISTER_SYSCALL_IMPL(dup3, [](FEXCore::Core::CpuStateFrame* Frame, int oldfd, int newfd, int flags) -> uint64_t {
+    // fs/file.c ksys_dup3: O_CLOEXEC is the only flag. OpenFlagsToHost drops
+    // bits it has no host value for, so check before translating.
+    if (static_cast<uint32_t>(flags) & ~static_cast<uint32_t>(FEX::HLE::Arm64::ABI::GUEST_O_CLOEXEC)) {
+      return -EINVAL;
+    }
     flags = FEX::HLE::Arm64::ABI::OpenFlagsToHost(flags);
     uint64_t Result = ::dup3(oldfd, newfd, flags);
     SYSCALL_ERRNO();
@@ -195,6 +200,11 @@ void RegisterFD(FEX::HLE::SyscallHandler* Handler) {
   });
 
   REGISTER_SYSCALL_IMPL(pipe2, [](FEXCore::Core::CpuStateFrame* Frame, int pipefd[2], int flags) -> uint64_t {
+    // fs/pipe.c __do_pipe_flags; O_NOTIFICATION_PIPE is O_EXCL.
+    using namespace FEX::HLE::Arm64::ABI;
+    if (static_cast<uint64_t>(static_cast<uint32_t>(flags)) & ~(GUEST_O_CLOEXEC | GUEST_O_NONBLOCK | GUEST_O_DIRECT | GUEST_O_EXCL)) {
+      return -EINVAL;
+    }
     flags = FEX::HLE::Arm64::ABI::OpenFlagsToHost(flags);
     uint64_t Result = ::pipe2(pipefd, flags);
     SYSCALL_ERRNO();
