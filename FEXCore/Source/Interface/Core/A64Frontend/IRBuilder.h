@@ -77,6 +77,10 @@ public:
   IRPair<FEXCore::IR::IROp_ExitFunction> ExitFunction(Ref NewPC, FEXCore::IR::BranchHint Hint = FEXCore::IR::BranchHint::None) {
     return _ExitFunction(FEXCore::IR::OpSize::i64Bit, NewPC, Hint, InvalidNode, InvalidNode);
   }
+  // A guest call (BL/BLR): ReturnAddress is the value just stored to X30.
+  IRPair<FEXCore::IR::IROp_ExitFunction> ExitCall(Ref NewPC, Ref ReturnAddress) {
+    return _ExitFunction(FEXCore::IR::OpSize::i64Bit, NewPC, FEXCore::IR::BranchHint::Call, ReturnAddress, InvalidNode);
+  }
 
   IRPair<FEXCore::IR::IROp_CondJump> CondJump(Ref Cmp, FEXCore::IR::CondClass Cond = FEXCore::IR::CondClass::NEQ) {
     return _CondJump(Cmp, Cond);
@@ -270,7 +274,7 @@ private:
   bool MultiplyAddSubLong(uint32_t Word, bool IsSigned, bool IsSub);
   bool CompareBranch(uint32_t Word, bool IsNonZero);
   bool TestBranch(uint32_t Word, bool IsNonZero);
-  bool BranchRegister(uint32_t Word, bool Link);
+  bool BranchRegister(uint32_t Word, FEXCore::IR::BranchHint Hint);
   // One load or store of Size bytes at Address, with the A64 opc decode already done.
   void LoadStoreSingle(bool IsLoad, OpSize Size, bool SignExtend, bool Is64Dest, uint32_t Rt, Ref Address);
   // One SIMD&FP register load or store of Size bytes at Address.

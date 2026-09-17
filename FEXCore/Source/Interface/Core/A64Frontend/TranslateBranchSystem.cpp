@@ -21,8 +21,16 @@ bool IRBuilder::B_uncond(uint32_t Word) {
 }
 
 bool IRBuilder::BL(uint32_t Word) {
-  StoreX(30, PCValue(CurrentPC + INSTRUCTION_SIZE));
-  ExitToPC(CurrentPC + SignExtend(Bits(Word, 25, 0), 26) * 4);
+  const uint64_t Target = CurrentPC + SignExtend(Bits(Word, 25, 0), 26) * 4;
+  Ref ReturnAddress = PCValue(CurrentPC + INSTRUCTION_SIZE);
+  StoreX(30, ReturnAddress);
+  if (JumpTargets.contains(Target)) {
+    // A call to this unit's own entry stays an in-unit jump.
+    ExitToPC(Target);
+  } else {
+    ExitCall(_InlineEntrypointOffset(OpSize::i64Bit, Target - Entry), ReturnAddress);
+    BlockSetPC = true;
+  }
   return true;
 }
 
@@ -73,25 +81,30 @@ bool IRBuilder::TBNZ(uint32_t Word) {
   return TestBranch(Word, true);
 }
 
-bool IRBuilder::BranchRegister(uint32_t Word, bool Link) {
-  // POWERARM-M1-TODO(frontend): BL/BLR/RET exit with BranchHint::None. The backend's Call/Return hints drive an x86-shaped shadow return stack (return address on the guest stack); an X30-based return prediction is a later performance item.
+bool IRBuilder::BranchRegister(uint32_t Word, BranchHint Hint) {
+  // Hints drive the backend's call/return pairing: BL/BLR exit with Call and
+  // the X30 value, RET with Return. A RET's target is still the register's
+  // value, whatever the pairing predicted (see DEF_OP(ExitFunction)).
   Ref Target = LoadX(Bits(Word, 9, 5));
-  if (Link) {
-    StoreX(30, PCValue(CurrentPC + INSTRUCTION_SIZE));
+  if (Hint == BranchHint::Call) {
+    Ref ReturnAddress = PCValue(CurrentPC + INSTRUCTION_SIZE);
+    StoreX(30, ReturnAddress);
+    ExitCall(Target, ReturnAddress);
+  } else {
+    ExitFunction(Target, Hint);
   }
-  ExitFunction(Target);
   BlockSetPC = true;
   return true;
 }
 
 bool IRBuilder::BR(uint32_t Word) {
-  return BranchRegister(Word, false);
+  return BranchRegister(Word, BranchHint::None);
 }
 bool IRBuilder::BLR(uint32_t Word) {
-  return BranchRegister(Word, true);
+  return BranchRegister(Word, BranchHint::Call);
 }
 bool IRBuilder::RET(uint32_t Word) {
-  return BranchRegister(Word, false);
+  return BranchRegister(Word, BranchHint::Return);
 }
 
 // ---------------------------------------------------------------------------
