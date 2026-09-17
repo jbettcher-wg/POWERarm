@@ -345,6 +345,7 @@ inline uint64_t Rel32Target(uint64_t InstEnd, uint32_t Rel32) {
   return InstEnd + static_cast<uint64_t>(static_cast<int64_t>(static_cast<int32_t>(Rel32)));
 }
 
+// POWERARM-M0-TODO(smc): DecodeRel32BranchSite and DecodeMovImmSite below recognise x86 encodings and have no caller since the x86 frontend was removed; the A64 frontend needs B/BL/B.cond/CBZ/TBZ imm-field site recording and a MOVZ/MOVK counterpart.
 /**
  * @brief Recognise a direct rel32 branch and locate its immediate field.
  *

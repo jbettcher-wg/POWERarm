@@ -466,6 +466,7 @@ static void SetFPCR(uint64_t Value) {
 
 static void OverrideFeatures(FEXCore::HostFeatures* Features, uint64_t ForceSVEWidth) {
   // Override features if the user has specifically called for it.
+  // POWERARM-M0-TODO(config): HostFeatures still enumerates x86 guest feature overrides (AVX, AVX2, SSE4a, ...) and Config.json.in keeps other x86-only options (HideHypervisorBit, CPUID-backed CPU count, TSO tuning); prune them when the A64 feature profile lands.
   FEX_CONFIG_OPT(HostFeatures, HOSTFEATURES);
   if (!HostFeatures()) {
     // Early exit if no features are overriden.

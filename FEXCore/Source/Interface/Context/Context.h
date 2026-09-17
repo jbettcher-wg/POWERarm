@@ -562,7 +562,9 @@ public:
 
 protected:
   void UpdateAtomicTSOEmulationConfig() {
-    if (SupportsHardwareTSO.load(std::memory_order_relaxed)) {
+    // POWERARM-M0-TODO(tso): TSO emulation is force-disabled. The barrier IR ops, backend lowering, PROT_SAO path and config are x86-TSO machinery wired through the whole JIT, so they stay in-tree but inert until the AArch64 guest memory-ordering story is decided.
+    constexpr bool ForceDisableTSO = true;
+    if (ForceDisableTSO || SupportsHardwareTSO.load(std::memory_order_relaxed)) {
       // If the hardware supports TSO then we don't need to emulate it through atomics.
       AtomicTSOEmulationEnabled.store(false, std::memory_order_relaxed);
       VectorAtomicTSOEmulationEnabled.store(false, std::memory_order_relaxed);
