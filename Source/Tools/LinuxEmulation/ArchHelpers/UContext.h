@@ -4,7 +4,7 @@
 // (arch/arm64/include/uapi/asm/sigcontext.h, ucontext.h; asm-generic signal.h).
 // These are what a guest handler sees through its ucontext_t* argument.
 //
-// POWERARM-M0-TODO(signals): layout only. SetupFrame_Arm64/RestoreFrame_Arm64 do not yet build or consume these frames (fpsimd_context in __reserved[], esr_context, the rt_sigreturn trampoline in the guest vDSO).
+// POWERARM-M0-TODO(signals): SetupFrame_Arm64/RestoreFrame_Arm64 do not yet build or consume the __reserved[] records (fpsimd_context, esr_context).
 #pragma once
 
 #include <FEXCore/Utils/CompilerDefs.h>

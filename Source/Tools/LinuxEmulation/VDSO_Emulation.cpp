@@ -614,7 +614,7 @@ void LoadFEXGeneratedCode(FEXCore::Core::InternalThreadState* Thread, VDSOMappin
 
   FEXCore::Allocator::VirtualName("FEXMem_Misc", Mapping->X86GeneratedCodePtr, Mapping->X86GeneratedCodeSize);
 
-  // POWERARM-M0-TODO(signals): the fallback trampolines are still the x86 FEX CALLBACKRET instruction bytes; the A64 guest needs an __kernel_rt_sigreturn (mov x8, #139; svc #0) and a callback-return encoding the A64 frontend decodes.
+  // POWERARM-M0-TODO(signals): VDSO_FEX_CallbackRET is still the x86 FEX CALLBACKRET instruction bytes; the A64 guest needs a callback-return encoding the A64 frontend decodes (thunks are outside M1).
   size_t CurrentCodeOffset {};
   if (!VDSOPointers.VDSO_FEX_CallbackRET) {
     constexpr std::array<uint8_t, 2> CallbackRetCode = {
@@ -624,6 +624,24 @@ void LoadFEXGeneratedCode(FEXCore::Core::InternalThreadState* Thread, VDSOMappin
     VDSOPointers.VDSO_FEX_CallbackRET = reinterpret_cast<void*>(reinterpret_cast<uintptr_t>(Mapping->X86GeneratedCodePtr) + CurrentCodeOffset);
     memcpy(VDSOPointers.VDSO_FEX_CallbackRET, CallbackRetCode.data(), CallbackRetCode.size());
     CurrentCodeOffset += CallbackRetCode.size();
+  }
+
+  if (!VDSOPointers.VDSO_kernel_rt_sigreturn) {
+    // arm64 has no SA_RESTORER convention in its libcs: glibc and musl leave
+    // sa_restorer NULL and the kernel points x30 at the vDSO's
+    // __kernel_rt_sigreturn (arch/arm64/kernel/vdso/sigreturn.S). Without a
+    // guest vDSO, provide the same code here. The NOP ahead of the symbol is
+    // the kernel's unwinder marker.
+    constexpr std::array<uint32_t, 3> RTSigReturnCode = {
+      0xd503201f, // nop
+      0xd2801168, // mov x8, #139 (__NR_rt_sigreturn)
+      0xd4000001, // svc #0
+    };
+    CurrentCodeOffset = FEXCore::AlignUp(CurrentCodeOffset, 4);
+    const auto Base = reinterpret_cast<uintptr_t>(Mapping->X86GeneratedCodePtr) + CurrentCodeOffset;
+    memcpy(reinterpret_cast<void*>(Base), RTSigReturnCode.data(), sizeof(RTSigReturnCode));
+    VDSOPointers.VDSO_kernel_rt_sigreturn = reinterpret_cast<void*>(Base + sizeof(uint32_t));
+    CurrentCodeOffset += sizeof(RTSigReturnCode);
   }
 
   Handler->GuestMprotect(Thread, Mapping->X86GeneratedCodePtr, Mapping->X86GeneratedCodeSize, PROT_READ | PROT_EXEC);
