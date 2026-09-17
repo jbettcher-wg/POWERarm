@@ -1343,13 +1343,8 @@ uintptr_t ContextImpl::RegisterCachedBlock(FEXCore::Core::InternalThreadState* T
   for (uint64_t Page = Block.StartAddr & FEXCore::Utils::FEX_GUEST_PAGE_MASK; Page <= LastInst; Page += FEXCore::Utils::FEX_GUEST_PAGE_SIZE) {
     CodePages.push_back(Page);
   }
-  const fextl::set<uint64_t> EntryPoints {GuestRIP};
-  for (auto CodePage : CodePages) {
-    if (Thread->LookupCache->AddBlockExecutableRange(Thread, EntryPoints, CodePage, FEXCore::Utils::FEX_GUEST_PAGE_SIZE, Block.StartAddr,
-                                                     Block.Length)) {
-      SyscallHandler->MarkGuestExecutableRange(Thread, CodePage, FEXCore::Utils::FEX_GUEST_PAGE_SIZE);
-    }
-  }
+  // The pages were registered (and write-protected) by TryLoadBlock before it
+  // checked the guest bytes.
 
   uint64_t GuestHash = 0;
   uint64_t HashedRangeLength = 0;

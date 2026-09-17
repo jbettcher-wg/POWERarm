@@ -388,6 +388,19 @@ public:
    */
   void SaveCodeCaches(FEXCore::Core::InternalThreadState* Thread, bool Force);
 
+  // The guest image is about to go away (exit_group, execve): save what it
+  // compiled and, with POWERARM_CODECACHESTATS=1, print its cache counters.
+  void CodeCacheImageExit(FEXCore::Core::InternalThreadState* Thread) {
+    SaveCodeCaches(Thread, true);
+    static const bool Stats = [] {
+      const char* Env = getenv("FEX_CODECACHESTATS");
+      return Env && *Env == '1';
+    }();
+    if (Stats && EnableCodeCaching()) {
+      CTX->GetCodeCache().DumpStats();
+    }
+  }
+
   // Polls the FEXCore-side "enough new blocks / enough time" trigger and saves
   // if it fires. Called from the tails of the memory-management syscalls, which
   // are the safe points this process reliably passes through.

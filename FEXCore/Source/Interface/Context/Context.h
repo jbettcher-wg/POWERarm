@@ -173,7 +173,7 @@ public:
   // Counters for DumpStats. Relaxed atomics: diagnostic only.
   struct {
     std::atomic<uint64_t> Loaded, NotInIndex, NoFile, BadEntry, GuestMismatch, NotExecutable, RelocFailed, SavedBlocks, SavedSegments,
-      Compactions;
+      Compactions, SaveNS, LoadNS;
   } Stats {};
 
   // Number of blocks compiled since the last save pass; also drives WantsSave.
@@ -210,6 +210,7 @@ private:
     uint64_t RelocEnd;
   };
   fextl::vector<CompiledRecord> CompiledBlocks;
+
 
   std::shared_mutex RegistryMutex;
   fextl::map<uint64_t, fextl::unique_ptr<FileCache>> Registry;

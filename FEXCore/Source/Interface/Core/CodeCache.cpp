@@ -751,6 +751,21 @@ namespace {
     return static_cast<uint64_t>(TS.tv_sec) * 1000 + static_cast<uint64_t>(TS.tv_nsec) / 1000000;
   }
 
+  uint64_t MonotonicNS() {
+    struct timespec TS {};
+    ::clock_gettime(CLOCK_MONOTONIC, &TS);
+    return static_cast<uint64_t>(TS.tv_sec) * 1000000000ULL + static_cast<uint64_t>(TS.tv_nsec);
+  }
+
+  // Adds the scope's wall time to a counter.
+  struct ScopedNS {
+    std::atomic<uint64_t>& Counter;
+    uint64_t Start = MonotonicNS();
+    ~ScopedNS() {
+      Counter.fetch_add(MonotonicNS() - Start, std::memory_order_relaxed);
+    }
+  };
+
   uint64_t MonotonicSeconds() {
     struct timespec TS {};
     if (::clock_gettime(CLOCK_MONOTONIC, &TS) != 0) {
@@ -1115,9 +1130,11 @@ void CodeCache::ResetAfterFork() {
   // under CodeInvalidationMutex (shared), which fork holds exclusively, so none
   // can be held by a thread that did not survive the fork.
   BlocksSinceSave.store(0, std::memory_order_relaxed);
-  std::lock_guard lk {RelocationSinkMutex};
-  CompiledBlocks.clear();
-  RelocationSink.clear();
+  {
+    std::lock_guard lk {RelocationSinkMutex};
+    CompiledBlocks.clear();
+    RelocationSink.clear();
+  }
 }
 
 void CodeCache::DumpStats() {
@@ -1125,10 +1142,10 @@ void CodeCache::DumpStats() {
     return A.load(std::memory_order_relaxed);
   };
   const auto Line = fextl::fmt::format("POWERarm code cache [{}]: loaded {} not-in-index {} no-file {} bad-entry {} guest-mismatch {} not-exec {} "
-                                       "reloc-failed {} saved {} blocks in {} segments, {} compactions\n",
+                                       "reloc-failed {} saved {} blocks in {} segments, {} compactions; save-ms {} lookup-ms {}\n",
                                        ::getpid(), L(Stats.Loaded), L(Stats.NotInIndex), L(Stats.NoFile), L(Stats.BadEntry),
                                        L(Stats.GuestMismatch), L(Stats.NotExecutable), L(Stats.RelocFailed), L(Stats.SavedBlocks),
-                                       L(Stats.SavedSegments), L(Stats.Compactions));
+                                       L(Stats.SavedSegments), L(Stats.Compactions), L(Stats.SaveNS) / 1000000, L(Stats.LoadNS) / 1000000);
   (void)::write(STDERR_FILENO, Line.data(), Line.size());
 }
 
@@ -1184,6 +1201,7 @@ std::optional<CodeCache::LoadedBlock> CodeCache::TryLoadBlock(Core::InternalThre
   if (File->BasePath.empty()) {
     return std::nullopt;
   }
+  ScopedNS Timer {Stats.LoadNS};
 
 
   const uint64_t GuestOffset = GuestRIP - Section->FileStartVA;
@@ -1248,6 +1266,21 @@ std::optional<CodeCache::LoadedBlock> CodeCache::TryLoadBlock(Core::InternalThre
     if (SyscallHandler->GuestCodePageValidateOnly(Page)) {
       Stats.NotExecutable.fetch_add(1, std::memory_order_relaxed);
       return std::nullopt;
+    }
+  }
+  // Arm SMC write protection on the block's pages BEFORE hashing the guest
+  // bytes. The caller holds CodeInvalidationMutex shared, so a write that lands
+  // after this point faults and waits for the invalidation until the block is
+  // registered; a write that landed before it is seen by the hash. Hashing
+  // first would leave a window in which a write the hash never saw is not
+  // tracked either. (This is registration CompileBlock does after compiling;
+  // for a block that then fails to load it only costs a spurious SMC fault.)
+  {
+    const fextl::set<uint64_t> EntryPoints {GuestRIP};
+    for (uint64_t Page = GuestRIP & FEXCore::Utils::FEX_GUEST_PAGE_MASK; Page < GuestRIP + Length; Page += FEXCore::Utils::FEX_GUEST_PAGE_SIZE) {
+      if (Thread->LookupCache->AddBlockExecutableRange(Thread, EntryPoints, Page, FEXCore::Utils::FEX_GUEST_PAGE_SIZE, GuestRIP, Length)) {
+        SyscallHandler->MarkGuestExecutableRange(Thread, Page, FEXCore::Utils::FEX_GUEST_PAGE_SIZE);
+      }
     }
   }
   if (XXH3_64bits(reinterpret_cast<const void*>(GuestRIP), Length) != Block->GuestHash) {
@@ -1586,6 +1619,7 @@ size_t CodeCache::SaveNewBlocks(Core::InternalThreadState&, std::span<const Code
   if (!IsGeneratingCache || Targets.empty()) {
     return 0;
   }
+  ScopedNS Timer {Stats.SaveNS};
   const uint64_t ConfigId = ComputeCodeCacheConfigId();
 
   // Snapshot what has been compiled so far. Records appended while this pass
