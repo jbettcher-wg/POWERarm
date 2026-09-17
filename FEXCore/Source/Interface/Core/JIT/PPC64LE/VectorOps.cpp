@@ -3567,11 +3567,34 @@ DEF_OP(VFCMPUNO) {
 // ---------------------------------------------------------------------------
 // Table-lookup VTBL1 / VTBL2 / VTBX1
 // ---------------------------------------------------------------------------
+// ISA 3.0 encodings for the table lookups (checked against the POWER9
+// assembler: vpermr v1,v2,v3,v4 = 1022193b; xxspltib vs62,31 = f3c0fad1).
+// vpermr control byte k selects little-endian byte k of VRB||VRA, so a guest
+// index is the control directly, with no XOR.
+static void EmitVpermr(PPC64JITCore* J, VR Dst, VR A, VR B, VR C) {
+  J->Emit32((4u << 26) | (Dst.idx << 21) | (A.idx << 16) | (B.idx << 11) | (C.idx << 6) | 59u);
+}
+static void EmitXxspltib(PPC64JITCore* J, VR Dst, uint8_t Imm) {
+  // VR n is vs(32+n): TX = 1.
+  J->Emit32((60u << 26) | (Dst.idx << 21) | (static_cast<uint32_t>(Imm) << 11) | (360u << 1) | 1u);
+}
+
 DEF_OP(VTBL1) {
   const auto Op      = IROp->C<IR::IROp_VTBL1>();
   const auto Dst     = GetVReg(Node);
   const auto Table   = GetVReg(Op->VectorTable);
   const auto Indices = GetVReg(Op->VectorIndices);
+
+  if (EmitterCTX->HostFeatures.SupportsISA30) {
+    // Clamp indices to 31, then vpermr over Zero||Table: 0-15 select Table,
+    // 16-31 the zero register. 4 instructions (was 6). Indices is read by
+    // vminub before anything writes Dst.
+    EmitXxspltib(this, VTMP1, 31);
+    vminub(VTMP1, Indices, VTMP1);
+    vspltisb(VTMP2, 0);
+    EmitVpermr(this, Dst, VTMP2, Table, VTMP1);
+    return;
+  }
 
   // vperm selects from (VRA||VRB) using bits [3:7] (low 5 bits) of each
   // control byte. For VTBL1 (single 16-byte table) we use Table as both
@@ -3610,6 +3633,17 @@ DEF_OP(VTBL2) {
   const auto Table2  = GetVReg(Op->VectorTable2);
   const auto Indices = GetVReg(Op->VectorIndices);
 
+  if (EmitterCTX->HostFeatures.SupportsISA30) {
+    // Out-of-range mask first (Dst may alias Indices), then vpermr over
+    // Table2||Table1 with the raw indices (low 5 bits), then clear OOB bytes.
+    // 4 instructions (was 8).
+    EmitXxspltib(this, VTMP1, 31);
+    vcmpgtub(VTMP1, Indices, VTMP1);
+    EmitVpermr(this, Dst, Table2, Table1, Indices);
+    vandc(Dst, Dst, VTMP1);
+    return;
+  }
+
   // OOB mask first: RA may reuse Indices' VR for Dst (last-use aliasing), so
   // read Indices before vperm can overwrite Dst.  index >= 32 iff index >> 5 != 0.
   vspltisb(VTMP1, 5);
@@ -3631,6 +3665,16 @@ DEF_OP(VTBX1) {
   const auto SrcDst  = GetVReg(Op->VectorSrcDst);
   const auto Table   = GetVReg(Op->VectorTable);
   const auto Indices = GetVReg(Op->VectorIndices);
+
+  if (EmitterCTX->HostFeatures.SupportsISA30) {
+    // vpermr over Table||Table (any low-5-bit index lands in Table), then keep
+    // SrcDst where the index is above 15. 4 instructions (was 6).
+    EmitVpermr(this, VTMP1, Table, Table, Indices);
+    vspltisb(VTMP2, 15);
+    vcmpgtub(VTMP2, Indices, VTMP2);
+    vsel(Dst, VTMP1, SrcDst, VTMP2);
+    return;
+  }
 
   // VTMP1 = permuted table bytes (XOR with 0x0F maps LE byte index → ISA byte).
   vspltisb(VTMP2, 0x0F);

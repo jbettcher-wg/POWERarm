@@ -33,6 +33,7 @@
 #include <FEXCore/fextl/map.h>
 #include <FEXCore/fextl/vector.h>
 
+#include <array>
 #include <cstdint>
 #include <string_view>
 
@@ -137,7 +138,7 @@ public:
   bool LDR_lit_fpsimd(uint32_t Word); bool STP_LDP_fpsimd(uint32_t Word);
   bool STUR_LDUR_fpsimd(uint32_t Word); bool STR_LDR_imm_fpsimd_1(uint32_t Word); bool STR_LDR_imm_fpsimd_2(uint32_t Word);
   bool STR_LDR_reg_fpsimd(uint32_t Word);
-  bool LDx_STx_mult(uint32_t Word); bool LDx_STx_sngl(uint32_t Word); bool LD2_ST2_mult(uint32_t Word);
+  bool LDx_STx_mult(uint32_t Word); bool SIMDSingleStructure(uint32_t Word);
   // Advanced SIMD integer.
   bool DUP_gen(uint32_t Word); bool DUP_elt_1(uint32_t Word); bool DUP_elt_2(uint32_t Word);
   bool UMOV(uint32_t Word); bool SMOV(uint32_t Word); bool INS_gen(uint32_t Word); bool INS_elt(uint32_t Word);
@@ -167,6 +168,18 @@ public:
   bool EXT(uint32_t Word);
   bool UZP1(uint32_t Word); bool UZP2(uint32_t Word); bool ZIP1(uint32_t Word); bool ZIP2(uint32_t Word);
   bool TRN1(uint32_t Word); bool TRN2(uint32_t Word);
+  bool TBL(uint32_t Word); bool TBX(uint32_t Word);
+  bool USHL_2(uint32_t Word); bool SSHL_2(uint32_t Word); bool USHL_1(uint32_t Word); bool SSHL_1(uint32_t Word);
+  bool SRI_2(uint32_t Word); bool SLI_2(uint32_t Word); bool USRA_2(uint32_t Word); bool SSRA_2(uint32_t Word);
+  bool UADDLP(uint32_t Word); bool SADDLP(uint32_t Word); bool UADALP(uint32_t Word); bool SADALP(uint32_t Word);
+  bool SSUBW(uint32_t Word); bool USUBW(uint32_t Word);
+  bool UMULL_vec(uint32_t Word); bool SMULL_vec(uint32_t Word); bool UMLAL_vec(uint32_t Word); bool SMLAL_vec(uint32_t Word);
+  bool UMLSL_vec(uint32_t Word); bool SMLSL_vec(uint32_t Word);
+  bool MUL_vec(uint32_t Word); bool MLA_vec(uint32_t Word); bool MLS_vec(uint32_t Word); bool MUL_elt(uint32_t Word);
+  bool SMAXP(uint32_t Word); bool SMINP(uint32_t Word); bool REV16_asimd(uint32_t Word);
+  bool NEG_1(uint32_t Word); bool ABS_1(uint32_t Word); bool ADDP_pair(uint32_t Word); bool UQSUB_1(uint32_t Word);
+  bool FNEG_2(uint32_t Word); bool FABS_2(uint32_t Word); bool FABD_2(uint32_t Word); bool FABD_4(uint32_t Word);
+  bool SCVTF_int_4(uint32_t Word); bool UCVTF_int_4(uint32_t Word);
   // Scalar floating point.
   bool FMOV_float_gen(uint32_t Word); bool FMOV_float(uint32_t Word); bool FMOV_float_imm(uint32_t Word);
   bool FABS_float(uint32_t Word); bool FNEG_float(uint32_t Word); bool FSQRT_float(uint32_t Word); bool FCVT_float(uint32_t Word);
@@ -265,9 +278,10 @@ private:
 
   // Advanced SIMD shared bodies (TranslateSIMD.cpp).
   enum class ThreeSameOp { Add, Sub, CmEq, CmGt, CmGe, CmHs, CmHi, CmTst, UMax, UMin, SMax, SMin };
-  enum class PairwiseOp { Add, UMax, UMin };
+  enum class PairwiseOp { Add, UMax, UMin, SMax, SMin };
   enum class CompareZeroOp { Eq, Gt, Ge, Le, Lt };
-  enum class ThreeDifferentOp { SAddL, UAddL, SSubL, USubL, SAddW, UAddW, AddHN, SubHN };
+  enum class ThreeDifferentOp { SAddL, UAddL, SSubL, USubL, SAddW, UAddW, AddHN, SubHN, SSubW, USubW, UMull, SMull, UMlal, SMlal, UMlsl, SMlsl };
+  enum class ShiftInsertOp { Sri, Sli, Usra, Ssra };
   enum class ShiftImmOp { SShr, UShr, Shl, Shrn, SShll, UShll };
   enum class PermuteOp { Uzp1, Uzp2, Zip1, Zip2, Trn1, Trn2 };
   bool SIMDThreeSame(uint32_t Word, ThreeSameOp Op, bool Scalar);
@@ -277,7 +291,17 @@ private:
   bool SIMDThreeDifferent(uint32_t Word, ThreeDifferentOp Op);
   bool SIMDShiftImm(uint32_t Word, ShiftImmOp Op, bool Scalar);
   bool SIMDPermute(uint32_t Word, PermuteOp Op);
+  bool SIMDShiftRegister(uint32_t Word, bool Signed, bool Scalar);
+  bool SIMDShiftInsertAccumulate(uint32_t Word, ShiftInsertOp Op);
+  bool SIMDAddLongPairwise(uint32_t Word, bool Signed, bool Accumulate);
+  bool SIMDMultiply(uint32_t Word, int Accumulate);
+  bool FPVectorUnary(uint32_t Word, bool IsNeg);
+  bool FPAbsoluteDifference(uint32_t Word, bool Scalar);
+  bool FPVectorIntToFloat(uint32_t Word, bool Signed);
   void StoreNarrow(uint32_t Rd, bool Upper, Ref Narrow);
+  // Byte permutation of up to four 16-byte sources (TranslateSIMDLoadStore.cpp).
+  Ref PermuteBytes(const std::array<Ref, 4>& Sources, uint32_t NumSources, const std::array<uint8_t, 16>& Map);
+  bool TableLookup(uint32_t Word, bool IsTBX);
   // A 128-bit vector with Pattern in both 64-bit lanes.
   Ref VectorConstant64(uint64_t Pattern);
 
