@@ -208,7 +208,9 @@ DEF_OP(Constant) {
   // provably still holds that value. FEX_NOCONSTCACHE is checked on the
   // consumer side as well as the producer side so the switch reads as one
   // predicate everywhere, rather than relying on "the producer never set it".
-  if (!ConstCacheDisabled() && LastConstantCache.Valid) {
+  // A guest RIP is rebased when cached code is installed, so with relocations
+  // retained a plain constant never takes its delta from one.
+  if (!ConstCacheDisabled() && LastConstantCache.Valid && !(RetainRelocations && LastConstantCache.GuestRIP)) {
     const int64_t Delta = static_cast<int64_t>(Op->Constant) - static_cast<int64_t>(LastConstantCache.Value);
     const GPR Base = GeneralRegisters[LastConstantCache.Reg];
     if (Delta >= -32768 && Delta <= 32767 && Base != r0 && Base != Dst) {
@@ -254,7 +256,12 @@ DEF_OP(EntrypointOffset) {
   // relocation applier), so it must never appear there. The producer side is
   // gated on the same predicate, so a fixed-width unit never even populates a
   // cache entry from this op.
-  if (!ExitRIPFixedWidth && !ConstCacheDisabled() && LastConstantCache.Valid) {
+  //
+  // With only the code cache on, the delta is taken between two guest RIPs of
+  // this block, which the load base moves together, so the addi stays correct
+  // after relocation. A plain constant's register is not a valid base there.
+  if (!ExitRIPFixedWidth && !ConstCacheDisabled() && LastConstantCache.Valid &&
+      (!RetainRelocations || (LastConstantCache.GuestRIP && IROp->Size != IR::OpSize::i32Bit))) {
     const int64_t Delta = static_cast<int64_t>(Value) - static_cast<int64_t>(LastConstantCache.Value);
     const GPR Base = GeneralRegisters[LastConstantCache.Reg];
     if (Base != r0 && Base != Dst) {

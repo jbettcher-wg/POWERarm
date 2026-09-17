@@ -761,7 +761,18 @@ void PPC64JITCore::InsertGuestRIPMove(GPR Reg, uint64_t Constant) {
   };
   Reloc.GuestRIP.GuestRIP      = Constant;   // TakeRelocations subtracts base
   Reloc.GuestRIP.RegisterIndex = Reg.idx;
-  LoadConstantFixed(Reg, Constant);
+  if (ExitRIPFixedWidth) {
+    // Instructions == 0: the fixed 5-instruction window.
+    LoadConstantFixed(Reg, Constant);
+  } else {
+    // Variable width: the loader re-emits LoadConstant for the rebased value
+    // into these instructions, padding with nops, and rejects the block when
+    // the new value needs more. Load bases are page-aligned, so the low bits
+    // that decide the width seldom change.
+    const auto Start = GetOffset();
+    LoadConstant(Reg, Constant);
+    Reloc.GuestRIP.Instructions = static_cast<uint8_t>((GetOffset() - Start) / 4);
+  }
   Relocations.emplace_back(Reloc);
 }
 
@@ -788,7 +799,7 @@ void PPC64JITCore::InsertGuestRIPMove(GPR Reg, uint64_t Constant) {
 // scans for fixed-width RIP windows cannot find one path converted and the
 // other not.
 void PPC64JITCore::InsertEntrypointRIPMove(GPR Reg, uint64_t Constant) {
-  if (!ExitRIPFixedWidth) {
+  if (!RetainRelocations) {
     LoadConstant(Reg, Constant);
     return;
   }
@@ -802,7 +813,7 @@ void PPC64JITCore::InsertEntrypointRIPMove(GPR Reg, uint64_t Constant) {
 // future change to LoadImm64Fixed must fail here rather than silently turn
 // every fault-time match into a miss.
 void PPC64JITCore::InsertExitRIPMove(GPR Reg, uint64_t Constant) {
-  if (!ExitRIPFixedWidth) {
+  if (!RetainRelocations) {
     // Neither consumer of the fixed-width window exists in this configuration
     // (see the ExitRIPFixedWidth resolution in the constructor), so emit the
     // ordinary variable-width load: 1-5 instructions instead of always 5.
@@ -2207,7 +2218,12 @@ PPC64JITCore::PPC64JITCore(FEXCore::Context::ContextImpl* ctx,
   // is deliberately NOT the BlockLinking one: SMCSemanticPatch forces
   // BlockLinkingEnabled off, so testing BlockLinkingEnabled here would silently
   // pick the variable form in exactly the configuration that must not have it.
-  ExitRIPFixedWidth = FEXCore::Config::Get_ENABLECODECACHINGWIP() || CTX->Config.SMCSemanticPatch();
+  //
+  // The code cache alone no longer needs the fixed window: its relocations
+  // record the emitted width, and the loader re-emits within it (see
+  // InsertGuestRIPMove). Only SMCSemanticPatch still forces it.
+  RetainRelocations = FEXCore::Config::Get_ENABLECODECACHINGWIP() || CTX->Config.SMCSemanticPatch();
+  ExitRIPFixedWidth = CTX->Config.SMCSemanticPatch();
 
   // Announce the decision once per process (this constructor runs per guest
   // thread). This is the only externally observable statement of which form
@@ -2217,7 +2233,7 @@ PPC64JITCore::PPC64JITCore(FEXCore::Context::ContextImpl* ctx,
     static std::once_flag Announce;
     std::call_once(Announce, [this]() {
       LogMan::Msg::IFmt("PPC64 JIT: exit-RIP constants are {} (code caching {}, SMCSemanticPatch {})",
-                        ExitRIPFixedWidth ? "FIXED width (5 insns, patchable window)" : "variable width (1-5 insns)",
+                        ExitRIPFixedWidth ? "FIXED width (5 insns, patchable window)" : RetainRelocations ? "variable width (1-5 insns, relocatable)" : "variable width (1-5 insns)",
                         FEXCore::Config::Get_ENABLECODECACHINGWIP() ? "on" : "off", CTX->Config.SMCSemanticPatch() ? "on" : "off");
     });
   }
@@ -5804,7 +5820,7 @@ CPUBackend::CompiledCode PPC64JITCore::CompileCode(
           auto COp = IROp->C<IR::IROp_Constant>();
           const auto PR = IR::PhysicalRegister(CodeNode);
           if (!ConstCacheDisabled() && COp->PatchSite == 0 && PR.AsRegClass() == IR::RegClass::GPR) {
-            LastConstantCache = {static_cast<uint64_t>(COp->Constant), PR.Reg, true};
+            LastConstantCache = {static_cast<uint64_t>(COp->Constant), PR.Reg, true, false};
           } else {
             LastConstantCache.Valid = false;
           }
@@ -5823,9 +5839,13 @@ CPUBackend::CompiledCode PPC64JITCore::CompileCode(
           // addi off it. (The register would in fact hold the right value
           // there; keeping producer and consumer on one predicate is the point,
           // so a future reader cannot find one converted and the other not.)
+          // With relocatable variable-width loads (the code cache) the entry
+          // is marked GuestRIP and seeds only another guest RIP's delta; a
+          // 32-bit masked value is not rebase-invariant and seeds nothing.
           const auto PR = IR::PhysicalRegister(CodeNode);
-          if (!ConstCacheDisabled() && !ExitRIPFixedWidth && PR.AsRegClass() == IR::RegClass::GPR) {
-            LastConstantCache = {EntrypointOffsetValue(IROp), PR.Reg, true};
+          if (!ConstCacheDisabled() && !ExitRIPFixedWidth && PR.AsRegClass() == IR::RegClass::GPR &&
+              (!RetainRelocations || IROp->Size != IR::OpSize::i32Bit)) {
+            LastConstantCache = {EntrypointOffsetValue(IROp), PR.Reg, true, true};
           } else {
             LastConstantCache.Valid = false;
           }
@@ -5927,7 +5947,7 @@ CPUBackend::CompiledCode PPC64JITCore::CompileCode(
     // branch), the thunk word is the b +0x14 emitted just above.
     const uint32_t OrigCallerWord = *reinterpret_cast<const uint32_t*>(Thunk.CallerAddress);
     const uint32_t OrigThunkWord = *reinterpret_cast<const uint32_t*>(ThunkStart);
-    if (ExitRIPFixedWidth) {
+    if (RetainRelocations) {
       static_assert(offsetof(PPC64BlockLinkRecord, OrigCallerWord) == 24 && offsetof(PPC64BlockLinkRecord, OrigThunkWord) == 28,
                     "CodeCache::ApplyCodeRelocations rewrites the record's original words at these offsets");
       // Code cache relocations for the record (see RELOC_LINK_RECORD). Same
@@ -6122,7 +6142,7 @@ CPUBackend::CompiledCode PPC64JITCore::CompileCode(
   // push was pure overhead -- a Relocation appended to a vector on every
   // single compiled block, for a consumer that does not exist -- and the
   // vector is discarded unread at the end of CompileCode.
-  if (ExitRIPFixedWidth) {
+  if (RetainRelocations) {
     Relocation Reloc {};
     Reloc.GuestRIP.Header = {
       .Offset = BlockBufferOffset + static_cast<uint64_t>(CodeSize) + offsetof(CPUBackend::JITCodeTail, RIP),

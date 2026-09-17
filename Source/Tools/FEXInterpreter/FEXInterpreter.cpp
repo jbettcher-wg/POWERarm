@@ -540,6 +540,15 @@ int main(int argc, char** argv, char** const envp) {
   FEXCore::Config::ReloadMetaLayer();
   FEXCore::Config::Set(FEXCore::Config::CONFIG_INTERPRETER_INSTALLED, InterpreterInstalled ? "1" : "0");
 
+  // The code cache is on by default. These SMC modes attach per-block state the
+  // cache does not store, or patch code in ways a stored block cannot carry
+  // (store backpatch stubs), so they turn the whole cache off, writes included.
+  // Nothing has read the option yet.
+  if (FEXCore::Config::Get_SMCSEMANTICPATCH() || FEXCore::Config::Get_SMCLAZYINVAL() || FEXCore::Config::Get_SMCCHEAPTIER() ||
+      FEXCore::Config::Get_SMCSTOREEMULATION() || FEXCore::Config::Get_SMCSTOREBACKPATCH()) {
+    FEXCore::Config::Set(FEXCore::Config::CONFIG_ENABLECODECACHINGWIP, "0");
+  }
+
   // Host-page-size gate (64K port). Config is loaded and merged, and nothing
   // downstream exists yet: no context (CreateNewContext below caches SMCChecks
   // at construction, which is why degrade-mode forcing has to happen HERE), no

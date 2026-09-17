@@ -37,7 +37,9 @@
 
 #include <algorithm>
 #include <array>
+#include <bit>
 #include <cerrno>
+#include <dirent.h>
 #include <elf.h>
 #include <fcntl.h>
 #include <filesystem>
@@ -328,6 +330,19 @@ namespace {
       &Id);
     return Id;
   }
+
+  // 32-bit id of this emulator build: GIT_HASH and the executable's build id.
+  uint32_t EmulatorBuildId() {
+    static const uint32_t Id = [] {
+      const auto BuildId = ExecutableBuildId();
+      XXH3_state_t State;
+      XXH3_64bits_reset(&State);
+      XXH3_64bits_update(&State, GIT_HASH.data(), GIT_HASH.size());
+      XXH3_64bits_update(&State, BuildId.data(), BuildId.size());
+      return static_cast<uint32_t>(XXH3_64bits_digest(&State));
+    }();
+    return Id;
+  }
 } // namespace
 
 void SetCodeCacheHostFeatures(const HostFeatures& Features) {
@@ -385,8 +400,14 @@ uint64_t ComputeCodeCacheConfigId() {
                      F.SupportsVCmpFlagBranch, F.SupportsFlagTransparentSelect, F.SupportsAFP, F.SupportsFloatExceptions, F.IsInstCountCI}) {
         Hasher.Add(uint64_t {B});
       }
-      Hasher.Add(uint64_t {F.CPUMIDRs.size()});
-      for (uint32_t MIDR : F.CPUMIDRs) {
+      // The distinct MIDR values, not one per CPU: the count follows the
+      // process's CPU affinity, and a `taskset` run must share the cache of an
+      // unpinned one. Codegen only reads the values (the LRCPC2 erratum list).
+      fextl::vector<uint32_t> MIDRs = F.CPUMIDRs;
+      std::ranges::sort(MIDRs);
+      MIDRs.erase(std::unique(MIDRs.begin(), MIDRs.end()), MIDRs.end());
+      Hasher.Add(uint64_t {MIDRs.size()});
+      for (uint32_t MIDR : MIDRs) {
         Hasher.Add(uint64_t {MIDR});
       }
     }
@@ -775,13 +796,22 @@ namespace {
   }
 
   constexpr std::array<char, 4> SegmentMagic = {'P', 'A', 'C', 'C'};
-  constexpr uint32_t SegmentVersion = 4;
+  constexpr uint32_t SegmentVersion = 5;
   constexpr size_t MaxSegments = 8;
   // A runtime writer skips files with fewer new blocks than this. Stops a
   // process that compiled a handful of rare-path blocks from spending a
   // segment (and, eventually, a compaction) on them.
   constexpr size_t MinNewBlocksPerSegment = 8;
   constexpr uint64_t BlockAlignment = 16;
+
+  // Size sweep (SweepCacheDirectory). A namespace's last use is the newest
+  // mtime of its files; a process opening a namespace refreshes it when older
+  // than UseStampSeconds.
+  constexpr int64_t UseStampSeconds = 600;
+  constexpr int64_t SweepIntervalSeconds = 60;
+  // Another build's namespace, or a leftover temp file, unused this long is
+  // removed whatever the cap.
+  constexpr int64_t StaleSeconds = 3600;
 
   struct SegmentHeader {
     std::array<char, 4> Magic;
@@ -791,7 +821,9 @@ namespace {
     std::array<uint8_t, 20> BuildHash;
     uint32_t NumBlocks;
     uint32_t NumRelocs;
-    uint32_t Pad;
+    // EmulatorBuildId(): lets the size sweep recognise another build's files
+    // without the ConfigId inputs.
+    uint32_t EmulatorId;
     // /proc/sys/kernel/random/boot_id of the writer. Within that boot the file
     // is exactly what was written (it was complete before link(2) or rename(2)
     // published it), so entry hashes only need checking in another boot, where
@@ -879,11 +911,16 @@ namespace {
   }
 
   // Bytes of the code a relocation rewrites.
-  uint64_t RelocWidth(CPU::RelocationTypes Type) {
-    switch (Type) {
+  uint64_t RelocWidth(const CPU::Relocation& Reloc) {
+    switch (Reloc.Header.Type) {
     case CPU::RelocationTypes::RELOC_NAMED_SYMBOL_LITERAL:
     case CPU::RelocationTypes::RELOC_GUEST_RIP_LITERAL:
     case CPU::RelocationTypes::RELOC_LINK_RECORD: return sizeof(uint64_t);
+    case CPU::RelocationTypes::RELOC_GUEST_RIP_MOVE:
+      if (Reloc.GuestRIP.Instructions != 0) {
+        return uint64_t {Reloc.GuestRIP.Instructions} * 4;
+      }
+      [[fallthrough]];
     default: return PPC64Emitter::Emitter::LoadConstantFixedBytes;
     }
   }
@@ -952,6 +989,7 @@ namespace {
     H.ConfigId = ConfigId;
     H.FileId = FileId;
     std::ranges::copy(GIT_HASH, H.BuildHash.begin());
+    H.EmulatorId = EmulatorBuildId();
     H.BootId = CurrentBootId();
     H.NumBlocks = NumBlocks;
     H.NumRelocs = NumRelocs;
@@ -1034,7 +1072,9 @@ struct CodeCache::CacheSegment {
     return !CheckHashes || HashBlock(B, Code + B.CodeOffset, Relocs + B.RelocBegin) == B.EntryHash;
   }
 
-  static fextl::unique_ptr<CacheSegment> Open(const fextl::string& Path, uint64_t ConfigId, uint64_t FileId) {
+  // MarkUsed: record a use for the size sweep's LRU order by refreshing the
+  // file's mtime, at most every UseStampSeconds per file.
+  static fextl::unique_ptr<CacheSegment> Open(const fextl::string& Path, uint64_t ConfigId, uint64_t FileId, bool MarkUsed = false) {
     int FD = ::open(Path.c_str(), O_RDONLY | O_CLOEXEC);
     if (FD == -1) {
       return nullptr;
@@ -1043,6 +1083,10 @@ struct CodeCache::CacheSegment {
     if (::fstat(FD, &St) != 0 || St.st_size < static_cast<off_t>(sizeof(SegmentHeader))) {
       ::close(FD);
       return nullptr;
+    }
+    if (MarkUsed && St.st_mtime + UseStampSeconds < ::time(nullptr)) {
+      // Fails harmlessly on a read-only cache.
+      ::utimensat(AT_FDCWD, Path.c_str(), nullptr, 0);
     }
     const size_t Size = static_cast<size_t>(St.st_size);
     void* Map = FEXCore::Allocator::mmap(nullptr, Size, PROT_READ, MAP_PRIVATE, FD, 0);
@@ -1099,7 +1143,7 @@ struct CodeCache::FileCache {
   void ProbeNewSegments(uint64_t ConfigId, uint64_t FileId) {
     while (NumSegments.load(std::memory_order_relaxed) < MaxSegments) {
       const size_t Index = NumSegments.load(std::memory_order_relaxed);
-      auto Seg = CacheSegment::Open(SegmentPath(BasePath, Index), ConfigId, FileId);
+      auto Seg = CacheSegment::Open(SegmentPath(BasePath, Index), ConfigId, FileId, Index == 0);
       if (!Seg) {
         break;
       }
@@ -1494,7 +1538,7 @@ static void CollectLiveBlocks(CodeCache& Cache, ContextImpl& CTX, const Executab
     bool Cacheable = true;
     for (const auto& R : Relocs) {
       if (R.Header.Type == CPU::RelocationTypes::RELOC_NAMED_THUNK_MOVE || R.Header.Offset < Begin ||
-          R.Header.Offset + RelocWidth(R.Header.Type) > Begin + Size) {
+          R.Header.Offset + RelocWidth(R) > Begin + Size) {
         Cacheable = false;
         break;
       }
@@ -1683,6 +1727,208 @@ static bool CompactSegments(const fextl::string& Base, const fextl::string& Extr
   return true;
 }
 
+
+// =============================================================================
+// Size cap and eviction
+//
+// The cache directory holds one namespace per (guest file, ConfigId):
+// `<name>-<FileId>-<ConfigId>` plus `.1`..`.7`, `.lock` and `.tmp.*` files.
+// After a process publishes a segment it sweeps the directory, at most once per
+// SweepIntervalSeconds across all processes (the mtime of `.sweep`, claimed
+// under `.sweep.lock` with LOCK_NB):
+//   1. namespaces written by another emulator build (or an older format),
+//      and temp files, unused for StaleSeconds are removed;
+//   2. if the rest exceeds CodeCacheMaxSize, whole namespaces are removed in
+//      least-recently-used order until they fit in 90% of it.
+// A namespace is removed under an exclusive LOCK_NB flock of its `.lock`, so
+// never while a writer appends or compacts it; a busy one is skipped. Segments
+// are unlinked from the highest index down, then the lock file. A process that
+// has a segment mapped keeps valid data. A writer that raced the lock file's
+// removal can at worst lose its own segment to a concurrent compaction, which
+// costs recompiles, never wrong code (every block is checked on install).
+// =============================================================================
+namespace {
+  struct NamespaceName {
+    std::string_view Base;
+    // -1: `.lock`, -2: `.tmp.*`, else the segment index.
+    int Kind;
+  };
+
+  bool IsHex16(std::string_view S) {
+    return S.size() == 16 && std::ranges::all_of(S, [](char C) { return (C >= '0' && C <= '9') || (C >= 'a' && C <= 'f'); });
+  }
+
+  // Splits a cache directory entry into its namespace and kind.
+  std::optional<NamespaceName> ParseCacheFileName(std::string_view Name) {
+    // The namespace ends with `-<16 hex>-<16 hex>`; basenames may contain dots
+    // and dashes, so search every dash for that shape.
+    for (size_t Pos = Name.find('-'); Pos != std::string_view::npos; Pos = Name.find('-', Pos + 1)) {
+      const size_t End = Pos + 34;
+      if (End > Name.size() || !IsHex16(Name.substr(Pos + 1, 16)) || Name[Pos + 17] != '-' || !IsHex16(Name.substr(Pos + 18, 16))) {
+        continue;
+      }
+      const auto Base = Name.substr(0, End);
+      const auto Suffix = Name.substr(End);
+      if (Suffix.empty()) {
+        return NamespaceName {Base, 0};
+      }
+      if (Suffix == ".lock") {
+        return NamespaceName {Base, -1};
+      }
+      if (Suffix.starts_with(".tmp.")) {
+        return NamespaceName {Base, -2};
+      }
+      if (Suffix.size() == 2 && Suffix[0] == '.' && Suffix[1] >= '1' && Suffix[1] < '0' + static_cast<char>(MaxSegments)) {
+        return NamespaceName {Base, Suffix[1] - '0'};
+      }
+    }
+    return std::nullopt;
+  }
+
+  struct NamespaceInfo {
+    uint64_t Bytes = 0;
+    int64_t LastUse = 0;
+    uint32_t SegmentMask = 0;
+    bool HasLock = false;
+    fextl::vector<fextl::string> TempFiles;
+  };
+
+  // True if the segment file was written by this build in this format.
+  bool IsOwnBuild(const fextl::string& Path) {
+    int FD = ::open(Path.c_str(), O_RDONLY | O_CLOEXEC);
+    if (FD == -1) {
+      return false;
+    }
+    SegmentHeader H {};
+    const bool Read = ::pread(FD, &H, sizeof(H), 0) == static_cast<ssize_t>(sizeof(H));
+    ::close(FD);
+    return Read && H.Magic == SegmentMagic && H.Version == SegmentVersion && H.HeaderHash == HashHeader(H) &&
+           std::ranges::equal(H.BuildHash, GIT_HASH) && H.EmulatorId == EmulatorBuildId();
+  }
+
+  // Removes a namespace's files under its lock. False if the lock is busy.
+  bool RemoveNamespace(const fextl::string& Dir, std::string_view Base, const NamespaceInfo& Info) {
+    const fextl::string BasePath = fextl::fmt::format("{}/{}", Dir, Base);
+    const fextl::string LockPath = BasePath + ".lock";
+    int LockFD = -1;
+    if (Info.HasLock) {
+      LockFD = ::open(LockPath.c_str(), O_RDWR | O_CLOEXEC);
+      if (LockFD != -1 && ::flock(LockFD, LOCK_EX | LOCK_NB) != 0) {
+        ::close(LockFD);
+        return false;
+      }
+    }
+    for (size_t i = MaxSegments; i-- > 0;) {
+      if (Info.SegmentMask & (1u << i)) {
+        ::unlink(SegmentPath(BasePath, i).c_str());
+      }
+    }
+    for (const auto& Temp : Info.TempFiles) {
+      ::unlink(Temp.c_str());
+    }
+    if (LockFD != -1) {
+      ::unlink(LockPath.c_str());
+      ::close(LockFD);
+    }
+    return true;
+  }
+
+  void SweepCacheDirectory(const fextl::string& Dir, uint64_t CapBytes) {
+    const int64_t Now = ::time(nullptr);
+    const fextl::string StampPath = Dir + "/.sweep";
+    struct stat St {};
+    if (::stat(StampPath.c_str(), &St) == 0 && St.st_mtime + SweepIntervalSeconds > Now) {
+      return;
+    }
+    const fextl::string SweepLock = Dir + "/.sweep.lock";
+    int LockFD = ::open(SweepLock.c_str(), O_RDWR | O_CREAT | O_CLOEXEC, 0644);
+    if (LockFD == -1) {
+      return;
+    }
+    if (::flock(LockFD, LOCK_EX | LOCK_NB) != 0) {
+      ::close(LockFD);
+      return;
+    }
+    // Claim this interval: re-check under the lock, then stamp before the scan.
+    if (::stat(StampPath.c_str(), &St) == 0 && St.st_mtime + SweepIntervalSeconds > Now) {
+      ::close(LockFD);
+      return;
+    }
+    if (int StampFD = ::open(StampPath.c_str(), O_WRONLY | O_CREAT | O_CLOEXEC, 0644); StampFD != -1) {
+      ::futimens(StampFD, nullptr);
+      ::close(StampFD);
+    }
+
+    fextl::map<fextl::string, NamespaceInfo> Namespaces;
+    if (DIR* D = ::opendir(Dir.c_str())) {
+      const int DirFD = ::dirfd(D);
+      while (const auto* Entry = ::readdir(D)) {
+        const auto Parsed = ParseCacheFileName(Entry->d_name);
+        if (!Parsed || ::fstatat(DirFD, Entry->d_name, &St, AT_SYMLINK_NOFOLLOW) != 0 || !S_ISREG(St.st_mode)) {
+          continue;
+        }
+        auto& Info = Namespaces[fextl::string {Parsed->Base}];
+        Info.Bytes += static_cast<uint64_t>(St.st_blocks) * 512;
+        // Newest mtime of any file. Opening the lock does not change its mtime,
+        // so it matters only for a namespace that never got a segment.
+        Info.LastUse = std::max<int64_t>(Info.LastUse, St.st_mtime);
+        if (Parsed->Kind == -1) {
+          Info.HasLock = true;
+        } else if (Parsed->Kind == -2) {
+          if (St.st_mtime + StaleSeconds < Now) {
+            Info.TempFiles.push_back(fextl::fmt::format("{}/{}", Dir, Entry->d_name));
+          }
+        } else {
+          Info.SegmentMask |= 1u << Parsed->Kind;
+        }
+      }
+      ::closedir(D);
+    }
+
+    struct Candidate {
+      const fextl::string* Base;
+      NamespaceInfo* Info;
+    };
+    fextl::vector<Candidate> Live;
+    uint64_t Total = 0;
+    for (auto& [Base, Info] : Namespaces) {
+      const bool Stale = Info.LastUse + StaleSeconds < Now;
+      bool Own = false;
+      if (Info.SegmentMask) {
+        const int Lowest = std::countr_zero(Info.SegmentMask);
+        Own = IsOwnBuild(SegmentPath(fextl::fmt::format("{}/{}", Dir, Base), Lowest));
+      }
+      if (!Own && Stale && RemoveNamespace(Dir, Base, Info)) {
+        LogMan::Msg::IFmt("Code cache: removed unused namespace {} of another build", Base);
+        continue;
+      }
+      if (!Info.TempFiles.empty()) {
+        // Leftovers of a crashed writer; the namespace itself stays.
+        for (const auto& Temp : Info.TempFiles) {
+          ::unlink(Temp.c_str());
+        }
+      }
+      Total += Info.Bytes;
+      Live.push_back({&Base, &Info});
+    }
+
+    if (CapBytes != 0 && Total > CapBytes) {
+      const uint64_t Target = CapBytes / 10 * 9;
+      std::ranges::sort(Live, {}, [](const Candidate& C) { return C.Info->LastUse; });
+      for (const auto& C : Live) {
+        if (Total <= Target) {
+          break;
+        }
+        if (RemoveNamespace(Dir, *C.Base, *C.Info)) {
+          Total -= std::min(Total, C.Info->Bytes);
+          LogMan::Msg::IFmt("Code cache: evicted {} ({} KiB)", *C.Base, C.Info->Bytes >> 10);
+        }
+      }
+    }
+    ::close(LockFD);
+  }
+} // namespace
+
 size_t CodeCache::SaveNewBlocks(Core::InternalThreadState&, std::span<const CodeCacheSaveTarget> Targets) {
   if (!IsGeneratingCache || Targets.empty()) {
     return 0;
@@ -1798,6 +2044,18 @@ size_t CodeCache::SaveNewBlocks(Core::InternalThreadState&, std::span<const Code
     }
   }
 
+  if (SegmentsWritten != 0) {
+    // Every base path is in the one cache directory.
+    for (const auto& Target : Targets) {
+      if (!Target.BasePath.empty()) {
+        const int64_t CapMiB = FEXCore::Config::Get_CODECACHEMAXSIZE();
+        const auto Dir = std::filesystem::path(std::string_view {Target.BasePath}).parent_path();
+        SweepCacheDirectory(fextl::string {Dir.string()}, CapMiB > 0 ? static_cast<uint64_t>(CapMiB) << 20 : 0);
+        break;
+      }
+    }
+  }
+
   // Everything in the snapshot has had its chance: written, already on disk,
   // not cacheable, below the per-file minimum, or outside every target. Drop
   // it, and the relocations only it referenced.
@@ -1854,7 +2112,7 @@ bool CodeCache::ApplyCodeRelocations(uint64_t GuestEntry, std::span<std::byte> C
   }
 
   for (const auto& Reloc : EntryRelocations) {
-    const uint64_t Width = RelocWidth(Reloc.Header.Type);
+    const uint64_t Width = RelocWidth(Reloc);
     if (Reloc.Header.Offset > Code.size() || Width > Code.size() - Reloc.Header.Offset) {
       LogMan::Msg::EFmt("Code cache relocation at {:#x} overruns its {:#x} byte block", Reloc.Header.Offset, Code.size());
       return false;
@@ -1886,8 +2144,27 @@ bool CodeCache::ApplyCodeRelocations(uint64_t GuestEntry, std::span<std::byte> C
     }
     case CPU::RelocationTypes::RELOC_GUEST_RIP_MOVE: {
       uint64_t Pointer = Reloc.GuestRIP.GuestRIP + GuestEntry;
-      FEXCore::CPU::PPC64EmitterBase PatchEmitter(&CTX, Ptr, Remaining);
-      PatchEmitter.LoadConstantFixed(PPC64Emitter::r(Reloc.GuestRIP.RegisterIndex), Pointer);
+      if (Reloc.GuestRIP.Instructions == 0) {
+        FEXCore::CPU::PPC64EmitterBase PatchEmitter(&CTX, Ptr, Remaining);
+        PatchEmitter.LoadConstantFixed(PPC64Emitter::r(Reloc.GuestRIP.RegisterIndex), Pointer);
+        break;
+      }
+      // Variable width: stored as nops, so the file does not depend on the
+      // writer's load base. On install, the rebased value must fit the
+      // instructions the writer emitted; the block is compiled otherwise.
+      // Emitted into a scratch window first: LoadConstant may need more room.
+      uint8_t Window[PPC64Emitter::Emitter::LoadConstantFixedBytes + 4];
+      FEXCore::CPU::PPC64EmitterBase PatchEmitter(&CTX, Window, sizeof(Window));
+      if (!ForStorage) {
+        PatchEmitter.LoadConstant(PPC64Emitter::r(Reloc.GuestRIP.RegisterIndex), Pointer);
+      }
+      if (PatchEmitter.GetOffset() > Width || Width > sizeof(Window)) {
+        return false;
+      }
+      while (PatchEmitter.GetOffset() < Width) {
+        PatchEmitter.nop();
+      }
+      memcpy(Ptr, Window, Width);
       break;
     }
     case CPU::RelocationTypes::RELOC_LINK_RECORD: break;

@@ -7,17 +7,20 @@ build runs hundreds of short processes (`sh`, `sed`, the `gcc` driver, `cc1`,
 `as`) that translate the same code again and again. The code cache keeps
 translated blocks on disk and installs them in later processes.
 
-Enable it with:
+The cache is on by default (`EnableCodeCachingWIP=1`, `CodeCacheScope=rootfs`).
+Turn it off with:
 
 ```
-POWERARM_ENABLECODECACHINGWIP=1 POWERARM_CODECACHESCOPE=rootfs
+POWERARM_ENABLECODECACHINGWIP=0
 ```
 
 `rootfs` writes caches for files under the configured RootFS, and `all` for
 every executable mapping. The cache lives in `$POWERARM_APP_CACHE_LOCATION/cache/`
-(default `$XDG_CACHE_HOME/powerarm/cache/`). `POWERARM_CODECACHESTATS=1` prints
-each process's counters to stderr. It stays off by default; see
-[Default-on](#default-on).
+(default `$XDG_CACHE_HOME/powerarm/cache/`) and is capped at `CodeCacheMaxSize`
+MiB (default 2048, `POWERARM_CODECACHEMAXSIZE`). `POWERARM_CODECACHESTATS=1`
+prints each process's counters to stderr. The SMC modes that the cache cannot
+serve (`SMCSemanticPatch`, `SMCLazyInval`, `SMCCheapTier`, `SMCStoreEmulation`,
+`SMCStoreBackpatch`) turn it off. See [Default-on](#default-on).
 
 ## Where cold-process time goes
 
@@ -80,7 +83,8 @@ In short:
 - ConfigId hashes:
   - `GIT_HASH` and the executable's `NT_GNU_BUILD_ID` (changes on any rebuild);
   - every `HostFeatures` field, including `SupportsISA30` and the cache line
-    sizes (a size assert catches a new field);
+    sizes (a size assert catches a new field); the host MIDRs as a set of
+    distinct values, so the CPU affinity does not split the cache;
   - the host page size;
   - every codegen-affecting option and environment switch, including
     `BlockLinking`.
@@ -101,13 +105,24 @@ is first reached all fail check 2 and are compiled normally. Code patched
 after install is caught by normal SMC tracking: the pages are registered
 exactly like a compile's.
 
-**Format.** A file's cache is a set of self-contained segments: `<name>`,
-`<name>.1` … `<name>.7`. Each segment has a header (build hash, config id, file
-id, writer's boot id), a guest-offset-sorted block index, relocations (offsets
-relative to the block) and code. Blocks are stored exactly as the JIT laid them
+**Format (version 5).** A file's cache is a set of self-contained segments:
+`<name>`, `<name>.1` … `<name>.7`. Each segment has a header (build hash,
+emulator build id, config id, file id, writer's boot id), a guest-offset-sorted
+block index, relocations (offsets relative to the block) and code. Blocks are stored exactly as the JIT laid them
 out, but unlinked (`RELOC_LINK_RECORD` undoes links, and the record's saved
 words are recomputed after relocation), with host symbols zeroed and guest RIPs
 relative to the file's load base.
+
+**Guest-address loads.** With the cache alone on, a guest RIP (exit target,
+call return address) is the ordinary variable-width `LoadConstant`, and
+`RELOC_GUEST_RIP_MOVE` records how many instructions it took. The segment
+stores the site as nops. On install the loader emits `LoadConstant` for the
+rebased value into that width, padded with nops, and rejects the block if it
+needs more. Load bases are page-aligned, so the low bits that decide the width
+rarely change (`reloc-failed` stays 0 on `cc1`). The last-constant delta form
+applies between two guest RIPs of the same block, whose difference the load
+base does not change, but never between a guest RIP and a plain constant.
+`SMCSemanticPatch` still uses the fixed 5-instruction window.
 
 **Loading is lazy, per block.** `CompileBlock` asks `CodeCache::TryLoadBlock`
 before compiling. Nothing is read at `mmap` time, so a process pays only for
@@ -123,6 +138,28 @@ mapped segment stays valid if a compaction unlinks it. There is no `fsync`.
 Entry hashes are checked when the reading boot differs from the writer's
 (`/proc/sys/kernel/random/boot_id`), which is when a crash could have torn the
 file. `POWERARM_CODECACHEVERIFY=1` forces the check.
+
+**Size cap and eviction.** After a process publishes a segment, it sweeps the
+cache directory. Across all processes this happens at most once a minute:
+the mtime of `.sweep` records the last sweep, and a process claims the next
+one under `.sweep.lock` with `LOCK_NB`. A namespace is all files of one
+`<name>-<FileId>-<ConfigId>`. Its last use is the newest mtime of its files.
+A process opening a namespace's first segment refreshes that mtime when it is
+older than 10 minutes. The sweep:
+
+1. removes namespaces unused for an hour whose segment header names another
+   emulator build (GIT_HASH plus executable build id) or format, and temp
+   files older than an hour;
+2. if the remaining namespaces exceed `CodeCacheMaxSize`, removes whole
+   namespaces in least-recently-used order until they fit in 90% of it.
+
+A namespace is removed under an exclusive `LOCK_NB` flock of its `.lock`. A
+busy namespace is skipped, so the sweep never runs during an append or a
+compaction. Segments go highest index first, then the lock file. Running
+processes keep valid data in their mapped segments. A writer that races the
+lock file's removal can at worst lose its own segment to a concurrent
+compaction. That costs recompiles, never wrong code, because every block is
+checked on install.
 
 **Processes.** A fork child forgets the parent's unsaved compiles. SMC modes
 whose per-block metadata is not stored disable loading: semantic patch, lazy
@@ -220,33 +257,21 @@ counters, and a measured quality delta on `cc1 -O2 lvm.c`.
 
 ## Default-on
 
-Not yet, for these reasons:
+On since OPT2-CACHEDEFAULT (`CodeCacheScope=rootfs`). The earlier blockers:
 
-1. **Unbounded disk use.** There is no size cap and no eviction. Every rebuild
-   of POWERarm (new build id) starts a new namespace, and the old one stays.
-   One M2-style build leaves about 150 MB per rebuilt emulator. `CodeCacheScope=all`
-   also keeps caches for every rebuilt guest binary (a new inode each time).
-2. **Cache-mode codegen costs steady-state speed.** Relocatable guest-address
-   loads are fixed 5-instruction windows, and the last-constant delta form is
-   off. `cc1 -O2 lvm.c` runs 12.35 s with the cache enabled against 11.90 s
-   without (+3.8%), whether or not anything is loaded.
-3. **First runs are slower.** A cold `cc1 -O2 lvm.c` took 14.9 s against
-   12.1 s before the save-path fixes. Cold builds end up faster overall only
-   because later processes reuse the earlier ones' blocks (see Timings).
-
-Items 1 and 2 are bounded work (a size-capped LRU sweep at compaction time;
-see the next target). Nothing found in this work argues against default-on
-once they are done: all correctness gates pass with the cache on, and the
-stress test covers concurrency, replacement, ISA switching, corruption and SMC.
+1. **Unbounded disk use:** fixed by the size cap, LRU eviction and the sweep of
+   other builds' namespaces (see Design).
+2. **Cache-mode codegen cost steady-state speed:** fixed by variable-width
+   relocatable loads. On the slice workload (10 Lua objects at `-O2` plus
+   `ar`/`ld`, CPU 100), with the cache off at 45.02 s, a cold run went from
+   31.18 s to 30.28 s and a warm run from 28.28 s to 27.22 s.
+3. **First runs are slower:** still true for one long process that reuses
+   nothing (a cold `cc1 -O2 lvm.c`). Builds come out ahead because later
+   processes of the same binary load what earlier ones wrote.
 
 ## Next targets
 
-1. **Relocatable variable-width guest-address loads.** Record each load's
-   emitted width and re-emit it at install, padded with nops, rejecting blocks
-   whose new value does not fit. Allow the last-constant delta form between
-   two guest addresses of the same block, which is invariant under the load
-   base. This removes item 2 of Default-on.
-2. **Install cost.** A warm block costs about 1.2 µs to install, register and
+1. **Install cost.** A warm block costs about 1.2 µs to install, register and
    link on first use: 7.7 s of an 86 s warm Lua build. The rwlock, memcpy and
    registration costs dominate now that hashing is gated.
-3. **Cache size cap and stale-namespace sweep.**
+
