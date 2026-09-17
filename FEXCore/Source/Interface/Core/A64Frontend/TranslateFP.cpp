@@ -45,7 +45,7 @@ namespace {
     if (IsDouble) {
       return (Sign << 63) | ((B6 ^ 1) << 62) | ((B6 ? 0xFFULL : 0) << 54) | ((Imm8 & 0x3F) << 48);
     }
-    return (Sign << 31) | ((B6 ^ 1) << 30) | ((B6 ? 0x7ULL : 0) << 27) | ((Imm8 & 0x3F) << 21);
+    return (Sign << 31) | ((B6 ^ 1) << 30) | ((B6 ? 0x1FULL : 0) << 25) | ((Imm8 & 0x3F) << 19);
   }
 
   uint64_t QuietBit(OpSize ElementSize) {
@@ -246,24 +246,64 @@ bool IRBuilder::FMINNM_float(uint32_t Word) { return FPTwoRegister(Word, FPBinar
 bool IRBuilder::FMAXNM_float(uint32_t Word) { return FPTwoRegister(Word, FPBinaryOp::MaxNum); }
 
 bool IRBuilder::FPThreeRegister(uint32_t Word) {
-  // FMADD a+n*m, FMSUB a-n*m, FNMADD -(a+n*m), FNMSUB n*m-a; all fused.
-  // POWERARM-M1-TODO(fpu): NaN operand precedence of the fused forms (A64 checks the addend first) is not fixed up.
+  // A64 defines the group as one fused FPMulAdd with negated operands:
+  // FMADD a+n*m, FMSUB a+(-n)*m, FNMADD (-a)+(-n)*m, FNMSUB (-a)+n*m. The
+  // host's negating forms negate after rounding, which differs under the
+  // directed rounding modes and in the sign of a NaN result, so the
+  // negations go on the operands and the host op is always the plain one.
+  //
+  // NaNs: A64 picks the first signalling NaN of (addend, n, m), else the
+  // first quiet NaN, and a quiet NaN addend with an Inf*0 product gives the
+  // default NaN. The host op's precedence differs, so NaN lanes are
+  // overridden.
   OpSize Size {};
   if (!FPTypeSize(Bits(Word, 23, 22), &Size)) {
     return false;
   }
   const auto RS = OpSize::i128Bit;
-  const bool Negate = Bit(Word, 21);
-  const bool Subtract = Bit(Word, 15);
+  const bool NegateAddend = Bit(Word, 21);
+  const bool NegateOperand = Bit(Word, 21) != Bit(Word, 15);
   Ref N = LoadV(Bits(Word, 9, 5));
   Ref M = LoadV(Bits(Word, 20, 16));
   Ref A = LoadV(Bits(Word, 14, 10));
-  Ref Result {};
-  if (!Negate) {
-    Result = Subtract ? _VFNMLA(RS, Size, N, M, A).Node : _VFMLA(RS, Size, N, M, A).Node;
-  } else {
-    Result = Subtract ? _VFMLS(RS, Size, N, M, A).Node : _VFNMLS(RS, Size, N, M, A).Node;
+  if (NegateOperand) {
+    N = _VFNeg(RS, Size, N);
   }
+  if (NegateAddend) {
+    A = _VFNeg(RS, Size, A);
+  }
+  Ref Fused = _VFMLA(RS, Size, N, M, A);
+
+  const bool Is64 = Size == OpSize::i64Bit;
+  Ref Quiet = FPConstant(QuietBit(Size), Size);
+  auto IsNaN = [&](Ref V) -> Ref {
+    return _VFCMPUNO(RS, Size, V, V);
+  };
+  auto QuietBitSet = [&](Ref V) -> Ref {
+    return _VNot(RS, Size, _VCMPEQZ(RS, Size, _VAnd(RS, RS, V, Quiet)));
+  };
+  Ref NaNA = IsNaN(A), NaNN = IsNaN(N), NaNM = IsNaN(M);
+  Ref QBitA = QuietBitSet(A), QBitN = QuietBitSet(N), QBitM = QuietBitSet(M);
+  Ref NaNResult = M;
+  NaNResult = _VBSL(RS, _VAnd(RS, RS, NaNN, QBitN), N, NaNResult);
+  NaNResult = _VBSL(RS, _VAnd(RS, RS, NaNA, QBitA), A, NaNResult);
+  NaNResult = _VBSL(RS, _VAndn(RS, RS, NaNM, QBitM), M, NaNResult);
+  NaNResult = _VBSL(RS, _VAndn(RS, RS, NaNN, QBitN), N, NaNResult);
+  NaNResult = _VBSL(RS, _VAndn(RS, RS, NaNA, QBitA), A, NaNResult);
+  NaNResult = _VOr(RS, RS, NaNResult, Quiet);
+  Ref AnyNaN = _VOr(RS, RS, NaNA, _VOr(RS, RS, NaNN, NaNM));
+  Ref Result = _VBSL(RS, AnyNaN, NaNResult, Fused);
+
+  Ref Zero = _VectorImm(RS, OpSize::i8Bit, 0);
+  Ref Inf = FPConstant(Is64 ? 0x7FF0000000000000ULL : 0x7F800000ULL, Size);
+  Ref InfN = _VFCMPEQ(RS, Size, _VFAbs(RS, Size, N), Inf);
+  Ref InfM = _VFCMPEQ(RS, Size, _VFAbs(RS, Size, M), Inf);
+  Ref ZeroN = _VFCMPEQ(RS, Size, N, Zero);
+  Ref ZeroM = _VFCMPEQ(RS, Size, M, Zero);
+  Ref InfTimesZero = _VOr(RS, RS, _VAnd(RS, RS, InfN, ZeroM), _VAnd(RS, RS, ZeroN, InfM));
+  Ref DefaultCase = _VAnd(RS, RS, _VAnd(RS, RS, NaNA, QBitA), InfTimesZero);
+  Ref DefaultNaN = FPConstant(Is64 ? 0x7FF8000000000000ULL : 0x7FC00000ULL, Size);
+  Result = _VBSL(RS, DefaultCase, DefaultNaN, Result);
   StoreVSized(Bits(Word, 4, 0), Size, Result);
   return true;
 }

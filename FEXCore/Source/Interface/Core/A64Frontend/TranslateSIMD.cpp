@@ -71,7 +71,7 @@ namespace {
         const uint64_t Sign = (Imm8 >> 7) & 1;
         const uint64_t B6 = (Imm8 >> 6) & 1;
         if (!Op) {
-          const uint64_t Bits32 = (Sign << 31) | ((B6 ^ 1) << 30) | ((B6 ? 0x7ULL : 0) << 27) | ((Imm8 & 0x3F) << 21);
+          const uint64_t Bits32 = (Sign << 31) | ((B6 ^ 1) << 30) | ((B6 ? 0x1FULL : 0) << 25) | ((Imm8 & 0x3F) << 19);
           return Replicate32(Bits32);
         }
         return (Sign << 63) | ((B6 ^ 1) << 62) | ((B6 ? 0xFFULL : 0) << 54) | ((Imm8 & 0x3F) << 48);
@@ -234,7 +234,8 @@ bool IRBuilder::FMOV_vec_imm(uint32_t Word) {
 bool IRBuilder::SIMDThreeSame(uint32_t Word, ThreeSameOp Op, bool Scalar) {
   const bool Q = Scalar || Bit(Word, 30);
   const uint32_t Size = Bits(Word, 23, 22);
-  if ((Scalar && Size != 3) || (!Q && Size == 3)) {
+  const bool NoLongElements = Op == ThreeSameOp::UMax || Op == ThreeSameOp::UMin || Op == ThreeSameOp::SMax || Op == ThreeSameOp::SMin;
+  if ((Scalar && Size != 3) || (!Q && Size == 3) || (NoLongElements && Size == 3)) {
     return false;
   }
   const auto ES = ElementSizeFor(Size);
@@ -259,7 +260,7 @@ bool IRBuilder::SIMDThreeSame(uint32_t Word, ThreeSameOp Op, bool Scalar) {
   case ThreeSameOp::SMax: Result = _VSMax(RS, ES, A, B); break;
   case ThreeSameOp::SMin: Result = _VSMin(RS, ES, A, B); break;
   }
-  StoreVQ(Rd, Q, Result);
+  StoreVQ(Rd, Q && !Scalar, Result);
   return true;
 }
 
@@ -353,7 +354,7 @@ bool IRBuilder::UMINP(uint32_t Word) { return SIMDPairwise(Word, PairwiseOp::UMi
 bool IRBuilder::ADDV(uint32_t Word) {
   const bool Q = Bit(Word, 30);
   const uint32_t Size = Bits(Word, 23, 22);
-  if (Size == 3 && !Q) {
+  if (Size == 3 || (Size == 2 && !Q)) {
     return false;
   }
   const auto ES = ElementSizeFor(Size);
@@ -366,7 +367,7 @@ bool IRBuilder::ADDV(uint32_t Word) {
   if (Size == 2) {
     // VAddV's 32-bit lowering saturates; add the rotated vector lane-wise
     // instead. Element 0 of A + rot(A, 2) is a0+a2 and element 1 is a1+a3.
-    Ref Sum = Q ? _VAdd(RS, ES, V, _VExtr(RS, OpSize::i8Bit, V, V, 8)).Node : V;
+    Ref Sum = _VAdd(RS, ES, V, _VExtr(RS, OpSize::i8Bit, V, V, 8));
     Result = _VAdd(RS, ES, Sum, _VExtr(RS, OpSize::i8Bit, Sum, Sum, 4));
   } else {
     Result = _VAddV(RS, ES, V);
@@ -416,7 +417,7 @@ bool IRBuilder::SIMDCompareZero(uint32_t Word, CompareZeroOp Op, bool Scalar) {
   case CompareZeroOp::Ge: Result = _VNot(RS, ES, _VCMPLTZ(RS, ES, V)); break;
   case CompareZeroOp::Le: Result = _VNot(RS, ES, _VCMPGTZ(RS, ES, V)); break;
   }
-  StoreVQ(Bits(Word, 4, 0), Q, Result);
+  StoreVQ(Bits(Word, 4, 0), Q && !Scalar, Result);
   return true;
 }
 
@@ -584,7 +585,7 @@ bool IRBuilder::SIMDShiftImm(uint32_t Word, ShiftImmOp Op, bool Scalar) {
       const uint32_t Shift = 2 * ElementBits - ImmhImmb;
       Result = Op == ShiftImmOp::SShr ? _VSShrI(RS, ES, V, Shift).Node : _VUShrI(RS, ES, V, Shift).Node;
     }
-    StoreVQ(Rd, Q, Result);
+    StoreVQ(Rd, Q && !Scalar, Result);
     return true;
   }
   case ShiftImmOp::Shrn: {
