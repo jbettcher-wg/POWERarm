@@ -227,10 +227,10 @@ bool SetupClient(std::string_view InterpreterPath) {
     // Only overwrite the configured rootfs if the server returned a non-empty path. An empty response
     // can come from a fresh per-uid FEXServer (e.g. one spawned as `_apt`) that has no MountFolder yet,
     // and clobbering CONFIG_ROOTFS with "" makes every subsequent guest ELF fail to load.
+    // An empty path is also the normal answer when no rootfs is configured (static
+    // binaries), so it is not logged: emulator messages here land in the guest's stderr.
     if (!RootFSPath.empty()) {
       FEXCore::Config::Set(FEXCore::Config::CONFIG_ROOTFS, RootFSPath);
-    } else {
-      LogMan::Msg::EFmt("FEXServer returned empty rootfs path; keeping configured value");
     }
   }
 
