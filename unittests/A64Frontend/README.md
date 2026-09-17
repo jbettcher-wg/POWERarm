@@ -40,6 +40,9 @@ or `POWERARM_DISABLEDFCE=1`.
 | `sigill_udf`, `sigill_msr`, `sigill_idreg`, `sigtrap_brk` | differential exit status | UDF, MSR to a read-only register and an unemulated ID register raise SIGILL (132); BRK raises SIGTRAP (133) |
 | `sysreg` | self-checking | MRS/MSR against the presented CPU profile (`SystemRegisters.h`); prints PASS/FAIL per register |
 | `hello` | differential | static glibc `printf` hello world |
+| `loader_bss` | differential, self-checking | ELF loader: a host-aligned RW segment mapped straight from the file, followed by non-zero file bytes; everything past `p_filesz` reads as zero and is writable |
+| `loader_bss_nofile` | differential, self-checking | ELF loader: an RW segment with `p_filesz == 0` and a 4K-aligned `p_vaddr` in a host page of its own |
+| `loader_bss4k` | stated golden, self-checking | ELF loader: a 4K-aligned binary (`max-page-size=4096`) whose `p_filesz == 0` RW segment shares a host page with `.text`; 16K and 64K arm64 kernels cannot run it |
 
 Generated inputs are an edge-case corpus plus seeded random values; the seed
 is fixed in `gen.py`, so a rerun generates the same programs. Register
@@ -63,10 +66,10 @@ Two, and `run.sh` fails if either does not fire:
 - `run.sh` corrupts one character of a copy of `addsub.golden` and requires
   the comparison to report a mismatch.
 
-## Known limitation in the tree
+## Per-test build flags and stated goldens
 
-`common.S` puts one quad in `.data`. Without it the RW segment has
-`p_filesz == 0` and, when its `p_vaddr` is 4K-aligned, the ELF loader on a 64K
-host maps `.bss` starting at the next host page and leaves the first one
-unmapped (`Source/Tools/FEXInterpreter/ELFCodeLoader.h`, the `AnonStart`
-computation). Guest writes to the start of `.bss` then fault.
+A test source may carry a `// LDFLAGS: ...` line, which `golden.sh` adds to
+the link. A test that the Pi's 16K kernel cannot run states its golden
+instead: its `// EXPECT: ...` lines are the expected stdout and its
+`// EXPECT-RC: n` line the exit status, and `golden.sh` writes those rather
+than running it.

@@ -14,15 +14,23 @@ python3 "$here/gen.py" "$out"
 cp "$here"/*.S "$out"/
 
 cd "$out"
+# A test may carry extra link flags on a `// LDFLAGS:` line.
 for src in *.S; do
   [ "$src" = common.S ] && continue
-  gcc -nostdlib -static -o "${src%.S}" "$src"
+  gcc -nostdlib -static $(sed -n 's|^// LDFLAGS: ||p' "$src") -o "${src%.S}" "$src"
 done
 gcc -static -O2 -o hello "$here/hello.c"
 
 for src in *.S; do
   [ "$src" = common.S ] && continue
   t=${src%.S}
+  # A test that cannot run on this kernel states its golden instead: its
+  # `// EXPECT:` lines are the stdout and `// EXPECT-RC:` the exit status.
+  if grep -q '^// EXPECT-RC: ' "$src"; then
+    sed -n 's|^// EXPECT: ||p' "$src" > "$t.golden"
+    sed -n 's|^// EXPECT-RC: ||p' "$src" > "$t.rc"
+    continue
+  fi
   set +e
   "./$t" > "$t.golden" 2>/dev/null
   echo $? > "$t.rc"
