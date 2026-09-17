@@ -78,7 +78,7 @@
         mrs     x0, id_aa64dfr0_el1
         CHECK   id_aa64dfr0_el1, 0x6
         mrs     x0, id_aa64isar0_el1
-        CHECK   id_aa64isar0_el1, 0
+        CHECK   id_aa64isar0_el1, 0x11120
         mrs     x0, id_aa64isar1_el1
         CHECK   id_aa64isar1_el1, 0
         mrs     x0, id_aa64mmfr0_el1

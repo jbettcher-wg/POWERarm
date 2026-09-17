@@ -142,6 +142,10 @@ enum PPC64VConstIndex : uint32_t {
   PPC64_VCONST_MULH_HI_I16,
   // Splat f64(1.0) — numerator for VFRecp/VFRSqrt i64 xvdivdp paths.
   PPC64_VCONST_F64_ONE,
+  // CRC-32 (polynomial 0x04C11DB7, A64 CRC32B/H/W/X) Barrett constants, the
+  // same derivation as CRC32C_MU/CRC32C_P with P = 0x104C11DB7.
+  PPC64_VCONST_CRC32_MU,
+  PPC64_VCONST_CRC32_P,
   PPC64_VCONST_MAX,
 };
 

@@ -85,6 +85,15 @@ bool IRBuilder::PRFM_imm(uint32_t) {
 // Immediate offsets
 // ---------------------------------------------------------------------------
 
+bool IRBuilder::STLURx_LDAPURx(uint32_t Word) {
+  // LRCPC unscaled loads and stores: the STURx/LDURx fields with bit 24 set,
+  // except that size 11 with opc 1x is unallocated rather than a prefetch.
+  if (Bits(Word, 31, 30) == 3 && Bit(Word, 23)) {
+    return false;
+  }
+  return LoadStoreImm9(Word & ~(1U << 24));
+}
+
 bool IRBuilder::LoadStoreImm9(uint32_t Word) {
   // STURx/LDURx (bits 11:10 = 00), post-index (01), unprivileged (10), pre-index (11).
   const uint32_t Size = Bits(Word, 31, 30);
@@ -186,6 +195,11 @@ bool IRBuilder::LoadStoreRegOffset(uint32_t Word) {
 // ---------------------------------------------------------------------------
 // Pairs
 // ---------------------------------------------------------------------------
+
+bool IRBuilder::STNP_LDNP_gen(uint32_t Word) {
+  // Index bits 00: the signed-offset pair without writeback (see STNP_LDNP_fpsimd).
+  return STP_LDP_gen(Word | (1U << 24));
+}
 
 bool IRBuilder::STP_LDP_gen(uint32_t Word) {
   const uint32_t Opc = Bits(Word, 31, 30);

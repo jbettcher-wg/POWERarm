@@ -1039,6 +1039,508 @@ def gen_simd_projects(p):
         p.vcase([f"mov {e}{d}, v{n}.{e}[{p.rng.randrange(count)}]"], v)
 
 
+# ---------------------------------------------------------------------------
+# Advanced SIMD floating point (vector and scalar SIMD forms)
+# ---------------------------------------------------------------------------
+
+def fvec_pair(p, is64):
+    """Two V registers of float lanes whose lanes line up NaN pairs, edge values and random values."""
+    lanes = 2 if is64 else 4
+    bits = 64 if is64 else 32
+    a, b = 0, 0
+    for i in range(lanes):
+        r = p.rng.random()
+        if r < 0.25:
+            x, y = p.rng.choice(NAN_PAIRS64 if is64 else NAN_PAIRS32)
+        else:
+            x, y = (p.f64(), p.f64()) if is64 else (p.f32(), p.f32())
+            if r < 0.35:
+                y = x
+            elif r < 0.45:
+                y = x ^ (1 << (bits - 1))
+        a |= x << (bits * i)
+        b |= y << (bits * i)
+    return (a & M64, a >> 64), (b & M64, b >> 64)
+
+
+def ftype(p, allow_scalar=False):
+    """(register syntax, element syntax, is64, scalar) for a float vector or scalar operand."""
+    choices = [("2s", "s", False, False), ("4s", "s", False, False), ("2d", "d", True, False)]
+    if allow_scalar:
+        choices += [("s", "s", False, True), ("d", "d", True, True)]
+    return p.rng.choice(choices)
+
+
+def gen_simd_float(p):
+    to_int = ["fcvtns", "fcvtnu", "fcvtps", "fcvtpu", "fcvtms", "fcvtmu", "fcvtzs", "fcvtzu", "fcvtas", "fcvtau"]
+    for _ in range(1400):
+        d, n, m = p.vreg(), p.vreg(), p.vreg()
+        t, e, is64, scalar = ftype(p, True)
+        vn, vm = fvec_pair(p, is64)
+        v = {d: p.vec(), n: vn, m: vm}
+        fpcr = p.rng.choice(RMODES)
+        rd = f"{e}{d}" if scalar else f"v{d}.{t}"
+        rn = f"{e}{n}" if scalar else f"v{n}.{t}"
+        rm = f"{e}{m}" if scalar else f"v{m}.{t}"
+        kind = p.rng.randrange(12)
+        if kind <= 1 and not scalar:
+            op = p.rng.choice(["fadd", "fsub", "fmul", "fdiv", "fmin", "fmax", "fminnm", "fmaxnm"])
+            p.vcase([f"{op} {rd}, {rn}, {rm}"], v, fpcr=fpcr)
+        elif kind == 2:
+            op = p.rng.choice(["fmul", "fmla", "fmls"])
+            lanes = 2 if is64 else 4
+            idx = p.rng.randrange(lanes)
+            p.vcase([f"{op} {rd}, {rn}, v{m}.{e}[{idx}]"], v, fpcr=fpcr)
+        elif kind == 3 and not scalar:
+            op = p.rng.choice(["fmla", "fmls"])
+            vd, _ = fvec_pair(p, is64)
+            v[d] = vd
+            p.vcase([f"{op} {rd}, {rn}, {rm}"], v, fpcr=fpcr)
+        elif kind == 4:
+            op = p.rng.choice(["faddp", "fmaxp", "fminp", "fmaxnmp", "fminnmp"])
+            if scalar:
+                p.vcase([f"{op} {e}{d}, v{n}.2{e}"], v, fpcr=fpcr)
+            else:
+                p.vcase([f"{op} {rd}, {rn}, {rm}"], v, fpcr=fpcr)
+        elif kind == 5:
+            op = p.rng.choice(["fcmeq", "fcmge", "fcmgt", "facge", "facgt"])
+            p.vcase([f"{op} {rd}, {rn}, {rm}"], v)
+        elif kind == 6:
+            op = p.rng.choice(["fcmeq", "fcmge", "fcmgt", "fcmle", "fcmlt"])
+            p.vcase([f"{op} {rd}, {rn}, #0.0"], v)
+        elif kind == 7 and not scalar:
+            op = p.rng.choice(["frintn", "frintp", "frintm", "frintz", "frinta", "frintx", "frinti", "fsqrt"])
+            p.vcase([f"{op} {rd}, {rn}"], v, fpcr=fpcr)
+        elif kind == 8:
+            op = p.rng.choice(to_int)
+            p.vcase([f"{op} {rd}, {rn}"], v, fpcr=fpcr)
+        elif kind == 9:
+            op = p.rng.choice(["scvtf", "ucvtf", "fcvtzs", "fcvtzu"])
+            bits = 64 if is64 else 32
+            fbits = p.rng.choice([1, 2, bits // 2, bits - 1, bits, p.rng.randrange(1, bits + 1)])
+            if op in ("scvtf", "ucvtf"):
+                v[n] = p.vec()
+            p.vcase([f"{op} {rd}, {rn}, #{fbits}"], v, fpcr=fpcr)
+        elif kind == 10:
+            op = p.rng.choice(["fneg", "fabs"])
+            ht = p.rng.choice(["4h", "8h"])
+            p.vcase([f"{op} v{d}.{ht}, v{n}.{ht}"], v)
+        else:
+            op = p.rng.choice(["fadd", "fmul", "fdiv", "fsub"])
+            t2, e2, is642, _ = ftype(p)
+            vn2, vm2 = fvec_pair(p, is642)
+            p.vcase([f"{op} v{d}.{t2}, v{n}.{t2}, v{m}.{t2}"], {d: p.vec(), n: vn2, m: vm2}, fpcr=fpcr)
+    # Every edge value through the conversions and rounding in every mode.
+    for is64, edges in ((True, F64_EDGE), (False, F32_EDGE)):
+        e, t = ("d", "2d") if is64 else ("s", "4s")
+        bits = 64 if is64 else 32
+        for i in range(0, len(edges), 2 if is64 else 4):
+            chunk = edges[i:i + (2 if is64 else 4)]
+            val = 0
+            for j, c in enumerate(chunk):
+                val |= c << (bits * j)
+            reg = (val & M64, val >> 64)
+            for op in ["fcvtns", "fcvtzu", "fcvtas", "fcvtps", "fcvtms", "fcvtzs", "frintn", "frinta", "frintm"]:
+                p.vcase([f"{op} v5.{t}, v20.{t}"], {5: p.vec(), 20: reg}, fpcr=p.rng.choice(RMODES))
+
+
+# ---------------------------------------------------------------------------
+# Saturating, rounding, halving and by-element integer families
+# ---------------------------------------------------------------------------
+
+def lane_vec(p, bits):
+    """A 128-bit register whose lanes are drawn from the signed/unsigned boundaries."""
+    mask = (1 << bits) - 1
+    edges = [0, 1, 2, mask, mask - 1, 1 << (bits - 1), (1 << (bits - 1)) + 1, (1 << (bits - 1)) - 1,
+             (1 << (bits - 1)) - 2, mask >> 2, (mask >> 2) + 1]
+    full = 0
+    for i in range(128 // bits):
+        v = p.rng.choice(edges) if p.rng.random() < 0.6 else p.rng.getrandbits(bits)
+        full |= v << (bits * i)
+    return (full & M64, full >> 64)
+
+
+def gen_simd_sat(p):
+    scal = [("b", 8), ("h", 16), ("s", 32), ("d", 64)]
+    vt_of = {8: ("8b", "16b"), 16: ("4h", "8h"), 32: ("2s", "4s"), 64: (None, "2d")}
+    nar = {8: ("8b", "16b", "8h"), 16: ("4h", "8h", "4s"), 32: ("2s", "4s", "2d")}
+    clr = "msr fpsr, xzr"
+    for _ in range(2200):
+        d, n, m = p.vreg(), p.vreg(), p.vreg()
+        kind = p.rng.randrange(19)
+        if kind <= 1:
+            op = p.rng.choice(["sqadd", "sqsub", "uqadd", "uqsub"])
+            if p.rng.random() < 0.3:
+                r, bits = p.rng.choice(scal)
+                v = {d: p.vec(), n: lane_vec(p, bits), m: lane_vec(p, bits)}
+                p.vcase([clr, f"{op} {r}{d}, {r}{n}, {r}{m}"], v)
+            else:
+                vt, bits, q = vtypes(p)
+                v = {d: p.vec(), n: lane_vec(p, bits), m: lane_vec(p, bits)}
+                p.vcase([clr, f"{op} v{d}.{vt}, v{n}.{vt}, v{m}.{vt}"], v)
+        elif kind == 2:
+            op = p.rng.choice(["sqabs", "sqneg"])
+            if p.rng.random() < 0.3:
+                r, bits = p.rng.choice(scal)
+                p.vcase([clr, f"{op} {r}{d}, {r}{n}"], {d: p.vec(), n: lane_vec(p, bits)})
+            else:
+                vt, bits, q = vtypes(p)
+                p.vcase([clr, f"{op} v{d}.{vt}, v{n}.{vt}"], {d: p.vec(), n: lane_vec(p, bits)})
+        elif kind == 3:
+            op = p.rng.choice(["sqxtn", "uqxtn", "sqxtun"])
+            bits = p.rng.choice([8, 16, 32])
+            nt, nt2, wt = nar[bits]
+            v = {d: p.vec(), n: lane_vec(p, bits * 2)}
+            form = p.rng.randrange(3)
+            if form == 0:
+                p.vcase([clr, f"{op} v{d}.{nt}, v{n}.{wt}"], v)
+            elif form == 1:
+                p.vcase([clr, f"{op}2 v{d}.{nt2}, v{n}.{wt}"], v)
+            else:
+                rn = {8: "b", 16: "h", 32: "s"}[bits]
+                rw = {8: "h", 16: "s", 32: "d"}[bits]
+                p.vcase([clr, f"{op} {rn}{d}, {rw}{n}"], v)
+        elif kind <= 5:
+            op = p.rng.choice(["rshrn", "sqshrn", "sqrshrn", "uqshrn", "uqrshrn", "sqshrun", "sqrshrun"])
+            bits = p.rng.choice([8, 16, 32])
+            nt, nt2, wt = nar[bits]
+            sh = p.rng.choice([1, 2, bits - 1, bits, p.rng.randrange(1, bits + 1)])
+            v = {d: p.vec(), n: lane_vec(p, bits * 2)}
+            form = p.rng.randrange(3)
+            if form == 2 and op in ("sqshrn", "uqshrn", "sqshrun"):
+                rn = {8: "b", 16: "h", 32: "s"}[bits]
+                rw = {8: "h", 16: "s", 32: "d"}[bits]
+                p.vcase([clr, f"{op} {rn}{d}, {rw}{n}, #{sh}"], v)
+            elif form == 1:
+                p.vcase([clr, f"{op}2 v{d}.{nt2}, v{n}.{wt}, #{sh}"], v)
+            else:
+                p.vcase([clr, f"{op} v{d}.{nt}, v{n}.{wt}, #{sh}"], v)
+        elif kind == 6:
+            op = p.rng.choice(["srshr", "urshr", "srsra", "ursra"])
+            if p.rng.random() < 0.25:
+                sh = p.rng.choice([1, 2, 63, 64, p.rng.randrange(1, 65)])
+                p.vcase([f"{op} d{d}, d{n}, #{sh}"], {d: lane_vec(p, 64), n: lane_vec(p, 64)})
+            else:
+                vt, bits, q = vtypes(p)
+                sh = p.rng.choice([1, 2, bits - 1, bits, p.rng.randrange(1, bits + 1)])
+                p.vcase([f"{op} v{d}.{vt}, v{n}.{vt}, #{sh}"], {d: lane_vec(p, bits), n: lane_vec(p, bits)})
+        elif kind == 7:
+            op = p.rng.choice(["sqshl", "uqshl", "sqshlu"])
+            if p.rng.random() < 0.3:
+                r, bits = p.rng.choice(scal)
+                sh = p.rng.choice([0, 1, bits - 1, p.rng.randrange(bits)])
+                p.vcase([clr, f"{op} {r}{d}, {r}{n}, #{sh}"], {d: p.vec(), n: lane_vec(p, bits)})
+            else:
+                vt, bits, q = vtypes(p)
+                sh = p.rng.choice([0, 1, bits - 1, p.rng.randrange(bits)])
+                p.vcase([clr, f"{op} v{d}.{vt}, v{n}.{vt}, #{sh}"], {d: p.vec(), n: lane_vec(p, bits)})
+        elif kind == 8:
+            op = p.rng.choice(["uhadd", "shadd", "urhadd", "srhadd", "uhsub", "shsub"])
+            vt, bits, q = vtypes(p, False)
+            p.vcase([f"{op} v{d}.{vt}, v{n}.{vt}, v{m}.{vt}"], {d: p.vec(), n: lane_vec(p, bits), m: lane_vec(p, bits)})
+        elif kind == 9:
+            op = p.rng.choice(["uabd", "sabd", "uaba", "saba"])
+            vt, bits, q = vtypes(p, False)
+            p.vcase([f"{op} v{d}.{vt}, v{n}.{vt}, v{m}.{vt}"], {d: lane_vec(p, bits), n: lane_vec(p, bits), m: lane_vec(p, bits)})
+        elif kind == 10:
+            op = p.rng.choice(["uabdl", "sabdl", "uabal", "sabal"])
+            bits = p.rng.choice([8, 16, 32])
+            nt, nt2, wt = nar[bits]
+            v = {d: lane_vec(p, bits * 2), n: lane_vec(p, bits), m: lane_vec(p, bits)}
+            if p.rng.random() < 0.5:
+                p.vcase([f"{op} v{d}.{wt}, v{n}.{nt}, v{m}.{nt}"], v)
+            else:
+                p.vcase([f"{op}2 v{d}.{wt}, v{n}.{nt2}, v{m}.{nt2}"], v)
+        elif kind == 11:
+            op = p.rng.choice(["raddhn", "rsubhn"])
+            bits = p.rng.choice([8, 16, 32])
+            nt, nt2, wt = nar[bits]
+            v = {d: p.vec(), n: lane_vec(p, bits * 2), m: lane_vec(p, bits * 2)}
+            if p.rng.random() < 0.5:
+                p.vcase([f"{op} v{d}.{nt}, v{n}.{wt}, v{m}.{wt}"], v)
+            else:
+                p.vcase([f"{op}2 v{d}.{nt2}, v{n}.{wt}, v{m}.{wt}"], v)
+        elif kind <= 13:
+            op = p.rng.choice(["sqdmulh", "sqrdmulh"])
+            bits = p.rng.choice([16, 32])
+            e = "h" if bits == 16 else "s"
+            vt = p.rng.choice(vt_of[bits])
+            mreg = p.rng.choice([r for r in VREGS if r < 16]) if bits == 16 else p.vreg()
+            v = {d: p.vec(), n: lane_vec(p, bits), m: lane_vec(p, bits), mreg: lane_vec(p, bits)}
+            idx = p.rng.randrange(128 // bits)
+            form = p.rng.randrange(4)
+            if form == 0:
+                p.vcase([clr, f"{op} v{d}.{vt}, v{n}.{vt}, v{m}.{vt}"], v)
+            elif form == 1:
+                p.vcase([clr, f"{op} {e}{d}, {e}{n}, {e}{m}"], v)
+            elif form == 2:
+                p.vcase([clr, f"{op} v{d}.{vt}, v{n}.{vt}, v{mreg}.{e}[{idx}]"], v)
+            else:
+                p.vcase([clr, f"{op} {e}{d}, {e}{n}, v{mreg}.{e}[{idx}]"], v)
+        elif kind == 14:
+            op = p.rng.choice(["mla", "mls", "smull", "umull", "smlal", "umlal", "smlsl", "umlsl"])
+            bits = p.rng.choice([16, 32])
+            e = "h" if bits == 16 else "s"
+            mreg = p.rng.choice([r for r in VREGS if r < 16]) if bits == 16 else p.vreg()
+            idx = p.rng.randrange(128 // bits)
+            v = {d: lane_vec(p, bits), n: lane_vec(p, bits), mreg: lane_vec(p, bits)}
+            if op in ("mla", "mls"):
+                vt = p.rng.choice(vt_of[bits])
+                p.vcase([f"{op} v{d}.{vt}, v{n}.{vt}, v{mreg}.{e}[{idx}]"], v)
+            else:
+                nt, nt2, wt = {16: ("4h", "8h", "4s"), 32: ("2s", "4s", "2d")}[bits]
+                if p.rng.random() < 0.5:
+                    p.vcase([f"{op} v{d}.{wt}, v{n}.{nt}, v{mreg}.{e}[{idx}]"], v)
+                else:
+                    p.vcase([f"{op}2 v{d}.{wt}, v{n}.{nt2}, v{mreg}.{e}[{idx}]"], v)
+        elif kind == 15:
+            op = p.rng.choice(["uaddlv", "saddlv"])
+            r, vt, bits = p.rng.choice([("h", "8b", 8), ("h", "16b", 8), ("s", "4h", 16), ("s", "8h", 16), ("d", "4s", 32)])
+            p.vcase([f"{op} {r}{d}, v{n}.{vt}"], {d: p.vec(), n: lane_vec(p, bits)})
+        elif kind == 16:
+            op = p.rng.choice(["smaxv", "sminv"])
+            r, vt, bits = p.rng.choice([("b", "8b", 8), ("b", "16b", 8), ("h", "4h", 16), ("h", "8h", 16), ("s", "4s", 32)])
+            p.vcase([f"{op} {r}{d}, v{n}.{vt}"], {d: p.vec(), n: lane_vec(p, bits)})
+        elif kind == 17:
+            op = p.rng.choice(["clz", "cls"])
+            vt, bits, q = vtypes(p, False)
+            full = 0
+            for i in range(128 // bits):
+                full |= (p.rng.getrandbits(bits) >> p.rng.randrange(bits + 1)) << (bits * i)
+            vals = (full & M64, full >> 64) if p.rng.random() < 0.6 else lane_vec(p, bits)
+            p.vcase([f"{op} v{d}.{vt}, v{n}.{vt}"], {d: p.vec(), n: vals})
+        else:
+            q = p.rng.random() < 0.5
+            p.vcase([f"udot v{d}.{'4s' if q else '2s'}, v{n}.{'16b' if q else '8b'}, v{m}.{'16b' if q else '8b'}"],
+                    {d: p.vec(), n: lane_vec(p, 8), m: lane_vec(p, 8)})
+    # QC stays set across instructions until cleared.
+    p.vcase(["msr fpsr, xzr", "sqadd v1.16b, v2.16b, v3.16b", "add v4.16b, v2.16b, v3.16b"],
+            {1: p.vec(), 2: (0x7F7F7F7F7F7F7F7F, 0), 3: (0x0101010101010101, 0)})
+
+
+# ---------------------------------------------------------------------------
+# Cryptographic extension and CRC32
+# ---------------------------------------------------------------------------
+
+AES_SBOX = None
+
+
+def aes_key_expand(key):
+    """AES-128 round keys (11 x 16 bytes) for the FIPS-197 vector."""
+    global AES_SBOX
+    if AES_SBOX is None:
+        # Multiplicative inverse in GF(2^8) then the affine map.
+        def gmul(a, b):
+            r = 0
+            while b:
+                if b & 1:
+                    r ^= a
+                a = ((a << 1) ^ 0x11B) if a & 0x80 else a << 1
+                b >>= 1
+            return r
+        inv = [0] * 256
+        for a in range(1, 256):
+            for b in range(1, 256):
+                if gmul(a, b) == 1:
+                    inv[a] = b
+                    break
+        AES_SBOX = []
+        for a in range(256):
+            x = inv[a]
+            y = x
+            for _ in range(4):
+                x = ((x << 1) | (x >> 7)) & 0xFF
+                y ^= x
+            AES_SBOX.append(y ^ 0x63)
+    words = [list(key[i:i + 4]) for i in range(0, 16, 4)]
+    rcon = 1
+    for i in range(4, 44):
+        t = list(words[i - 1])
+        if i % 4 == 0:
+            t = t[1:] + t[:1]
+            t = [AES_SBOX[b] for b in t]
+            t[0] ^= rcon
+            rcon = ((rcon << 1) ^ 0x11B) if rcon & 0x80 else rcon << 1
+        words.append([words[i - 4][j] ^ t[j] for j in range(4)])
+    return [bytes(sum(words[r * 4:r * 4 + 4], [])) for r in range(11)]
+
+
+def bytes_reg(b):
+    v = int.from_bytes(b, "little")
+    return (v & M64, v >> 64)
+
+
+def words_reg(ws):
+    v = 0
+    for i, w in enumerate(ws):
+        v |= w << (32 * i)
+    return (v & M64, v >> 64)
+
+
+def gen_simd_crypto(p):
+    for _ in range(700):
+        d, n, m = p.vregs(3)
+        v = {d: p.vec(), n: p.vec(), m: p.vec()}
+        kind = p.rng.randrange(9)
+        if kind == 0:
+            op = p.rng.choice(["aese", "aesd"])
+            p.vcase([f"{op} v{d}.16b, v{n}.16b"], v)
+        elif kind == 1:
+            op = p.rng.choice(["aesmc", "aesimc"])
+            p.vcase([f"{op} v{d}.16b, v{n}.16b"], v)
+        elif kind == 2:
+            if p.rng.random() < 0.5:
+                v[n] = p.rng.choice([(M64, M64), (0x8000000000000001, 0x8000000000000001), p.vec()])
+                p.vcase([f"pmull v{d}.1q, v{n}.1d, v{m}.1d"], v)
+            else:
+                p.vcase([f"pmull2 v{d}.1q, v{n}.2d, v{m}.2d"], v)
+        elif kind == 3:
+            if p.rng.random() < 0.5:
+                p.vcase([f"pmull v{d}.8h, v{n}.8b, v{m}.8b"], v)
+            else:
+                p.vcase([f"pmull2 v{d}.8h, v{n}.16b, v{m}.16b"], v)
+        elif kind == 4:
+            op = p.rng.choice(["sha1c", "sha1m", "sha1p"])
+            p.vcase([f"{op} q{d}, s{n}, v{m}.4s"], v)
+        elif kind == 5:
+            op = p.rng.choice(["sha1h s{d}, s{n}", "sha1su0 v{d}.4s, v{n}.4s, v{m}.4s", "sha1su1 v{d}.4s, v{n}.4s"])
+            p.vcase([op.format(d=d, n=n, m=m)], v)
+        elif kind == 6:
+            op = p.rng.choice(["sha256h q{d}, q{n}, v{m}.4s", "sha256h2 q{d}, q{n}, v{m}.4s",
+                               "sha256su0 v{d}.4s, v{n}.4s", "sha256su1 v{d}.4s, v{n}.4s, v{m}.4s"])
+            p.vcase([op.format(d=d, n=n, m=m)], v)
+        else:
+            x, y, z = p.rng.sample(XREGS, 3)
+            op = p.rng.choice(["crc32b", "crc32h", "crc32w", "crc32x", "crc32cb", "crc32ch", "crc32cw", "crc32cx"])
+            src = "x" if op.endswith("x") else "w"
+            vals = {x: p.rng.choice([0, M64, 0xFFFFFFFF, p.rng.getrandbits(64)]), y: p.rng.getrandbits(64), z: p.rng.getrandbits(64)}
+            p.vcase([f"{op} w{z}, w{x}, {src}{y}"], v, vals)
+    # Aliased operands.
+    p.vcase(["aese v3.16b, v3.16b", "aesd v17.16b, v17.16b", "sha1su1 v20.4s, v20.4s", "sha256su1 v21.4s, v21.4s, v21.4s",
+             "pmull v22.1q, v22.1d, v22.1d", "crc32x w9, w9, x9"],
+            {3: p.vec(), 17: p.vec(), 20: p.vec(), 21: p.vec(), 22: p.vec()}, {9: p.rng.getrandbits(64)})
+
+    # FIPS-197 C.1: AES-128 encrypt 00112233.. under 000102..0f, then decrypt.
+    key = bytes(range(16))
+    rks = aes_key_expand(key)
+    pt = bytes.fromhex("00112233445566778899aabbccddeeff")
+    v = {16 + r: bytes_reg(rks[r]) for r in range(11)}
+    v[0] = bytes_reg(pt)
+    body = []
+    for r in range(9):
+        body += [f"aese v0.16b, v{16 + r}.16b", "aesmc v0.16b, v0.16b"]
+    body += ["aese v0.16b, v25.16b", "eor v0.16b, v0.16b, v26.16b", "mov v1.16b, v0.16b"]
+    # Decryption keys: InvMixColumns of rk9..rk1.
+    for r in range(1, 10):
+        body.append(f"aesimc v{16 + r}.16b, v{16 + r}.16b")
+    body += ["aesd v1.16b, v26.16b", "aesimc v1.16b, v1.16b"]
+    for r in range(9, 1, -1):
+        body += [f"aesd v1.16b, v{16 + r}.16b", "aesimc v1.16b, v1.16b"]
+    body += ["aesd v1.16b, v17.16b", "eor v1.16b, v1.16b, v16.16b"]
+    p.vcase(body, v)
+
+    k256 = [
+        0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1, 0x923f82a4, 0xab1c5ed5,
+        0xd807aa98, 0x12835b01, 0x243185be, 0x550c7dc3, 0x72be5d74, 0x80deb1fe, 0x9bdc06a7, 0xc19bf174,
+        0xe49b69c1, 0xefbe4786, 0x0fc19dc6, 0x240ca1cc, 0x2de92c6f, 0x4a7484aa, 0x5cb0a9dc, 0x76f988da,
+        0x983e5152, 0xa831c66d, 0xb00327c8, 0xbf597fc7, 0xc6e00bf3, 0xd5a79147, 0x06ca6351, 0x14292967,
+        0x27b70a85, 0x2e1b2138, 0x4d2c6dfc, 0x53380d13, 0x650a7354, 0x766a0abb, 0x81c2c92e, 0x92722c85,
+        0xa2bfe8a1, 0xa81a664b, 0xc24b8b70, 0xc76c51a3, 0xd192e819, 0xd6990624, 0xf40e3585, 0x106aa070,
+        0x19a4c116, 0x1e376c08, 0x2748774c, 0x34b0bcb5, 0x391c0cb3, 0x4ed8aa4a, 0x5b9cca4f, 0x682e6ff3,
+        0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208, 0x90befffa, 0xa4506ceb, 0xbef9a3f7, 0xc67178f2,
+    ]
+    block = b"abc" + b"\x80" + bytes(52) + (24).to_bytes(8, "big")
+
+    # SHA-256 compression of the padded "abc" block with the ARM intrinsics
+    # schedule (state words A..D in v0, E..H in v1, message words in v4-v7).
+    iv256 = [0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a, 0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19]
+    v = {0: words_reg(iv256[:4]), 1: words_reg(iv256[4:])}
+    for i in range(4):
+        v[4 + i] = bytes_reg(block[4 * i:4 * i + 4 * 4][:16]) if False else bytes_reg(block[16 * i:16 * i + 16])
+    body = ["mov v28.16b, v0.16b", "mov v29.16b, v1.16b"] + [f"rev32 v{4 + i}.16b, v{4 + i}.16b" for i in range(4)]
+    for g in range(16):
+        msg = 4 + g % 4
+        v[8 + g] = words_reg(k256[4 * g:4 * g + 4]) if 8 + g < 16 else None
+        body += [f"add v3.4s, v{msg}.4s, v27.4s".replace("v27", f"v{8 + g}") if 8 + g < 16 else f"adr x9, sha256k_{g}", ]
+        if 8 + g >= 16:
+            body += ["ld1 {v27.4s}, [x9]", f"add v3.4s, v{msg}.4s, v27.4s"]
+        body += ["mov v2.16b, v0.16b", "sha256h q0, q1, v3.4s", "sha256h2 q1, q2, v3.4s"]
+        body += [f"sha256su0 v{msg}.4s, v{4 + (g + 1) % 4}.4s",
+                 f"sha256su1 v{msg}.4s, v{4 + (g + 2) % 4}.4s, v{4 + (g + 3) % 4}.4s"]
+    body += ["add v0.4s, v0.4s, v28.4s", "add v1.4s, v1.4s, v29.4s", "b 3f"]
+    for g in range(8, 16):
+        body.append(f"sha256k_{g}: .word " + ", ".join(f"0x{k:08x}" for k in k256[4 * g:4 * g + 4]))
+    body.append("3:")
+    v = {r: val for r, val in v.items() if val is not None}
+    p.vcase(body, v)
+
+    # SHA-1 compression of the same block (ABCD in v0, E in w/s5 and s6).
+    iv1 = [0x67452301, 0xefcdab89, 0x98badcfe, 0x10325476, 0xc3d2e1f0]
+    k1 = [0x5a827999, 0x6ed9eba1, 0x8f1bbcdc, 0xca62c1d6]
+    v = {0: words_reg(iv1[:4]), 5: (iv1[4], 0)}
+    for i in range(4):
+        v[8 + i] = bytes_reg(block[16 * i:16 * i + 16])
+    for i in range(4):
+        v[12 + i] = words_reg([k1[i]] * 4)
+    body = ["mov v28.16b, v0.16b", "mov v29.16b, v5.16b"] + [f"rev32 v{8 + i}.16b, v{8 + i}.16b" for i in range(4)]
+    for g in range(20):
+        msg = 8 + g % 4
+        fn = ["sha1c", "sha1p", "sha1m", "sha1p"][g // 5]
+        body += [f"add v3.4s, v{msg}.4s, v{12 + g // 5}.4s", "sha1h s6, s0", f"{fn} q0, s5, v3.4s", "mov v5.16b, v6.16b",
+                 f"sha1su0 v{msg}.4s, v{8 + (g + 1) % 4}.4s, v{8 + (g + 2) % 4}.4s",
+                 f"sha1su1 v{msg}.4s, v{8 + (g + 3) % 4}.4s"]
+    body += ["add v0.4s, v0.4s, v28.4s", "add v5.4s, v5.4s, v29.4s"]
+    p.vcase(body, v)
+
+    # CRC-32 and CRC-32C check values of "123456789" (0xCBF43926, 0xE3069283).
+    for op in ("crc32b", "crc32cb"):
+        body = ["adr x9, 4f", "mov w0, #-1", "mov x10, #9"]
+        body += ["5:", "ldrb w1, [x9], #1", f"{op} w0, w0, w1", "subs x10, x10, #1", "b.ne 5b", "mvn w0, w0", "b 6f",
+                 '4: .ascii "123456789"', ".balign 4", "6:"]
+        p.vcase(body, {})
+    # Wider words over the same bytes: "12345678" as one x, two w, four h.
+    for op, width in (("crc32", "x"), ("crc32c", "x")):
+        p.vcase(["adr x9, 7f", "mov w0, #-1", "ldr x1, [x9]", f"{op}x w0, w0, x1",
+                 "mov w2, #-1", "ldr w3, [x9]", f"{op}w w2, w2, w3", "ldr w3, [x9, #4]", f"{op}w w2, w2, w3",
+                 "mov w4, #-1", "ldrh w5, [x9]", f"{op}h w4, w4, w5", "ldrh w5, [x9, #2]", f"{op}h w4, w4, w5",
+                 "b 8f", '7: .ascii "12345678"', ".balign 4", "8:"], {})
+
+
+def gen_loadstore_nopair(p):
+    """STNP/LDNP (pair index bits 00): general and SIMD&FP registers, as .inst words."""
+    p.emit("        adrp    x19, buf")
+    p.emit("        add     x19, x19, :lo12:buf")
+    p.emit("        add     x19, x19, #128")
+    for _ in range(240):
+        simd = p.rng.random() < 0.6
+        load = p.rng.random() < 0.5
+        opc = p.rng.choice([0, 1, 2]) if simd else p.rng.choice([0, 2])
+        size = (4 << opc) if simd else (4 if opc == 0 else 8)
+        imm7 = p.rng.randrange(-128 // size, (128 // size) - 1)
+        base = p.rng.choice([19, 25])
+        t, t2 = p.rng.sample([0, 1, 5, 9, 17, 22, 28, 30], 2)
+        word = (opc << 30) | (0b101 << 27) | ((1 if simd else 0) << 26) | ((1 if load else 0) << 22) \
+            | ((imm7 & 0x7F) << 15) | (t2 << 10) | (base << 5) | t
+        pre = [f"mov x{base}, x19"] if base != 19 else []
+        v = {r: p.vec() for r in (t, t2)} if simd else {}
+        x = {} if simd else {t: p.rng.getrandbits(64), t2: p.rng.getrandbits(64)}
+        p.vcase(pre + [f".inst 0x{word:08x}"], v, x, dumpbuf=not load)
+
+
+def gen_simd_shll(p):
+    """SHLL/SHLL2 (shift left long by the element width) at every width."""
+    nar = {8: ("8b", "16b", "8h"), 16: ("4h", "8h", "4s"), 32: ("2s", "4s", "2d")}
+    for _ in range(120):
+        d, n = p.vreg(), p.vreg()
+        bits = p.rng.choice([8, 16, 32])
+        nt, nt2, wt = nar[bits]
+        v = {d: p.vec(), n: lane_vec(p, bits)}
+        if p.rng.random() < 0.5:
+            p.vcase([f"shll v{d}.{wt}, v{n}.{nt}, #{bits}"], v)
+        else:
+            p.vcase([f"shll2 v{d}.{wt}, v{n}.{nt2}, #{bits}"], v)
+
+
 GROUPS = {
     "simd_loadstore": gen_simd_loadstore,
     "simd_copy": gen_simd_copy,
@@ -1056,6 +1558,11 @@ GROUPS = {
     "simd_struct": gen_simd_struct,
     "simd_gaps": gen_simd_gaps,
     "simd_projects": gen_simd_projects,
+    "simd_float": gen_simd_float,
+    "simd_sat": gen_simd_sat,
+    "simd_crypto": gen_simd_crypto,
+    "loadstore_nopair": gen_loadstore_nopair,
+    "simd_shll": gen_simd_shll,
 }
 
 

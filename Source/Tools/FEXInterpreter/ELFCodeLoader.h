@@ -1139,7 +1139,10 @@ public:
     // Pi parity.
     using namespace FEX::HLE::Arm64::ABI;
     // fphp/asimdhp: half precision passes Pi parity (fp_half), tier 1 since 2026-09-16.
-    HWCap = GUEST_HWCAP_FP | GUEST_HWCAP_ASIMD | GUEST_HWCAP_FPHP | GUEST_HWCAP_ASIMDHP | GUEST_HWCAP_CPUID;
+    // aes/pmull/sha1/sha2/crc32: pass Pi parity (simd_crypto, including the
+    // FIPS-197 and SHA "abc" vectors), tier 1.
+    HWCap = GUEST_HWCAP_FP | GUEST_HWCAP_ASIMD | GUEST_HWCAP_AES | GUEST_HWCAP_PMULL | GUEST_HWCAP_SHA1 | GUEST_HWCAP_SHA2 |
+            GUEST_HWCAP_CRC32 | GUEST_HWCAP_FPHP | GUEST_HWCAP_ASIMDHP | GUEST_HWCAP_CPUID;
     HWCap2 = 0;
   }
 

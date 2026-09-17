@@ -957,26 +957,6 @@ bool IRBuilder::ADDP_pair(uint32_t Word) {
   return true;
 }
 
-bool IRBuilder::UQSUB_1(uint32_t Word) {
-  // UQSUB on D registers: the difference, or 0 where it would go below zero,
-  // which also sets the cumulative FPSR.QC.
-  if (Bits(Word, 23, 22) != 3) {
-    return false;
-  }
-  const auto RS = OpSize::i128Bit;
-  const auto ES = OpSize::i64Bit;
-  Ref A = LoadV(Bits(Word, 9, 5));
-  Ref B = LoadV(Bits(Word, 20, 16));
-  // B > A unsigned  <=>  max(A, B) != A.
-  Ref Underflow = _VNot(RS, ES, _VCMPEQ(RS, ES, _VUMax(RS, ES, A, B), A));
-  StoreVSized(Bits(Word, 4, 0), ES, _VAndn(RS, RS, _VSub(RS, ES, A, B), Underflow));
-  const uint64_t QC = 1ULL << 27;
-  Ref Saturated = _And(OpSize::i64Bit, _VExtractToGPR(RS, ES, Underflow, 0), Constant(QC));
-  Ref FPSR = _LoadContext(OpSize::i32Bit, RegClass::GPR, offsetof(FEXCore::Core::CPUState, fpsr));
-  _StoreContext(OpSize::i32Bit, RegClass::GPR, _Or(OpSize::i64Bit, FPSR, Saturated), offsetof(FEXCore::Core::CPUState, fpsr));
-  return true;
-}
-
 // ---------------------------------------------------------------------------
 // Table lookup
 // ---------------------------------------------------------------------------

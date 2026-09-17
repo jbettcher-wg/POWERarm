@@ -371,6 +371,47 @@ DEF_OP(VPopcount) {
   }
 }
 
+DEF_OP(VCLZ) {
+  const auto Op = IROp->C<IR::IROp_VCLZ>();
+  const auto Dst = GetVReg(Node);
+  const auto Src = GetVReg(Op->Vector);
+  switch (Op->Header.ElementSize) {
+  case IR::OpSize::i8Bit:  vclzb(Dst, Src); break;
+  case IR::OpSize::i16Bit: vclzh(Dst, Src); break;
+  case IR::OpSize::i32Bit: vclzw(Dst, Src); break;
+  case IR::OpSize::i64Bit: vclzd(Dst, Src); break;
+  default: Op_Unhandled(IROp, Node); break;
+  }
+}
+
+// VUDot: vmsumubm adds the four unsigned byte products of each word and the
+// word of VRC, modulo 2^32. A word element covers the same four bytes in the
+// guest's lane order as in ISA element order, so no permutation is needed.
+DEF_OP(VUDot) {
+  const auto Op = IROp->C<IR::IROp_VUDot>();
+  vmsumubm(GetVReg(Node), GetVReg(Op->Vector1), GetVReg(Op->Vector2), GetVReg(Op->Addend));
+}
+
+// VPMullB: zero-extend the selected half of each operand to 16-bit elements
+// (vmrgl/vmrgh with zero first, as UXTL/UXTL2), then vpmsumb, whose halfword
+// result is the xor of the carry-less products of the two byte pairs; the
+// zero high byte leaves only the product of the data bytes.
+DEF_OP(VPMullB) {
+  const auto Op = IROp->C<IR::IROp_VPMullB>();
+  const auto Dst = GetVReg(Node);
+  const auto V1 = GetVReg(Op->Vector1);
+  const auto V2 = GetVReg(Op->Vector2);
+  vspltisw(VTMP1, 0);
+  if (Op->Upper) {
+    vmrghb(VTMP2, VTMP1, V1);
+    vmrghb(VTMP1, VTMP1, V2);
+  } else {
+    vmrglb(VTMP2, VTMP1, V1);
+    vmrglb(VTMP1, VTMP1, V2);
+  }
+  vpmsumb(Dst, VTMP2, VTMP1);
+}
+
 // VFAbs / VFNeg: VSX has direct per-element abs/neg instructions on POWER8.
 DEF_OP(VFAbs) {
   const auto Op = IROp->C<IR::IROp_VFAbs>();
@@ -5228,6 +5269,11 @@ static const ::FEXCore::CPU::PPC64RuntimeTables PPC64Tables = {
     [2 * ::FEXCore::CPU::PPC64_VCONST_CRC32C_MU + 1]     = 0xA434F61C6F5389F8ULL,
     [2 * ::FEXCore::CPU::PPC64_VCONST_CRC32C_P + 0]      = 0x0000000000000000ULL,
     [2 * ::FEXCore::CPU::PPC64_VCONST_CRC32C_P + 1]      = 0x0000000105EC76F1ULL,
+    // CRC-32 (0x04C11DB7) Barrett constants, same layout.
+    [2 * ::FEXCore::CPU::PPC64_VCONST_CRC32_MU + 0]      = 0x0000000000000000ULL,
+    [2 * ::FEXCore::CPU::PPC64_VCONST_CRC32_MU + 1]      = 0x5A72D812FB808B20ULL,
+    [2 * ::FEXCore::CPU::PPC64_VCONST_CRC32_P + 0]       = 0x0000000000000000ULL,
+    [2 * ::FEXCore::CPU::PPC64_VCONST_CRC32_P + 1]       = 0x00000001DB710641ULL,
     // VAddP vperm controls (values verbatim from the old inline builds).
     [2 * ::FEXCore::CPU::PPC64_VCONST_ADDP_EVEN_B + 0]   = 0x01030507090B0D0FULL,
     [2 * ::FEXCore::CPU::PPC64_VCONST_ADDP_EVEN_B + 1]   = 0x11131517191B1D1FULL,

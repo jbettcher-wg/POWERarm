@@ -74,6 +74,12 @@ by default and none with the knob set.
 | `simd_struct1` | differential, generated | LD1/ST1 single-element structures: B/H/S/D lanes at every index, offset, post-index by element size and by register |
 | `simd_projects` | differential, generated | instructions the M2 project builds reached that the groups above don't cover: scalar DUP (`mov b/h/s/dN, vM.<T>[i]`) of every element size |
 | `simd_struct2` | differential, generated | LD2/ST2 interleaved structures: every element width, D and Q, offset and post-index |
+| `simd_float` | differential, generated | Advanced SIMD floating point on single and double lanes, vector and scalar SIMD forms: FADD/FSUB/FMUL/FDIV/FMIN/FMAX(NM), FMUL/FMLA/FMLS by element, FMLA/FMLS, pairwise FADDP/FMAXP/FMINP(NM) vector and scalar, FCMEQ/FCMGE/FCMGT/FACGE/FACGT and the zero compares, FRINT*/FSQRT, FCVT{N,P,M,Z,A}{S,U}, fixed-point SCVTF/UCVTF/FCVTZS/FCVTZU, half-precision FNEG/FABS; NaN pairs lined up lane by lane, every edge value through the conversions and rounding |
+| `simd_sat` | differential, generated | saturating SQADD/SQSUB/UQADD/UQSUB (vector and scalar, 64-bit lanes), SQABS/SQNEG, SQXTN/UQXTN/SQXTUN, RSHRN and the saturating (rounding) shift-right narrows, SRSHR/URSHR/SRSRA/URSRA, SQSHL/UQSHL/SQSHLU by immediate, UHADD/SHADD/URHADD/SRHADD/UHSUB/SHSUB, [SU]ABD/[SU]ABA(L), RADDHN/RSUBHN, SQDMULH/SQRDMULH (vector, scalar, by element), MLA/MLS and the long multiplies by element, UADDLV/SADDLV, SMAXV/SMINV, CLZ/CLS, UDOT; operands from the signed and unsigned lane boundaries; FPSR.QC cleared before each saturating case so every saturation is checked |
+| `simd_crypto` | differential, generated | AESE/AESD/AESMC/AESIMC, PMULL/PMULL2 (8 and 64 bit), SHA1C/M/P/H/SU0/SU1, SHA256H/H2/SU0/SU1, CRC32B-X and CRC32CB-CX on random operands and aliased registers; FIPS-197 C.1 AES-128 encryption and decryption, SHA-1 and SHA-256 compressions of the padded "abc" block, the CRC-32/CRC-32C check values of "123456789" |
+| `loadstore_rcpc2` | stated golden, self-checking | LRCPC2 STLUR*/LDAPUR*/LDAPURS* (the Pi 5 lacks LRCPC2): each load checked against the pattern stored with STUR, each store read back with LDUR |
+| `loadstore_nopair` | differential, generated | STNP/LDNP (pair index bits 00, no writeback) for W/X and S/D/Q registers, static and context-backed base, as .inst words |
+| `simd_shll` | differential, generated | SHLL/SHLL2 at every element width over lane boundary values |
 | `exclusive` | differential, generated | LDXR/LDAXR then STXR/STLXR at every width: success, store without a load, a second store, CLREX in between, NZCV across a successful store; LDAR/STLR. A store to a different address than the load is IMPLEMENTATION DEFINED (the Pi lets it succeed within a region) and is not tested |
 | `hello`, `printf_float`, `strmem`, `fpmath` (and `musl_*`) | differential | static glibc (and musl) programs: printf float formatting, the string/memory routines over lengths and alignments, scalar FP code |
 | `bb_*` | differential | busybox `echo`, `cat`, `wc`, `sort`, `sort -n`, `sha256sum`, `md5sum` |
@@ -93,8 +99,8 @@ Every program switches SP to a static stack in `.bss`, so SP and all data
 addresses are identical on the Pi and under POWERarm and can be printed.
 
 `sysreg` is not compared with the Pi: the presented ID_AA64ISAR0/ISAR1 values
-differ from the Pi 5 by design (the presented profile leaves out the crypto,
-CRC32, atomics and later extensions). On the Pi those checks print FAIL.
+differ from the Pi 5 by design (the presented profile leaves out atomics,
+SHA-512 and the later extensions). On the Pi those checks print FAIL.
 
 ## Positive controls
 

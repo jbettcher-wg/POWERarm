@@ -4319,7 +4319,8 @@ extern "C" uint64_t PPC64_CRC32(uint64_t Acc, uint64_t Val, uint64_t Bytes);
 //
 // Math (derived and verified over 200k random vectors per SrcSize in
 // unittests/GuestCrypto/crc32_derive.py - do NOT edit constants without re-running it):
-// with Q = (crc ^ val) masked to N bytes, A = reflect(Q), P = 0x11EDC6F41:
+// with Q = (crc ^ val) masked to N bytes, A = reflect(Q), P = 0x11EDC6F41
+// (0x104C11DB7 for the non-Castagnoli CRC-32, CRC32_MU/CRC32_P):
 //   crc' = reflect32( (A * x^32) mod P )   [ ^ (crc >> 8N) when N < 4 ]
 // Barrett with mu = floor(x^96/P) = x^64 + mu', all in the reflected domain
 // so no runtime bit-reversal is ever needed:
@@ -4361,7 +4362,7 @@ DEF_OP(CRC32) {
 
   mtvsrd(VTMP1, TMP1);
   xxpermdi(AsVSX(VTMP1), AsVSX(VTMP1), VZERO_VSX, 0b00);   // dw1 <- 0
-  EmitLoadPPC64VConst(VTMP2, PPC64_VCONST_CRC32C_MU, TMP3, TMP4);
+  EmitLoadPPC64VConst(VTMP2, Op->Castagnoli ? PPC64_VCONST_CRC32C_MU : PPC64_VCONST_CRC32_MU, TMP3, TMP4);
   vpmsumd(VTMP1, VTMP1, VTMP2);
 
   xxpermdi(AsVSX(VTMP1), AsVSX(VTMP1), AsVSX(VTMP1), 0b10); // dw0 <- low dw
@@ -4372,7 +4373,7 @@ DEF_OP(CRC32) {
 
   mtvsrd(VTMP1, TMP2);
   xxpermdi(AsVSX(VTMP1), AsVSX(VTMP1), VZERO_VSX, 0b00);
-  EmitLoadPPC64VConst(VTMP2, PPC64_VCONST_CRC32C_P, TMP3, TMP4);
+  EmitLoadPPC64VConst(VTMP2, Op->Castagnoli ? PPC64_VCONST_CRC32C_P : PPC64_VCONST_CRC32_P, TMP3, TMP4);
   vpmsumd(VTMP1, VTMP1, VTMP2);
 
   if (N == 8) {

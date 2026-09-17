@@ -24,7 +24,7 @@ cd "$out"
 # A test may carry extra link flags on a `// LDFLAGS:` line.
 for src in *.S; do
   [ "$src" = common.S ] && continue
-  gcc -march=armv8.2-a+fp16 -nostdlib -static $(sed -n 's|^// LDFLAGS: ||p' "$src") -o "${src%.S}" "$src"
+  gcc -march=armv8.2-a+fp16+crypto+crc+dotprod -nostdlib -static $(sed -n 's|^// LDFLAGS: ||p' "$src") -o "${src%.S}" "$src"
 done
 
 # Static libc programs.

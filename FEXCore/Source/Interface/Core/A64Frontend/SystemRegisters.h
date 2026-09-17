@@ -6,7 +6,8 @@
 // reference machine. Values marked "Pi 5" were read there with MRS under
 // Linux 6.18 (the kernel's sanitized EL0 view). Feature fields are then cut
 // down to the M1 HWCAP profile, fp | asimd | cpuid: every feature register
-// field that would imply another HWCAP bit reads as "not implemented".
+// field that would imply another HWCAP bit reads as "not implemented". The
+// profile has since grown by half precision and aes/pmull/sha1/sha2/crc32.
 //
 // Change these together with AT_HWCAP (Linux layer) and /proc/cpuinfo: a
 // feature must be visible the same way through all three, and only once its
@@ -38,8 +39,9 @@ inline constexpr uint64_t ID_AA64PFR0_EL1 = 0x0000000000110011;
 inline constexpr uint64_t ID_AA64PFR1_EL1 = 0;
 // Pi 5: 0x6 (DebugVer only).
 inline constexpr uint64_t ID_AA64DFR0_EL1 = 0x6;
-// Pi 5: 0x0000100010211120 (AES, SHA1, SHA2, CRC32, Atomic, RDM, DP). M1: none.
-inline constexpr uint64_t ID_AA64ISAR0_EL1 = 0;
+// Pi 5: 0x0000100010211120 (AES, SHA1, SHA2, CRC32, Atomic, RDM, DP).
+// Presented: AES=2 (AES and PMULL), SHA1=1, SHA2=1 (SHA-256 only), CRC32=1.
+inline constexpr uint64_t ID_AA64ISAR0_EL1 = 0x0000000000011120;
 // Pi 5: 0x100001 (DPB, LRCPC). M1: none.
 inline constexpr uint64_t ID_AA64ISAR1_EL1 = 0;
 // Pi 5: 0x00000111FF000000 (translation granule fields). No HWCAP depends on it.
