@@ -409,6 +409,47 @@ bool IRBuilder::FMAX_float(uint32_t Word) { return FPTwoRegister(Word, FPBinaryO
 bool IRBuilder::FMINNM_float(uint32_t Word) { return FPTwoRegister(Word, FPBinaryOp::MinNum); }
 bool IRBuilder::FMAXNM_float(uint32_t Word) { return FPTwoRegister(Word, FPBinaryOp::MaxNum); }
 
+// FPMulAdd(A, N, M) in every Size lane: one fused A + N*M with A64 NaN
+// operand precedence (first signalling NaN of A, N, M, else the first quiet
+// NaN) and the default NaN for a quiet NaN addend with an Inf*0 product.
+// Negations of A or N are applied by the caller before the call.
+Ref IRBuilder::FPMulAddLanes(OpSize Size, Ref A, Ref N, Ref M) {
+  const auto RS = OpSize::i128Bit;
+  Ref Fused = _VFMLA(RS, Size, N, M, A);
+
+  const bool Is64 = Size == OpSize::i64Bit;
+  Ref Quiet = FPConstant(QuietBit(Size), Size);
+  auto IsNaN = [&](Ref V) -> Ref {
+    return _VFCMPUNO(RS, Size, V, V);
+  };
+  auto QuietBitSet = [&](Ref V) -> Ref {
+    return _VNot(RS, Size, _VCMPEQZ(RS, Size, _VAnd(RS, RS, V, Quiet)));
+  };
+  Ref NaNA = IsNaN(A), NaNN = IsNaN(N), NaNM = IsNaN(M);
+  Ref QBitA = QuietBitSet(A), QBitN = QuietBitSet(N), QBitM = QuietBitSet(M);
+  Ref NaNResult = M;
+  NaNResult = _VBSL(RS, _VAnd(RS, RS, NaNN, QBitN), N, NaNResult);
+  NaNResult = _VBSL(RS, _VAnd(RS, RS, NaNA, QBitA), A, NaNResult);
+  NaNResult = _VBSL(RS, _VAndn(RS, RS, NaNM, QBitM), M, NaNResult);
+  NaNResult = _VBSL(RS, _VAndn(RS, RS, NaNN, QBitN), N, NaNResult);
+  NaNResult = _VBSL(RS, _VAndn(RS, RS, NaNA, QBitA), A, NaNResult);
+  NaNResult = _VOr(RS, RS, NaNResult, Quiet);
+  Ref AnyNaN = _VOr(RS, RS, NaNA, _VOr(RS, RS, NaNN, NaNM));
+  Ref Result = _VBSL(RS, AnyNaN, NaNResult, Fused);
+
+  Ref Zero = _VectorImm(RS, OpSize::i8Bit, 0);
+  Ref Inf = FPConstant(Is64 ? 0x7FF0000000000000ULL : 0x7F800000ULL, Size);
+  Ref InfN = _VFCMPEQ(RS, Size, _VFAbs(RS, Size, N), Inf);
+  Ref InfM = _VFCMPEQ(RS, Size, _VFAbs(RS, Size, M), Inf);
+  Ref ZeroN = _VFCMPEQ(RS, Size, N, Zero);
+  Ref ZeroM = _VFCMPEQ(RS, Size, M, Zero);
+  Ref InfTimesZero = _VOr(RS, RS, _VAnd(RS, RS, InfN, ZeroM), _VAnd(RS, RS, ZeroN, InfM));
+  Ref DefaultCase = _VAnd(RS, RS, _VAnd(RS, RS, NaNA, QBitA), InfTimesZero);
+  Ref DefaultNaN = FPConstant(Is64 ? 0x7FF8000000000000ULL : 0x7FC00000ULL, Size);
+  Result = _VBSL(RS, DefaultCase, DefaultNaN, Result);
+  return Result;
+}
+
 bool IRBuilder::FPThreeRegister(uint32_t Word) {
   // A64 defines the group as one fused FPMulAdd with negated operands:
   // FMADD a+n*m, FMSUB a+(-n)*m, FNMADD (-a)+(-n)*m, FNMSUB (-a)+n*m. The
@@ -443,38 +484,7 @@ bool IRBuilder::FPThreeRegister(uint32_t Word) {
   if (NegateAddend) {
     A = _VFNeg(RS, Size, A);
   }
-  Ref Fused = _VFMLA(RS, Size, N, M, A);
-
-  const bool Is64 = Size == OpSize::i64Bit;
-  Ref Quiet = FPConstant(QuietBit(Size), Size);
-  auto IsNaN = [&](Ref V) -> Ref {
-    return _VFCMPUNO(RS, Size, V, V);
-  };
-  auto QuietBitSet = [&](Ref V) -> Ref {
-    return _VNot(RS, Size, _VCMPEQZ(RS, Size, _VAnd(RS, RS, V, Quiet)));
-  };
-  Ref NaNA = IsNaN(A), NaNN = IsNaN(N), NaNM = IsNaN(M);
-  Ref QBitA = QuietBitSet(A), QBitN = QuietBitSet(N), QBitM = QuietBitSet(M);
-  Ref NaNResult = M;
-  NaNResult = _VBSL(RS, _VAnd(RS, RS, NaNN, QBitN), N, NaNResult);
-  NaNResult = _VBSL(RS, _VAnd(RS, RS, NaNA, QBitA), A, NaNResult);
-  NaNResult = _VBSL(RS, _VAndn(RS, RS, NaNM, QBitM), M, NaNResult);
-  NaNResult = _VBSL(RS, _VAndn(RS, RS, NaNN, QBitN), N, NaNResult);
-  NaNResult = _VBSL(RS, _VAndn(RS, RS, NaNA, QBitA), A, NaNResult);
-  NaNResult = _VOr(RS, RS, NaNResult, Quiet);
-  Ref AnyNaN = _VOr(RS, RS, NaNA, _VOr(RS, RS, NaNN, NaNM));
-  Ref Result = _VBSL(RS, AnyNaN, NaNResult, Fused);
-
-  Ref Zero = _VectorImm(RS, OpSize::i8Bit, 0);
-  Ref Inf = FPConstant(Is64 ? 0x7FF0000000000000ULL : 0x7F800000ULL, Size);
-  Ref InfN = _VFCMPEQ(RS, Size, _VFAbs(RS, Size, N), Inf);
-  Ref InfM = _VFCMPEQ(RS, Size, _VFAbs(RS, Size, M), Inf);
-  Ref ZeroN = _VFCMPEQ(RS, Size, N, Zero);
-  Ref ZeroM = _VFCMPEQ(RS, Size, M, Zero);
-  Ref InfTimesZero = _VOr(RS, RS, _VAnd(RS, RS, InfN, ZeroM), _VAnd(RS, RS, ZeroN, InfM));
-  Ref DefaultCase = _VAnd(RS, RS, _VAnd(RS, RS, NaNA, QBitA), InfTimesZero);
-  Ref DefaultNaN = FPConstant(Is64 ? 0x7FF8000000000000ULL : 0x7FC00000ULL, Size);
-  Result = _VBSL(RS, DefaultCase, DefaultNaN, Result);
+  Ref Result = FPMulAddLanes(Size, A, N, M);
   if (Half) {
     StoreVSized(Bits(Word, 4, 0), OpSize::i16Bit, DoubleToHalf(Result, true));
     return true;

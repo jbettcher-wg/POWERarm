@@ -1039,6 +1039,111 @@ def gen_simd_projects(p):
         p.vcase([f"mov {e}{d}, v{n}.{e}[{p.rng.randrange(count)}]"], v)
 
 
+# ---------------------------------------------------------------------------
+# Advanced SIMD floating point (vector and scalar SIMD forms)
+# ---------------------------------------------------------------------------
+
+def fvec_pair(p, is64):
+    """Two V registers of float lanes whose lanes line up NaN pairs, edge values and random values."""
+    lanes = 2 if is64 else 4
+    bits = 64 if is64 else 32
+    a, b = 0, 0
+    for i in range(lanes):
+        r = p.rng.random()
+        if r < 0.25:
+            x, y = p.rng.choice(NAN_PAIRS64 if is64 else NAN_PAIRS32)
+        else:
+            x, y = (p.f64(), p.f64()) if is64 else (p.f32(), p.f32())
+            if r < 0.35:
+                y = x
+            elif r < 0.45:
+                y = x ^ (1 << (bits - 1))
+        a |= x << (bits * i)
+        b |= y << (bits * i)
+    return (a & M64, a >> 64), (b & M64, b >> 64)
+
+
+def ftype(p, allow_scalar=False):
+    """(register syntax, element syntax, is64, scalar) for a float vector or scalar operand."""
+    choices = [("2s", "s", False, False), ("4s", "s", False, False), ("2d", "d", True, False)]
+    if allow_scalar:
+        choices += [("s", "s", False, True), ("d", "d", True, True)]
+    return p.rng.choice(choices)
+
+
+def gen_simd_float(p):
+    to_int = ["fcvtns", "fcvtnu", "fcvtps", "fcvtpu", "fcvtms", "fcvtmu", "fcvtzs", "fcvtzu", "fcvtas", "fcvtau"]
+    for _ in range(1400):
+        d, n, m = p.vreg(), p.vreg(), p.vreg()
+        t, e, is64, scalar = ftype(p, True)
+        vn, vm = fvec_pair(p, is64)
+        v = {d: p.vec(), n: vn, m: vm}
+        fpcr = p.rng.choice(RMODES)
+        rd = f"{e}{d}" if scalar else f"v{d}.{t}"
+        rn = f"{e}{n}" if scalar else f"v{n}.{t}"
+        rm = f"{e}{m}" if scalar else f"v{m}.{t}"
+        kind = p.rng.randrange(12)
+        if kind <= 1 and not scalar:
+            op = p.rng.choice(["fadd", "fsub", "fmul", "fdiv", "fmin", "fmax", "fminnm", "fmaxnm"])
+            p.vcase([f"{op} {rd}, {rn}, {rm}"], v, fpcr=fpcr)
+        elif kind == 2:
+            op = p.rng.choice(["fmul", "fmla", "fmls"])
+            lanes = 2 if is64 else 4
+            idx = p.rng.randrange(lanes)
+            p.vcase([f"{op} {rd}, {rn}, v{m}.{e}[{idx}]"], v, fpcr=fpcr)
+        elif kind == 3 and not scalar:
+            op = p.rng.choice(["fmla", "fmls"])
+            vd, _ = fvec_pair(p, is64)
+            v[d] = vd
+            p.vcase([f"{op} {rd}, {rn}, {rm}"], v, fpcr=fpcr)
+        elif kind == 4:
+            op = p.rng.choice(["faddp", "fmaxp", "fminp", "fmaxnmp", "fminnmp"])
+            if scalar:
+                p.vcase([f"{op} {e}{d}, v{n}.2{e}"], v, fpcr=fpcr)
+            else:
+                p.vcase([f"{op} {rd}, {rn}, {rm}"], v, fpcr=fpcr)
+        elif kind == 5:
+            op = p.rng.choice(["fcmeq", "fcmge", "fcmgt", "facge", "facgt"])
+            p.vcase([f"{op} {rd}, {rn}, {rm}"], v)
+        elif kind == 6:
+            op = p.rng.choice(["fcmeq", "fcmge", "fcmgt", "fcmle", "fcmlt"])
+            p.vcase([f"{op} {rd}, {rn}, #0.0"], v)
+        elif kind == 7 and not scalar:
+            op = p.rng.choice(["frintn", "frintp", "frintm", "frintz", "frinta", "frintx", "frinti", "fsqrt"])
+            p.vcase([f"{op} {rd}, {rn}"], v, fpcr=fpcr)
+        elif kind == 8:
+            op = p.rng.choice(to_int)
+            p.vcase([f"{op} {rd}, {rn}"], v, fpcr=fpcr)
+        elif kind == 9:
+            op = p.rng.choice(["scvtf", "ucvtf", "fcvtzs", "fcvtzu"])
+            bits = 64 if is64 else 32
+            fbits = p.rng.choice([1, 2, bits // 2, bits - 1, bits, p.rng.randrange(1, bits + 1)])
+            if op in ("scvtf", "ucvtf"):
+                v[n] = p.vec()
+            p.vcase([f"{op} {rd}, {rn}, #{fbits}"], v, fpcr=fpcr)
+        elif kind == 10:
+            op = p.rng.choice(["fneg", "fabs"])
+            ht = p.rng.choice(["4h", "8h"])
+            p.vcase([f"{op} v{d}.{ht}, v{n}.{ht}"], v)
+        else:
+            op = p.rng.choice(["fadd", "fmul", "fdiv", "fsub"])
+            t2, e2, is642, _ = ftype(p)
+            vn2, vm2 = fvec_pair(p, is642)
+            p.vcase([f"{op} v{d}.{t2}, v{n}.{t2}, v{m}.{t2}"], {d: p.vec(), n: vn2, m: vm2}, fpcr=fpcr)
+    # Every edge value through the conversions and rounding in every mode.
+    for is64, edges in ((True, F64_EDGE), (False, F32_EDGE)):
+        e, t = ("d", "2d") if is64 else ("s", "4s")
+        bits = 64 if is64 else 32
+        for i in range(0, len(edges), 2 if is64 else 4):
+            chunk = edges[i:i + (2 if is64 else 4)]
+            val = 0
+            for j, c in enumerate(chunk):
+                val |= c << (bits * j)
+            reg = (val & M64, val >> 64)
+            for op in ["fcvtns", "fcvtzu", "fcvtas", "fcvtps", "fcvtms", "fcvtzs", "frintn", "frinta", "frintm"]:
+                p.vcase([f"{op} v5.{t}, v20.{t}"], {5: p.vec(), 20: reg}, fpcr=p.rng.choice(RMODES))
+
+
 GROUPS = {
     "simd_loadstore": gen_simd_loadstore,
     "simd_copy": gen_simd_copy,
@@ -1056,6 +1161,7 @@ GROUPS = {
     "simd_struct": gen_simd_struct,
     "simd_gaps": gen_simd_gaps,
     "simd_projects": gen_simd_projects,
+    "simd_float": gen_simd_float,
 }
 
 

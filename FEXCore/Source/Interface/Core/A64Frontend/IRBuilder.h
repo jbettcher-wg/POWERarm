@@ -202,6 +202,33 @@ public:
   bool FCVTZS_float_fix(uint32_t Word); bool FCVTZU_float_fix(uint32_t Word);
   bool FCVTZS_int_2(uint32_t Word); bool FCVTZU_int_2(uint32_t Word); bool SCVTF_int_2(uint32_t Word); bool UCVTF_int_2(uint32_t Word);
   bool FCVTL(uint32_t Word); bool FCVTN(uint32_t Word);
+  // Advanced SIMD floating point (TranslateSIMDFloat.cpp).
+  bool FADD_2(uint32_t Word); bool FSUB_2(uint32_t Word); bool FMUL_vec_2(uint32_t Word); bool FDIV_2(uint32_t Word);
+  bool FMIN_2(uint32_t Word); bool FMAX_2(uint32_t Word); bool FMINNM_2(uint32_t Word); bool FMAXNM_2(uint32_t Word);
+  bool FMUL_elt_4(uint32_t Word); bool FMUL_elt_2(uint32_t Word); bool FMLA_elt_4(uint32_t Word); bool FMLA_elt_2(uint32_t Word);
+  bool FMLS_elt_4(uint32_t Word); bool FMLS_elt_2(uint32_t Word); bool FMLA_vec_2(uint32_t Word); bool FMLS_vec_2(uint32_t Word);
+  bool FADDP_vec_2(uint32_t Word); bool FMAXP_vec_2(uint32_t Word); bool FMINP_vec_2(uint32_t Word);
+  bool FMAXNMP_vec_2(uint32_t Word); bool FMINNMP_vec_2(uint32_t Word);
+  bool FADDP_pair_2(uint32_t Word); bool FMAXP_pair_2(uint32_t Word); bool FMINP_pair_2(uint32_t Word);
+  bool FMAXNMP_pair_2(uint32_t Word); bool FMINNMP_pair_2(uint32_t Word);
+  bool FCMEQ_reg_4(uint32_t Word); bool FCMGE_reg_4(uint32_t Word); bool FCMGT_reg_4(uint32_t Word);
+  bool FACGE_4(uint32_t Word); bool FACGT_4(uint32_t Word);
+  bool FCMEQ_zero_4(uint32_t Word); bool FCMGE_zero_4(uint32_t Word); bool FCMGT_zero_4(uint32_t Word);
+  bool FCMLE_4(uint32_t Word); bool FCMLT_4(uint32_t Word);
+  bool FCMEQ_reg_2(uint32_t Word); bool FCMGE_reg_2(uint32_t Word); bool FCMGT_reg_2(uint32_t Word);
+  bool FACGE_2(uint32_t Word); bool FACGT_2(uint32_t Word);
+  bool FCMEQ_zero_2(uint32_t Word); bool FCMGE_zero_2(uint32_t Word); bool FCMGT_zero_2(uint32_t Word);
+  bool FCMLE_2(uint32_t Word); bool FCMLT_2(uint32_t Word);
+  bool FRINTN_2(uint32_t Word); bool FRINTP_2(uint32_t Word); bool FRINTM_2(uint32_t Word); bool FRINTZ_2(uint32_t Word);
+  bool FRINTA_2(uint32_t Word); bool FRINTX_2(uint32_t Word); bool FRINTI_2(uint32_t Word);
+  bool FSQRT_2(uint32_t Word); bool FNEG_1(uint32_t Word); bool FABS_1(uint32_t Word);
+  bool FCVTNS_4(uint32_t Word); bool FCVTNU_4(uint32_t Word); bool FCVTPS_4(uint32_t Word); bool FCVTPU_4(uint32_t Word);
+  bool FCVTMS_4(uint32_t Word); bool FCVTMU_4(uint32_t Word); bool FCVTZS_int_4(uint32_t Word); bool FCVTZU_int_4(uint32_t Word);
+  bool FCVTAS_4(uint32_t Word); bool FCVTAU_4(uint32_t Word);
+  bool FCVTNS_2(uint32_t Word); bool FCVTNU_2(uint32_t Word); bool FCVTPS_2(uint32_t Word); bool FCVTPU_2(uint32_t Word);
+  bool FCVTMS_2(uint32_t Word); bool FCVTMU_2(uint32_t Word); bool FCVTAS_2(uint32_t Word); bool FCVTAU_2(uint32_t Word);
+  bool SCVTF_fix_2(uint32_t Word); bool UCVTF_fix_2(uint32_t Word); bool FCVTZS_fix_2(uint32_t Word); bool FCVTZU_fix_2(uint32_t Word);
+  bool SCVTF_fix_1(uint32_t Word); bool UCVTF_fix_1(uint32_t Word); bool FCVTZS_fix_1(uint32_t Word); bool FCVTZU_fix_1(uint32_t Word);
   // clang-format on
 
 private:
@@ -340,6 +367,23 @@ private:
   Ref DoubleToHalf(Ref D, bool ApplyFZ16);
   // Host rounding mode <- FPCR.RMode of the given FPCR value.
   void SyncHostRoundingMode(Ref FPCR);
+
+  // Advanced SIMD floating-point shared bodies (TranslateSIMDFloat.cpp).
+  enum class FloatCompareKind { Eq, Ge, Gt, AbsGe, AbsGt, EqZero, GeZero, GtZero, LeZero, LtZero };
+  // FPMulAdd(A, N, M) per lane with A64 NaN handling (TranslateFP.cpp).
+  Ref FPMulAddLanes(OpSize Size, Ref A, Ref N, Ref M);
+  Ref FPBinaryLanes(FPBinaryOp Op, OpSize ES, Ref A, Ref B);
+  void StoreFloatLanes(uint32_t Word, bool Scalar, OpSize ES, Ref Result);
+  bool FloatElementOperand(uint32_t Word, OpSize ES, Ref* Element);
+  bool SIMDFloatThreeSame(uint32_t Word, FPBinaryOp Op, bool Scalar);
+  bool SIMDFloatMulElement(uint32_t Word, int Accumulate, bool Scalar);
+  bool SIMDFloatMulAccumulate(uint32_t Word, bool Subtract);
+  bool SIMDFloatPairwise(uint32_t Word, FPBinaryOp Op, bool Scalar);
+  bool SIMDFloatCompare(uint32_t Word, FloatCompareKind Kind, bool Scalar);
+  bool SIMDFloatRound(uint32_t Word, FPRounding Mode);
+  bool SIMDHalfSign(uint32_t Word, bool IsNeg);
+  bool SIMDFloatToInt(uint32_t Word, uint8_t Rounding, bool Signed, bool Scalar);
+  bool SIMDFixedConvert(uint32_t Word, bool ToFloat, bool Signed, bool Scalar);
 
   struct JumpTargetInfo {
     Ref BlockEntry;

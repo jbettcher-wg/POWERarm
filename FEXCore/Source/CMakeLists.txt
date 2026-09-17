@@ -31,6 +31,7 @@ set(SRCS
   Interface/Core/A64Frontend/TranslateFP.cpp
   Interface/Core/A64Frontend/TranslateLoadStore.cpp
   Interface/Core/A64Frontend/TranslateSIMD.cpp
+  Interface/Core/A64Frontend/TranslateSIMDFloat.cpp
   Interface/Core/A64Frontend/TranslateSIMDLoadStore.cpp)
 
 # PPC64LE JIT backend. This fork targets PPC64LE hosts only; the ARM64 JIT
