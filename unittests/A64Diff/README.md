@@ -1,12 +1,14 @@
 # A64Diff: differential tests against real ARM hardware
 
 A64Diff checks that AArch64 programs behave the same under POWERarm on POWER9 as they do on a
-real ARM CPU (the Raspberry Pi 5, a Cortex-A76). It has two levels:
+real ARM CPU (the Raspberry Pi 5, a Cortex-A76). It has three levels:
 
 - **Instruction level.** Thousands of small static programs, each running one instruction or a
   short branch sequence from a seeded state, then dumping the full machine state.
 - **Program level.** Static `hello` built against glibc and musl, static busybox, and the M1
   applet script run on a fixed input corpus.
+- **Rootfs level.** Dynamically linked programs run inside an AArch64 root filesystem, as
+  command sequences whose output files are byte-compared (see [Rootfs jobs](#rootfs-jobs)).
 
 Both levels run natively on the Pi to capture goldens, then under POWERarm on the POWER9: on
 the bare 64K-page host and in a KVM guest running the host's 4K kernel. Every compare injects
@@ -17,7 +19,10 @@ gen/a64gen.py              instruction test generator (Python 3, no dependencies
 tool/a64diff.h             record format
 tool/a64diff.c             runner and comparator (C99 + POSIX, builds static)
 tool/broken-runner.sh      deliberately wrong "emulator" for negative controls
-programs/                  hello.c, build-programs.sh, programs.jobs, applets.sh, corpus/
+programs/                  hello.c, build-programs.sh, programs.jobs, rootfs.jobs, applets.sh, corpus/
+rootfs/a64diff-rootfs.py   rootfs content hash (same definition as the sysroot builder)
+rootfs/mkrootfs-minimal.sh the "minimal-debian" prototype rootfs
+../../Scripts/powerarm/a64diff-rootfs-exec.sh  native rootfs runner (bwrap, unprivileged)
 vm/a64diff-init.c          /init for the 4K KVM guest
 ../../Scripts/powerarm/a64diff-golden.sh    golden side (Pi)
 ../../Scripts/powerarm/a64diff-selftest.sh  negative controls (Pi)
@@ -59,13 +64,15 @@ Useful options:
 | `--timeout SEC` | Per-test limit (default 30) |
 | `-j N` | Parallel tests |
 | `--skip CLASSES` | Classes to leave out |
-| `--suites insn,programs` | Which suites to run |
+| `--suites LIST` | Which suites to run: `insn` and job suites named after `programs/<suite>.jobs` (default all) |
+| `--rootfs NAME=DIR` | Where an external rootfs lives (default `~/.local/share/powerarm/RootFS/NAME`) |
+| `--rootfs-transport ext4\|squashfs` | How a rootfs reaches the 4K guest (default ext4) |
 | `--env K=V` | Set a variable for the emulator; repeatable |
 | `--kernel`, `--cpus`, `--mem` | 4k-kvm guest settings |
 
-Results go to `~/.cache/a64diff/results/<bundle>-<mode>-<time>/`: `insn.log`/`programs.log`
-(the summaries), `insn.report`/`programs.report` (every failure in detail) and, for 4k-kvm,
-`console.txt` and `qemu-cmdline.txt`.
+Results go to `~/.cache/a64diff/results/<bundle>-<mode>-<time>/`: `<suite>.log` (the summary)
+and `<suite>.report` (every failure in detail) per suite and, for 4k-kvm, `console.txt` and
+`qemu-cmdline.txt`.
 
 **Exit codes** (the tool and both scripts):
 
@@ -90,7 +97,10 @@ initramfs with these contents:
 - `/init`: `vm/a64diff-init.c`, static
 - a static `a64diff`
 - `POWERarm` and `POWERarmServer`, plus every library `ldd` reports, and the ELF interpreter
-- the bundle (tests, goldens, program corpus)
+- the bundle (tests, goldens, program corpus), without the instruction tests unless `insn` runs
+- for rootfs jobs: the booted kernel's `virtio_ring`, `virtio`, `virtio_pci*` and `virtio_blk`
+  modules (and `squashfs` for that transport), taken from the `/lib/modules` directory whose
+  `vmlinuz` matches the kernel image
 
 It then boots the image with this command:
 
@@ -103,12 +113,14 @@ qemu-system-ppc64 -M pseries,accel=kvm -cpu host -smp 8 -m 4G -nographic -nodefa
 Settings reach the guest as kernel command-line environment variables. `--env` values are
 appended the same way.
 
-1. `/init` mounts `/proc`, `/dev`, `/dev/shm` and `/tmp`.
+1. `/init` mounts `/proc`, `/dev`, `/dev/pts`, `/dev/shm` and `/tmp`.
 2. It checks that the page size is 4096. If not, it prints `A64DIFF-GUEST-ERROR` and the run
    exits 2.
-3. It runs both suites as uid 65534 and prints the logs and reports between
+3. If the command line has `A64DIFF_ROOTFS=name:fstype,...`, it loads the modules and mounts
+   `/dev/vda`, `/dev/vdb`, ... read-only at `/a64diff/rootfs/<name>`.
+4. It runs each suite as uid 65534 and prints the logs and reports between
    `A64DIFF-BEGIN/END` markers.
-4. It prints `A64DIFF-GUEST-EXIT insn=N programs=M` and powers off.
+5. It prints `A64DIFF-GUEST-EXIT <suite>=N ...` and powers off.
 
 The host extracts the sections from the console log. The guest stops starting tests at its
 deadline, and `timeout(1)` kills QEMU if the guest wedges; either way the run exits 124.
@@ -159,9 +171,120 @@ The record is 4944 bytes, little-endian.
 kind, `test_insn` address, encodings, objdump disassembly, and the resolved initial state (X0–X30,
 SP, NZCV).
 
-Program jobs (`programs/programs.jobs`) are tab-separated: `id class required stdin argv...`.
-`@ROOT@` expands to the bundle root, and stdin `-` means `/dev/null`. Each job runs in a fresh,
-empty working directory. stdout, stderr and the exit status are all compared byte for byte.
+## Jobs format
+
+Each `programs/<suite>.jobs` file is one job suite, with goldens in `golden-<suite>/`. Fields are
+TAB-separated, `#` starts a comment, `@ROOT@` expands to the bundle root and stdin `-` means
+`/dev/null`. Every job runs in a fresh, empty working directory. There are two forms.
+
+**One command per line** (the M1 form): `id class required stdin argv...`. stdout, stderr and
+the exit status are compared byte for byte.
+
+**A block** of directives, one per line (leading blanks are ignored):
+
+```
+job     ID  CLASS  REQUIRED
+        rootfs  NAME             run every step inside this rootfs
+        input   PATH             copy a file, or a directory's contents, into the working directory
+        env     KEY=VALUE        added to every step's environment (repeatable)
+        timeout SEC              for the whole block
+        run     STDIN argv...    a step; the block stops at the first non-zero status
+        try     STDIN argv...    a step whose non-zero status doesn't stop the block
+        output  PATH             a declared output file, or PATH/ for every file below a directory
+end
+```
+
+A step's stdin, and any relative path, resolves in the working directory. For example, a build
+job for M2:
+
+```
+job     zlib.build  zlib  1
+        rootfs  alarm-m2
+        input   @ROOT@/sources/zlib-1.3.1
+        env     SOURCE_DATE_EPOCH=0
+        run     -  /usr/bin/sh  ./configure  --static
+        run     -  /usr/bin/make  -j1  libz.a  example  minigzip
+        run     -  ./example
+        output  libz.a
+        output  example
+end
+```
+
+A block job is compared on these parts:
+
+- the step list with each step's status (`<id>.steps`)
+- every step's stdout and stderr (`<id>.<k>.out`/`.err`)
+- the final status
+- the declared outputs
+
+Each output is recorded as `sha256 size path` in `<id>.outputs`, with a copy kept in
+`<id>.files/`, so a mismatch report gives the first differing byte. A missing output is recorded
+as `missing`, and a symlink as `link TARGET`. Jobs must not print or embed the absolute path of
+their working directory, because it differs between the Pi and the POWER9. For builds, keep
+`-g` paths out with `-ffile-prefix-map`, or leave out debug info.
+
+## Rootfs jobs
+
+A block with `rootfs NAME` runs dynamically linked programs inside an AArch64 root filesystem.
+Guest absolute paths (`/usr/bin/gcc`, `/lib/ld-linux-aarch64.so.1`) resolve inside the rootfs,
+and relative paths resolve in the working directory.
+
+**Identity.** A bundle records each rootfs in `rootfs/<name>.id` (name, entry count,
+`content-hash sha256:…` and location) and in `rootfs/<name>.contents`. The content hash is the
+same definition the Arch Linux ARM sysroot builder uses: sorted paths with the file sha256,
+mode and symlink target, and no owners or times. `rootfs/a64diff-rootfs.py hash|verify`
+computes it. Both sides verify the tree against the bundle before running anything. A
+`bundle` rootfs travels inside the bundle. An `external` one (`a64diff-golden.sh --rootfs
+NAME=DIR`, e.g. the Arch Linux ARM sysroot) is found on the POWER9 under
+`~/.local/share/powerarm/RootFS/NAME` or through `--rootfs NAME=DIR`.
+
+**Where each side runs a rootfs job:**
+
+| Side | How |
+|---|---|
+| Pi (golden) | `a64diff run --rootfs NAME=DIR --rootfs-exec a64diff-rootfs-exec.sh`. Each step runs as `a64diff-rootfs-exec.sh DIR WORKDIR -- argv...`: bwrap in a user namespace, no root, an empty tmpfs `/` with the rootfs's top-level entries bound read-only, fresh `/dev`, `/proc` and `/tmp`, and the working directory bound read-write. Any runner with that calling convention (for example the sysroot work's Pi runner) can replace the adapter |
+| POWER9 `64k` | `a64diff run --rootfs NAME=DIR -- POWERarm`. Each step runs as `POWERarm argv...` with `POWERARM_ROOTFS=DIR` |
+| POWER9 `4k-kvm` | The rootfs is attached as a read-only virtio-blk disk image and mounted in the guest (below); the guest runs the steps as in `64k` |
+
+**4K guest transport.** The rootfs is too big for the initramfs, and the 4K kernel
+(`/boot/vmlinuz-linux-power9`, 7.2.6) rules out the shared-directory options:
+
+- `CONFIG_NET_9P`, `CONFIG_VIRTIO_FS` and `CONFIG_EROFS_FS` are not set, and `/lib/modules/7.2.6`
+  has no 9p, virtiofs or erofs module.
+- There is no `virtiofsd` on the host.
+
+What's left is a read-only disk image of a filesystem the kernel has: ext4 (built in) or
+squashfs (a module, with zlib/lzo/xz and single-threaded decompression). Both images are built
+without root (`mke2fs -d`, `mksquashfs -all-root`) from the verified tree and cached in
+`~/.cache/a64diff/rootfs-img/` by content hash.
+
+Measured on a 765 MB, 66k-file tree (larger than the 595 MB, 27k-entry Arch Linux ARM M2
+sysroot), with an 8-vCPU, 4 GB guest and a cold cache:
+
+| Transport | Image | Build (once per hash) | Mounted after boot | Read every file |
+|---|---|---|---|---|
+| **ext4** (no journal) | 943 MB | 15.9 s | 0.34 s | **6.0 s** |
+| squashfs, lzo | 184 MB | 3.9 s | 0.59 s | 16.0 s |
+| squashfs, xz | 135 MB | 7.1 s | 0.37 s | 30.8 s |
+
+**ext4 is the default.** It reads 2.7× faster than the best squashfs, and the only extra cost
+is disk space in the image cache. `--rootfs-transport squashfs` (lzo by default,
+`A64DIFF_SQUASHFS_COMP` to change it) is kept for when disk space matters more. To repeat the
+measurement, run with `A64DIFF_TEST_ROOTFS_UNVERIFIED=1 --rootfs NAME=TREE
+--env A64DIFF_ROOTFS_BENCH=1`. The guest reads every file once and reports the time instead of
+running suites.
+
+**The prototype rootfs.** `minimal-debian` stands in until the Arch Linux ARM sysroot is ready,
+and ships inside the bundle. `rootfs/mkrootfs-minimal.sh` assembles it from the golden
+machine's own Debian `ld-linux-aarch64.so.1` and `libc.so.6` in multiarch layout, plus
+`hello-dyn` (PIE), `hello-dyn-nopie` and the pinned static busybox. `<name>.sources` records the
+libc6 and gcc versions. `programs/rootfs.jobs` runs the following against it:
+
+- both hellos
+- ld.so run as a program, both with a program and with `--version`
+- a six-step busybox sequence with inputs, `env`, a `try` step and declared output files, one of
+  them in a subdirectory
+- a job whose declared output is never written
 
 ## Classes
 
@@ -209,7 +332,10 @@ with `CONTROL-FAIL`.
 
 The corrupting value is chosen to differ from the actual value as well, so a real bug that
 happens to produce the corrupted value can't make a control look blind. Program jobs get the
-same two controls per class, one on a stdout byte and one on the exit status.
+same two controls per class, one on a stdout byte and one on the exit status. A class with
+declared output files gets a third: one byte of a golden output file is flipped and its hash
+recomputed. It must be flagged in exactly that job, on the outputs alone, and against the
+actual result.
 
 **Negative controls (`a64diff-selftest.sh`, Pi).** Each case has a required verdict.
 
@@ -221,11 +347,16 @@ same two controls per class, one on a stdout byte and one on the exit status.
 | Comparator blind to `nzcv` (`--blind-field`) | Exit 2 through `CONTROL-FAIL`. Every test "passes" |
 | Comparator blind to `x7` | Exit 2 through `CONTROL-FAIL`. Every test "passes" |
 | Program output truncated to 64 bytes | Fail (exit 1) |
+| Rootfs jobs, neutral | Pass (exit 0) |
+| Rootfs jobs with `--break-outputs` (every declared output damaged before hashing) | Fail (exit 1), on the output files and nothing else |
 
 A wrong verdict fails the selftest.
 
 **Environment controls.** The 64k mode refuses to run unless the host page size is 65536, and
 the guest refuses unless its page size is 4096. Booting the 64K image in `4k-kvm` mode exits 2.
+Rootfs content hashes are verified on both sides. The golden script also checks isolation: through
+the native runner, the rootfs's `/usr/lib/aarch64-linux-gnu` must show exactly the two files the
+builder put there, not the golden machine's hundreds.
 
 ## Adding an instruction class
 
@@ -242,8 +373,9 @@ the guest refuses unless its page size is 4096. Booting the 64K image in `4k-kvm
    match yet. Each class has its own RNG stream, so the other classes don't change.
 4. Run `a64diff-golden.sh --selftest`. The new class gets controls automatically.
 
-To add a program job, append a line to `programs/programs.jobs`, keeping the output free of
-absolute paths, times, owners and readdir order. The job's class gets controls automatically.
+To add a program job, append a line or block to a `programs/*.jobs` file (a new file is a new
+suite), keeping the output free of absolute paths, times, owners and readdir order. The job's
+class gets controls automatically.
 
 ## Notes for the emulator workstreams
 
