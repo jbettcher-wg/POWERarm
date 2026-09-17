@@ -1,0 +1,39 @@
+== va_probe: ppc64le 7.2.6-64k omarchy-power9  pagesize=65536 personality=0x40000
+mmap_min_addr=4096
+no-hint 1 page            -> 0x00007ffff7f30000 bit46
+no-hint 1 GiB PROT_NONE   -> 0x00007fffb7c00000
+no-hint 1TiB reservations: 127 TiB until ENOMEM; lowest=0x000000fff7c00000 highest_end=0x00007ffff7c00000 (bit46)
+hint / MAP_FIXED_NOREPLACE (FNR), len=1 page:
+  hint   2^46         0x0000400000000000 -> 0x0000400000000000 bit46  EXACT
+  FNR    2^46         0x0000400000000000 -> 0x0000400000000000 EXACT
+  hint   2^47-pg      0x00007fffffff0000 -> 0x00007ffff7f30000 bit46  relocated
+  FNR    2^47-pg      0x00007fffffff0000 -> FAILED errno=17 (File exists)
+  hint   2^47         0x0000800000000000 -> 0x00007ffff7f30000 bit46  relocated
+  FNR    2^47         0x0000800000000000 -> 0x0000800000000000 EXACT
+  hint   2^47+pg      0x0000800000010000 -> 0x0000800000010000 bit47  EXACT
+  FNR    2^47+pg      0x0000800000010000 -> 0x0000800000010000 EXACT
+  hint   2^48-pg      0x0000ffffffff0000 -> 0x0000ffffffff0000 bit47  EXACT
+  FNR    2^48-pg      0x0000ffffffff0000 -> 0x0000ffffffff0000 EXACT
+  hint   2^48         0x0001000000000000 -> 0x0001000000000000 bit48  EXACT
+  FNR    2^48         0x0001000000000000 -> 0x0001000000000000 EXACT
+  hint   2^52-pg      0x000fffffffff0000 -> 0x000fffffffff0000 bit51  EXACT
+  FNR    2^52-pg      0x000fffffffff0000 -> 0x000fffffffff0000 EXACT
+FNR at (2^b - 16 pages): 40:Y 41:Y 42:Y 43:Y 44:Y 45:Y 46:Y 47:Y 48:Y 49:Y 50:Y 51:Y 52:Y 53:n 54:n 55:n 56:n
+  => user VA ceiling (TASK_SIZE) = 2^52
+after hint 2^47+2^40 (got 0x0000810000000000), next no-hint -> 0x00007ffff7f30000
+controls:
+  CONTROL must-succeed FNR 2^40 (1 TiB)            0x0000010000000000 -> mapped errno=0  [PASS]
+  CONTROL must-succeed FNR 2^46-16pg               0x00003ffffff00000 -> mapped errno=0  [PASS]
+  CONTROL must-fail FNR 2^56 (above any TASK_SIZE) 0x0100000000000000 -> FAILED errno=12  [PASS]
+  CONTROL must-fail FNR below mmap_min_addr        0x0000000000000000 -> FAILED errno=1  [PASS]
+  CONTROL must-fail FNR over existing mapping      0x00007ffff7f30000 -> FAILED errno=17  [PASS]
+/proc/self/maps (exe, heap, stack, vdso, vvar, highest):
+  100000000-100010000 r-xp 00000000 00:36 4742201                          /tmp/powerarm-va-probes/va_probe
+  100030000-100060000 rw-p 00000000 00:00 0                                [heap]
+  7ffff7f40000-7ffff7f80000 r--p 00000000 00:00 0                          [vvar]
+  7ffff7f80000-7ffff7f90000 r-xp 00000000 00:00 0                          [vdso]
+  7ffff7f90000-7ffff7fe0000 r-xp 00000000 00:1c 3416                       /usr/lib/ld64.so.2
+  7ffffffd0000-800000000000 rw-p 00000000 00:00 0                          [stack]
+  last: 7ffffffd0000-800000000000 rw-p 00000000 00:00 0                          [stack]
+main=0x10000114c (PIE text)
+RESULT controls_failed=0

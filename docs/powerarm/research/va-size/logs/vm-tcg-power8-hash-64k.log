@@ -1,0 +1,54 @@
+qemu-system-ppc64: warning: TCG doesn't support requested feature, cap-cfpc=workaround
+qemu-system-ppc64: warning: TCG doesn't support requested feature, cap-ibs=workaround
+qemu-system-ppc64: warning: TCG doesn't support requested feature, cap-ccf-assist=on
+
+
+SLOF[0m[?25l **********************************************************************
+[1mQEMU Starting
+[0m Build Date = Oct 26 2025 18:45:22
+ FW Version = release 20251026
+ Press "s" to enter Open Firmware.
+
+[0m[?25hC0000C0100C0120C0140C0200C0240C0260C02E0C0300C0320C0340C0360C0370C0380C0371C0373C0374C03F0C0400C0480C04C0C04D0C0500Populating /vdevice methods
+Populating /vdevice/vty@71000000
+Populating /vdevice/nvram@71000001
+C05A0Populating /pci@800000020000000
+C0600C06C0C0700C0800C0880No NVRAM common partition, re-initializing...
+C0890C08A0C08A8C08B0Scanning USB 
+C08C0C08D0Using default console: /vdevice/vty@71000000
+C08E0C08E8Detected RAM kernel at 400000 (294edd8 bytes) 
+C08FF     
+  Welcome to Open Firmware
+
+  Copyright (c) 2004, 2017 IBM Corporation All rights reserved.
+  This program and the accompanying materials are made available
+  under the terms of the BSD License available at
+  http://www.opensource.org/licenses/bsd-license.php
+
+Booting from memory...
+OF stdout device is: /vdevice/vty@71000000
+Preparing to boot Linux version 7.2.6-64k (linux-power9-64k@omarchy-ppc64le) (gcc (GCC) 16.1.1 20260625, GNU ld (GNU Binutils) 2.46.1) #1 SMP PREEMPT Mon, 14 Sep 2026 21:38:26 +0000
+Detected machine type: 0000000000000101
+command line: console=hvc0 quiet
+Max number of cores passed to firmware: 176 (NR_CPUS = 176)
+Calling ibm,client-architecture-support... 
+
+( 700 ) Program Exception [ 7db7b254 ]
+
+
+    R0 .. R7           R8 .. R15         R16 .. R23         R24 .. R31
+000000007daf06b0   0000000002c48100   000000000000b27d   0000000000000001   
+000000007e580f00   0000000000000000   0000000000000008   0000000000000000   
+000000007db2667c   0000000000000004   000000007db7b308   0000000001c60c98   
+0000000000000003   0000000001c0b998   0000000001c1a4d0   0000000001c0bc58   
+0000000000000700   8000000000000001   0000000001c0be70   0000000001c0bb98   
+000000007db7b254   0000000000000000   0000000000000008   0000000000400000   
+000000007db7b300   0000000000000000   0000000000000001   000000007e377e00   
+000000007db7b2e8   0000000001c0bcb8   0000000002c50c80   000000000000000c   
+
+    CR / XER           LR / CTR          SRR0 / SRR1        DAR / DSISR
+        84000008   000000007daf0308   0000000000000f40   0000000000000000   
+0000000000000000   000000007daf0210   8000000000081000           00000000   
+
+
+2 > 7qemu-system-ppc64: terminating on signal 15 from pid 3888005 (timeout)

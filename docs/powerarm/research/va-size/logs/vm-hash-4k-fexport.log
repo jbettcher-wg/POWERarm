@@ -1,0 +1,95 @@
+
+
+SLOF[0m[?25l **********************************************************************
+[1mQEMU Starting
+[0m Build Date = Oct 26 2025 18:45:22
+ FW Version = release 20251026
+ Press "s" to enter Open Firmware.
+
+[0m[?25hC0000C0100C0120C0140C0200C0240C0260C02E0C0300C0320C0340C0360C0370C0380C0371C0373C0374C03F0C0400C0480C04C0C04D0C0500Populating /vdevice methods
+Populating /vdevice/vty@71000000
+Populating /vdevice/nvram@71000001
+C05A0Populating /pci@800000020000000
+C0600C06C0C0700C0800C0880No NVRAM common partition, re-initializing...
+C0890C08A0C08A8C08B0Scanning USB 
+C08C0C08D0Using default console: /vdevice/vty@71000000
+C08E0C08E8Detected RAM kernel at 400000 (28ab6d8 bytes) 
+C08FF     
+  Welcome to Open Firmware
+
+  Copyright (c) 2004, 2017 IBM Corporation All rights reserved.
+  This program and the accompanying materials are made available
+  under the terms of the BSD License available at
+  http://www.opensource.org/licenses/bsd-license.php
+
+Booting from memory...
+OF stdout device is: /vdevice/vty@71000000
+Preparing to boot Linux version 7.2.6 (linux-power9@omarchy-ppc64le) (gcc (GCC) 16.1.1 20260625, GNU ld (GNU Binutils) 2.46.1) #1 SMP PREEMPT Mon, 14 Sep 2026 21:31:34 +0000
+Detected machine type: 0000000000000101
+command line: console=hvc0 quiet disable_radix
+Max number of cores passed to firmware: 176 (NR_CPUS = 176)
+Calling ibm,client-architecture-support... done
+memory layout at init:
+  memory_limit : 0000000000000000 (16 MB aligned)
+  alloc_bottom : 0000000002f91000
+  alloc_top    : 0000000030000000
+  alloc_top_hi : 0000000080000000
+  rmo_top      : 0000000030000000
+  ram_top      : 0000000080000000
+instantiating rtas at 0x000000002ffff000... done
+prom_hold_cpus: skipped
+copying OF device tree...
+Building dt strings...
+Building dt structure...
+Device tree strings 0x0000000002f92000 -> 0x0000000002f92b33
+Device tree struct  0x0000000002f93000 -> 0x0000000002f97000
+Quiescing Open Firmware ...
+Booting Linux via __start() @ 0x0000000000400000 ...
+Linux ppc64le
+#1 SMP PREEMPT MGUEST cpu		: POWER9 (architected), altivec supported
+GUEST MMU		: Hash
+== va_probe: ppc64le 7.2.6 (none)  pagesize=4096 personality=0x0
+mmap_min_addr=4096
+no-hint 1 page            -> 0x00003fff997ea000 bit45
+no-hint 1 GiB PROT_NONE   -> 0x00003fff59600000
+no-hint 1TiB reservations: 62 TiB until ENOMEM; lowest=0x000001ff99600000 highest_end=0x00003fff99600000 (bit45)
+hint / MAP_FIXED_NOREPLACE (FNR), len=1 page:
+  hint   2^46         0x0000400000000000 -> 0x00003fff997ea000 bit45  relocated
+  FNR    2^46         0x0000400000000000 -> FAILED errno=12 (Cannot allocate memory)
+  hint   2^47-pg      0x00007ffffffff000 -> 0x00003fff997ea000 bit45  relocated
+  FNR    2^47-pg      0x00007ffffffff000 -> FAILED errno=12 (Cannot allocate memory)
+  hint   2^47         0x0000800000000000 -> 0x00003fff997ea000 bit45  relocated
+  FNR    2^47         0x0000800000000000 -> FAILED errno=12 (Cannot allocate memory)
+  hint   2^47+pg      0x0000800000001000 -> 0x00003fff997ea000 bit45  relocated
+  FNR    2^47+pg      0x0000800000001000 -> FAILED errno=12 (Cannot allocate memory)
+  hint   2^48-pg      0x0000fffffffff000 -> 0x00003fff997ea000 bit45  relocated
+  FNR    2^48-pg      0x0000fffffffff000 -> FAILED errno=12 (Cannot allocate memory)
+  hint   2^48         0x0001000000000000 -> 0x00003fff997ea000 bit45  relocated
+  FNR    2^48         0x0001000000000000 -> FAILED errno=12 (Cannot allocate memory)
+  hint   2^52-pg      0x000ffffffffff000 -> 0x00003fff997ea000 bit45  relocated
+  FNR    2^52-pg      0x000ffffffffff000 -> FAILED errno=12 (Cannot allocate memory)
+FNR at (2^b - 16 pages): 40:Y 41:Y 42:Y 43:Y 44:Y 45:Y 46:Y 47:n 48:n 49:n 50:n 51:n 52:n 53:n 54:n 55:n 56:n
+  => user VA ceiling (TASK_SIZE) = 2^46
+after hint 2^47+2^40 (got 0x00003fff997ea000), next no-hint -> 0x00003fff997e9000
+controls:
+  CONTROL must-succeed FNR 2^40 (1 TiB)            0x0000010000000000 -> mapped errno=0  [PASS]
+  CONTROL must-succeed FNR 2^46-16pg               0x00003fffffff0000 -> mapped errno=0  [PASS]
+  CONTROL must-fail FNR 2^56 (above any TASK_SIZE) 0x0100000000000000 -> FAILED errno=12  [PASS]
+  CONTROL must-fail FNR below mmap_min_addr        0x0000000000000000 -> FAILED errno=1  [PASS]
+  CONTROL must-fail FNR over existing mapping      0x00003fff997ea000 -> FAILED errno=17  [PASS]
+/proc/self/maps (exe, heap, stack, vdso, vvar, highest):
+  10000000-100d7000 r-xp 00000000 00:03 7                                  /va_probe
+  1000b3ab000-1000b3cd000 rw-p 00000000 00:00 0                            [heap]
+  3fff997e0000-3fff997e4000 r--p 00000000 00:00 0                          [vvar]
+  3fff997e4000-3fff997e7000 r-xp 00000000 00:00 0                          [vdso]
+  3fffcf876000-3fffcf897000 rw-p 00000000 00:00 0                          [stack]
+  last: 3fffcf876000-3fffcf897000 rw-p 00000000 00:00 0                          [stack]
+main=0x10000be0 (PIE text)
+RESULT controls_failed=0
+FEXPORT pagesize=4096 DetermineVASize=42
+FEXPORT Setup48BitAllocatorIfExists engages=no (steals [0x800000000000,0x1000000000000))
+FEXPORT guest stack hint = 2^42 - 128MiB = 0x3fff8000000
+FEXPORT ELF interp load hint = min(2^42,2^47)/3*2 = 0x2aaaaaaaaaa
+FEXPORT internal arena hint window = [0x10000000000, 0x200000000000)
+GUEST probe exit=0
+[    0.463447][    T1] reboot: Power down

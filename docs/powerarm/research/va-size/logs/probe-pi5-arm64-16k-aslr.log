@@ -1,0 +1,39 @@
+== va_probe: aarch64 6.18.39+rpt-rpi-2712 openbmc  pagesize=16384 personality=0x0
+mmap_min_addr=4096
+no-hint 1 page            -> 0x00007fff7b010000 bit46
+no-hint 1 GiB PROT_NONE   -> 0x00007fff3ae30000
+no-hint 1TiB reservations: 127 TiB until ENOMEM; lowest=0x000000555db60000 highest_end=0x00007fff7ae30000 (bit46)
+hint / MAP_FIXED_NOREPLACE (FNR), len=1 page:
+  hint   2^46         0x0000400000000000 -> 0x0000400000000000 bit46  EXACT
+  FNR    2^46         0x0000400000000000 -> 0x0000400000000000 EXACT
+  hint   2^47-pg      0x00007fffffffc000 -> 0x00007fffffffc000 bit46  EXACT
+  FNR    2^47-pg      0x00007fffffffc000 -> 0x00007fffffffc000 EXACT
+  hint   2^47         0x0000800000000000 -> 0x00007fff7b010000 bit46  relocated
+  FNR    2^47         0x0000800000000000 -> FAILED errno=12 (Cannot allocate memory)
+  hint   2^47+pg      0x0000800000004000 -> 0x00007fff7b010000 bit46  relocated
+  FNR    2^47+pg      0x0000800000004000 -> FAILED errno=12 (Cannot allocate memory)
+  hint   2^48-pg      0x0000ffffffffc000 -> 0x00007fff7b010000 bit46  relocated
+  FNR    2^48-pg      0x0000ffffffffc000 -> FAILED errno=12 (Cannot allocate memory)
+  hint   2^48         0x0001000000000000 -> 0x00007fff7b010000 bit46  relocated
+  FNR    2^48         0x0001000000000000 -> FAILED errno=12 (Cannot allocate memory)
+  hint   2^52-pg      0x000fffffffffc000 -> 0x00007fff7b010000 bit46  relocated
+  FNR    2^52-pg      0x000fffffffffc000 -> FAILED errno=12 (Cannot allocate memory)
+FNR at (2^b - 16 pages): 40:Y 41:Y 42:Y 43:Y 44:Y 45:Y 46:Y 47:Y 48:n 49:n 50:n 51:n 52:n 53:n 54:n 55:n 56:n
+  => user VA ceiling (TASK_SIZE) = 2^47
+after hint 2^47+2^40 (got 0x00007fff7b010000), next no-hint -> 0x00007fff7b00c000
+controls:
+  CONTROL must-succeed FNR 2^40 (1 TiB)            0x0000010000000000 -> mapped errno=0  [PASS]
+  CONTROL must-succeed FNR 2^46-16pg               0x00003ffffffc0000 -> mapped errno=0  [PASS]
+  CONTROL must-fail FNR 2^56 (above any TASK_SIZE) 0x0100000000000000 -> FAILED errno=12  [PASS]
+  CONTROL must-fail FNR below mmap_min_addr        0x0000000000000000 -> FAILED errno=1  [PASS]
+  CONTROL must-fail FNR over existing mapping      0x00007fff7b010000 -> FAILED errno=17  [PASS]
+/proc/self/maps (exe, heap, stack, vdso, vvar, highest):
+  55555db60000-55555db64000 r-xp 00000000 00:20 15503                      <probe-dir>/va_probe
+  55556f4a8000-55556f4cc000 rw-p 00000000 00:00 0                          [heap]
+  7fff7b014000-7fff7b03c000 r-xp 00000000 b3:02 5812                       /usr/lib/aarch64-linux-gnu/ld-linux-aarch64.so.1
+  7fff7b03c000-7fff7b04c000 r--p 00000000 00:00 0                          [vvar]
+  7fff7b04c000-7fff7b050000 r-xp 00000000 00:00 0                          [vdso]
+  7ffff5628000-7ffff564c000 rw-p 00000000 00:00 0                          [stack]
+  last: 7ffff5628000-7ffff564c000 rw-p 00000000 00:00 0                          [stack]
+main=0x55555db60e48 (PIE text)
+RESULT controls_failed=0

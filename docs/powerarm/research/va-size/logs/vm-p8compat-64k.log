@@ -1,0 +1,81 @@
+
+
+SLOF[0m[?25l **********************************************************************
+[1mQEMU Starting
+[0m Build Date = Oct 26 2025 18:45:22
+ FW Version = release 20251026
+ Press "s" to enter Open Firmware.
+
+[0m[?25hC0000C0100C0120C0140C0200C0240C0260C02E0C0300C0320C0340C0360C0370C0380C0371C0373C0374C03F0C0400C0480C04C0C04D0C0500Populating /vdevice methods
+Populating /vdevice/vty@71000000
+Populating /vdevice/nvram@71000001
+C05A0Populating /pci@800000020000000
+C0600C06C0C0700C0800C0880No NVRAM common partition, re-initializing...
+C0890C08A0C08A8C08B0Scanning USB 
+C08C0C08D0Using default console: /vdevice/vty@71000000
+C08E0C08E8Detected RAM kernel at 400000 (294edd8 bytes) 
+C08FF     
+  Welcome to Open Firmware
+
+  Copyright (c) 2004, 2017 IBM Corporation All rights reserved.
+  This program and the accompanying materials are made available
+  under the terms of the BSD License available at
+  http://www.opensource.org/licenses/bsd-license.php
+
+Booting from memory...
+OF stdout device is: /vdevice/vty@71000000
+Preparing to boot Linux version 7.2.6-64k (linux-power9-64k@omarchy-ppc64le) (gcc (GCC) 16.1.1 20260625, GNU ld (GNU Binutils) 2.46.1) #1 SMP PREEMPT Mon, 14 Sep 2026 21:38:26 +0000
+Detected machine type: 0000000000000101
+command line: console=hvc0 quiet
+Max number of cores passed to firmware: 176 (NR_CPUS = 176)
+Calling ibm,client-architecture-support... done
+memory layout at init:
+  memory_limit : 0000000000000000 (16 MB aligned)
+  alloc_bottom : 0000000003040000
+  alloc_top    : 0000000030000000
+  alloc_top_hi : 0000000080000000
+  rmo_top      : 0000000030000000
+  ram_top      : 0000000080000000
+instantiating rtas at 0x000000002fff0000... done
+prom_hold_cpus: skipped
+copying OF device tree...
+Building dt strings...
+Building dt structure...
+Device tree strings 0x0000000003050000 -> 0x0000000003050aff
+Device tree struct  0x0000000003060000 -> 0x0000000003070000
+Quiescing Open Firmware ...
+Booting Linux via __start() @ 0x0000000000400000 ...
+Linux ppc64le
+#1 SMP PREEMPT M[    0.278508][    T1] vas: API is supported only with radix page tables
+[    0.294687][    T1] Kernel panic - not syncing: Attempted to kill init! exitcode=0x00000004
+[    0.294733][    T1] CPU: 0 UID: 0 PID: 1 Comm: init Not tainted 7.2.6-64k #1 PREEMPTLAZY 
+[    0.294771][    T1] Hardware name: IBM pSeries (emulated by qemu) POWER8 (architected) 0x4e1203 0xf000004 of:SLOF,HEAD hv:linux,kvm pSeries
+[    0.294833][    T1] Call Trace:
+[    0.294852][    T1] [c00000000371f9e0] [c0000000013d1b24] dump_stack_lvl+0x88/0xc4 (unreliable)
+[    0.294898][    T1] [c00000000371fa10] [c000000000208128] vpanic+0x324/0x5dc
+[    0.294936][    T1] [c00000000371fac0] [c00000000020841c] do_panic_on_target_cpu+0x0/0x34
+[    0.294974][    T1] [c00000000371fae0] [c000000000211cdc] do_exit+0xc9c/0xcd0
+[    0.295012][    T1] [c00000000371fba0] [c000000000211fcc] do_group_exit+0x3c/0xe0
+[    0.295050][    T1] [c00000000371fbf0] [c000000000229270] get_signal+0xb10/0xc00
+[    0.295087][    T1] [c00000000371fcd0] [c00000000002277c] arch_do_signal_or_restart+0x8c/0x340
+[    0.295131][    T1] [c00000000371fd70] [c000000001443398] irqentry_exit+0x398/0xbc0
+[    0.295168][    T1] [c00000000371fe10] [c00000000002d29c] program_check_exception+0x9c/0xd0
+[    0.295207][    T1] [c00000000371fe50] [c000000000009b2c] program_check_common_virt+0x3bc/0x3c0
+[    0.295252][    T1] ---- interrupt: 700 at 0x10025834
+[    0.295277][    T1] NIP:  0000000010025834 LR: 00000000100015f4 CTR: 000000000000000e
+[    0.295313][    T1] REGS: c00000000371fe80 TRAP: 0700   Not tainted  (7.2.6-64k)
+[    0.295349][    T1] MSR:  800000000008d033 <SF,EE,PR,ME,IR,DR,RI,LE>  CR: 20000824  XER: 00000000
+[    0.295399][    T1] CFAR: 00000000100015f0 IRQMASK: 0 
+[    0.295399][    T1] GPR00: 00000000100012f4 00007fffd7db0cd0 00000000100e7e00 00007fffd7db0bd0 
+[    0.295399][    T1] GPR04: 0000000000000000 00007fffd7dbfff5 00000000100a818c 00000000100df3d9 
+[    0.295399][    T1] GPR08: 00000000100e6f28 00000000100e6f48 00000000100e6f38 0000000000000000 
+[    0.295399][    T1] GPR12: 00007fffd7db10a9 0000000000000000 0000000000000000 0000000000000000 
+[    0.295399][    T1] GPR16: 0000000000000000 0000000000000000 0000000000000000 0000000000000000 
+[    0.295399][    T1] GPR20: 0000000000000000 00000000100dc100 00000000100e6da8 00007fffd7db0e10 
+[    0.295399][    T1] GPR24: 0000000000000000 0000000010000b04 00007fffd7db0e40 0000000000000001 
+[    0.295399][    T1] GPR28: 00007fffd7db0e18 0000000000000000 00000000100e0f30 00007fffd7db0cd0 
+[    0.295730][    T1] NIP [0000000010025834] 0x10025834
+[    0.295754][    T1] LR [00000000100015f4] 0x100015f4
+[    0.295779][    T1] ---- interrupt: 700
+[    0.297355][    T1] pstore: backend (nvram) writing error (-1)
+qemu-system-ppc64: OS terminated: 

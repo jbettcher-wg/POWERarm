@@ -1,0 +1,5 @@
+FEXPORT pagesize=16384 DetermineVASize=47
+FEXPORT Setup48BitAllocatorIfExists engages=no (steals [0x800000000000,0x1000000000000))
+FEXPORT guest stack hint = 2^47 - 128MiB = 0x7ffff8000000
+FEXPORT ELF interp load hint = min(2^47,2^47)/3*2 = 0x555555555554
+FEXPORT internal arena hint window = [0x10000000000, 0x200000000000)

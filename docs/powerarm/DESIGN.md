@@ -278,6 +278,65 @@ inode and offset. `[SPEC]` Check whether mtrack already handles `memfd` aliases.
 
 ---
 
+### 4.8 Presented CPU profile
+
+The aim is for 99% of aarch64 Linux software to run by *presenting* a CPU that software already
+knows, not by emulating every corner. Distros build for the ARMv8.0-A baseline, and anything
+above that is detected at run time through `HWCAP`/`HWCAP2`, `/proc/cpuinfo` or `MRS ID_AA64*`.
+Everything declared must actually work. A feature is added to the profile only when its
+instructions pass Pi parity.
+
+**Target: a Cortex-A72/A76-class core.** The Pi 5's A76 is both the model and the reference
+machine.
+
+| Tier | HWCAP features | Why |
+|---|---|---|
+| 1 (M2–M4) | `fp`, `asimd`, `cpuid`, `atomics` (LSE), `crc32`, `aes`, `pmull`, `sha1`, `sha2` | Covers distro baselines. LSE keeps glibc and libstdc++ off the LL/SC path |
+| 2 (after M4) | `asimdhp`, `fphp`, `asimdrdm`, `jscvt`, `fcma`, `lrcpc`, `dcpop`, `asimddp` (dotprod) | Fast paths in JS engines, codecs and ML runtimes. Dotprod is added once it's implemented |
+| Never, initially | SVE/SVE2/SME, MTE, PAC and BTI enforcement, `sha3`/`sha512`, `i8mm`, `bf16` | Software falls back. PAC and BTI instructions are NOPs |
+
+- **SHA1/SHA256** map one-to-one onto existing IR ops. `VSha1*` and `VSha256H/H2/U0/U1` are
+  named after the ARM instructions and are already lowered on ppc64le. fastppcx86 lowered x86
+  SHA-NI onto them.
+- **AES:** the existing `VAESEnc/Dec` ops have x86 `AESENC` semantics. `AESE`/`AESD`/`AESMC`/
+  `AESIMC` need new ops or compositions of the existing ones.
+- **32-bit code:** none. There's no AArch32 and no armhf multilib; ARMv9 cores dropped AArch32
+  at EL0 as well. Guest pointers are host pointers, so thunks pass them through untouched.
+
+### 4.9 Page size and address space
+
+**Page size.** The guest is told the **host** page size (`AT_PAGESZ` = 4096 or 65536). arm64
+Linux software already runs on 4K, 16K and 64K kernels, and GNU ld's aarch64 default
+max-page-size is 64K. The M0 smoke binary (Debian static `hello`) has `p_align` 0x10000 on both
+PT_LOADs. The 4K granule emulation inherited from fastppcx86 is kept only as a **per-process
+fallback** for binaries whose PT_LOAD `p_align` is smaller than the host page. **Every milestone
+from M1 on must pass on both a 4K and a 64K host kernel**; the owner runs both.
+
+**Address space.** Research and measurements are in
+[`research/va-size/VA-SIZE-RESEARCH.md`](research/va-size/VA-SIZE-RESEARCH.md) `[MEASURED]`:
+
+| Kernel | User VA ceiling |
+|---|---|
+| ppc64 64K (radix or hash) | 2^52. Default window 2^47; hints above it are honoured |
+| ppc64 **4K** (radix or hash) | **2^46**. Nothing above it can be mapped |
+| arm64 Pi 5 (16K, VA47) | 2^47. Identical to ppc64 64K with no hints, apart from PIE base |
+| arm64 VA48 / VA52 | 2^48 / 2^52 `[SPEC]` |
+
+- **Default:** a guest limit equal to the host's natural window. That's 47 bits on 64K and 46
+  on 4K, enforced in the mmap-family syscall layer: hints above the limit are dropped, and
+  `MAP_FIXED` above it gets `ENOMEM`. POWERarm's own allocations live at 2^48 and above on 64K.
+- **Per-app `GuestVABits`:** 48 on 64K for MSan and TSan (needs a guest address allocator).
+  42 or 39 on 4K for TSan. 52 only on request.
+- **Software that cares:** released TSan and `go -race` abort below 47 bits, and MSan needs
+  48-bit. V8, HotSpot/ZGC, the Go runtime, .NET, LuaJIT GC64 and SpiderMonkey probe or already
+  assume at most 47 bits.
+- **Inherited bug:** FEX's `DetermineVASize()` probe list lacks 46, so on 4K it detects 42 and
+  guest stack and interpreter hints land inside FEX's own [1 TiB, 32 TiB) allocation window.
+  This also affects fastppcx86 on 4K kernels. Fix it in both trees.
+- **Top-byte-ignore:** arm64 ignores pointer tag bytes and POWER doesn't. Mask only for
+  processes that opt in with `prctl(PR_SET_TAGGED_ADDR_CTRL)`. That's rare on Linux desktops
+  and servers.
+
 ## 5. Linux user ABI: arm64 guest on a powerpc64 host
 
 These differences are all in the host direction. fastppcx86 already translates x86-64 onto
@@ -331,9 +390,27 @@ the generator's layout-repacking work mostly disappears. What remains:
   trampoline. FEX already has this machinery.
 - **Unwinding and exceptions across the boundary.** Unsupported. Document it and abort
   cleanly.
-- **First targets, as in fastppcx86:** `libGL`, `libEGL`, `libvulkan`, `libdrm`,
-  `libwayland-client`, `libX11`, `libasound`, `libSDL2`. These already exist in
-  `ThunkLibs/` `[CODE]`, so each one needs a new guest half, not a new host half.
+- **Order (owner decision 2026-09-16):**
+  1. **GL/Vulkan first**, with `libEGL`, `libdrm`, `libwayland-client`, `libX11`, `libasound`
+     and `libSDL2` alongside. The host halves already exist in `ThunkLibs/` `[CODE]`, so only
+     the guest halves are new. The Pi 5 builds them natively, with no cross toolchain; after
+     the self-hosting milestone (§8) POWERarm builds them itself.
+  2. **Then `libcrypto`/`libssl`.** The host OpenSSL runs POWER assembly paths (`vcipher`,
+     `vpmsumd`), so TLS runs at native speed. OpenSSL 3's opaque pointers make most symbols
+     auto-thunkable. Callbacks (BIO methods, verify, password, ex_data, allocators), `va_list`
+     functions and provider loading need annotation or hand-written thunks. Guest and host
+     `.so.3` versions must be compatible. Statically linked crypto (Go, ring/rustls,
+     BoringSSL in Chromium/Electron/Node) doesn't benefit, so the JIT's SHA/AES/PMULL paths
+     are still required.
+- **GPU test ladder:**
+  1. `vkcube` and `eglgears`/`glxgears`
+  2. Sascha Willems' Vulkan samples, built for aarch64 (one feature per sample)
+  3. Native arm64 open-source games from Arch Linux ARM: SuperTuxKart first (GL and Vulkan
+     renderers, easy to benchmark), then Luanti, 0 A.D. and Xonotic. Confirm package
+     availability when the rootfs is built
+  4. An aarch64 Godot export, the first binary built by someone else
+
+  Every step runs on both the 4K and 64K kernels.
 
 ### 6.2 Rootfs and binfmt
 
@@ -402,11 +479,12 @@ The house rule applies: **parity before timing, with controls that fire.**
 | # | Deliverable | Exit criterion |
 |---|---|---|
 | **M0** | Fork fastppcx86 with history, rename the product, delete the x86 guest, add an empty A64 frontend and arm64 `CPUState` (§10.4) | The tree builds. The list of fixes it took is the coupling census |
-| M1 | A64 interpreter plus static ELF loader with a minimal syscall set | Static arm64 `hello`, `busybox --help`, instruction-level parity against the Pi |
+| M1 | A64 interpreter plus static ELF loader with a minimal syscall set | Static arm64 `hello`, `busybox --help`, instruction-level parity against the Pi. **From M1 on, every exit criterion must pass on both 4K and 64K host kernels** |
 | M2 | A64 → FEX IR frontend for base integer and branch instructions, JIT enabled | Static coreutils via JIT, fuzz parity for integer instructions |
 | M3 | Dynamic linking, Arch Linux ARM rootfs overlay, binfmt, signals, vDSO, threads | Bash and Python from the arm64 rootfs, run through binfmt |
 | M4 | FP/NEON/crypto/CRC, exclusive monitors plus LSE | glibc tests, OpenSSL `speed` parity, a contention test for LL/SC |
-| M5 | Library thunks (GL/Vulkan/Wayland/ALSA) | An arm64 GL program renders on the host GPU |
+| M5 | Library thunks: GL/Vulkan first, then libcrypto/libssl (§6.1) | `vkcube` and SuperTuxKart render on the host GPU; `openssl s_client` and `curl https://` run through the thunk |
+| M5.5 | **Self-hosting:** Arch Linux ARM's own `gcc`/`cmake`/`make` run under POWERarm | A real package builds under emulation, with output byte-identical to the Pi's build. POWERarm's own guest thunk halves build on the POWER9 through POWERarm |
 | M6 | Performance: RAS, register-pinning census, flag elimination, ISA 3.0 paths | Measured against `qemu-aarch64` on arkamedes, with machine configuration pinned (handbook §Measuring) |
 
 ---
@@ -419,6 +497,11 @@ The house rule applies: **parity before timing, with controls that fire.**
 | Rootfs source | **Arch Linux ARM** (§6.4) |
 | Second guest in fastppcx86, or a split | Research needed. Result: **split with shared history and rename** (§10) |
 | Host `long double` | **IBM double-double**, measured. No auto-thunking of `long double` (§6.1) |
+| Presented CPU | Cortex-A72/A76-class HWCAP profile, tiered (§4.8) |
+| Page size | Host page size, with a 4K granule fallback per process; test on 4K and 64K kernels (§4.9) |
+| Address space | Match the host window (47-bit on 64K, 46-bit on 4K), per-app `GuestVABits` override (§4.9) |
+| Thunk order | GL/Vulkan, then OpenSSL (§6.1) |
+| Name | Keep POWERarm; README carries a trademark non-affiliation line |
 
 ---
 
