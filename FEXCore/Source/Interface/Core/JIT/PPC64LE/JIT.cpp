@@ -5081,9 +5081,47 @@ CPUBackend::CompiledCode PPC64JITCore::CompileCode(
   }
   size_t BlockEmissionIdx = 0;
 
+  // P6 prepass (see DEF_OP(CondJump)): emission order, and which blocks hold
+  // nothing but a constant-target plain exit (the taken and not-taken blocks
+  // the A64 frontend builds for every conditional branch).
+  BlockEmissionIDs.clear();
+  ConstExitOnlyBlock.assign(NumBlocks, 0);
+  for (auto [BlockNode, BlockHeader] : IRView->GetBlocks()) {
+    auto BlockIROp = BlockHeader->C<FEXCore::IR::IROp_CodeBlock>();
+    BlockEmissionIDs.push_back(BlockIROp->EntryPoint ? UINT32_MAX : BlockIROp->ID);
+    uint32_t CodeOps = 0;
+    bool ConstExit = false;
+    for (auto [CodeNode, IROp] : IR->GetCode(BlockNode)) {
+      switch (IROp->Op) {
+      case IR::OP_DUMMY:
+      case IR::OP_BEGINBLOCK:
+      case IR::OP_ENDBLOCK:
+      case IR::OP_INVALIDATEFLAGS:
+      case IR::OP_INLINECONSTANT:
+      case IR::OP_INLINEENTRYPOINTOFFSET:
+      case IR::OP_GUESTOPCODE: continue;
+      default: break;
+      }
+      ++CodeOps;
+      if (IROp->Op == IR::OP_EXITFUNCTION) {
+        auto Exit = IROp->C<IR::IROp_ExitFunction>();
+        uint64_t Target {};
+        ConstExit = Exit->Hint == IR::BranchHint::None &&
+                    (IsInlineConstant(Exit->NewRIP, &Target) || IsInlineEntrypointOffset(Exit->NewRIP, &Target));
+      }
+    }
+    if (CodeOps == 1 && ConstExit && BlockIROp->ID < NumBlocks) {
+      ConstExitOnlyBlock[BlockIROp->ID] = 1;
+    }
+  }
+  size_t ShapeEmissionIdx = 0;
+
   for (auto [BlockNode, BlockHeader] : IRView->GetBlocks()) {
     auto BlockIROp = BlockHeader->CW<FEXCore::IR::IROp_CodeBlock>();
     CurrentBlockID = BlockIROp->ID;
+    NextBlockID = ShapeEmissionIdx + 1 < BlockEmissionIDs.size() ? BlockEmissionIDs[ShapeEmissionIdx + 1] : UINT32_MAX;
+    NextNextBlockID = ShapeEmissionIdx + 2 < BlockEmissionIDs.size() ? BlockEmissionIDs[ShapeEmissionIdx + 2] : UINT32_MAX;
+    ++ShapeEmissionIdx;
 
     FallthroughBlockID = UINT32_MAX;
     if (!DisableFallthrough) {

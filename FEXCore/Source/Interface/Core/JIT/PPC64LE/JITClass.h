@@ -303,6 +303,14 @@ private:
   // backward-edge suspend poke in the jump handlers is never skipped by this.
   uint32_t FallthroughBlockID {UINT32_MAX};
 
+  // P6 conditional-exit shape (DEF_OP(CondJump)): the IDs of the two blocks
+  // emitted after the current one (UINT32_MAX when absent or an EntryPoint),
+  // and, per CodeBlock ID, whether the block is nothing but a constant-target
+  // plain ExitFunction. Filled by CompileCode before the block loop.
+  uint32_t NextBlockID {UINT32_MAX};
+  uint32_t NextNextBlockID {UINT32_MAX};
+  fextl::vector<uint32_t> BlockEmissionIDs;
+  fextl::vector<uint8_t> ConstExitOnlyBlock;
 
   // -------------------------------------------------------------------------
   // 32-bit tail-mask elision (FEX_ZEXTOPT=0 kill switch).

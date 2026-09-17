@@ -1275,6 +1275,23 @@ DEF_OP(CondJump) {
   const uint32_t TrueID = IR->GetOp<IR::IROp_CodeBlock>(Op->TrueBlock)->ID;
   const uint32_t FalseID = IR->GetOp<IR::IROp_CodeBlock>(Op->FalseBlock)->ID;
 
+  // P6 (POWER9 pipeline research Rule 6): a conditional guest branch between
+  // two block exits. The frontend emits it as this CondJump followed by the
+  // taken block and then the not-taken block, each holding only a constant
+  // exit, which once linked is a single `b`. The generic shape below reaches
+  // them through `bc; b; b` hops: two taken branches on the true path and
+  // three on the false one. Branch straight to the false exit instead and
+  // fall into the true one: one taken branch on the true path (the linked
+  // exit), two on the false path. The bc's reach is the true block alone (a
+  // constant exit, at most ~30 instructions). POWERARM_NOEXITSHAPE=1 disables.
+  static const bool NoExitShape = getenv("POWERARM_NOEXITSHAPE") != nullptr;
+  if (!NoExitShape && TrueID != FalseID && TrueID == NextBlockID && FalseID == NextNextBlockID && TrueID < ConstExitOnlyBlock.size() &&
+      FalseID < ConstExitOnlyBlock.size() && ConstExitOnlyBlock[TrueID] && ConstExitOnlyBlock[FalseID] && SpinBackedges.empty() &&
+      SpinRestoreEdges.empty()) {
+    bc(InvertCond(CC), JumpTarget(Op->FalseBlock));
+    return;
+  }
+
   // Fallthrough elision (see FallthroughBlockID in JITClass.h). A fallthrough
   // target is by construction the next emitted block: forward, unbound, so
   // the backward-edge suspend poke never applies to an elided leg.
