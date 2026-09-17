@@ -47,9 +47,8 @@ inline constexpr uint64_t ID_AA64ISAR1_EL1 = 0;
 inline constexpr uint64_t ID_AA64MMFR0_EL1 = 0x00000111FF000000;
 
 // FPCR bits EL0 can set. Pi 5 reads back 0x07C80000 after writing all-ones:
-// AHP(26), DN(25), FZ(24), RMode(23:22) and FZ16(19). FZ16 is left out
-// because the presented CPU has no FP16 (a deliberate difference from the Pi).
-inline constexpr uint64_t FPCR_WRITABLE_MASK = 0x07C00000;
+// AHP(26), DN(25), FZ(24), RMode(23:22) and FZ16(19), the same as here.
+inline constexpr uint64_t FPCR_WRITABLE_MASK = 0x07C80000;
 // FPSR bits EL0 can set. Pi 5: 0xF800009F (NZCV, QC, IDC, IXC..IOC).
 inline constexpr uint64_t FPSR_WRITABLE_MASK = 0xF800009F;
 
