@@ -203,6 +203,170 @@ DEF_OP(CallbackReturn) {
 //
 // FEX_NOSINKEXITRIP restores the hoisted form (RIP constant + `std State.rip`
 // above the patch site) for A/B and bisection.
+// ---------------------------------------------------------------------------
+// A64 guest call/return pairing (P3, OPTIMIZATION-CHECKLIST.md)
+// ---------------------------------------------------------------------------
+// The x86-shaped pairing further down pushes a host continuation that is a
+// block of the SAME compile unit (CallReturnBlock). The A64 frontend compiles
+// one guest block per unit and ends it at every branch, so a BL/BLR never has
+// its return block in the unit, and that layout would push {0,0}.
+//
+// Here the continuation is a trampoline in the CALLER's unit: a constant exit
+// to the return address R, in link-first form, so once linked it is a single
+// `b` to R's translation. The call ends in an LK=1 branch whose next word IS
+// that trampoline, and pushes {R, &trampoline} on the per-thread shadow stack:
+//
+//   BL (constant target T)                BLR (register target)
+//     push {R, &Tramp}                      push {R, &Tramp}
+//     [li r0,0]                             L1 probe on the target:
+//   A: b MissLeg     -> linked: bl T'        hit: mtctr; std rip; [li r0,0]
+//   Tramp: exit to R (link-first)                 bctrl
+//     ...                                 Tramp: exit to R (link-first)
+//   MissLeg: rip = T; b LinkPath            miss: std rip; b spill+dispatch
+//
+// A guest RET (DEF_OP(ExitFunction), Return hint) pops the top entry and, when
+// its guest address equals the RET's actual target, loads the trampoline into
+// LR and returns with `blr`, which the hardware link stack predicts because
+// the call's `bl`/`bctrl` pushed exactly that word.
+//
+// CORRECTNESS does not depend on the pairing being right. A trampoline does
+// nothing but continue at its R with the guest state as it is, so executing
+// any entry whose R equals the RET target is exact, whoever pushed it: a stale
+// entry left by longjmp, a tail call or a signal frame either does not match
+// (the RET falls back to the L1 probe on its real target, and the pop is
+// unconditional so stale entries drain) or matches and still continues at the
+// right guest address. What the hardware link stack predicts is only a
+// prediction: LR is loaded explicitly, so a desynchronised link stack costs a
+// mispredict, never a wrong branch. A call that did not reach its `bl` (first
+// execution, before A is linked; the BLR probe's miss leg) pushed an entry
+// without a link-stack push: its return mispredicts once and is still exact.
+// Host trampolines never outlive their code: every code-buffer rotation and
+// every guest code invalidation zeroes the stack. A zero entry matches only a
+// RET to guest address 0; its `blr` to host address 0 faults outside the code
+// buffer with State.pc already 0, which is the guest SIGSEGV the RET owes
+// (the L1 probe has the same property for an empty entry).
+//
+// Neither the push nor the pop checks bounds (7 and 9 instructions before
+// the r0 re-zero and the branch). An overflow or underflow faults on a guard page of the
+// call-ret allocation at the first ld/std through the stack pointer register;
+// SyscallHandler::HandleSegfault resets that register to the default location
+// and retries. Tested by unittests/A64Frontend/callret.c (120000-deep
+// recursion, 300000 unpaired RETs). PC discovery for &Tramp is lnia
+// (addpcis) on ISA 3.0, which avoids the mflr SPR move; POWER8 uses
+// bcl 20,31,$+4 ; mflr.
+bool PPC64JITCore::ConstantCallReturnAddress(const IR::OrderedNodeWrapper& WNode, uint64_t* Value) const {
+  // After register allocation a GPR argument is either an inline constant op
+  // or an encoded register, so the frontend passes the return address as an
+  // InlineEntrypointOffset rather than the SSA value it stored to X30.
+  return IsInlineConstant(WNode, Value) || IsInlineEntrypointOffset(WNode, Value);
+}
+
+void PPC64JITCore::EmitLinkFirstConstExit(uint64_t Target) {
+  const int16_t rip_off = static_cast<int16_t>(offsetof(FEXCore::Core::CpuStateFrame, State.pc));
+  // The patch site is the first word of the RIP move; the linker rewrites it
+  // to `b HostCode` (or `b Thunk`), skipping the rest.
+  PendingJumpThunks.push_back({GetCursorAddress<uint64_t>(), Target, {}});
+  InsertExitRIPMove(TMP1, Target);
+  std(TMP1, rip_off, STATE);
+  b(&PendingJumpThunks.back().LinkPath);
+}
+
+void PPC64JITCore::EmitA64PairedCall(const IR::IROp_ExitFunction* Op, bool ConstRIP, uint64_t NewRIP, uint64_t ReturnAddress,
+                                     bool UnitR0Dirty) {
+  const int16_t rip_off = static_cast<int16_t>(offsetof(FEXCore::Core::CpuStateFrame, State.pc));
+  const int16_t sp_off = static_cast<int16_t>(offsetof(FEXCore::Core::CpuStateFrame, State.callret_sp));
+
+  // The guest return address for the push is X30, which the frontend stored
+  // just before this exit and which lives in its pinned static register at
+  // every block exit (the next block reads it there).
+  GPR RetReg = TMP1;
+  for (size_t i = 0; i < FEXCore::Core::StaticGPRGuestReg.size(); ++i) {
+    if (FEXCore::Core::StaticGPRGuestReg[i] == 30) {
+      RetReg = a64::SRA[i];
+    }
+  }
+  if (RetReg == TMP1) {
+    LoadConstant(TMP1, ReturnAddress);
+  }
+  GPR TargetReg = ConstRIP ? TMP1 : GetReg(Op->NewRIP);
+
+  // Push {R, &Tramp}. The addi's displacement is patched once Tramp's address
+  // is known.
+  uint64_t Anchor;
+  if (CTX->HostFeatures.SupportsISA30) {
+    lnia(TMP2);
+    Anchor = GetCursorAddress<uint64_t>();
+  } else {
+    bcl(20, 31, 4);                     // no link-stack push
+    Anchor = GetCursorAddress<uint64_t>();
+    mflr(TMP2);
+  }
+  uint32_t* AddiWord = GetCursorAddress<uint32_t*>();
+  addi(TMP2, TMP2, 0);
+  // No bounds check: a push below the base faults on the guard page and
+  // SyscallHandler::HandleSegfault resets TMP3 (the faulting store's base
+  // register) to the default location, then the store retries.
+  ld(TMP3, sp_off, STATE);
+  addi(TMP3, TMP3, -16);
+  std(RetReg, 0, TMP3);
+  std(TMP2, 8, TMP3);
+  std(TMP3, sp_off, STATE);
+
+  auto PatchTramp = [&]() {
+    const int64_t Delta = static_cast<int64_t>(GetCursorAddress<uint64_t>()) - static_cast<int64_t>(Anchor);
+    LOGMAN_THROW_A_FMT(Delta > 0 && Delta < 0x7FFF, "A64 call trampoline out of addi reach: {}", Delta);
+    *AddiWord = (14u << 26) | (static_cast<uint32_t>(TMP2.idx) << 21) | (static_cast<uint32_t>(TMP2.idx) << 16) |
+                (static_cast<uint32_t>(Delta) & 0xFFFFu);
+  };
+
+  PPC64Emitter::Label MissLeg {};
+  if (ConstRIP) {
+    EmitExitR0Zero(UnitR0Dirty);
+    // A: the record's caller word, and also its Final word: FinalOffset ==
+    // CallerOffset tells the linker to write `bl` here in place.
+    const uint64_t A = GetCursorAddress<uint64_t>();
+    PendingJumpThunks.push_back({A, NewRIP, {}});
+    auto* Record = &PendingJumpThunks.back();
+    Record->FinalAddress = A;
+    b(&MissLeg);
+    PatchTramp();
+    EmitLinkFirstConstExit(ReturnAddress);
+    Bind(&MissLeg);
+    InsertExitRIPMove(TMP1, NewRIP);
+    std(TMP1, rip_off, STATE);
+    b(&Record->LinkPath);
+  } else {
+    const int32_t l1_off = static_cast<int32_t>(offsetof(FEXCore::Core::CpuStateFrame, State.L1Pointer));
+    const int32_t l1mask_off = static_cast<int32_t>(offsetof(FEXCore::Core::CpuStateFrame, State.L1Mask));
+    ld(TMP2, l1_off, STATE);
+    if (!FEXCore::Config::Get_DYNAMICL1CACHE()) {
+      constexpr uint32_t L1MB = 64 - (std::countr_zero(FEXCore::LookupCache::MAX_L1_ENTRIES) + 4);
+      rldic(TMP4, TargetReg, 4, L1MB);
+    } else {
+      ld(TMP3, l1mask_off, STATE);
+      sldi(TMP4, TargetReg, 4);
+      and_(TMP4, TMP4, TMP3);
+    }
+    add(TMP2, TMP2, TMP4);
+    ld(TMP4, 8, TMP2);                  // GuestCode, loaded first (see the probe below)
+    cmpd(cr(7), TMP4, TargetReg);
+    bc({4, 30}, &MissLeg);
+    xor_(TMP3, TMP4, TMP4);
+    ldx(TMP3, TMP2, TMP3);              // HostCode under the GuestCode address dependency
+    mtctr(TMP3);
+    std(TargetReg, rip_off, STATE);
+    EmitExitR0Zero(UnitR0Dirty);
+    bctrl();                            // LK=1: link stack <- &Tramp
+    PatchTramp();
+    EmitLinkFirstConstExit(ReturnAddress);
+    Bind(&MissLeg);
+    std(TargetReg, rip_off, STATE);
+    SharedSpillExitUsed = true;
+    b(&SharedSpillExitLabel);
+  }
+
+}
+
 DEF_OP(ExitFunction) {
   auto Op = IROp->C<IR::IROp_ExitFunction>();
   // Snapshot the unit's r0-dirty state BEFORE this handler emits anything:
@@ -259,8 +423,16 @@ DEF_OP(ExitFunction) {
   // Shadow-RET / linkability predicates, resolved before anything is emitted
   // because the sink decision below depends on both.
   // -------------------------------------------------------------------------
+  // A call whose return continuation is not a block of this compile unit (the
+  // A64 frontend: one guest block per unit, so never) pairs only through the
+  // A64 layout below, which needs the return address as a compile-time
+  // constant and the record linker. Without both it is a plain exit.
+  uint64_t A64CallReturn = 0;
+  const bool A64CallShape = Op->Hint == IR::BranchHint::Call && Op->CallReturnBlock.IsInvalid();
+  const bool A64Call = ShadowRetStackEnabled && A64CallShape && CallLinkingEnabled && !Op->CallReturnAddress.IsInvalid() &&
+                       ConstantCallReturnAddress(Op->CallReturnAddress, &A64CallReturn);
   const bool ShadowActive = ShadowRetStackEnabled &&
-    (Op->Hint == IR::BranchHint::Return || Op->Hint == IR::BranchHint::Call);
+    (Op->Hint == IR::BranchHint::Return || (Op->Hint == IR::BranchHint::Call && (!A64CallShape || A64Call)));
 
   // Plain jumps link whenever BlockLinkingEnabled. CALL exits additionally
   // require CallLinkingEnabled (= BlockLinkingEnabled && !LazyLinkArmed):
@@ -362,6 +534,37 @@ DEF_OP(ExitFunction) {
   // (ShadowCall itself is only declared further down, but by the identity
   // above `SinkLinkedRIP && ShadowActive` names exactly the same exits.)
   const bool SinkAfterShadowPush = SinkLinkedRIP && ShadowActive;
+
+  // ---------------------------------------------------------------------
+  // LINK FIRST (POWERARM_NOLINKFIRST=1 restores the probe-first form).
+  //
+  // An unlinked constant exit used to run the inline L1 probe and reach the
+  // record linker only on an L1 *miss*. A target this thread had already
+  // dispatched to sits in its L1, so such a site hit the probe on its first
+  // execution and was never linked: it paid the probe's dependent chain
+  // (ld;rldic;add;ld;cmpd;bne;ldx;mtctr;bctr, ~21 cycles with the FXU stall
+  // on mtctr, and a count-cache bctr) for the life of the block. Measured on
+  // `cc1 -O2 lvm.c` (2026-09-17 branch census): 162k of 370k constant exit
+  // sites stayed unlinked and executed 197M times, 12% of all block exits.
+  //
+  // So when links stick (CallLinkingEnabled: block linking on, not the
+  // lazy-link regime, whose scrub severs links constantly), the unlinked
+  // path goes straight to the record linker: PatchSite (the sunk RIP move),
+  // std State.rip, b LinkPath. The linker looks up or compiles the target and
+  // patches PatchSite, so every later execution is the single linked `b`.
+  // A site the linker cannot patch (buffer rotated under it, a lookup race)
+  // simply re-enters the linker next time; the only permanent failure,
+  // LinkOutcomeUnreachable, needs a compile unit larger than a `b`'s reach.
+  // Paired A64 calls use the same link-first form (EmitA64PairedCall); the
+  // x86-shaped shadow CALL keeps its own layout (the push precedes the probe).
+  // ---------------------------------------------------------------------
+  static const bool NoLinkFirst = getenv("POWERARM_NOLINKFIRST") != nullptr;
+  const bool LinkFirst = SinkLinkedRIP && !ShadowActive && CallLinkingEnabled && !NoLinkFirst;
+
+  if (A64Call) {
+    EmitA64PairedCall(Op, ConstRIP, NewRIP, A64CallReturn, UnitR0Dirty);
+    return;
+  }
 
   if (ConstRIP) {
     if (!SinkLinkedRIP) {
@@ -520,27 +723,32 @@ DEF_OP(ExitFunction) {
     // RET pop: peek {guest_ret_rip, host_trampoline}; on a match restore
     // the trampoline into LR and `blr` -- the link stack, primed by the
     // call's LK=1 branch, predicts this; the count cache would not.
+    // No empty check: a pop past the top of the stack faults on the guard
+    // page above it, and SyscallHandler::HandleSegfault resets TMP2 to the
+    // default location and retries the load (a stale or zero entry follows,
+    // which cannot match a live trampoline wrongly; see EmitA64PairedCall).
     ld(TMP2, sp_off, STATE);            // TMP2 = sp
-    ld(TMP3, end_off, STATE);           // TMP3 = base + SIZE (empty / top guard)
-    cmpd(cr(7), TMP2, TMP3);
-    bc({4, 28}, &ShadowRetReprobe);     // sp >= base+SIZE -> empty -> probe
+    // Rule 4 (POWER9 pipeline research): move the host trampoline into the
+    // branch register as early as its value exists, so the 5-6 cycle SPR move
+    // overlaps the guest-address compare instead of preceding the blr. LR/CTR
+    // are scratch on the mismatch path (the probe reloads CTR).
+    ld(TMP4, 8, TMP2);                  // TMP4 = host trampoline (top slot + 8)
     ld(TMP3, 0, TMP2);                  // TMP3 = guest_ret_rip (top slot)
+    if (NoLinkStackPair) {
+      mtctr(TMP4);
+    } else {
+      mtlr(TMP4);
+    }
     cmpd(cr(7), TMP3, RIPReg);
     addi(TMP2, TMP2, 16);               // pop (unconditional, mirrors the stack discipline)
     std(TMP2, sp_off, STATE);
     bc({4, 30}, &ShadowRetReprobe);     // guest_ret_rip != target -> probe
-    ld(TMP3, -8, TMP2);                 // TMP3 = host trampoline (== old sp + 8)
     // P5.0.1: store rip before the jump. RETAINED deliberately even though the
     // exit-RIP sink retires the equivalent store on linked constant exits:
     // this is one instruction on a register that is live here anyway, and the
     // sink's soundness argument is about the LINKED path of a patched exit,
     // which this is not. Dropping it wants its own proof.
     std(RIPReg, rip_off, STATE);
-    if (NoLinkStackPair) {
-      mtctr(TMP3);
-    } else {
-      mtlr(TMP3);
-    }
     EmitExitR0Zero(UnitR0Dirty);        // P5.0.2: zero-index invariant
     if (NoLinkStackPair) {
       bctr();
@@ -674,6 +882,69 @@ DEF_OP(ExitFunction) {
     Thunk.LinkedEntryAddress = GetCursorAddress<uint64_t>();
   }
 
+  // ---------------------------------------------------------------------
+  // P2: inline compare cache for a guest BR (POWER9 pipeline research Rule 2,
+  // §4.5). The count cache predicts the LAST target of a bctr site, so an
+  // interpreter's dispatch `br` mispredicts on every change of opcode, while
+  // the direction predictor learns patterned sequences perfectly through a
+  // chain of compares (period-8 dispatch: 35.3 cycles through bctr, 16.5
+  // through a compare chain). Each slot is the indirect-call inline cache's
+  // guarded direct branch, chained:
+  //
+  //   A0: b MISS0      <- unlinked: to the record linker (sampled, below),
+  //                       which fills slot 0 with the target it observed,
+  //                       then A0 becomes nop
+  //       lis/ori/sldi/oris/ori TMP2 ; cmpd cr7, target, TMP2
+  //       bne A1                        (the last slot: bne PROBE)
+  //       std rip ; [li r0,0]
+  //   F0: trap         <- linker: b HostCode / b Thunk
+  //   A1: b MISS1 ...
+  //   PROBE: the L1 probe, as before (hit: bctr; miss: dispatcher)
+  //   MISSi: 1 in 64: std rip ; b LinkPath_i   otherwise: b PROBE
+  //
+  // Sampled targets win their slots, a slot whose target block is
+  // erased is relinked by the next target to reach it, and a target the
+  // linker refuses points its slot's A at PROBE for good. Unfilled slots cost
+  // nothing past the first; filled non-matching slots cost two issue slots
+  // each for the compare and branch (the constants have no dependency).
+  // POWERARM_BRCACHESLOTS=N (0-8, default 8) sets the chain length.
+  // ---------------------------------------------------------------------
+  static const uint32_t BRCacheSlots = [] {
+    const char* Env = getenv("POWERARM_BRCACHESLOTS");
+    return Env ? std::min<uint32_t>(static_cast<uint32_t>(strtoul(Env, nullptr, 10)), 8u) : 8u;
+  }();
+  const bool BRCache = Op->Hint == IR::BranchHint::None && !ConstRIP && CallLinkingEnabled && BRCacheSlots != 0;
+  std::array<PPC64Emitter::Label, 8> BRSlotMiss {};
+  std::array<PPC64Emitter::Label, 8> BRSlotNext {};
+  std::array<PendingJumpThunk*, 8> BRSlotThunk {};
+  if (BRCache) {
+    for (uint32_t i = 0; i < BRCacheSlots; ++i) {
+      if (i != 0) {
+        Bind(&BRSlotNext[i - 1]);
+      }
+      PendingJumpThunks.push_back({GetCursorAddress<uint64_t>(), 0 /* indirect */, {}});
+      auto* Slot = &PendingJumpThunks.back();
+      BRSlotThunk[i] = Slot;
+      b(&BRSlotMiss[i]);                // A_i
+      lis(TMP2, 0);
+      ori(TMP2, TMP2, 0);
+      sldi(TMP2, TMP2, 32);
+      oris(TMP2, TMP2, 0);
+      ori(TMP2, TMP2, 0);
+      cmpd(cr(7), RIPReg, TMP2);
+      bc({4, 30}, i + 1 < BRCacheSlots ? &BRSlotNext[i] : &InlineCacheProbe);
+      std(RIPReg, rip_off, STATE);
+      EmitExitR0Zero(UnitR0Dirty);
+      Slot->FinalAddress = GetCursorAddress<uint64_t>();
+      Slot->FinalPlainBranch = true;
+      Emit32(0x7FE00008u);              // F_i: trap until linked
+    }
+    Bind(&InlineCacheProbe);
+    for (uint32_t i = 0; i < BRCacheSlots; ++i) {
+      BRSlotThunk[i]->LinkedEntryAddress = GetCursorAddress<uint64_t>();
+    }
+  }
+
   // Shadow CALL push. For a Linkable exit this `bcl` IS the patch site A:
   // the registration above deliberately emits nothing after itself in that
   // case (SinkAfterShadowPush defers the sunk region to just below), so A is
@@ -715,76 +986,79 @@ DEF_OP(ExitFunction) {
     Bind(&ShadowRetReprobe);
   }
 
-  ld(TMP2, l1_off, STATE);       // TMP2 = L1Pointer
-  if (!FEXCore::Config::Get_DYNAMICL1CACHE()) {
-    // Static L1: constant-mask probe, one rldic instead of L1Mask load +
-    // sldi + and_. Same derivation as the dispatcher's DispatcherLoopTop.
-    static_assert((FEXCore::LookupCache::MAX_L1_ENTRIES & (FEXCore::LookupCache::MAX_L1_ENTRIES - 1)) == 0,
-                  "rldic probe requires a power-of-two L1");
-    constexpr uint32_t L1MB = 64 - (std::countr_zero(FEXCore::LookupCache::MAX_L1_ENTRIES) + 4);
-    rldic(TMP4, RIPReg, 4, L1MB);
-  } else {
-    ld(TMP3, l1mask_off, STATE);   // TMP3 = L1Mask (pre-scaled)
-    sldi(TMP4, RIPReg, 4);         // log2(sizeof(LookupCacheEntry)) == 4
-    and_(TMP4, TMP4, TMP3);
-  }
-  add(TMP2, TMP2, TMP4);         // TMP2 = &L1[hash]
-
-  ld(TMP4, 8, TMP2);             // TMP4 = GuestCode (the "key"), loaded FIRST
-  cmpd(cr(7), TMP4, RIPReg);
-  // BO=4 (branch if false), BI=30 (CR7.EQ at PPC bit 4*7+2). i.e. bne cr7.
-  bc({4, 30}, &MissLabel);
-
-  // Hit. Carry the GuestCode value into the HostCode load's address so the
-  // hardware cannot hoist it above the GuestCode load and observe
-  // {stale HostCode, new GuestCode} mid-Publish. TMP3 is 0 by construction.
-  // Same one-instruction fold as the dispatcher's match_label leg: the data
-  // dependency rides ldx's index operand (TMP3 == 0), preserving the
-  // load-load ordering the comment above requires.
-  xor_(TMP3, TMP4, TMP4);
-  ldx(TMP3, TMP2, TMP3);         // TMP3 = HostCode (loaded under address-dep)
-  mtctr(TMP3);
-  if (!Linkable) {
-    // P5.0.1: store the destination RIP into State.rip on the hit leg too.
-    // Rationale: RestoreRIPFromHostPC's fallback (Frame->State.rip) is invoked
-    // whenever a JIT block has no per-instruction RIP entries or the host PC
-    // sits outside a header'd block; without this store the fallback returns
-    // whatever the last L1 *miss* stored, which can be arbitrarily stale.
-    // Symptom (silent): guest signal frames carry wrong-but-plausible RIPs and
-    // sigreturn resumes at the wrong address. 1 instruction on a 14-instruction
-    // leg. Reviewed against Power ISA v3.0B — safe placement here (RIPReg is
-    // still live; no dependency on TMP1-TMP4 that could be misordered).
-    std(RIPReg, rip_off, STATE);
-    // P5.0.2: reset r0 to 0 before the bctr. JIT blocks emit X-form indexed
-    // memory ops with r0 in the rB slot (ldx/stdx and friends), which read r0
-    // as its actual value (not literal zero — the "r0 reads as zero" rule
-    // applies only to rA). A nonzero r0 silently offsets every load/store in
-    // the target block. Every mflr(r0) in the backend today is paired with a
-    // restore, so no bug is visible — but the invariant is currently globally
-    // assumed, and the failure mode is silent guest memory corruption. Make
-    // the local guarantee explicit for 1 extra instruction on this hot leg.
-    //
-    // ...and it is no longer merely assumed: EmitExitR0Zero drops the
-    // instruction entirely in compile units that provably never clobber r0.
-    // See the policy comment at the top of this file.
-    EmitExitR0Zero(UnitR0Dirty);
-  }
-  // Linkable exits emit neither of the above on this leg. The r0 re-zero was
-  // hoisted ABOVE the patch site (a linked branch skips everything after it,
-  // and P5.0.2's failure mode is silent guest memory corruption); the rip
-  // store was SUNK below the patch site — still before this hit leg, so this
-  // leg's State.rip is exactly what the hoisted form left. See the sink
-  // comment up top.
-  if (ShadowCall) {
-    if (NoLinkStackPair) {
-      bctr();
+  // LINK-FIRST: an unlinked constant exit does not probe (see LinkFirst above).
+  if (!LinkFirst) {
+    ld(TMP2, l1_off, STATE);       // TMP2 = L1Pointer
+    if (!FEXCore::Config::Get_DYNAMICL1CACHE()) {
+      // Static L1: constant-mask probe, one rldic instead of L1Mask load +
+      // sldi + and_. Same derivation as the dispatcher's DispatcherLoopTop.
+      static_assert((FEXCore::LookupCache::MAX_L1_ENTRIES & (FEXCore::LookupCache::MAX_L1_ENTRIES - 1)) == 0,
+                    "rldic probe requires a power-of-two L1");
+      constexpr uint32_t L1MB = 64 - (std::countr_zero(FEXCore::LookupCache::MAX_L1_ENTRIES) + 4);
+      rldic(TMP4, RIPReg, 4, L1MB);
     } else {
-      bctrl();                          // LK=1: link stack <- &Tramp1
+      ld(TMP3, l1mask_off, STATE);   // TMP3 = L1Mask (pre-scaled)
+      sldi(TMP4, RIPReg, 4);         // log2(sizeof(LookupCacheEntry)) == 4
+      and_(TMP4, TMP4, TMP3);
     }
-    PatchShadowCallAddi(ShadowPush1, GetCursorAddress<uint64_t>());
-    EmitShadowCallTrampoline();         // Tramp1
-  } else {
-    bctr();
+    add(TMP2, TMP2, TMP4);         // TMP2 = &L1[hash]
+
+    ld(TMP4, 8, TMP2);             // TMP4 = GuestCode (the "key"), loaded FIRST
+    cmpd(cr(7), TMP4, RIPReg);
+    // BO=4 (branch if false), BI=30 (CR7.EQ at PPC bit 4*7+2). i.e. bne cr7.
+    bc({4, 30}, &MissLabel);
+
+    // Hit. Carry the GuestCode value into the HostCode load's address so the
+    // hardware cannot hoist it above the GuestCode load and observe
+    // {stale HostCode, new GuestCode} mid-Publish. TMP3 is 0 by construction.
+    // Same one-instruction fold as the dispatcher's match_label leg: the data
+    // dependency rides ldx's index operand (TMP3 == 0), preserving the
+    // load-load ordering the comment above requires.
+    xor_(TMP3, TMP4, TMP4);
+    ldx(TMP3, TMP2, TMP3);         // TMP3 = HostCode (loaded under address-dep)
+    mtctr(TMP3);
+    if (!Linkable) {
+      // P5.0.1: store the destination RIP into State.rip on the hit leg too.
+      // Rationale: RestoreRIPFromHostPC's fallback (Frame->State.rip) is invoked
+      // whenever a JIT block has no per-instruction RIP entries or the host PC
+      // sits outside a header'd block; without this store the fallback returns
+      // whatever the last L1 *miss* stored, which can be arbitrarily stale.
+      // Symptom (silent): guest signal frames carry wrong-but-plausible RIPs and
+      // sigreturn resumes at the wrong address. 1 instruction on a 14-instruction
+      // leg. Reviewed against Power ISA v3.0B — safe placement here (RIPReg is
+      // still live; no dependency on TMP1-TMP4 that could be misordered).
+      std(RIPReg, rip_off, STATE);
+      // P5.0.2: reset r0 to 0 before the bctr. JIT blocks emit X-form indexed
+      // memory ops with r0 in the rB slot (ldx/stdx and friends), which read r0
+      // as its actual value (not literal zero — the "r0 reads as zero" rule
+      // applies only to rA). A nonzero r0 silently offsets every load/store in
+      // the target block. Every mflr(r0) in the backend today is paired with a
+      // restore, so no bug is visible — but the invariant is currently globally
+      // assumed, and the failure mode is silent guest memory corruption. Make
+      // the local guarantee explicit for 1 extra instruction on this hot leg.
+      //
+      // ...and it is no longer merely assumed: EmitExitR0Zero drops the
+      // instruction entirely in compile units that provably never clobber r0.
+      // See the policy comment at the top of this file.
+      EmitExitR0Zero(UnitR0Dirty);
+    }
+    // Linkable exits emit neither of the above on this leg. The r0 re-zero was
+    // hoisted ABOVE the patch site (a linked branch skips everything after it,
+    // and P5.0.2's failure mode is silent guest memory corruption); the rip
+    // store was SUNK below the patch site — still before this hit leg, so this
+    // leg's State.rip is exactly what the hoisted form left. See the sink
+    // comment up top.
+    if (ShadowCall) {
+      if (NoLinkStackPair) {
+        bctr();
+      } else {
+        bctrl();                          // LK=1: link stack <- &Tramp1
+      }
+      PatchShadowCallAddi(ShadowPush1, GetCursorAddress<uint64_t>());
+      EmitShadowCallTrampoline();         // Tramp1
+    } else {
+      bctr();
+    }
   }
 
   // ---------------------------------------------------------------------
@@ -837,6 +1111,25 @@ DEF_OP(ExitFunction) {
     // instructions per exit with this one branch; see SharedSpillExitLabel.
     SharedSpillExitUsed = true;
     b(&SharedSpillExitLabel);
+  }
+  if (BRCache) {
+    // An empty slot is filled by a sampled arrival, not the first one: only
+    // when the time base's low 6 bits are zero (about 1 in 64 arrivals) does
+    // the miss leg go to the linker; the rest take the probe. A slot then
+    // holds a target in proportion to how often it arrives, instead of
+    // whichever targets a start-up path happened to dispatch first (vm filled
+    // all eight slots with its setup opcodes that way), and a cold site pays
+    // the C++ linker on ~2% of its executions rather than on each of its
+    // first few. mftb is a user-readable SPR; no CR0 or XER bits are touched.
+    for (uint32_t i = 0; i < BRCacheSlots; ++i) {
+      Bind(&BRSlotMiss[i]);
+      mftb(TMP2);
+      rldicl(TMP2, TMP2, 0, 58);
+      cmpldi(cr(7), TMP2, 0);
+      bc({4, 30}, &InlineCacheProbe);   // bne cr7: not sampled, probe
+      std(RIPReg, rip_off, STATE);      // the record linker reads the target here
+      b(&BRSlotThunk[i]->LinkPath);
+    }
   }
 
   // Linked shadow call: its own push (return word = Tramp2), the Final word
@@ -981,6 +1274,23 @@ DEF_OP(CondJump) {
   }
   const uint32_t TrueID = IR->GetOp<IR::IROp_CodeBlock>(Op->TrueBlock)->ID;
   const uint32_t FalseID = IR->GetOp<IR::IROp_CodeBlock>(Op->FalseBlock)->ID;
+
+  // P6 (POWER9 pipeline research Rule 6): a conditional guest branch between
+  // two block exits. The frontend emits it as this CondJump followed by the
+  // taken block and then the not-taken block, each holding only a constant
+  // exit, which once linked is a single `b`. The generic shape below reaches
+  // them through `bc; b; b` hops: two taken branches on the true path and
+  // three on the false one. Branch straight to the false exit instead and
+  // fall into the true one: one taken branch on the true path (the linked
+  // exit), two on the false path. The bc's reach is the true block alone (a
+  // constant exit, at most ~30 instructions). POWERARM_NOEXITSHAPE=1 disables.
+  static const bool NoExitShape = getenv("POWERARM_NOEXITSHAPE") != nullptr;
+  if (!NoExitShape && TrueID != FalseID && TrueID == NextBlockID && FalseID == NextNextBlockID && TrueID < ConstExitOnlyBlock.size() &&
+      FalseID < ConstExitOnlyBlock.size() && ConstExitOnlyBlock[TrueID] && ConstExitOnlyBlock[FalseID] && SpinBackedges.empty() &&
+      SpinRestoreEdges.empty()) {
+    bc(InvertCond(CC), JumpTarget(Op->FalseBlock));
+    return;
+  }
 
   // Fallthrough elision (see FallthroughBlockID in JITClass.h). A fallthrough
   // target is by construction the next emitted block: forward, unbound, so
