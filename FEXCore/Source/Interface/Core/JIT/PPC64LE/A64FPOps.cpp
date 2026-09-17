@@ -13,8 +13,8 @@
 // Vector register image (see CoreState.h and PPC64Emitter.cpp): element 0 is
 // VSX doubleword 1; a single-precision element 0 is the low word of it. The
 // VSX scalar instructions work on doubleword 0, so operands are positioned
-// there first. Measured on POWER9 (probe under /tmp/powerarm-w2 while this
-// was written): xscvdpspn, xscvdpsp and xscvdpsxws/xscvdpuxws write their
+// there first. Measured on POWER9 with a probe of each instruction:
+// xscvdpspn, xscvdpsp and xscvdpsxws/xscvdpuxws write their
 // 32-bit result into both words of doubleword 0; xscvspdpn reads word 0;
 // the unsigned converts give 0 for NaN and negative inputs; xsrdpi rounds
 // ties away from zero.
