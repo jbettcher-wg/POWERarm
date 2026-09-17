@@ -1416,7 +1416,7 @@ void GdbServer::GdbServerLoop() {
   CloseListenSocket();
 }
 static void* ThreadHandler(void* Arg) {
-  HLE::ThreadManager::SetThreadName("FEX:gdbserver");
+  HLE::ThreadManager::SetThreadName("POWERarmGdbSrv");
   auto This = reinterpret_cast<FEX::GdbServer*>(Arg);
   This->GdbServerLoop();
   return nullptr;

@@ -71,7 +71,7 @@ void ThreadManager::StatAlloc::Initialize() {
     goto err;
   }
 
-  FEXCore::Allocator::VirtualName("FEXMem_Misc", reinterpret_cast<void*>(Base), MAX_STATS_SIZE);
+  FEXCore::Allocator::VirtualName("POWERarmMem_Misc", reinterpret_cast<void*>(Base), MAX_STATS_SIZE);
 
   // Allocate a small working shared space for now, grow as necessary.
   {
@@ -248,7 +248,7 @@ FEX::HLE::ThreadStateObject* ThreadManager::CreateThread(uint64_t InitialRIP, ui
   auto AllocBase =
     reinterpret_cast<uint64_t>(FEXCore::Allocator::mmap(nullptr, CallRetAllocSize, PROT_NONE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0));
 
-  FEXCore::Allocator::VirtualName("FEXMem_CallRetStacks", reinterpret_cast<void*>(AllocBase), CallRetAllocSize);
+  FEXCore::Allocator::VirtualName("POWERarmMem_CallRetStacks", reinterpret_cast<void*>(AllocBase), CallRetAllocSize);
 
   // Disable HUGEPAGE on callret stacks.
   FEXCore::Allocator::VirtualTHPControl(reinterpret_cast<void*>(AllocBase), CallRetAllocSize, FEXCore::Allocator::THPControl::Disable);

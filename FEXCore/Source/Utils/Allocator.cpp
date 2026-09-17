@@ -55,7 +55,7 @@ void* FEX_mmap(void* addr, size_t length, int prot, int flags, int fd, off_t off
   }
 
   if (flags & MAP_ANONYMOUS) {
-    VirtualName("FEXMem", Result, length);
+    VirtualName("POWERarmMem", Result, length);
   }
   return Result;
 }

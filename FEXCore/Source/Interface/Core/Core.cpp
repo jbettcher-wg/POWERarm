@@ -746,7 +746,7 @@ ContextImpl::CreateThread(uint64_t InitialRIP, uint64_t StackPointer, const FEXC
   FEXCore::Core::InternalThreadState* Thread = new FEXCore::Core::InternalThreadState {
     .CTX = this,
   };
-  FEXCore::Allocator::VirtualName("FEXMem_ThreadState", Thread, sizeof(*Thread));
+  FEXCore::Allocator::VirtualName("POWERarmMem_ThreadState", Thread, sizeof(*Thread));
 
   // One host page for the deferred-signal interrupt fault page. It is mapped
   // separately from the thread state precisely so that its address is host-page
@@ -759,7 +759,7 @@ ContextImpl::CreateThread(uint64_t InitialRIP, uint64_t StackPointer, const FEXC
     if (FaultPage == MAP_FAILED) {
       ERROR_AND_DIE_FMT("Failed to allocate the interrupt fault page for a new thread");
     }
-    FEXCore::Allocator::VirtualName("FEXMem_InterruptFaultPage", FaultPage, PageSize);
+    FEXCore::Allocator::VirtualName("POWERarmMem_InterruptFaultPage", FaultPage, PageSize);
     Thread->BaseFrameState.InterruptFaultPagePtr = static_cast<uint8_t*>(FaultPage);
   }
 

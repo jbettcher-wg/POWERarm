@@ -47,7 +47,7 @@ void JITSymbols::RegisterJITSpace(const void* HostAddr, uint32_t CodeSize) {
 
   // Linux perf format is very straightforward
   // `<HostPtr> <Size> <Name>\n`
-  const auto Buffer = fextl::fmt::format("{} {:x} FEXJIT\n", HostAddr, CodeSize);
+  const auto Buffer = fextl::fmt::format("{} {:x} POWERarmJIT\n", HostAddr, CodeSize);
   auto Result = write(fd, Buffer.c_str(), Buffer.size());
   if (Result == -1 && errno == EBADF) {
     fd = -1;

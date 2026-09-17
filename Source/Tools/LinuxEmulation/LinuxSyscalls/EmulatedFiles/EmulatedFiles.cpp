@@ -118,7 +118,7 @@ EmulatedFDManager::EmulatedFDManager(FEXCore::Context::Context* ctx)
     int FD = GenTmpFD(pathname, flags);
     // UTS version NEEDS to be in a format that can pass to `date -d`
     // Format of this is Linux version <Release> (<Compile By>@<Compile Host>) (<Linux Compiler>) #<version> {SMP, PREEMPT, PREEMPT_RT} <UTS version>\n"
-    const char kernel_version[] = "Linux version %d.%d.%d (FEX@FEX) (clang) #" GIT_DESCRIBE_STRING " SMP " __DATE__ " " __TIME__ "\n";
+    const char kernel_version[] = "Linux version %d.%d.%d (POWERarm@POWERarm) (clang) #" GIT_DESCRIBE_STRING " SMP " __DATE__ " " __TIME__ "\n";
     uint32_t GuestVersion = FEX::HLE::_SyscallHandler->GetGuestKernelVersion();
     char Tmp[sizeof(kernel_version) + 64] {};
     snprintf(Tmp, sizeof(Tmp), kernel_version, FEX::HLE::SyscallHandler::KernelMajor(GuestVersion),
