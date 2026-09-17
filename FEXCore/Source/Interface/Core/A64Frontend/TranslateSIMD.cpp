@@ -14,6 +14,8 @@
 #include "Interface/Core/A64Frontend/IRBuilder.h"
 #include "Interface/Core/A64Frontend/TranslateCommon.h"
 
+#include <FEXCore/Core/CoreState.h>
+
 #include <array>
 #include <bit>
 
@@ -952,8 +954,8 @@ bool IRBuilder::ADDP_pair(uint32_t Word) {
 }
 
 bool IRBuilder::UQSUB_1(uint32_t Word) {
-  // UQSUB on D registers: the difference, or 0 where it would go below zero.
-  // POWERARM-M1-TODO(simd): FPSR.QC is not raised by the saturating operations.
+  // UQSUB on D registers: the difference, or 0 where it would go below zero,
+  // which also sets the cumulative FPSR.QC.
   if (Bits(Word, 23, 22) != 3) {
     return false;
   }
@@ -964,6 +966,10 @@ bool IRBuilder::UQSUB_1(uint32_t Word) {
   // B > A unsigned  <=>  max(A, B) != A.
   Ref Underflow = _VNot(RS, ES, _VCMPEQ(RS, ES, _VUMax(RS, ES, A, B), A));
   StoreVSized(Bits(Word, 4, 0), ES, _VAndn(RS, RS, _VSub(RS, ES, A, B), Underflow));
+  const uint64_t QC = 1ULL << 27;
+  Ref Saturated = _And(OpSize::i64Bit, _VExtractToGPR(RS, ES, Underflow, 0), Constant(QC));
+  Ref FPSR = _LoadContext(OpSize::i32Bit, RegClass::GPR, offsetof(FEXCore::Core::CPUState, fpsr));
+  _StoreContext(OpSize::i32Bit, RegClass::GPR, _Or(OpSize::i64Bit, FPSR, Saturated), offsetof(FEXCore::Core::CPUState, fpsr));
   return true;
 }
 
