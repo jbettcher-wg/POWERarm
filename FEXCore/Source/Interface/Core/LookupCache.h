@@ -755,19 +755,16 @@ public:
 
   void AddBlockLink(uint64_t GuestDestination, FEXCore::Context::ExitFunctionLinkData* HostLink,
                     const FEXCore::Context::BlockDelinkerFunc& delinker, const LookupCacheWriteLockToken&) {
+    // No duplicate scan. The only caller (PPC64JITCore::ExitFunctionLinkWithRecord)
+    // registers a record only while its caller word is still the unlinked word,
+    // checked under this same write lock, and every registered record has its
+    // caller word patched before the lock is dropped; SeverLinks restores the
+    // word and drops the registration together. So (GuestDestination, HostLink)
+    // cannot already be here. The scan walked the destination's whole inbound
+    // chain on every link, quadratic in fan-in: 4.8% of a warm `gcc -c empty.c`.
+    // A duplicate would only cost a pool node and a second, idempotent delink.
     auto [it, Inserted] = BlockLinks.try_emplace(GuestDestination, BlockLinkInvalid);
-
-    if (!Inserted) {
-      // Duplicate (GuestDestination, HostLink) registrations keep the existing
-      // entry, matching the old std::map::insert. The chain is the inbound
-      // fan-in of a single guest destination, which is small, so this scan is
-      // cheaper than the tree descent it replaces even in the duplicate case.
-      for (uint64_t Index = it->second; Index != BlockLinkInvalid; Index = BlockLinkPool[Index].Next) {
-        if (BlockLinkPool[Index].HostLink == HostLink) {
-          return;
-        }
-      }
-    }
+    (void)Inserted;
 
     // NOTE: `it` points into BlockLinks, which is not touched again below; the
     // pool may reallocate, but it is addressed by index, never by pointer.
