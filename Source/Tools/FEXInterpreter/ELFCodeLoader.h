@@ -27,6 +27,8 @@
 #include "Common/HostPageMapping.h"
 #include "FEXCore/Utils/Allocator.h"
 #include "LinuxSyscalls/Syscalls.h"
+#include "LinuxSyscalls/Arm64/GeneratedABI.h"
+#include "LinuxSyscalls/Arm64/GuestVA.h"
 #include "VDSO_Emulation.h"
 #include "Linux/Utils/ELFParser.h"
 
@@ -594,12 +596,10 @@ public:
     // On the upside, this more accurately emulates how the kernel allocates stack space for the application when hinting at the location.
     //
     void* StackPointerBase {};
-    auto VASize = FEXCore::Allocator::DetermineVASize();
+    // DESIGN.md §4.9: the guest VA is the host's natural window, 47 bits on a
+    // 64K kernel and 46 on a 4K one, like an arm64 VA_BITS=47 kernel.
+    const auto VASize = FEX::HLE::Arm64::GuestVA::Bits();
     uint64_t StackHint {};
-    // POWERARM-M0-TODO(loader): the 47-bit clamp is the x86-64 user VA limit; an AArch64 Linux guest expects 48-bit VA (DESIGN.md guest VA size).
-    if (VASize > 47) {
-      VASize = 47;
-    }
 
     // Calculate the highest point the stack could go.
     StackHint = (1ULL << VASize) - FULL_STACK_SIZE;
@@ -685,11 +685,7 @@ public:
       //
       // Random number that gets added to the base needs to be in the number of bits (multiplied by pages):
       // [28, 32] bits. By default the /minimum/ number of bits is used here.
-      constexpr uint64_t TASK_SIZE_64 = (1ULL << 47);
-      // Ensure that if we are running on a 36-bit VA system, we don't try hinting that an ELF should
-      // live way outside the VA space.
-      uint64_t HostVASize = 1ULL << FEXCore::Allocator::DetermineVASize();
-      ELFLoadHint = std::min(HostVASize, TASK_SIZE_64) / 3 * 2;
+      ELFLoadHint = FEX::HLE::Arm64::GuestVA::Limit() / 3 * 2;
 #define ASLR_LOAD
 #ifdef ASLR_LOAD
       // Only enable ASLR randomization if the personality has it enabled.
@@ -1058,18 +1054,24 @@ public:
   }
 
   void CalculateHWCaps(FEXCore::Context::Context* ctx) {
-    // POWERARM-M0-TODO(cpustate): hwcap profile per DESIGN §4.8; AT_HWCAP/AT_HWCAP2 stay 0 until the A64 feature profile is decided.
-    HWCap = 0;
+    // M1 profile (M1-PLAN.md): the AArch64 ABI baseline fp and asimd, plus cpuid
+    // (EL0 reads of the ID registers are emulated). DESIGN.md §4.8 grows this as
+    // the frontend implements more; a feature is only advertised once it passes
+    // Pi parity.
+    using namespace FEX::HLE::Arm64::ABI;
+    HWCap = GUEST_HWCAP_FP | GUEST_HWCAP_ASIMD | GUEST_HWCAP_CPUID;
     HWCap2 = 0;
   }
 
   uint64_t CalculateSignalStackSize() const {
-    // AT_MINSIGSTKSZ: what SignalDelegator::SetupFrame_Arm64 pushes on the guest stack
-    // (rt_sigframe plus the frame record and FEX's host-context slot), rounded to the
-    // AArch64 16-byte stack alignment.
-    // POWERARM-M0-TODO(signals): grow this with the fpsimd/esr/SVE records once the signal frame carries them.
-    uint64_t Result = sizeof(FEXCore::arm64::rt_sigframe) + 32;
-    return FEXCore::AlignUp(Result, 16);
+    // AT_MINSIGSTKSZ as arch/arm64/kernel/signal.c minsigstksz_setup computes it
+    // for a CPU without SVE/SME: the rt_sigframe (the fpsimd, esr and end
+    // records fit inside sigcontext.__reserved), the frame record rounded to 16,
+    // and 16 bytes of alignment slack. A Cortex-A76 kernel reports 4720.
+    uint64_t Result = sizeof(FEXCore::arm64::rt_sigframe) + FEXCore::AlignUp(sizeof(FEXCore::arm64::frame_record), 16) + 16;
+    // getauxval(AT_MINSIGSTKSZ) on the Raspberry Pi 5 reference machine.
+    LOGMAN_THROW_A_FMT(Result == 4720, "AT_MINSIGSTKSZ {} does not match arm64's 4720", Result);
+    return Result;
   }
 
   constexpr static uint64_t BRK_SIZE = 8 * 1024 * 1024;
