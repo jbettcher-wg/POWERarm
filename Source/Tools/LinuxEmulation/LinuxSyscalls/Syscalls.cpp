@@ -655,7 +655,9 @@ uint64_t ExecveHandler(FEXCore::Core::CpuStateFrame* Frame, const char* pathname
   ExecveArgs.emplace_back(nullptr);
 
   if (PreserveArgv0 && !IsFDExec) {
-    if (EnvpPtr != const_cast<char* const*>(EnvpArgs.data())) {
+    // Test NeedsEnvpCopy, not EnvpPtr against EnvpArgs.data(): with a NULL
+    // envp and no copy both are NULL, and pop_back would run on an empty vector.
+    if (!NeedsEnvpCopy) {
       EnvpArgs.clear();
       for (auto OldEnvp = envp; OldEnvp && *OldEnvp; ++OldEnvp) {
         EnvpArgs.emplace_back(*OldEnvp);
