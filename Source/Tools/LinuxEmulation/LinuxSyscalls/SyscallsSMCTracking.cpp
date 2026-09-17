@@ -2175,7 +2175,9 @@ void* SyscallHandler::GuestMmap(bool Is64Bit, FEXCore::Core::InternalThreadState
     //       us to be more optimal by using GuardSignalDeferringSection instead
     auto lk = FEXCore::GuardSignalDeferringSectionWithFallback(VMATracking.Mutex, Thread);
 
-    bool Map32Bit = !Is64Bit || (flags & FEX::HLE::X86_64_MAP_32BIT);
+    // AArch64 has no MAP_32BIT, and flags are host values here (on powerpc
+    // 0x40, x86's MAP_32BIT, is MAP_NORESERVE).
+    bool Map32Bit = !Is64Bit;
     if (Map32Bit) {
       Result = (uint64_t)Get32BitAllocator()->Mmap((void*)addr, length, HostProt, flags, fd, offset);
       if (FEX::HLE::HasSyscallError(Result) && HostProt != prot) {

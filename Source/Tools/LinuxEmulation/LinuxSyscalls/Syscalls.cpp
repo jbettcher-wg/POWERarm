@@ -16,6 +16,7 @@ $end_info$
 #include "LinuxSyscalls/LinuxAllocator.h"
 #include "LinuxSyscalls/SignalDelegator.h"
 #include "LinuxSyscalls/SMCStoreBackpatch.h"
+#include "LinuxSyscalls/Arm64/ABITranslation.h"
 #include "LinuxSyscalls/Syscalls.h"
 #include "LinuxSyscalls/Syscalls/Thread.h"
 #include "LinuxSyscalls/ThreadCensus.h"
@@ -892,10 +893,8 @@ uint64_t CloneHandler(FEXCore::Core::CpuStateFrame* Frame, FEX::HLE::clone3_args
     }
   }
 
-  constexpr uint64_t TASK_MAX = (1ULL << 48); // 48-bits until we can query the host side VA sanely. AArch64 doesn't expose this in cpuinfo
-  if (args->args.tls && args->args.tls >= TASK_MAX) {
-    return -EPERM;
-  }
+  // arm64 copy_thread loads the tls argument into TPIDR_EL0 as-is; unlike
+  // x86-64 there is no canonical-address check to reproduce.
 
   auto Thread = Frame->Thread;
 
@@ -1446,7 +1445,8 @@ uint64_t SyscallHandler::HandleSyscallImpl(FEXCore::Core::CpuStateFrame* Frame, 
 #ifdef DEBUG_STRACE
   Strace(Args, Result);
 #endif
-  return Result;
+  // powerpc has its own EDEADLOCK value; everything else matches asm-generic.
+  return FEX::HLE::Arm64::ABI::HostResultToGuest(Result);
 }
 
 #ifdef DEBUG_STRACE

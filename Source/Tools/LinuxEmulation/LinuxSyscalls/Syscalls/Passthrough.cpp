@@ -11,15 +11,13 @@ $end_info$
 #include "LinuxSyscalls/Syscalls.h"
 #include "LinuxSyscalls/SignalDelegator.h"
 #include "LinuxSyscalls/ThreadManager.h"
+#include "LinuxSyscalls/Arm64/ABITranslation.h"
 #include "LinuxSyscalls/Arm64/Syscalls.h"
 #include "LinuxSyscalls/SyscallObserver.h"
 #include "LinuxSyscalls/CoreIsolation.h"
 #include "LinuxSyscalls/ThreadCensus.h"
 #include "VDSO_Emulation.h"
 
-#ifdef ARCHITECTURE_ppc64le
-#include "LinuxSyscalls/PPC64LE/TermiosTranslation.h"
-#endif
 
 #include <FEXCore/IR/IR.h>
 #include <FEXHeaderUtils/Syscalls.h>
@@ -1176,8 +1174,7 @@ void RegisterPassthrough(FEX::HLE::SyscallHandler* Handler) {
   // Handlers that used to be registered only for x86-64 and whose arguments
   // mean the same for an AArch64 guest on a ppc64le host (LP64 structs with
   // identical layout, no flag re-encoding), now keyed by asm-generic numbers.
-  // POWERARM-M0-TODO(syscalls): ioctl is not wired: the x86 path re-encoded _IOC direction/size bits and TTY numbers for powerpc, and the arm64 guest needs its own table (asm-generic _IOC, generic termios).
-  // POWERARM-M0-TODO(syscalls): mlockall is not wired: powerpc MCL_* values (0x2000/0x4000/0x8000) differ from asm-generic (1/2/4) and need translation.
+  // ioctl and mlockall need translation and live in Arm64/FD.cpp and Arm64/Memory.cpp.
   REGISTER_SYSCALL_IMPL(ftruncate, SyscallPassthrough2<SYSCALL_DEF(ftruncate)>);
   REGISTER_SYSCALL_IMPL(pread64, SyscallPassthrough4<SYSCALL_DEF(pread_64)>);
   REGISTER_SYSCALL_IMPL(pwrite64, SyscallPassthrough4<SYSCALL_DEF(pwrite_64)>);
@@ -1191,18 +1188,18 @@ void RegisterPassthrough(FEX::HLE::SyscallHandler* Handler) {
   REGISTER_SYSCALL_IMPL(accept, SyscallPassthrough3<SYSCALL_DEF(accept)>);
   REGISTER_SYSCALL_IMPL(sendmsg, SyscallPassthrough3<SYSCALL_DEF(sendmsg)>);
   REGISTER_SYSCALL_IMPL(recvmsg, SyscallPassthrough3<SYSCALL_DEF(recvmsg)>);
-  // Not passthrough: powerpc hosts use legacy SOL_SOCKET option numbers for
-  // six options; the guest's asm-generic numbering must be translated.
+  // Not passthrough: powerpc uses its own numbers for six SOL_SOCKET options
+  // (generated table in Arm64/GeneratedABI.h).
   REGISTER_SYSCALL_IMPL(setsockopt,
                         [](FEXCore::Core::CpuStateFrame* Frame, int sockfd, int level, int optname, const void* optval, socklen_t optlen) -> uint64_t {
                           uint64_t Result = ::syscall(SYSCALL_DEF(setsockopt), sockfd, level,
-                                                      FEX::HLE::TranslateGuestSockOptName(level, optname), optval, optlen);
+                                                      level == SOL_SOCKET ? FEX::HLE::Arm64::ABI::SocketOptionToHost(optname) : optname, optval, optlen);
                           SYSCALL_ERRNO();
                         });
   REGISTER_SYSCALL_IMPL(getsockopt,
                         [](FEXCore::Core::CpuStateFrame* Frame, int sockfd, int level, int optname, void* optval, socklen_t* optlen) -> uint64_t {
                           uint64_t Result = ::syscall(SYSCALL_DEF(getsockopt), sockfd, level,
-                                                      FEX::HLE::TranslateGuestSockOptName(level, optname), optval, optlen);
+                                                      level == SOL_SOCKET ? FEX::HLE::Arm64::ABI::SocketOptionToHost(optname) : optname, optval, optlen);
                           SYSCALL_ERRNO();
                         });
   REGISTER_SYSCALL_IMPL(wait4, SyscallPassthrough4<SYSCALL_DEF(wait4)>);
