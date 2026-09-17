@@ -476,8 +476,8 @@ int32_t EmbedSubprocess(const char* path, char* const* args) {
  * Spawn a FEXOfflineCompiler instance to generate a code cache from the given code map
  */
 static int RunOfflineCompiler(const char* CodeMap) {
-  const char* ExecveArgs[] = {"FEXOfflineCompiler", "generate", CodeMap, nullptr};
-  return EmbedSubprocess("FEXOfflineCompiler", const_cast<char* const*>(&ExecveArgs[0]));
+  const char* ExecveArgs[] = {POWERARM_EXE_PREFIX "OfflineCompiler", "generate", CodeMap, nullptr};
+  return EmbedSubprocess(POWERARM_EXE_PREFIX "OfflineCompiler", const_cast<char* const*>(&ExecveArgs[0]));
 };
 
 void HandleSocketData(fasio::tcp_socket& Socket) {
