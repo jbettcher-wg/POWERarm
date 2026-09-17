@@ -914,6 +914,9 @@ private:
   // flag domain (CR0.LT/EQ + XER.CA/OV). Other CR0 / XER bits preserved.
   // Used by CondAddNZCV / CondSubNZCV "false" paths.
   void SetNZCVConstant(uint8_t NZCV);
+  // Bracket the 128/64 Div/UDiv lowerings, which clobber CR0 and XER.CA (ALUOps.cpp).
+  void SaveCR0AndCA();
+  void RestoreCR0AndCA();
 
   // After a sub-64-bit AND result has been computed in `Result`, mask/extend
   // it to the IR operand size and set CR0 from the resized value, so that

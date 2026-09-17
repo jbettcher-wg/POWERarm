@@ -25,7 +25,7 @@ report() {
 }
 
 run_emu() {
-  POWERARM_HOSTPAGEMODE=${POWERARM_HOSTPAGEMODE-force} "$emu" "./$1" > "$1.powerarm" 2> "$1.stderr"
+  "$emu" "./$1" > "$1.powerarm" 2> "$1.stderr"
   echo $? > "$1.powerarm.rc"
 }
 

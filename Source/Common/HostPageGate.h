@@ -14,41 +14,59 @@ namespace FEX::HostPageGate {
 /**
  * @brief The host-page-size startup gate.
  *
- * FEX's guest contract is AT_PAGESZ=4096 and that never changes. What changes
- * with the host kernel is the granularity real mmap/mprotect/munmap demand, and
- * the port that makes that a runtime quantity is staged (docs/PAGE_SIZE_64K_PLAN.md,
- * docs/PAGE_SIZE_64K_EXECUTION.md). Until the guest memory syscalls and mtrack
- * are granule-aware (stages S4/S5), a host page larger than 4096 is not a
- * supported configuration, and the failure modes are silent: deferred signals
- * that never arm and a guest that hangs with no diagnostic.
+ * An AArch64 guest is told AT_PAGESZ = the host page size. arm64 Linux software
+ * already runs on 4K, 16K and 64K kernels, and GNU ld's aarch64 default
+ * max-page-size is 64K, so a binary whose PT_LOADs are aligned to the host page
+ * needs nothing beyond host-granular mmap. A binary linked for 4K pages
+ * (p_align 0x1000) cannot be mapped that way on a 64K host: its segments share
+ * host pages with different protections. For those, the 4K granule emulation
+ * inherited from fastppcx86 is kept as a per-process fallback
+ * (docs/powerarm/DESIGN.md §4.9, docs/PAGE_SIZE_64K_EXECUTION.md).
  *
- * FEX_HOSTPAGEMODE selects what happens on such a host:
- *   abort   (default) - explain and refuse to start.
- *   degrade           - continue, and force SMCChecks=full, which is the
- *                       correctness fallback that does not depend on host-page
- *                       protection granularity. Log the relaxed contract once.
- *   force             - continue, force nothing. For bring-up work.
+ * POWERARM_HOSTPAGEMODE selects what happens on a host page larger than 4K:
+ *   auto    (default) - look at the PT_LOADs of the program and its
+ *                       interpreter. If every p_align is at least the host
+ *                       page, run natively with no granule emulation.
+ *                       Otherwise use the granule emulation (as `force`) and
+ *                       say why in one line.
+ *   native            - no granule emulation, whatever the p_align.
+ *   force             - granule emulation with the configured SMCChecks.
+ *   degrade           - granule emulation, and force SMCChecks=full, which is
+ *                       the one SMC mode whose correctness does not depend on
+ *                       host-page protection granularity.
+ *   abort             - explain the granule emulation's limits and refuse to
+ *                       start (fastppcx86's default for x86 guests).
  *
- * FEX_ALLOW_UNSUPPORTED_PAGE_SIZE=1 is kept as an alias for `force`.
+ * FEX_HOSTPAGEMODE is read as a fallback, and FEX_ALLOW_UNSUPPORTED_PAGE_SIZE=1
+ * is kept as an alias for `force`. None of this does anything on a 4K host.
  *
- * Written straight to stderr rather than through LogMan on purpose. FEX_SILENTLOG
- * defaults to on and every LogMan path is swallowed when it is; a gate whose whole
- * purpose is to replace a silent hang with an explanation cannot be silenceable by
- * the default logging config.
+ * Written straight to stderr rather than through LogMan on purpose. Silent
+ * logging defaults to on and every LogMan path is swallowed when it is; the
+ * gate's messages must not be silenceable by the default logging config.
  */
 enum class Mode {
+  Auto,
+  Native,
   Abort,
   Degrade,
   Force,
 };
 
 inline Mode ParseMode(std::string_view Value) {
+  if (Value == "auto") {
+    return Mode::Auto;
+  }
+  if (Value == "native") {
+    return Mode::Native;
+  }
   if (Value == "degrade") {
     return Mode::Degrade;
   }
   if (Value == "force") {
     return Mode::Force;
   }
+  // "abort", and anything unrecognised: refusing with an explanation is the
+  // safe reading of a typo.
   return Mode::Abort;
 }
 
@@ -60,7 +78,7 @@ inline Mode GetMode(bool ConfigAvailable, Mode DefaultMode, bool* Explicit) {
   // meta layer is a null global until Initialize() runs, and this gate is deliberately
   // callable from before that point.
   if (ConfigAvailable) {
-    if (auto Value = FEXCore::Config::Get(FEXCore::Config::CONFIG_HOSTPAGEMODE); Value && *Value) {
+    if (auto Value = FEXCore::Config::Get(FEXCore::Config::CONFIG_HOSTPAGEMODE); Value && *Value && !(*Value)->empty()) {
       return ParseMode(std::string_view {(*Value)->c_str()});
     }
   }
@@ -80,36 +98,39 @@ inline Mode GetMode(bool ConfigAvailable, Mode DefaultMode, bool* Explicit) {
 /**
  * @brief Call first thing in every tool that hosts guest code.
  *
- * No-op on a 4K host, which is every path the shipping build takes today.
- *
- * DefaultMode applies when neither config nor environment says otherwise. The
- * FEX launcher keeps Abort: the Linux syscall lane still has the loader,
- * guest-mmap and mtrack gaps. Force is for embedders that do every guest
- * mapping themselves, host-granular, and handle invalidation explicitly.
+ * Handles every mode that can be decided before the guest ELF is read, and
+ * returns the selected mode. On a 4K host it returns Native: there is nothing
+ * to emulate. A caller that gets Auto back must call ResolveAuto() once it
+ * knows the guest's PT_LOAD alignment, before the first guest mapping. A
+ * caller that gets Native must turn the granule emulation off
+ * (VMATracking::GranuleTable::DisableEmulation()).
  */
-inline void CheckHostPageSize(bool ConfigAvailable = false, Mode DefaultMode = Mode::Abort) {
+inline Mode CheckHostPageSize(bool ConfigAvailable = false, Mode DefaultMode = Mode::Auto) {
   const long HostPageSize = ::sysconf(_SC_PAGESIZE);
   if (HostPageSize <= 0 || static_cast<uint64_t>(HostPageSize) == FEXCore::Utils::FEX_GUEST_PAGE_SIZE) {
-    // Either the expected 4K host, or sysconf failed and there is nothing
-    // meaningful to say -- the rest of FEX already treats a failed _SC_PAGESIZE
-    // as "assume the guest page size", so do not invent a second policy here.
-    return;
+    // Either a 4K host, or sysconf failed and there is nothing meaningful to
+    // say -- the rest of the tree already treats a failed _SC_PAGESIZE as
+    // "assume 4K", so do not invent a second policy here.
+    return Mode::Native;
   }
 
   bool Explicit = false;
   const Mode SelectedMode = GetMode(ConfigAvailable, DefaultMode, &Explicit);
 
-  if (!Explicit && SelectedMode == Mode::Force) {
-    // The caller vouched for this lane: one line, not the bring-up banner.
-    fextl::fmt::print(stderr, "FEX: host page size is {} (guest page {}); this lane is host-granular, continuing.\n",
-                      HostPageSize, FEXCore::Utils::FEX_GUEST_PAGE_SIZE);
-    return;
+  if (SelectedMode == Mode::Auto || SelectedMode == Mode::Native) {
+    return SelectedMode;
   }
 
-  // POWERARM-M0-TODO(loader): an AArch64 guest built for 64K pages (PT_LOAD p_align >= host page) needs none of the granule emulation below; skip this gate for it once the loader records p_align.
+  if (!Explicit && SelectedMode == Mode::Force) {
+    // The caller vouched for this lane: one line, not the bring-up banner.
+    fextl::fmt::print(stderr, "POWERarm: host page size is {}; this lane is host-granular, continuing.\n", HostPageSize);
+    return SelectedMode;
+  }
+
   fextl::fmt::print(stderr,
-                    "FEX: {}: host page size is {}; guest mappings still go through the {}-byte granule\n"
-                    "emulation on top of the larger host page, although AT_PAGESZ reports the host page (docs/PAGE_SIZE_64K_EXECUTION.md):\n"
+                    "POWERarm: {}: host page size is {}, and HostPageMode={} selects the {}-byte granule\n"
+                    "emulation on top of the larger host page (AT_PAGESZ still reports the host page;\n"
+                    "docs/PAGE_SIZE_64K_EXECUTION.md):\n"
                     "  * loader, brk, ASLR and the allocators are host-granular (S2/S4a),\n"
                     "  * guest mmap/mprotect/munmap below the host page go through the granule table\n"
                     "    in the permissive tier: a granule is mapped/protected as the union of its\n"
@@ -117,13 +138,16 @@ inline void CheckHostPageSize(bool ConfigAvailable = false, Mode DefaultMode = M
                     "  * SMC tracking (SMCChecks=mtrack) arms whole host pages and re-arms after a\n"
                     "    write to a shared granule (S4c).\n"
                     "\n"
-                    "This is tested on the gaming lanes but not proven for every guest; a guest that\n"
-                    "depends on sub-granule faults (GC write barriers, guard pages) may misbehave.\n"
+                    "A guest that depends on sub-granule faults (GC write barriers, guard pages) may misbehave.\n"
                     "\n"
-                    "FEX_HOSTPAGEMODE=abort (default) refuses to start; =force continues with the\n"
-                    "configured SMCChecks (recommended: mtrack, the 4K configuration); =degrade\n"
-                    "continues and forces SMCChecks=full, which is several times slower.\n",
-                    SelectedMode == Mode::Abort ? "FATAL" : "WARNING", HostPageSize, FEXCore::Utils::FEX_GUEST_PAGE_SIZE);
+                    "POWERARM_HOSTPAGEMODE=auto (default) runs natively when every PT_LOAD of the program\n"
+                    "and its interpreter has p_align >= the host page and emulates otherwise; =native never\n"
+                    "emulates; =force emulates with the configured SMCChecks (recommended: mtrack);\n"
+                    "=degrade emulates and forces SMCChecks=full, which is several times slower;\n"
+                    "=abort refuses to start.\n",
+                    SelectedMode == Mode::Abort ? "FATAL" : "WARNING", HostPageSize,
+                    SelectedMode == Mode::Abort ? "abort" : (SelectedMode == Mode::Degrade ? "degrade" : "force"),
+                    FEXCore::Utils::FEX_GUEST_PAGE_SIZE);
 
   switch (SelectedMode) {
   case Mode::Degrade:
@@ -133,20 +157,40 @@ inline void CheckHostPageSize(bool ConfigAvailable = false, Mode DefaultMode = M
     if (ConfigAvailable) {
       FEXCore::Config::Set(FEXCore::Config::CONFIG_SMCCHECKS, "2" /* CONFIG_SMC_FULL */);
     }
-    fextl::fmt::print(stderr, "FEX: FEX_HOSTPAGEMODE=degrade -- continuing with SMCChecks forced to full.\n"
+    fextl::fmt::print(stderr, "POWERarm: HostPageMode=degrade -- continuing with SMCChecks forced to full.\n"
                               "Relaxed-correctness contract, stated once: guest protections finer than the host\n"
                               "page are tracked but not enforced, sub-page guard pages do not fault, and freed\n"
                               "sub-page memory stays resident. Do not report performance numbers from this mode.\n");
-    return;
+    return SelectedMode;
   case Mode::Force:
-    fextl::fmt::print(stderr, "FEX: FEX_HOSTPAGEMODE=force -- continuing, forcing nothing. This is a bring-up aid\n"
-                              "for working on host-page-size support, not a supported configuration.\n");
-    return;
+    fextl::fmt::print(stderr, "POWERarm: HostPageMode=force -- continuing with the granule emulation, forcing nothing.\n");
+    return SelectedMode;
   case Mode::Abort:
   default: break;
   }
 
-  fextl::fmt::print(stderr, "\nSet FEX_HOSTPAGEMODE=degrade (or =force) to continue anyway.\n");
+  fextl::fmt::print(stderr, "\nSet POWERARM_HOSTPAGEMODE=auto (or =force, =degrade) to continue.\n");
   FEX_TRAP_EXECUTION;
+}
+
+/**
+ * @brief Decide Auto once the guest ELF has been read.
+ *
+ * SmallestAlign is the smallest PT_LOAD p_align of the program and its
+ * interpreter, and File the path it came from. Returns true when the granule
+ * emulation is needed. The native case prints nothing; the emulated case prints
+ * one line saying why.
+ */
+inline bool ResolveAuto(uint64_t SmallestAlign, std::string_view File) {
+  const uint64_t HostPageSize = FEXCore::HostPage::Size();
+  if (SmallestAlign >= HostPageSize) {
+    return false;
+  }
+
+  fextl::fmt::print(stderr,
+                    "POWERarm: {} has a PT_LOAD with p_align {:#x}, below the {:#x} host page: emulating {}-byte pages "
+                    "for this process (POWERARM_HOSTPAGEMODE=auto)\n",
+                    File, SmallestAlign, HostPageSize, FEXCore::Utils::FEX_GUEST_PAGE_SIZE);
+  return true;
 }
 } // namespace FEX::HostPageGate

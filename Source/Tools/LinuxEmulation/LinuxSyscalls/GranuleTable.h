@@ -55,10 +55,21 @@ namespace FEX::HLE::VMATracking {
  * SMC layer depends on.
  */
 struct GranuleTable {
-  // True when the host page is larger than the guest's, i.e. when any of this
-  // machinery does anything at all.
+  // True when the host page is larger than 4K and the emulation has not been
+  // turned off for this process, i.e. when any of this machinery does anything
+  // at all.
   [[nodiscard]] static bool Active() {
-    return !FEXCore::HostPage::MatchesGuest();
+    return !EmulationDisabled && !FEXCore::HostPage::MatchesGuest();
+  }
+
+  // POWERarm: the granule emulation is a per-process fallback for guests linked
+  // for pages smaller than the host's. HostPageGate turns it off, before the
+  // first guest mapping, for a guest whose PT_LOADs are aligned to the host
+  // page (HostPageMode auto or native). Such a guest was told AT_PAGESZ = the
+  // host page and gets plain host-granular memory syscalls, as on an arm64
+  // kernel with that page size. It is never turned back on.
+  static void DisableEmulation() {
+    EmulationDisabled = true;
   }
 
   // Guest 4K pages covered by one host granule. 1 on a 4K host, 16 on 64K.
@@ -71,6 +82,8 @@ struct GranuleTable {
   // guest pages per granule is the real ceiling; the check exists so that a
   // hypothetical 2M-page host fails loudly here instead of corrupting the
   // table.
+  static inline bool EmulationDisabled {false};
+
   static constexpr uint64_t MaxPagesPerGranule = 16;
   static constexpr uint64_t MaxHostPageSize = MaxPagesPerGranule * FEXCore::Utils::FEX_GUEST_PAGE_SIZE;
 

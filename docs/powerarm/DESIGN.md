@@ -312,6 +312,14 @@ PT_LOADs. The 4K granule emulation inherited from fastppcx86 is kept only as a *
 fallback** for binaries whose PT_LOAD `p_align` is smaller than the host page. **Every milestone
 from M1 on must pass on both a 4K and a 64K host kernel**; the owner runs both.
 
+`POWERARM_HOSTPAGEMODE` implements this (`Source/Common/HostPageGate.h`). The default, `auto`,
+reads the PT_LOADs of the program and its interpreter before anything is mapped: if every
+`p_align` is at least the host page, the process runs with no granule emulation; otherwise it
+uses the emulation and prints one line naming the file and the `p_align`. `native` never
+emulates, and fastppcx86's `force`, `degrade` and `abort` keep their meaning. The decision
+covers the program and its interpreter only: a 4K-aligned shared library loaded later by a
+natively running `ld.so` gets host-granular `mmap`, as it would on an arm64 64K kernel.
+
 **Address space.** Research and measurements are in
 [`research/va-size/VA-SIZE-RESEARCH.md`](research/va-size/VA-SIZE-RESEARCH.md) `[MEASURED]`:
 

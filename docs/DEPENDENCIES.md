@@ -152,8 +152,10 @@ cmake -S . -B build -GNinja \
 
 - **ppc64le.** `CMakeLists.txt` rejects other processors. x86-64 hosts need
   `ENABLE_X86_HOST_DEBUG=True` and are debug-only.
-- **4K-page kernel** for `SMCChecks=mtrack`. See the note in `README.md`. On a 64K-page
-  kernel, running binaries needs `POWERARM_HOSTPAGEMODE=force`.
+- **4K or 64K-page kernel.** On a 64K kernel `POWERARM_HOSTPAGEMODE=auto` (the default)
+  runs a binary natively when every PT_LOAD of it and its interpreter has
+  `p_align` >= 64K, and uses the 4K granule emulation otherwise
+  (`docs/powerarm/DESIGN.md` §4.9).
 - `TUNE_CPU` defaults to `native`, which bakes `-march=native` into the binary. Set
   `-DTUNE_CPU=none` for anything another machine will run.
 - `BUILD_TESTS=False` is not enough to skip tests — `unittests/` is gated on

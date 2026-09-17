@@ -255,13 +255,6 @@ check:
         mov     x30, x16
         ret
 
-        // A non-empty .data keeps p_filesz of the RW segment above zero. With
-        // p_filesz == 0 and a 4K-aligned p_vaddr, the ELF loader on a 64K host
-        // leaves the first host page of .bss unmapped (see README.md).
-        .data
-data_marker:
-        .quad   0x5a5a5a5a5a5a5a5a
-
         .bss
         .balign 16
         .global buf

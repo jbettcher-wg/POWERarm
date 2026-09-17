@@ -278,8 +278,9 @@ static int GenerateCache(int argc, const char** argv) {
   FEX::Config::LoadConfig("", envp, PortableInfo);
 
   // Host page size gate (64K port). Config is up by this point, so HostPageMode and the
-  // degrade-mode SMCChecks forcing both work.
-  FEX::HostPageGate::CheckHostPageSize(true);
+  // degrade-mode SMCChecks forcing both work. No guest is loaded here, so auto and
+  // native have nothing further to decide.
+  (void)FEX::HostPageGate::CheckHostPageSize(true);
 
   auto NumBlocks = Data.at(ProgramName).size();
   auto GeneratedCache = GenerateSingleCache(ProgramName, Data.at(ProgramName), OutDir);

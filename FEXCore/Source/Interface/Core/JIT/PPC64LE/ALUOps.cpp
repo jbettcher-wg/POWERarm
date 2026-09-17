@@ -574,6 +574,32 @@ DEF_OP(UMulH) {
   }
 }
 
+// Div and UDiv are flag-neutral: IR.json gives them no flag semantics,
+// DeadFlagCalculationElimination does not classify them as flag writers, and
+// the upstream arm64 backend spills and refills NZCV around the long-division
+// helper call it makes. The 128/64 lowerings below use cmpdi/cmpld and
+// sradi/subfic/subfze/subfc/subfe, which write CR0 (guest N/Z) and XER.CA
+// (guest C). They never write OV or SO. So those two paths save CR0 and CA on
+// entry and put them back on exit, without an XER mtspr:
+//   save:    subfe TMP1, r0, r0 = CA - 1 (carry-out == carry-in), mfocrf CR0
+//   restore: addi +1 gives CA as 0/1, SetCAFromBit, mtocrf CR0
+// Red-zone slots -56/-64 hold them; -8..-24 are used by other ops and
+// -40/-48 by the signed path's sign masks.
+void PPC64JITCore::SaveCR0AndCA() {
+  subfe(TMP1, r0, r0);
+  std(TMP1, -56, r1);
+  mfocrf(TMP1, 0x80);
+  std(TMP1, -64, r1);
+}
+
+void PPC64JITCore::RestoreCR0AndCA() {
+  ld(TMP1, -56, r1);
+  addi(TMP1, TMP1, 1);
+  SetCAFromBit(TMP1, TMP1);
+  ld(TMP1, -64, r1);
+  mtocrf(0x80, TMP1);
+}
+
 DEF_OP(Div) {
   // x86 div/idiv: dividend = (Upper:Lower) at 2x op size, divisor at op size.
   // For 32-bit: 64-bit signed dividend / 32-bit signed divisor → 32-bit quotient/remainder.
@@ -647,6 +673,7 @@ DEF_OP(Div) {
     // -8/-16/-24 are reserved by other ops, so stay below -32.
     auto Upper = GetReg(Op->Upper);
 
+    SaveCR0AndCA();
     sradi(TMP1, Upper, 63);                   // dividend sign mask (-1 or 0)
     sradi(TMP2, Divisor, 63);                 // divisor  sign mask
     xor_(TMP3, TMP1, TMP2);                   // quotient sign mask
@@ -691,6 +718,7 @@ DEF_OP(Div) {
     subf(Quotient, TMP3, TMP1);
     xor_(TMP2, TMP2, TMP4);
     subf(Remainder, TMP4, TMP2);
+    RestoreCR0AndCA();
   } else {
     divd(Quotient, Lower, Divisor);
     mulld(TMP4, Quotient, Divisor);
@@ -754,6 +782,7 @@ DEF_OP(UDiv) {
     // quotient. One correction step (compare remainder against Divisor)
     // recovers the exact answer.
     auto Upper = GetReg(Op->Upper);
+    SaveCR0AndCA();
     divdeu(TMP1, Upper, Divisor);            // q1 = floor(Upper * 2^64 / Divisor)
     divdu(TMP2, Lower, Divisor);              // q2 = floor(Lower / Divisor)
     add(TMP1, TMP1, TMP2);                    // tentative = q1 + q2
@@ -801,6 +830,7 @@ DEF_OP(UDiv) {
 
     or_(Quotient,  TMP1, TMP1);               // mr Quotient,  TMP1
     or_(Remainder, TMP4, TMP4);               // mr Remainder, TMP4
+    RestoreCR0AndCA();
   } else {
     divdu(Quotient, Lower, Divisor);
     mulld(TMP4, Quotient, Divisor);
@@ -2272,46 +2302,29 @@ DEF_OP(TestZ) {
 DEF_OP(Adc) {
   auto Op  = IROp->C<IR::IROp_Adc>();
   auto Dst = GetReg(Node);
-  auto S1  = GetReg(Op->Src1);
+  // Src1 is Inline:"Zero" in IR.json: an inline zero has no register, so
+  // GetZeroableReg maps it to r0 (pinned 0).
+  auto S1  = GetZeroableReg(Op->Src1);
   auto S2  = GetReg(Op->Src2);
-  // CFInverted=true: stored XER.CA = !x86_CF. PPC `adde` would inject !x86_CF
-  // as the carry-in, producing a result that is off by one. Materialise the
-  // carry instead, without disturbing XER.
+  // Dst = S1 + S2 + CA. XER.CA holds the carry directly: the frontend's ADC and
+  // DeadFlagCalculationElimination's AdcWithFlags -> Adc rewrite both feed an
+  // un-inverted carry.
   //
-  // `subfe rT, r0, r0` = ~r0 + r0 + CA. With the JIT's r0 == 0 invariant that
-  // is 0xFFFF_FFFF_FFFF_FFFF + 0 + CA, i.e.
-  //     CA = 1  ->  rT =  0
-  //     CA = 0  ->  rT = -1
-  // so rT == -(!CA) == -x86_CF for this op's CFInverted=true convention.
-  // (The identity actually holds for any r0 value: ~x + x is all-ones.)
-  // Its carry-out is 1 iff CA was 1, so XER.CA is left exactly as found;
-  // OE = 0 and Rc = 0, so OV/SO/CR0 are untouched too — which matters here
-  // because _Adc is a value-only op that must not perturb flags.
+  // Adc is a value-only op (no HasSideEffects, and DFCE models it as reading C
+  // and writing nothing), so it must leave XER.CA/OV/SO and CR0 untouched. A
+  // bare `adde` writes the carry-out into XER.CA: an A64 `adc x0, x1, x2`
+  // followed by `b.cs` then branched on the carry-out of the ADC rather than
+  // the guest's C.
   //
-  // Dst = S1 + S2 + x86_CF = (S1 + S2) - (-x86_CF), so the third addend
-  // folds into a subf instead of an add.
-  // CARRY POLARITY: this op consumes a DIRECT carry (XER.CA == x86_CF), not an
-  // inverted one. Its only producer is DeadFlagCalculationElimination rewriting
-  // AdcWithFlags -> Adc, and CalculateFlags_ADC (OpcodeDispatcher/Flags.cpp:276)
-  // does RectifyCarryInvert(false) + sets CFInverted=false immediately before
-  // emitting _AdcWithFlags. The ADX path likewise. So `adde` -- which computes
-  // RA + RB + XER.CA -- IS the operation, exactly.
-  //
-  // The previous sequence here (subfe TMP2,r0,r0; add; subf) assumed the
-  // INVERTED convention: subfe r0,r0 yields CA-1 == -(!CA), and subtracting it
-  // adds !CA. Under a direct carry that computes S1 + S2 + !x86_CF -- off by
-  // one in BOTH carry states. It was never caught because OP_ADC has no other
-  // producer, so this handler has never executed with the pass disabled.
-  //
-  // adde writes XER.CA (carry-out). That is safe here and not a new hazard: the
-  // Replacement rewrite only fires when the flag writes are dead, and the
-  // AdcWithFlags this replaced wrote CA itself, so nothing can observe the
-  // difference. (Sbb/AdcZero keep their subfe forms -- their producers DO
-  // rectify to inverted; see the note in each. The three deliberately differ.)
-  adde(Dst, S1, S2);          // Dst = S1 + S2 + x86_CF
+  // `subfe TMP1, r0, r0` = ~r0 + r0 + CA = all-ones + CA, i.e. CA - 1. Its
+  // carry-out equals its carry-in, so XER.CA survives, and OE = Rc = 0 leaves
+  // OV/SO/CR0 alone. ~(CA - 1) = -CA, and S1 + S2 - (-CA) = S1 + S2 + CA.
+  subfe(TMP1, r0, r0);        // TMP1 = CA - 1
+  nor(TMP1, TMP1, TMP1);      // TMP1 = -CA
+  add(TMP2, S1, S2);
+  subf(Dst, TMP1, TMP2);      // Dst = S1 + S2 + CA
   if (IROp->Size == IR::OpSize::i32Bit) {
-    // x86-64 zero-extends 32-bit writebacks; sources arrive AllowUpperGarbage
-    // and the dispatcher stores the raw host register. Matches Add/Sub/And/...
+    // Sources arrive AllowUpperGarbage; zero-extend the 32-bit writeback.
     rldicl(Dst, Dst, 0, 32);
   }
 }
@@ -2319,11 +2332,16 @@ DEF_OP(Adc) {
 DEF_OP(Sbb) {
   auto Op  = IROp->C<IR::IROp_Sbb>();
   auto Dst = GetReg(Node);
-  // Carry stays as-is: SBB's producer DOES rectify to the inverted convention
-  // (CalculateFlags_SBB), so XER.CA == !x86_CF here and the bare subfe computes
-  // S1 + ~S2 + CA == S1 - S2 - x86_CF, which is exactly SBB. Deliberately the
-  // opposite polarity from DEF_OP(Adc) above -- do not "uniformize" them.
-  subfe(Dst, GetReg(Op->Src2), GetReg(Op->Src1));
+  // Dst = S1 + ~S2 + CA = S1 - S2 - !CA, with XER.CA holding the no-borrow
+  // carry directly (ARM C; the x86 producer rectifies CF to the same stored
+  // polarity before SbbWithFlags).
+  //
+  // Value-only, like Adc: a bare `subfe` would write the borrow into XER.CA.
+  // `subfe TMP1, r0, r0` gives CA - 1 and preserves CA (see Adc), and
+  // S1 - S2 + (CA - 1) is the result.
+  subfe(TMP1, r0, r0);                          // TMP1 = CA - 1
+  subf(TMP2, GetReg(Op->Src2), GetReg(Op->Src1)); // TMP2 = S1 - S2
+  add(Dst, TMP2, TMP1);
   if (IROp->Size == IR::OpSize::i32Bit) {
     rldicl(Dst, Dst, 0, 32);  // zero-extend the 32-bit writeback (see Adc)
   }
@@ -3126,16 +3144,13 @@ DEF_OP(CondAddNZCV) {
     addco_(TMP3, TMP1, TMP2);   // CA/OV at 32-bit boundary; CR0 from shifted result
   } else {
     if (S2Inline) {
-      if (static_cast<int64_t>(Const) >= -32768 && static_cast<int64_t>(Const) <= 32767) {
-        addic_(TMP3, S1, static_cast<int16_t>(Const));   // CA + CR0; OV unchanged from prior op
-        // addic. doesn't set OV; force OV=0 (addic.+small-const can't overflow
-        // the 64-bit boundary in a way ccmn cares about). One addo, preserving
-        // the CA addic. just produced — was a full XER round-trip.
-        SetOVConstant(false, r0, TMP1);
-      } else {
-        LoadConstant(TMP4, Const);
-        addco_(TMP3, S1, TMP4);
-      }
+      // Always the register form. There used to be an `addic.` shortcut for
+      // constants that fit in int16, followed by forcing OV=0 on the claim that
+      // a small constant cannot overflow. It can: CCMN x1, #1 with
+      // x1 = INT64_MAX must set V, and addic. computes no overflow at all.
+      // addco. sets CA, OV and CR0 from the same 64-bit add.
+      LoadConstant(TMP4, Const);
+      addco_(TMP3, S1, TMP4);
     } else {
       addco_(TMP3, S1, GetReg(Op->Src2));
     }
