@@ -2849,6 +2849,34 @@ void PPC64JITCore::EmitEntryPoint(PPC64Emitter::Label& HeaderLabel, bool CheckTF
   (void)CheckTF;
 }
 
+void PPC64JITCore::BindShortCondBranches(uint32_t BlockID) {
+  for (auto It = ShortCondBranches.begin(); It != ShortCondBranches.end();) {
+    if (It->BlockID != BlockID) {
+      ++It;
+      continue;
+    }
+    if (GetOffset() - It->Offset > 32764) {
+      ERROR_AND_DIE_FMT("PPC64 JIT: short conditional branch at +{:#x} cannot reach block {} at +{:#x}", It->Offset, BlockID, GetOffset());
+    }
+    Bind(&It->Label);
+    It = ShortCondBranches.erase(It);
+  }
+}
+
+void PPC64JITCore::EmitShortCondIsland() {
+  PPC64Emitter::Label Over {};
+  b(&Over);
+  for (auto& Short : ShortCondBranches) {
+    if (GetOffset() - Short.Offset > 32764) {
+      ERROR_AND_DIE_FMT("PPC64 JIT: short conditional branch at +{:#x} cannot reach its island at +{:#x}", Short.Offset, GetOffset());
+    }
+    Bind(&Short.Label);
+    b(&JumpTargets[Short.BlockID]);
+  }
+  ShortCondBranches.clear();
+  Bind(&Over);
+}
+
 void PPC64JITCore::EmitSuspendInterruptCheck() {
   // Byte-store poke of the interrupt fault page (see JITClass.h and the matching
   // drain logic in SignalDelegator::HandleGuestSignal). The stored value is
@@ -4952,6 +4980,7 @@ CPUBackend::CompiledCode PPC64JITCore::CompileCode(
   SharedSpillLinkLabel = {};
   SharedSpillExitUsed = false;
   SharedSpillLinkUsed = false;
+  ShortCondBranches.clear();
 
   // -------------------------------------------------------------------------
   // Emit entry point
@@ -5555,6 +5584,9 @@ CPUBackend::CompiledCode PPC64JITCore::CompileCode(
     // Bind() only patches already-emitted forward branches; it does not move
     // the cursor, so the prologue delta is complete here.
     Bind(JumpTarget(BlockNode));
+    if (!ShortCondBranches.empty()) {
+      BindShortCondBranches(BlockIROp->ID);
+    }
 
     // A block can be entered from anywhere; nothing about the previously
     // emitted block's trailing register contents may be assumed here.
@@ -5610,6 +5642,10 @@ CPUBackend::CompiledCode PPC64JITCore::CompileCode(
       // via Bind()/PatchPending rewrites bytes in place without advancing the
       // cursor, so a forward branch resolved by a later op is still charged to
       // the op that emitted it, which is what we want.)
+      if (!ShortCondBranches.empty() && GetOffset() - ShortCondBranches.front().Offset > kShortCondIslandAge) {
+        EmitShortCondIsland();
+      }
+
       [[maybe_unused]] const size_t OpStart = GetOffset();
 
       // Any helper call this op emits saves only the dynamic VRs live across
@@ -5728,6 +5764,9 @@ CPUBackend::CompiledCode PPC64JITCore::CompileCode(
   //
   // Emitted BEFORE Align16B/CodeSize capture so the thunk bytes are included
   // in CodeData.Size and in the icache flush below.
+  if (!ShortCondBranches.empty()) {
+    ERROR_AND_DIE_FMT("PPC64 JIT: {} short conditional branches left unbound in the unit at {:#x}", ShortCondBranches.size(), Entry);
+  }
   const uint64_t StubAddr = CTX->Dispatcher->GetExitFunctionLinkerWithRecordAddress();
   for (auto& Thunk : PendingJumpThunks) {
     static_assert(offsetof(PPC64BlockLinkRecord, StubAddr) <= 32764 &&
