@@ -894,6 +894,11 @@ bool SyscallHandler::HandleSegfault(FEXCore::Core::InternalThreadState* Thread, 
                   RSL, Thread->CurrentFrame->SignalHandlerRefCounter);
         if (RSL && Thread->CurrentFrame->SignalHandlerRefCounter == 0) {
           ArchHelpers::Context::SetSp(ucontext, RSL);
+          // No live guest handler holds the refcount, so any handler records
+          // left are markers for abandoned dispatchers below this SP; their
+          // memory is free stack from here on (SignalDelegator.cpp,
+          // "Abandoned guest handlers").
+          ThreadObject->SignalInfo.InnermostHandler = nullptr;
         }
       }
 #endif

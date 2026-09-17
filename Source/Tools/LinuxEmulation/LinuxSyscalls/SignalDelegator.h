@@ -239,7 +239,8 @@ private:
     return Address >= Config.FABIStubsBegin && Address < Config.FABIStubsEnd;
   }
 
-  void RestoreFrame_Arm64(FEXCore::Core::InternalThreadState* Thread, ArchHelpers::Context::ContextBackup* Context,
+  ///< Returns true when the handler redirected the guest and execution resumes through the dispatcher.
+  bool RestoreFrame_Arm64(FEXCore::Core::InternalThreadState* Thread, ArchHelpers::Context::ContextBackup* Context,
                           FEXCore::Core::CpuStateFrame* Frame, void* ucontext);
 
   ///< Setup the rt_sigframe for an AArch64 guest.
@@ -252,7 +253,25 @@ private:
     TYPE_NONREALTIME, ///< Signal restore type is from a `non-realtime` signal.
     TYPE_PAUSE,       ///< Signal restore type is from a GDB pause event.
   };
-  ArchHelpers::Context::ContextBackup* StoreThreadState(FEXCore::Core::InternalThreadState* Thread, int Signal, void* ucontext);
+  // Where a guest handler's host frame goes (see "Abandoned guest handlers").
+  struct HandlerPlacement {
+    // Host SP to build the ContextBackup under; 0 = below the interrupted SP.
+    uint64_t BaseSP {};
+    // Interrupted host stack bytes to save with the backup: [SaveLo, SaveHi).
+    uint64_t SaveLo {};
+    uint64_t SaveHi {};
+    uint64_t InterruptedBase {};
+  };
+  HandlerPlacement PlaceGuestHandler(FEXCore::Core::InternalThreadState* Thread, void* ucontext, bool WasInJIT);
+
+public:
+  ///< Guest syscall entry: marks the innermost guest handler abandoned if the guest SP has left its frame.
+  void NoteGuestSyscall(FEXCore::Core::InternalThreadState* Thread);
+
+private:
+
+  ArchHelpers::Context::ContextBackup* StoreThreadState(FEXCore::Core::InternalThreadState* Thread, int Signal, void* ucontext,
+                                                        const HandlerPlacement& Placement);
   void RestoreThreadState(FEXCore::Core::InternalThreadState* Thread, void* ucontext, RestoreType Type);
   bool HandleDispatcherGuestSignal(FEXCore::Core::InternalThreadState* Thread, int Signal, void* info, void* ucontext,
                                    GuestSigAction* GuestAction, stack_t* GuestStack);

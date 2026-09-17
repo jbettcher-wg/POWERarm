@@ -56,6 +56,36 @@ struct ThreadStateObject : public FEXCore::Allocator::FEXAllocOperators {
     uint64_t SigMask;
   };
 
+  // One guest signal handler that has been entered and not yet returned from,
+  // as far as the delegator knows. The record lives on the host stack right
+  // above the handler's ContextBackup; see "Abandoned guest handlers" in
+  // SignalDelegator.cpp for how records are pushed, found abandoned and popped.
+  struct GuestHandlerLevel {
+    GuestHandlerLevel* Outer;
+    // The ContextBackup address: the host SP the handler's dispatcher runs at.
+    uint64_t HostBase;
+    // Also written into the guest frame, so rt_sigreturn can tell this record
+    // from a newer one placed at the same host address. 0 marks a record that
+    // is not a handler: the dispatcher of an abandoned handler that the guest
+    // was put back on by rt_sigreturn (always abandoned, no refcount).
+    uint64_t Serial;
+    // The guest signal frame [rt_sigframe .. top of the host stack slot).
+    uint64_t GuestFrameLo;
+    uint64_t GuestFrameHi;
+    // The sigaltstack range when the frame was placed on it, otherwise 0.
+    uint64_t AltStackLo;
+    uint64_t AltStackHi;
+    // Dispatcher SP of the level the handler interrupted, used when the
+    // handler returns to a different guest PC; 0 when unknown.
+    uint64_t InterruptedBase;
+    // A delivery that reclaimed abandoned levels saved the interrupted host
+    // stack bytes right after this record; rt_sigreturn copies them back here.
+    uint64_t SavedStackAddr;
+    uint64_t SavedStackLen;
+    // Set when a guest syscall saw the guest SP above the frame.
+    bool KnownAbandoned;
+  };
+
   FEXCore::Core::InternalThreadState* Thread;
 
   struct {
@@ -111,6 +141,17 @@ struct ThreadStateObject : public FEXCore::Allocator::FEXAllocOperators {
     // thread that is executing the syscall), so plain integers are sufficient.
     uint32_t DeliveredGuestSignals {};
     uint32_t DeliveredGuestSignalsWithoutRestart {};
+
+    // Guest handlers entered and not known to be finished, innermost first
+    // (GuestHandlerLevel above). Owned by this thread's signal handlers.
+    GuestHandlerLevel* InnermostHandler {};
+    // Records with a nonzero Serial; each also holds a SignalHandlerRefCounter count.
+    uint32_t HandlerLevels {};
+    uint64_t HandlerSerial {};
+    // Set while HandleGuestSignal delivers a frame drained at an interrupt
+    // fault page poke: the interrupted host code has finished its deferred
+    // section, so its stack may be saved and put back.
+    bool DeliveringDrainedSignal {};
 
     // Queue of thread local signal frames that have been deferred.
     // Async signals aren't guaranteed to be delivered in any particular order, but FEX treats them as FILO.
