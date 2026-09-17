@@ -31,9 +31,32 @@ namespace {
 
   struct Table {
     std::vector<InstMatcher> Matchers;
-    std::array<std::vector<const InstMatcher*>, 0x1000> Buckets;
+    // Buckets in CSR form: bucket i is BucketEntries[BucketStart[i] ..
+    // BucketStart[i + 1]), in matcher priority order.
+    std::array<uint32_t, 0x1001> BucketStart {};
+    std::vector<const InstMatcher*> BucketEntries;
     size_t HandledEntries {};
   };
+
+  // Calls Visit(i) for every 12-bit fast-lookup index i with
+  // (i & FastLookupIndex(Mask)) == FastLookupIndex(Expect), i.e. every bucket
+  // the matcher can be reached from. Enumerating the free index bits visits
+  // exactly those buckets; testing all 4096 per matcher cost most of the table
+  // build, which runs at every process start.
+  template<typename F>
+  void ForEachBucket(const InstMatcher& M, F&& Visit) {
+    const uint32_t Fixed = FastLookupIndex(M.Mask);
+    const uint32_t Want = FastLookupIndex(M.Expect);
+    const uint32_t Free = ~Fixed & 0xFFF;
+    uint32_t Sub = Free;
+    while (true) {
+      Visit(Want | Sub);
+      if (Sub == 0) {
+        break;
+      }
+      Sub = (Sub - 1) & Free;
+    }
+  }
 
   Table BuildTable() {
     Table T;
@@ -78,12 +101,18 @@ namespace {
     };
     std::stable_partition(T.Matchers.begin(), T.Matchers.end(), ComesFirst);
 
-    for (size_t i = 0; i < T.Buckets.size(); ++i) {
-      for (const auto& M : T.Matchers) {
-        if ((i & FastLookupIndex(M.Mask)) == FastLookupIndex(M.Expect)) {
-          T.Buckets[i].push_back(&M);
-        }
-      }
+    // Count, then fill in matcher order so each bucket keeps priority order.
+    for (const auto& M : T.Matchers) {
+      ForEachBucket(M, [&](uint32_t i) { ++T.BucketStart[i + 1]; });
+    }
+    for (size_t i = 1; i < T.BucketStart.size(); ++i) {
+      T.BucketStart[i] += T.BucketStart[i - 1];
+    }
+    T.BucketEntries.resize(T.BucketStart.back());
+    std::array<uint32_t, 0x1000> Cursor {};
+    std::copy_n(T.BucketStart.begin(), Cursor.size(), Cursor.begin());
+    for (const auto& M : T.Matchers) {
+      ForEachBucket(M, [&](uint32_t i) { T.BucketEntries[Cursor[i]++] = &M; });
     }
     return T;
   }
@@ -95,10 +124,12 @@ namespace {
 } // namespace
 
 const InstMatcher* DecodeInstruction(uint32_t Word) {
-  const auto& Bucket = GetTable().Buckets[FastLookupIndex(Word)];
-  for (const auto* M : Bucket) {
-    if ((Word & M->Mask) == M->Expect) {
-      return M;
+  const auto& T = GetTable();
+  const size_t Index = FastLookupIndex(Word);
+  const auto* const End = T.BucketEntries.data() + T.BucketStart[Index + 1];
+  for (auto* It = T.BucketEntries.data() + T.BucketStart[Index]; It != End; ++It) {
+    if ((Word & (*It)->Mask) == (*It)->Expect) {
+      return *It;
     }
   }
   return nullptr;

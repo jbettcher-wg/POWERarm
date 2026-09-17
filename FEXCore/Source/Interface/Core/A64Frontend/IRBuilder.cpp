@@ -6,6 +6,7 @@
 #include <FEXCore/Core/CoreState.h>
 #include <FEXCore/Core/SignalDelegator.h>
 
+#include <algorithm>
 #include <array>
 
 namespace FEXCore::A64 {
@@ -208,10 +209,22 @@ const IRBuilder::HandlerEntry IRBuilder::HandlerTable[] = {
 // clang-format on
 
 InstHandler IRBuilder::FindHandler(std::string_view Name) {
-  for (const auto& Entry : HandlerTable) {
-    if (Entry.Name == Name) {
-      return Entry.Handler;
+  // Called once per a64.inc entry while the decode table is built, in every
+  // process. A linear scan made that ~400K string compares per process start;
+  // an index sorted by name makes it a binary search. The first entry for a
+  // name wins, as it did with the scan.
+  static const auto Index = [] {
+    fextl::vector<const HandlerEntry*> Sorted;
+    Sorted.reserve(std::size(HandlerTable));
+    for (const auto& Entry : HandlerTable) {
+      Sorted.push_back(&Entry);
     }
+    std::stable_sort(Sorted.begin(), Sorted.end(), [](const HandlerEntry* A, const HandlerEntry* B) { return A->Name < B->Name; });
+    return Sorted;
+  }();
+  auto It = std::lower_bound(Index.begin(), Index.end(), Name, [](const HandlerEntry* A, std::string_view N) { return A->Name < N; });
+  if (It != Index.end() && (*It)->Name == Name) {
+    return (*It)->Handler;
   }
   return nullptr;
 }
