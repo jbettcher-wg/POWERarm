@@ -205,6 +205,7 @@ INST(UnallocatedEncoding,    "",                                          "--101
 
 // Loads and stores - Load/Store register (unscaled immediate)
 INST(STURx_LDURx,            "STURx/LDURx",                               "zz111000oo0iiiiiiiii00nnnnnttttt")
+INST(STLURx_LDAPURx,          "STLURx/LDAPURx",                            "zz011001oo0iiiiiiiii00nnnnnttttt")
 INST(UnallocatedEncoding,    "",                                          "111110001-0---------00----------")
 INST(UnallocatedEncoding,    "",                                          "10111000110---------00----------")
 INST(PRFM_imm,               "PRFM (immediate)",                          "1111100110iiiiiiiiiiiinnnnnttttt")

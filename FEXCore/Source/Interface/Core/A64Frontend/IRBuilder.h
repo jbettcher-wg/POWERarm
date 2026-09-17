@@ -122,7 +122,7 @@ public:
   // Loads and stores.
   bool LDR_lit_gen(uint32_t Word); bool LDRSW_lit(uint32_t Word); bool PRFM_lit(uint32_t Word);
   bool STP_LDP_gen(uint32_t Word);
-  bool LoadStoreImm9(uint32_t Word); bool STRx_LDRx_imm_2(uint32_t Word);
+  bool LoadStoreImm9(uint32_t Word); bool STRx_LDRx_imm_2(uint32_t Word); bool STLURx_LDAPURx(uint32_t Word);
   bool PRFM_imm(uint32_t Word);
   bool LoadStoreRegOffset(uint32_t Word);
   bool LoadExclusive(uint32_t Word); bool StoreExclusive(uint32_t Word); bool LoadStoreAtomicWidth(uint32_t Word);

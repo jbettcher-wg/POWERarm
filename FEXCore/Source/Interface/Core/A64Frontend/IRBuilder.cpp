@@ -67,6 +67,7 @@ const IRBuilder::HandlerEntry IRBuilder::HandlerTable[] = {
   {"STP_LDP_gen", &IRBuilder::STP_LDP_gen},
   {"STURx_LDURx", &IRBuilder::LoadStoreImm9}, {"STRx_LDRx_imm_1", &IRBuilder::LoadStoreImm9},
   {"STRx_LDRx_imm_2", &IRBuilder::STRx_LDRx_imm_2},
+  {"STLURx_LDAPURx", &IRBuilder::STLURx_LDAPURx},
   {"PRFM_imm", &IRBuilder::PRFM_imm}, {"PRFM_unscaled_imm", &IRBuilder::PRFM_imm},
   // Unprivileged loads and stores behave as the unscaled forms at EL0.
   {"STTRB", &IRBuilder::LoadStoreImm9}, {"LDTRB", &IRBuilder::LoadStoreImm9}, {"LDTRSB", &IRBuilder::LoadStoreImm9},
