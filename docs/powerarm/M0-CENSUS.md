@@ -13,7 +13,7 @@ decisions are waiting. It covers the tasks in the M0b brief. DESIGN.md §10.1 po
 
 - **Fork base:** `9da3ccf9f` (`daedalao-wt`, DESIGN.md §10.3)
 - **M0b start:** `ceb23fdc6`
-- **Measured at:** `8c221a4ec`, plus the commit that adds this file
+- **Measured at:** `90561e4af`, plus the commit that adds this file
 - **Build host:** 192.168.2.24, ppc64le, kernel `7.2.6-64k`, page size 65536
 - **Guest build machine:** Raspberry Pi 5, Debian, gcc 14.2.0, kernel `6.18.39+rpt-rpi-2712`
 
@@ -21,21 +21,21 @@ decisions are waiting. It covers the tasks in the M0b brief. DESIGN.md §10.1 po
 
 | Commit | Subject | Builds? |
 |---|---|---|
-| `096a8d383` | drop IS_32BIT_THUNK paths from thunk sources | **No.** CMake fails at `Source/Tools/CMakeLists.txt:23`. The commit also swept in the staged deletion of `Source/Tools/CodeSizeValidation/`, while its `add_subdirectory` goes away only in the next commit. The thunk change was verified on its own before commit |
-| `642716057` | remove TestHarnessRunner, CodeSizeValidation and zydis | Yes |
-| `4097b8b97` | remove the EC-transition IR op and bridge-only core code | Yes |
-| `617f0fbad` | replace the x86 frontend with an empty A64 frontend | Yes |
-| `a17877bd8` | remove x87, CPUID and other x86-only IR ops and lowerings | Yes |
-| `9782cb76a` | replace the x86 CPUState with an AArch64 CPUState | **No, by design** (369 errors). LinuxEmulation and the tools still use the x86 state |
-| `cc6f278ce` | port the Linux layer skeleton to AArch64 | **No, by design** (4 errors). FEXInterpreter and the offline compiler are ported in the next commit |
-| `bec41c77f` | accept only AArch64 ELFs in the loader | Yes |
-| `6b11e3683` | force-disable TSO emulation and mark remaining x86 machinery | Yes |
-| `8c221a4ec` | wire the generic passthroughs that were x86-64-only | Yes |
+| `66357ac71` | drop IS_32BIT_THUNK paths from thunk sources | **No.** CMake fails at `Source/Tools/CMakeLists.txt:23`. The commit also swept in the staged deletion of `Source/Tools/CodeSizeValidation/`, while its `add_subdirectory` goes away only in the next commit. The thunk change was verified on its own before commit |
+| `974b7638c` | remove TestHarnessRunner, CodeSizeValidation and zydis | Yes |
+| `811af18b0` | remove the EC-transition IR op and bridge-only core code | Yes |
+| `19f7c198b` | replace the x86 frontend with an empty A64 frontend | Yes |
+| `c4bfd8c81` | remove x87, CPUID and other x86-only IR ops and lowerings | Yes |
+| `9a721af34` | replace the x86 CPUState with an AArch64 CPUState | **No, by design** (369 errors). LinuxEmulation and the tools still use the x86 state |
+| `1577c24ab` | port the Linux layer skeleton to AArch64 | **No, by design** (4 errors). FEXInterpreter and the offline compiler are ported in the next commit |
+| `8de706f89` | accept only AArch64 ELFs in the loader | Yes |
+| `aa2a51ba5` | force-disable TSO emulation and mark remaining x86 machinery | Yes |
+| `90561e4af` | wire the generic passthroughs that were x86-64-only | Yes |
 
 **Per-commit verification.** Each commit was checked out in a throwaway worktree and built
 incrementally with the same CMake options as `build-powerarm` (submodules symlinked from the
 main tree). The Builds? column is that result (`/tmp/pa-m0b/verify.txt` on the build host).
-Non-building commits: `096a8d383` (accidental), `9782cb76a` and `cc6f278ce` (planned run).
+Non-building commits: `66357ac71` (accidental), `9a721af34` and `1577c24ab` (planned run).
 
 **Cold build of HEAD.** `rm -rf build-powerarm`, then CMake and ninja with:
 
@@ -52,7 +52,7 @@ rc=0, 203 build steps, 18.6 s wall with a warm ccache, 0 errors.
 
 - `BUILD_TESTING=ON`: unittests, FEXLinuxTests and the ASM suites are x86 test corpora and
   were not attempted.
-- `BUILD_THUNKS=ON`: at `096a8d383` only the drm, EGL, wayland and xshmfence host libs were
+- `BUILD_THUNKS=ON`: at `66357ac71` only the drm, EGL, wayland and xshmfence host libs were
   built. asound, GL and vulkan need an x86 sysroot that the host doesn't have.
 
 ## Smoke test
@@ -172,7 +172,7 @@ exclusive monitor. NZCV lives in host CR0 inside JIT code and is spilled to `Sta
 
 ## (a) Diff stats per subsystem
 
-`git diff --numstat <base> 8c221a4ec`, bucketed by path prefix. "Core (other)" is
+`git diff --numstat <base> 90561e4af`, bucketed by path prefix. "Core (other)" is
 `FEXCore/Source/Interface/Core/*` outside the named directories. Counts are lines.
 
 | Subsystem | files (9da3ccf9f) | +/- (9da3ccf9f) | files (ceb23fdc6) | +/- (ceb23fdc6) |
@@ -224,9 +224,9 @@ a file, not as a first error. Those items are listed below the table and carry T
 
 | Phase (commit) | Mechanical rename | x86-semantic removed | Needs design decision | Knock-on / own intermediate |
 |---|---:|---:|---:|---:|
-| Frontend swap (`617f0fbad`) | 4 | 0 | 0 | 2 |
-| x87/CPUID/PF/AF removal (`a17877bd8`) | 0 | 14 | 0 | 0 |
-| CPUState swap, Linux layer, loader (`9782cb76a`..`8c221a4ec`) | 69 | 99 | 19 | 18 |
+| Frontend swap (`19f7c198b`) | 4 | 0 | 0 | 2 |
+| x87/CPUID/PF/AF removal (`c4bfd8c81`) | 0 | 14 | 0 | 0 |
+| CPUState swap, Linux layer, loader (`9a721af34`..`90561e4af`) | 69 | 99 | 19 | 18 |
 | **total** | **73** | **113** | **19** | **20** |
 
 ### Mechanical rename
@@ -492,7 +492,7 @@ x87/X87 57, gregs 23, CPUID 19, xmm 13, MXCSR 9, F80 8, RFLAG_ 7, X86State 2.
     - `Source/Tools/CommonTools/HarnessHelpers.h`, no includers
     - the 32-bit robust-futex walker in ThreadManager
     - most of `ELFContainer` (only `GetELFType` has callers)
-11. **`096a8d383` swept in an unrelated staged deletion.** The CodeSizeValidation files went in
+11. **`66357ac71` swept in an unrelated staged deletion.** The CodeSizeValidation files went in
     with the thunks commit, so that commit does not configure.
 12. **SMC semantic patching (Idea 4) was fed by the x86 decoder.** Its site tables are now
     always empty; the feature is inert, not broken.

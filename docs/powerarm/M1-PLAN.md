@@ -1,6 +1,6 @@
 # M1 plan: static AArch64 programs run, checked against real hardware
 
-Written 2026-09-16, after M0 (`2257d0ecb`). Scope, work split and exit criteria for M1.
+Written 2026-09-16, after M0 (`bface9d0d`). Scope, work split and exit criteria for M1.
 
 ## Decision: no separate interpreter
 

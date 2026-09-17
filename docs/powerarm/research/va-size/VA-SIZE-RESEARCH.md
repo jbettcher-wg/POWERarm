@@ -5,7 +5,7 @@ Research date 2026-09-16. Research only: no repository was modified.
 Evidence tags follow `powerpc64le-handbook/docs/verification-discipline.md`:
 **[CODE]** read in source (file:line), **[MEASURED]** probe output in `logs/`, **[DOC]** external documentation or upstream source,
 **[SPEC]** predicted from source but not measured. Kernel citations are to `~/Development/linux-7.2.6` on the POWER9 host, unless marked otherwise.
-POWERarm citations are to `~/Development/POWERarm` at `a17877bd8`, which is the same as `POWERarm-baseline` (`9da3ccf9f`) for every file cited here.
+POWERarm citations are to `~/Development/POWERarm` at `c4bfd8c81`, which is the same as `POWERarm-baseline` (`9da3ccf9f`) for every file cited here.
 
 Files next to this document:
 

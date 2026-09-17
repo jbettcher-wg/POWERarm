@@ -20,7 +20,7 @@ inference that no experiment here has isolated.
 | Pinning | `taskset -c 3`, sequential, one untimed warm-up | `numactl --membind=0 taskset -c 88` (node 0); other work kept on node 8 |
 | Load | loadavg 1.6–1.8 (desktop session on other cores) | node-0 busy before each process: median 1 %, max 4 % |
 | Compiler | Debian clang 19.1.7, `-O2 -mgeneral-regs-only -march=armv8-a -mtune=cortex-a76` | clang 22.1.8, `-O2 -mcpu=power8` / `-mcpu=power9`, `-mno-altivec -mno-vsx -msoft-float` |
-| Emulator | – | POWERarm `41e9380c0` (`powerarm-m1/bench` base), Release, `POWERARM_HOSTPAGEMODE=force` |
+| Emulator | – | POWERarm `dcfb220e8` (`powerarm-m1/bench` base), Release, `POWERARM_HOSTPAGEMODE=force` |
 
 Repetitions: five process runs × three in-process repetitions on the POWER9, three × three
 on the Pi. The native `-mcpu=power9` `crc32` control drifted by +0.04 % between the start
