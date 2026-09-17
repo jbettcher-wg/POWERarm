@@ -131,7 +131,7 @@ private:
 
   GDBContextDefinition GenerateContextDefinition(const FEX::HLE::ThreadStateObject* ThreadObject);
 
-  FEXCore::Context::Context* CTX;
+  [[maybe_unused]] FEXCore::Context::Context* CTX;
   FEX::HLE::SyscallHandler* const SyscallHandler;
   FEX::HLE::SignalDelegator* SignalDelegation;
   fextl::unique_ptr<FEXCore::Threads::Thread> gdbServerThread;

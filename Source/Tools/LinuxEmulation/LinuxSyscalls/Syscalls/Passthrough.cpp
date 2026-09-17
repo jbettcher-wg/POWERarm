@@ -1170,7 +1170,103 @@ void RegisterCommon(FEX::HLE::SyscallHandler* Handler) {
 }
 
 void RegisterPassthrough(FEX::HLE::SyscallHandler* Handler) {
-  // POWERARM-M0-TODO(syscalls): the x64 passthrough table (ioctl re-encoding to the powerpc _IOC layout, ftruncate, newer-kernel gates) was x86-64-numbered and went with it; rebuild it for asm-generic numbers.
+  using namespace FEXCore::IR;
   RegisterCommon(Handler);
+
+  // Handlers that used to be registered only for x86-64 and whose arguments
+  // mean the same for an AArch64 guest on a ppc64le host (LP64 structs with
+  // identical layout, no flag re-encoding), now keyed by asm-generic numbers.
+  // POWERARM-M0-TODO(syscalls): ioctl is not wired: the x86 path re-encoded _IOC direction/size bits and TTY numbers for powerpc, and the arm64 guest needs its own table (asm-generic _IOC, generic termios).
+  // POWERARM-M0-TODO(syscalls): mlockall is not wired: powerpc MCL_* values (0x2000/0x4000/0x8000) differ from asm-generic (1/2/4) and need translation.
+  REGISTER_SYSCALL_IMPL(ftruncate, SyscallPassthrough2<SYSCALL_DEF(ftruncate)>);
+  REGISTER_SYSCALL_IMPL(pread64, SyscallPassthrough4<SYSCALL_DEF(pread_64)>);
+  REGISTER_SYSCALL_IMPL(pwrite64, SyscallPassthrough4<SYSCALL_DEF(pwrite_64)>);
+  REGISTER_SYSCALL_IMPL(readv, SyscallPassthrough3<SYSCALL_DEF(readv)>);
+  REGISTER_SYSCALL_IMPL(writev, SyscallPassthrough3<SYSCALL_DEF(writev)>);
+  REGISTER_SYSCALL_IMPL(dup, SyscallPassthrough1<SYSCALL_DEF(dup)>);
+  REGISTER_SYSCALL_IMPL(nanosleep, SyscallPassthrough2<SYSCALL_DEF(nanosleep)>);
+  REGISTER_SYSCALL_IMPL(getitimer, SyscallPassthrough2<SYSCALL_DEF(getitimer)>);
+  REGISTER_SYSCALL_IMPL(setitimer, SyscallPassthrough3<SYSCALL_DEF(setitimer)>);
+  REGISTER_SYSCALL_IMPL(sendfile, SyscallPassthrough4<SYSCALL_DEF(sendfile)>);
+  REGISTER_SYSCALL_IMPL(accept, SyscallPassthrough3<SYSCALL_DEF(accept)>);
+  REGISTER_SYSCALL_IMPL(sendmsg, SyscallPassthrough3<SYSCALL_DEF(sendmsg)>);
+  REGISTER_SYSCALL_IMPL(recvmsg, SyscallPassthrough3<SYSCALL_DEF(recvmsg)>);
+  // Not passthrough: powerpc hosts use legacy SOL_SOCKET option numbers for
+  // six options; the guest's asm-generic numbering must be translated.
+  REGISTER_SYSCALL_IMPL(setsockopt,
+                        [](FEXCore::Core::CpuStateFrame* Frame, int sockfd, int level, int optname, const void* optval, socklen_t optlen) -> uint64_t {
+                          uint64_t Result = ::syscall(SYSCALL_DEF(setsockopt), sockfd, level,
+                                                      FEX::HLE::TranslateGuestSockOptName(level, optname), optval, optlen);
+                          SYSCALL_ERRNO();
+                        });
+  REGISTER_SYSCALL_IMPL(getsockopt,
+                        [](FEXCore::Core::CpuStateFrame* Frame, int sockfd, int level, int optname, void* optval, socklen_t* optlen) -> uint64_t {
+                          uint64_t Result = ::syscall(SYSCALL_DEF(getsockopt), sockfd, level,
+                                                      FEX::HLE::TranslateGuestSockOptName(level, optname), optval, optlen);
+                          SYSCALL_ERRNO();
+                        });
+  REGISTER_SYSCALL_IMPL(wait4, SyscallPassthrough4<SYSCALL_DEF(wait4)>);
+#ifdef ARCHITECTURE_ppc64le
+  REGISTER_SYSCALL_IMPL(semop, UnimplementedSyscallSafe);
+#else
+  REGISTER_SYSCALL_IMPL(semop, SyscallPassthrough3<SYSCALL_DEF(semop)>);
+#endif
+  REGISTER_SYSCALL_IMPL(gettimeofday, VDSOGetTimeOfDay);
+  REGISTER_SYSCALL_IMPL(getrlimit, SyscallPassthrough2<SYSCALL_DEF(getrlimit)>);
+  REGISTER_SYSCALL_IMPL(getrusage, SyscallPassthrough2<SYSCALL_DEF(getrusage)>);
+  REGISTER_SYSCALL_IMPL(sysinfo, SyscallPassthrough1<SYSCALL_DEF(sysinfo)>);
+  REGISTER_SYSCALL_IMPL(times, SyscallPassthrough1<SYSCALL_DEF(times)>);
+  REGISTER_SYSCALL_IMPL(rt_sigqueueinfo, SyscallPassthrough3<SYSCALL_DEF(rt_sigqueueinfo)>);
+  REGISTER_SYSCALL_IMPL(fstatfs, SyscallPassthrough2<SYSCALL_DEF(fstatfs)>);
+  REGISTER_SYSCALL_IMPL(sched_rr_get_interval, SyscallPassthrough2<SYSCALL_DEF(sched_rr_get_interval)>);
+  REGISTER_SYSCALL_IMPL(munlockall, SyscallPassthrough0<SYSCALL_DEF(munlockall)>);
+  REGISTER_SYSCALL_IMPL(adjtimex, SyscallPassthrough1<SYSCALL_DEF(adjtimex)>);
+  REGISTER_SYSCALL_IMPL(setrlimit, SyscallPassthrough2<SYSCALL_DEF(setrlimit)>);
+  REGISTER_SYSCALL_IMPL(settimeofday, SyscallPassthrough2<SYSCALL_DEF(settimeofday)>);
+  REGISTER_SYSCALL_IMPL(readahead, SyscallPassthrough3<SYSCALL_DEF(readahead)>);
+  REGISTER_SYSCALL_IMPL(futex, ObservedFutexSyscall);
+  REGISTER_SYSCALL_IMPL(io_getevents, SyscallPassthrough5<SYSCALL_DEF(io_getevents)>);
+  REGISTER_SYSCALL_IMPL(semtimedop, SyscallPassthrough4<SYSCALL_DEF(semtimedop)>);
+  REGISTER_SYSCALL_IMPL(timer_create, SyscallPassthrough3<SYSCALL_DEF(timer_create)>);
+  REGISTER_SYSCALL_IMPL(timer_settime, SyscallPassthrough4<SYSCALL_DEF(timer_settime)>);
+  REGISTER_SYSCALL_IMPL(timer_gettime, SyscallPassthrough2<SYSCALL_DEF(timer_gettime)>);
+  REGISTER_SYSCALL_IMPL(clock_settime, SyscallPassthrough2<SYSCALL_DEF(clock_settime)>);
+  REGISTER_SYSCALL_IMPL(clock_gettime, VDSOClockGetTime);
+  REGISTER_SYSCALL_IMPL(clock_getres, VDSOClockGetRes);
+  REGISTER_SYSCALL_IMPL(clock_nanosleep, SyscallPassthrough4<SYSCALL_DEF(clock_nanosleep)>);
+  REGISTER_SYSCALL_IMPL(mq_open, SyscallPassthrough4<SYSCALL_DEF(mq_open)>);
+  REGISTER_SYSCALL_IMPL(mq_timedsend, SyscallPassthrough5<SYSCALL_DEF(mq_timedsend)>);
+  REGISTER_SYSCALL_IMPL(mq_timedreceive, SyscallPassthrough5<SYSCALL_DEF(mq_timedreceive)>);
+  REGISTER_SYSCALL_IMPL(mq_notify, SyscallPassthrough2<SYSCALL_DEF(mq_notify)>);
+  REGISTER_SYSCALL_IMPL(mq_getsetattr, SyscallPassthrough3<SYSCALL_DEF(mq_getsetattr)>);
+  REGISTER_SYSCALL_IMPL(waitid, SyscallPassthrough5<SYSCALL_DEF(waitid)>);
+  REGISTER_SYSCALL_IMPL(pselect6, SyscallPassthrough6<SYSCALL_DEF(pselect6)>);
+  REGISTER_SYSCALL_IMPL(ppoll, SyscallPassthrough5<SYSCALL_DEF(ppoll)>);
+  REGISTER_SYSCALL_IMPL(set_robust_list, SyscallPassthrough2<SYSCALL_DEF(set_robust_list)>);
+  REGISTER_SYSCALL_IMPL(get_robust_list, SyscallPassthrough3<SYSCALL_DEF(get_robust_list)>);
+  REGISTER_SYSCALL_IMPL(sync_file_range, SyscallPassthrough4<SYSCALL_DEF(sync_file_range)>);
+  REGISTER_SYSCALL_IMPL(vmsplice, SyscallPassthrough4<SYSCALL_DEF(vmsplice)>);
+  REGISTER_SYSCALL_IMPL(fallocate, SyscallPassthrough4<SYSCALL_DEF(fallocate)>);
+  REGISTER_SYSCALL_IMPL(timerfd_settime, SyscallPassthrough4<SYSCALL_DEF(timerfd_settime)>);
+  REGISTER_SYSCALL_IMPL(timerfd_gettime, SyscallPassthrough2<SYSCALL_DEF(timerfd_gettime)>);
+  REGISTER_SYSCALL_IMPL(preadv, SyscallPassthrough5<SYSCALL_DEF(preadv)>);
+  REGISTER_SYSCALL_IMPL(pwritev, SyscallPassthrough5<SYSCALL_DEF(pwritev)>);
+  REGISTER_SYSCALL_IMPL(rt_tgsigqueueinfo, SyscallPassthrough4<SYSCALL_DEF(rt_tgsigqueueinfo)>);
+  REGISTER_SYSCALL_IMPL(recvmmsg, SyscallPassthrough5<SYSCALL_DEF(recvmmsg)>);
+  REGISTER_SYSCALL_IMPL(clock_adjtime, SyscallPassthrough2<SYSCALL_DEF(clock_adjtime)>);
+  REGISTER_SYSCALL_IMPL(sendmmsg, SyscallPassthrough4<SYSCALL_DEF(sendmmsg)>);
+  REGISTER_SYSCALL_IMPL(process_vm_readv, SyscallPassthrough6<SYSCALL_DEF(process_vm_readv)>);
+  REGISTER_SYSCALL_IMPL(process_vm_writev, SyscallPassthrough6<SYSCALL_DEF(process_vm_writev)>);
+  REGISTER_SYSCALL_IMPL(preadv2, SyscallPassthrough6<SYSCALL_DEF(preadv2)>);
+  REGISTER_SYSCALL_IMPL(pwritev2, SyscallPassthrough6<SYSCALL_DEF(pwritev2)>);
+  REGISTER_SYSCALL_IMPL(io_pgetevents, SyscallPassthrough6<SYSCALL_DEF(io_pgetevents)>);
+  REGISTER_SYSCALL_IMPL(pidfd_send_signal, SyscallPassthrough4<SYSCALL_DEF(pidfd_send_signal)>);
+  REGISTER_SYSCALL_IMPL(process_madvise, SyscallPassthrough5<SYSCALL_DEF(process_madvise)>);
+  REGISTER_SYSCALL_IMPL(fadvise64, SyscallPassthrough4<SYSCALL_DEF(fadvise64)>);
+  if (Handler->IsHostKernelVersionAtLeast(6, 5, 0)) {
+    REGISTER_SYSCALL_IMPL(cachestat, SyscallPassthrough4<SYSCALL_DEF(cachestat)>);
+  } else {
+    REGISTER_SYSCALL_IMPL(cachestat, UnimplementedSyscallSafe);
+  }
 }
 } // namespace FEX::HLE
