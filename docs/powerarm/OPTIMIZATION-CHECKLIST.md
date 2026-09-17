@@ -60,6 +60,7 @@ Also check whether each B item affects fastppcx86. If it does, add a patch under
 | P9 | Never let a wider load consume two narrower stores | PIPE Rule 10 | context layout, load/store lowering | +21 cycles and no forwarding avoided | not touched | |
 | P10 | Multi-block/region compilation (currently one guest block per compile) | PIPE §8; M1 TODO | frontend block formation, IR passes | enables P1 across block edges | not touched | |
 | P11 | Run one guest thread per core with SMT siblings idle (scheduling/pinning policy, docs) | PIPE Rule 7, §4.7 | launcher/config, docs | vm 1.9× slower with a busy sibling | not touched | |
+| P12 | Link constant exits on their first execution: an unlinked exit goes to the record linker instead of running the inline L1 probe | PIPE §5.2 (probe chain); census below | `BranchOps.cpp` ExitFunction | 197M probed constant exits in `cc1 -O2 lvm.c` | done (this commit) | Branch census of `cc1 -O2 lvm.c`: 162k of 370k constant exit sites were never linked (their target was already in L1, so the probe hit and the linker never ran) and executed 197M times, 12% of all exits. cc1 12.42→11.24 s (−9.5%); zlib 134.5→126.9 s (−5.6%); Lua 118.9→111.4 s (−6.3%) (CPU 108, 2 runs each, spread <0.5%). A64Bench (CPU 108, 3 runs): vm 3303→3836 ms (+16%): 180M fewer predictable probe `bctr` changed the count cache's global history and vm's dispatch `br` mispredicts rose 46M→74M; bst 544→560, sort 1062→1035, crc32/sha256 flat; geomean 0.97. P2 is the fix for vm. `POWERARM_NOLINKFIRST=1` restores probe-first |
 
 ## F: scalar floating point
 

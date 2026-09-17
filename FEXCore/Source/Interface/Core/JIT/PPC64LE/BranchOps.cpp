@@ -363,6 +363,31 @@ DEF_OP(ExitFunction) {
   // above `SinkLinkedRIP && ShadowActive` names exactly the same exits.)
   const bool SinkAfterShadowPush = SinkLinkedRIP && ShadowActive;
 
+  // ---------------------------------------------------------------------
+  // LINK FIRST (POWERARM_NOLINKFIRST=1 restores the probe-first form).
+  //
+  // An unlinked constant exit used to run the inline L1 probe and reach the
+  // record linker only on an L1 *miss*. A target this thread had already
+  // dispatched to sits in its L1, so such a site hit the probe on its first
+  // execution and was never linked: it paid the probe's dependent chain
+  // (ld;rldic;add;ld;cmpd;bne;ldx;mtctr;bctr, ~21 cycles with the FXU stall
+  // on mtctr, and a count-cache bctr) for the life of the block. Measured on
+  // `cc1 -O2 lvm.c` (2026-09-17 branch census): 162k of 370k constant exit
+  // sites stayed unlinked and executed 197M times, 12% of all block exits.
+  //
+  // So when links stick (CallLinkingEnabled: block linking on, not the
+  // lazy-link regime, whose scrub severs links constantly), the unlinked
+  // path goes straight to the record linker: PatchSite (the sunk RIP move),
+  // std State.rip, b LinkPath. The linker looks up or compiles the target and
+  // patches PatchSite, so every later execution is the single linked `b`.
+  // A site the linker cannot patch (buffer rotated under it, a lookup race)
+  // simply re-enters the linker next time; the only permanent failure,
+  // LinkOutcomeUnreachable, needs a compile unit larger than a `b`'s reach.
+  // Shadow CALL exits keep their own layout (the push precedes the probe).
+  // ---------------------------------------------------------------------
+  static const bool NoLinkFirst = getenv("POWERARM_NOLINKFIRST") != nullptr;
+  const bool LinkFirst = SinkLinkedRIP && !ShadowActive && CallLinkingEnabled && !NoLinkFirst;
+
   if (ConstRIP) {
     if (!SinkLinkedRIP) {
       EmitConstRIPIntoTMP1();
@@ -715,76 +740,79 @@ DEF_OP(ExitFunction) {
     Bind(&ShadowRetReprobe);
   }
 
-  ld(TMP2, l1_off, STATE);       // TMP2 = L1Pointer
-  if (!FEXCore::Config::Get_DYNAMICL1CACHE()) {
-    // Static L1: constant-mask probe, one rldic instead of L1Mask load +
-    // sldi + and_. Same derivation as the dispatcher's DispatcherLoopTop.
-    static_assert((FEXCore::LookupCache::MAX_L1_ENTRIES & (FEXCore::LookupCache::MAX_L1_ENTRIES - 1)) == 0,
-                  "rldic probe requires a power-of-two L1");
-    constexpr uint32_t L1MB = 64 - (std::countr_zero(FEXCore::LookupCache::MAX_L1_ENTRIES) + 4);
-    rldic(TMP4, RIPReg, 4, L1MB);
-  } else {
-    ld(TMP3, l1mask_off, STATE);   // TMP3 = L1Mask (pre-scaled)
-    sldi(TMP4, RIPReg, 4);         // log2(sizeof(LookupCacheEntry)) == 4
-    and_(TMP4, TMP4, TMP3);
-  }
-  add(TMP2, TMP2, TMP4);         // TMP2 = &L1[hash]
-
-  ld(TMP4, 8, TMP2);             // TMP4 = GuestCode (the "key"), loaded FIRST
-  cmpd(cr(7), TMP4, RIPReg);
-  // BO=4 (branch if false), BI=30 (CR7.EQ at PPC bit 4*7+2). i.e. bne cr7.
-  bc({4, 30}, &MissLabel);
-
-  // Hit. Carry the GuestCode value into the HostCode load's address so the
-  // hardware cannot hoist it above the GuestCode load and observe
-  // {stale HostCode, new GuestCode} mid-Publish. TMP3 is 0 by construction.
-  // Same one-instruction fold as the dispatcher's match_label leg: the data
-  // dependency rides ldx's index operand (TMP3 == 0), preserving the
-  // load-load ordering the comment above requires.
-  xor_(TMP3, TMP4, TMP4);
-  ldx(TMP3, TMP2, TMP3);         // TMP3 = HostCode (loaded under address-dep)
-  mtctr(TMP3);
-  if (!Linkable) {
-    // P5.0.1: store the destination RIP into State.rip on the hit leg too.
-    // Rationale: RestoreRIPFromHostPC's fallback (Frame->State.rip) is invoked
-    // whenever a JIT block has no per-instruction RIP entries or the host PC
-    // sits outside a header'd block; without this store the fallback returns
-    // whatever the last L1 *miss* stored, which can be arbitrarily stale.
-    // Symptom (silent): guest signal frames carry wrong-but-plausible RIPs and
-    // sigreturn resumes at the wrong address. 1 instruction on a 14-instruction
-    // leg. Reviewed against Power ISA v3.0B — safe placement here (RIPReg is
-    // still live; no dependency on TMP1-TMP4 that could be misordered).
-    std(RIPReg, rip_off, STATE);
-    // P5.0.2: reset r0 to 0 before the bctr. JIT blocks emit X-form indexed
-    // memory ops with r0 in the rB slot (ldx/stdx and friends), which read r0
-    // as its actual value (not literal zero — the "r0 reads as zero" rule
-    // applies only to rA). A nonzero r0 silently offsets every load/store in
-    // the target block. Every mflr(r0) in the backend today is paired with a
-    // restore, so no bug is visible — but the invariant is currently globally
-    // assumed, and the failure mode is silent guest memory corruption. Make
-    // the local guarantee explicit for 1 extra instruction on this hot leg.
-    //
-    // ...and it is no longer merely assumed: EmitExitR0Zero drops the
-    // instruction entirely in compile units that provably never clobber r0.
-    // See the policy comment at the top of this file.
-    EmitExitR0Zero(UnitR0Dirty);
-  }
-  // Linkable exits emit neither of the above on this leg. The r0 re-zero was
-  // hoisted ABOVE the patch site (a linked branch skips everything after it,
-  // and P5.0.2's failure mode is silent guest memory corruption); the rip
-  // store was SUNK below the patch site — still before this hit leg, so this
-  // leg's State.rip is exactly what the hoisted form left. See the sink
-  // comment up top.
-  if (ShadowCall) {
-    if (NoLinkStackPair) {
-      bctr();
+  // LINK-FIRST: an unlinked constant exit does not probe (see LinkFirst above).
+  if (!LinkFirst) {
+    ld(TMP2, l1_off, STATE);       // TMP2 = L1Pointer
+    if (!FEXCore::Config::Get_DYNAMICL1CACHE()) {
+      // Static L1: constant-mask probe, one rldic instead of L1Mask load +
+      // sldi + and_. Same derivation as the dispatcher's DispatcherLoopTop.
+      static_assert((FEXCore::LookupCache::MAX_L1_ENTRIES & (FEXCore::LookupCache::MAX_L1_ENTRIES - 1)) == 0,
+                    "rldic probe requires a power-of-two L1");
+      constexpr uint32_t L1MB = 64 - (std::countr_zero(FEXCore::LookupCache::MAX_L1_ENTRIES) + 4);
+      rldic(TMP4, RIPReg, 4, L1MB);
     } else {
-      bctrl();                          // LK=1: link stack <- &Tramp1
+      ld(TMP3, l1mask_off, STATE);   // TMP3 = L1Mask (pre-scaled)
+      sldi(TMP4, RIPReg, 4);         // log2(sizeof(LookupCacheEntry)) == 4
+      and_(TMP4, TMP4, TMP3);
     }
-    PatchShadowCallAddi(ShadowPush1, GetCursorAddress<uint64_t>());
-    EmitShadowCallTrampoline();         // Tramp1
-  } else {
-    bctr();
+    add(TMP2, TMP2, TMP4);         // TMP2 = &L1[hash]
+
+    ld(TMP4, 8, TMP2);             // TMP4 = GuestCode (the "key"), loaded FIRST
+    cmpd(cr(7), TMP4, RIPReg);
+    // BO=4 (branch if false), BI=30 (CR7.EQ at PPC bit 4*7+2). i.e. bne cr7.
+    bc({4, 30}, &MissLabel);
+
+    // Hit. Carry the GuestCode value into the HostCode load's address so the
+    // hardware cannot hoist it above the GuestCode load and observe
+    // {stale HostCode, new GuestCode} mid-Publish. TMP3 is 0 by construction.
+    // Same one-instruction fold as the dispatcher's match_label leg: the data
+    // dependency rides ldx's index operand (TMP3 == 0), preserving the
+    // load-load ordering the comment above requires.
+    xor_(TMP3, TMP4, TMP4);
+    ldx(TMP3, TMP2, TMP3);         // TMP3 = HostCode (loaded under address-dep)
+    mtctr(TMP3);
+    if (!Linkable) {
+      // P5.0.1: store the destination RIP into State.rip on the hit leg too.
+      // Rationale: RestoreRIPFromHostPC's fallback (Frame->State.rip) is invoked
+      // whenever a JIT block has no per-instruction RIP entries or the host PC
+      // sits outside a header'd block; without this store the fallback returns
+      // whatever the last L1 *miss* stored, which can be arbitrarily stale.
+      // Symptom (silent): guest signal frames carry wrong-but-plausible RIPs and
+      // sigreturn resumes at the wrong address. 1 instruction on a 14-instruction
+      // leg. Reviewed against Power ISA v3.0B — safe placement here (RIPReg is
+      // still live; no dependency on TMP1-TMP4 that could be misordered).
+      std(RIPReg, rip_off, STATE);
+      // P5.0.2: reset r0 to 0 before the bctr. JIT blocks emit X-form indexed
+      // memory ops with r0 in the rB slot (ldx/stdx and friends), which read r0
+      // as its actual value (not literal zero — the "r0 reads as zero" rule
+      // applies only to rA). A nonzero r0 silently offsets every load/store in
+      // the target block. Every mflr(r0) in the backend today is paired with a
+      // restore, so no bug is visible — but the invariant is currently globally
+      // assumed, and the failure mode is silent guest memory corruption. Make
+      // the local guarantee explicit for 1 extra instruction on this hot leg.
+      //
+      // ...and it is no longer merely assumed: EmitExitR0Zero drops the
+      // instruction entirely in compile units that provably never clobber r0.
+      // See the policy comment at the top of this file.
+      EmitExitR0Zero(UnitR0Dirty);
+    }
+    // Linkable exits emit neither of the above on this leg. The r0 re-zero was
+    // hoisted ABOVE the patch site (a linked branch skips everything after it,
+    // and P5.0.2's failure mode is silent guest memory corruption); the rip
+    // store was SUNK below the patch site — still before this hit leg, so this
+    // leg's State.rip is exactly what the hoisted form left. See the sink
+    // comment up top.
+    if (ShadowCall) {
+      if (NoLinkStackPair) {
+        bctr();
+      } else {
+        bctrl();                          // LK=1: link stack <- &Tramp1
+      }
+      PatchShadowCallAddi(ShadowPush1, GetCursorAddress<uint64_t>());
+      EmitShadowCallTrampoline();         // Tramp1
+    } else {
+      bctr();
+    }
   }
 
   // ---------------------------------------------------------------------
