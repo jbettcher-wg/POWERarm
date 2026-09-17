@@ -366,6 +366,8 @@ static int CloneFork(uint32_t flags, uint64_t exit_signal) {
 //      child leaves the process debuggable instead of frozen.  Child-writes-
 //      through-shared-VM semantics remain unimplemented (see
 //      vfork-no-vm-sharing notes); exit-status/ordering semantics hold.
+//
+// POWERARM-M1-TODO(syscalls): clone(CLONE_VM|CLONE_VFORK) without CLONE_THREAD (vfork(2), glibc posix_spawn) runs the child in a COPY of the address space, so nothing the child writes before execve/_exit reaches the parent. Visible consequence: glibc posix_spawn reports an exec failure by storing errno in memory shared with the child, so posix_spawn of a missing program returns 0 and the child exits 127 instead of returning ENOENT (musl uses a CLOEXEC pipe and is unaffected; fork+exec, and every spawn whose exec succeeds, behave like Linux). Real sharing needs the vfork child to run guest code without touching FEX's shared heap (attempt 1 above); unittests/A64Syscalls/sys_process.c leaves this case out.
 
 uint64_t ForkGuest(FEXCore::Core::InternalThreadState* Thread, FEXCore::Core::CpuStateFrame* Frame, FEX::HLE::clone3_args* args) {
   const uint64_t flags = args->args.flags;
