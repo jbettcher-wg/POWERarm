@@ -70,9 +70,33 @@ target_link_libraries(LinuxEmulation PRIVATE
 
 target_link_libraries(LinuxEmulation INTERFACE FEXCore)
 
+# The arm64 guest layouts are not hand-written headers: gen_abi_tables.py
+# derives them from the kernel uapi headers for both targets and
+# Arm64/Tests checks them against natively compiled references, so there is
+# nothing for StructPackVerifier to parse.
 set(HEADERS_TO_VERIFY
-  # POWERARM-M0-TODO(syscalls): the x86_32/x86_64 guest struct headers were deleted with LinuxSyscalls/x32 and x64; arm64 guest layout headers go here (verified as aarch64).
 )
+
+if (BUILD_TESTING)
+  # Host-side tests of the arm64 -> ppc64le translators (native, no guest code).
+  add_executable(POWERarmABITranslationTests LinuxSyscalls/Arm64/Tests/ABITranslationTests.cpp)
+  target_include_directories(POWERarmABITranslationTests PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/
+    ${CMAKE_CURRENT_SOURCE_DIR}/LinuxSyscalls/Arm64/Tests/)
+  target_compile_options(POWERarmABITranslationTests PRIVATE -Wall -Werror)
+  add_test(NAME POWERarm/ABITranslation COMMAND POWERarmABITranslationTests)
+
+  # Optional: the committed tables must match a regeneration from the kernel tree.
+  set(POWERARM_UAPI_KERNEL_TREE "" CACHE PATH "Kernel source tree GeneratedABI.h was generated from")
+  if (POWERARM_UAPI_KERNEL_TREE)
+    add_test(NAME POWERarm/ABITablesCurrent
+      COMMAND python3 ${CMAKE_CURRENT_SOURCE_DIR}/LinuxSyscalls/Arm64/gen_abi_tables.py --check
+        --kernel ${POWERARM_UAPI_KERNEL_TREE}
+        --header ${CMAKE_CURRENT_SOURCE_DIR}/LinuxSyscalls/Arm64/GeneratedABI.h
+        --doc ${PROJECT_SOURCE_DIR}/docs/powerarm/M1-ABI-DIFFERENCES.md
+        --names ${CMAKE_CURRENT_SOURCE_DIR}/LinuxSyscalls/Arm64/Tests/ConstantNames.txt)
+  endif()
+endif()
 
 list(LENGTH HEADERS_TO_VERIFY ARG_COUNT)
 math(EXPR ARG_COUNT "${ARG_COUNT}-1")

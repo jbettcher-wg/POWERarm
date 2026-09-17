@@ -25,8 +25,8 @@ Outputs:
   --header  C++ header with GUEST_*/HOST_* constants, flag and field tables,
             the ioctl table, errno fixups, struct layouts and converters.
   --doc     Markdown list of every constant and layout that differs.
-  --names   Plain list of guest constant names (input for the arm64 reference
-            probe used by the unit tests).
+  --names   Plain list of the emitted constant names (input for the native
+            reference probes used by the unit tests).
 
 Usage:
   gen_abi_tables.py --kernel ~/Development/linux-7.2.6 \
@@ -1198,8 +1198,9 @@ def emit_doc(consts, identical, converted, guest_only, version):
 def emit_names(consts):
     out = []
     for (f, n), c in sorted(consts.items()):
-        if c.kind != IGNORE and 'guest' in c.values:
-            out.append('%s %s %s' % (cname('GUEST', n), n, f))
+        for role, prefix in (('guest', 'GUEST'), ('host', 'HOST')):
+            if c.kind != IGNORE and role in c.values:
+                out.append('%s %s %s' % (cname(prefix, n), n, f))
     return '\n'.join(out) + '\n'
 
 
