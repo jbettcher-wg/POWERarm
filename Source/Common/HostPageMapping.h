@@ -25,8 +25,13 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <fcntl.h>
 #include <sys/mman.h>
 #include <unistd.h>
+
+#include <algorithm>
+#include <mutex>
+#include <vector>
 
 #ifndef MAP_FIXED_NOREPLACE
 #define MAP_FIXED_NOREPLACE 0x100000
@@ -95,6 +100,111 @@ inline bool ReadFully(int FD, void* Dest, size_t Size, uint64_t Offset) {
   return true;
 }
 
+
+// ---------------------------------------------------------------------------
+// Ranges a fallback turned into anonymous memory
+// ---------------------------------------------------------------------------
+// A MAP_PRIVATE file mapping keeps its file underneath it: MADV_DONTNEED (and
+// MADV_FREE, and MADV_REMOVE) drop the private copy and the next access reads
+// the file again. Anonymous memory has no file underneath, so the same advice
+// zeroes it for good.
+//
+// The fallback above hands the guest anonymous memory where it asked for a file
+// mapping, which makes those advices destructive where the guest is entitled to
+// expect them to be free. Bun's standalone executables do exactly this: they
+// serve their embedded bundle out of their own image and MADV_DONTNEED the part
+// they have finished with, and 40MB of JavaScript became NUL bytes
+// (POWERARM bunbytes). Record what each fallback covers so the advice can put
+// the file bytes back, which is what the guest would have seen.
+struct FallbackRange {
+  uint64_t Start {};
+  uint64_t End {}; ///< exclusive, and only as far as the file reaches
+  int FD {-1};     ///< our own dup, alive as long as the range is
+  uint64_t Offset {};
+};
+
+inline std::mutex FallbackRangesLock;
+inline std::vector<FallbackRange> FallbackRanges;
+
+/**
+ * @brief Record that [Addr, Addr + Length) is anonymous memory standing in for
+ * a file mapping. Length is the file-backed part only: anything past the end of
+ * the file really is anonymous and a destructive advice may zero it.
+ */
+inline void RegisterFallbackRange(uint64_t Addr, uint64_t Length, int FD, uint64_t Offset) {
+  if (!Length || FD < 0) {
+    return;
+  }
+  const int Dup = ::fcntl(FD, F_DUPFD_CLOEXEC, 0);
+  if (Dup < 0) {
+    return;
+  }
+  std::lock_guard Lock {FallbackRangesLock};
+  FallbackRanges.push_back(FallbackRange {Addr, Addr + Length, Dup, Offset});
+}
+
+/**
+ * @brief Drop whatever [Addr, Addr + Length) covers, because the guest has
+ * unmapped it or mapped something else over it. A range that is only partly
+ * covered keeps the parts that survive.
+ */
+inline void ForgetFallbackRange(uint64_t Addr, uint64_t Length) {
+  if (!Length) {
+    return;
+  }
+  const uint64_t End = Addr + Length;
+  std::lock_guard Lock {FallbackRangesLock};
+  std::vector<FallbackRange> Split;
+  auto It = FallbackRanges.begin();
+  while (It != FallbackRanges.end()) {
+    if (It->End <= Addr || It->Start >= End) {
+      ++It;
+      continue;
+    }
+    if (It->Start < Addr) {
+      Split.push_back(FallbackRange {It->Start, Addr, ::fcntl(It->FD, F_DUPFD_CLOEXEC, 0), It->Offset});
+    }
+    if (It->End > End) {
+      Split.push_back(FallbackRange {End, It->End, ::fcntl(It->FD, F_DUPFD_CLOEXEC, 0), It->Offset + (End - It->Start)});
+    }
+    ::close(It->FD);
+    It = FallbackRanges.erase(It);
+  }
+  for (auto& Entry : Split) {
+    if (Entry.FD >= 0) {
+      FallbackRanges.push_back(Entry);
+    }
+  }
+}
+
+/**
+ * @brief Is this madvise one the guest expects to be free on a file mapping?
+ */
+[[nodiscard]]
+inline bool AdviceDiscardsPrivateCopy(int Advice) {
+  return Advice == MADV_DONTNEED || Advice == MADV_FREE || Advice == MADV_REMOVE;
+}
+
+/**
+ * @brief Put the file bytes back over whatever the advice just threw away.
+ *
+ * Called after the host madvise has been applied, so the pages are fresh and
+ * the pread is the only thing that has written them. A range with nothing
+ * registered under it costs one lock and a scan.
+ */
+inline void RestoreAfterDiscard(uint64_t Addr, uint64_t Length) {
+  const uint64_t End = Addr + Length;
+  std::lock_guard Lock {FallbackRangesLock};
+  for (const auto& Entry : FallbackRanges) {
+    const uint64_t From = std::max(Entry.Start, Addr);
+    const uint64_t To = std::min(Entry.End, End);
+    if (From >= To) {
+      continue;
+    }
+    ReadFully(Entry.FD, reinterpret_cast<void*>(From), To - From, Entry.Offset + (From - Entry.Start));
+  }
+}
+
 /**
  * @brief Emulate one unrepresentable file mapping.
  *
@@ -135,6 +245,7 @@ inline void* MapFilePrivate(MmapFn&& Mmap, MprotectFn&& Mprotect, void* Addr, si
   if (!ReadFully(FD, reinterpret_cast<void*>(Result), Length, Offset)) {
     return reinterpret_cast<void*>(static_cast<int64_t>(-errno));
   }
+  RegisterFallbackRange(Result, Length, FD, Offset);
 
   if (Prot != (PROT_READ | PROT_WRITE)) {
     // Host granularity: a protection finer than the host page cannot be

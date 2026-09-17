@@ -53,6 +53,7 @@ $end_info$
 #include "LinuxSyscalls/HostOwnedRanges.h"
 #include "LinuxSyscalls/SMCHostGranule.h"
 #include "LinuxSyscalls/SMCStoreBackpatch.h"
+#include "Common/HostPageMapping.h"
 #include "LinuxSyscalls/Syscalls.h"
 #include "LinuxSyscalls/SignalDelegator.h"
 
@@ -2019,6 +2020,10 @@ void SyscallHandler::SaveCodeCaches(FEXCore::Core::InternalThreadState* Thread, 
 
 void* SyscallHandler::GuestMmap(bool Is64Bit, FEXCore::Core::InternalThreadState* Thread, void* addr, size_t length, int prot, int flags,
                                 int fd, off_t offset) {
+  // A fixed mapping replaces whatever a 64K fallback recorded here.
+  if (flags & (MAP_FIXED | MAP_FIXED_NOREPLACE)) {
+    FEX::HostPageMapping::ForgetFallbackRange(reinterpret_cast<uint64_t>(addr), length);
+  }
   LOGMAN_THROW_A_FMT(Is64Bit || (length >> 32) == 0, "values must fit to 32 bits");
 
   uint64_t Result {};
@@ -2165,6 +2170,8 @@ void SyscallHandler::FinishTrackedMmap(FEXCore::Core::InternalThreadState* Threa
 }
 
 uint64_t SyscallHandler::GuestMunmap(bool Is64Bit, FEXCore::Core::InternalThreadState* Thread, void* addr, uint64_t length) {
+  // Whatever a 64K fallback recorded here is gone with the mapping.
+  FEX::HostPageMapping::ForgetFallbackRange(reinterpret_cast<uint64_t>(addr), length);
   LOGMAN_THROW_A_FMT(Is64Bit || (reinterpret_cast<uintptr_t>(addr) >> 32) == 0, "values must fit to 32 bits: {}", fmt::ptr(addr));
   LOGMAN_THROW_A_FMT(Is64Bit || (length >> 32) == 0, "values must fit to 32 bits");
 
