@@ -5773,6 +5773,8 @@ CPUBackend::CompiledCode PPC64JITCore::CompileCode(
     const uint32_t OrigCallerWord = *reinterpret_cast<const uint32_t*>(Thunk.CallerAddress);
     const uint32_t OrigThunkWord = *reinterpret_cast<const uint32_t*>(ThunkStart);
     if (ExitRIPFixedWidth) {
+      static_assert(offsetof(PPC64BlockLinkRecord, OrigCallerWord) == 24 && offsetof(PPC64BlockLinkRecord, OrigThunkWord) == 28,
+                    "CodeCache::ApplyCodeRelocations rewrites the record's original words at these offsets");
       // Code cache relocations for the record (see RELOC_LINK_RECORD). Same
       // retention predicate as every other relocation this backend records.
       const uint64_t RecordOffset = BlockBufferOffset + static_cast<uint64_t>(GetOffset());

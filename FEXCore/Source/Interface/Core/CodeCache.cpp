@@ -1819,6 +1819,40 @@ size_t CodeCache::SaveNewBlocks(Core::InternalThreadState&, std::span<const Code
 
 bool CodeCache::ApplyCodeRelocations(uint64_t GuestEntry, std::span<std::byte> Code, std::span<const CPU::Relocation> EntryRelocations,
                                      bool ForStorage) {
+  // Link records are handled around the other relocations, because a link
+  // thunk's caller word can be the first word of a guest RIP window (a
+  // link-first constant exit): the unlinked word is whatever the RIP
+  // relocation leaves there, not the word emitted in the generating process.
+  //   1. storage only: undo links (caller and thunk words, HostCode);
+  //   2. every other relocation;
+  //   3. store the resulting unlinked words in the record (the delinker
+  //      restores from them), and on install check the record is unlinked.
+  auto* Base = reinterpret_cast<uint8_t*>(Code.data());
+  const int64_t Size = static_cast<int64_t>(Code.size());
+  constexpr int64_t RecordOrigWordsOffset = 24; // PPC64BlockLinkRecord::OrigCallerWord, then OrigThunkWord
+  auto LinkSites = [&](const CPU::Relocation& Reloc, int64_t& Record, int64_t& Caller, int64_t& Thunk) {
+    Record = static_cast<int64_t>(Reloc.Header.Offset);
+    Caller = Record + Reloc.LinkRecord.CallerDelta;
+    Thunk = Record + Reloc.LinkRecord.ThunkDelta;
+    return Record >= 0 && Record <= Size - RecordOrigWordsOffset - 8 && Caller >= 0 && Caller <= Size - 4 && Thunk >= 0 && Thunk <= Size - 4;
+  };
+
+  for (const auto& Reloc : EntryRelocations) {
+    if (Reloc.Header.Type != CPU::RelocationTypes::RELOC_LINK_RECORD) {
+      continue;
+    }
+    int64_t Record, Caller, Thunk;
+    if (!LinkSites(Reloc, Record, Caller, Thunk)) {
+      return false;
+    }
+    if (ForStorage) {
+      const uint64_t Zero = 0;
+      memcpy(Base + Caller, &Reloc.LinkRecord.OrigCallerWord, 4);
+      memcpy(Base + Thunk, &Reloc.LinkRecord.OrigThunkWord, 4);
+      memcpy(Base + Record, &Zero, sizeof(Zero));
+    }
+  }
+
   for (const auto& Reloc : EntryRelocations) {
     const uint64_t Width = RelocWidth(Reloc.Header.Type);
     if (Reloc.Header.Offset > Code.size() || Width > Code.size() - Reloc.Header.Offset) {
@@ -1856,36 +1890,29 @@ bool CodeCache::ApplyCodeRelocations(uint64_t GuestEntry, std::span<std::byte> C
       PatchEmitter.LoadConstantFixed(PPC64Emitter::r(Reloc.GuestRIP.RegisterIndex), Pointer);
       break;
     }
-    case CPU::RelocationTypes::RELOC_LINK_RECORD: {
-      const int64_t Record = static_cast<int64_t>(Reloc.Header.Offset);
-      const int64_t Caller = Record + Reloc.LinkRecord.CallerDelta;
-      const int64_t Thunk = Record + Reloc.LinkRecord.ThunkDelta;
-      const int64_t Size = static_cast<int64_t>(Code.size());
-      if (Caller < 0 || Caller > Size - 4 || Thunk < 0 || Thunk > Size - 4) {
-        return false;
-      }
-      auto* Base = reinterpret_cast<uint8_t*>(Code.data());
-      if (ForStorage) {
-        // The live block may be linked: restore both patchable words and the
-        // record's HostCode to their emitted values.
-        const uint64_t Zero = 0;
-        memcpy(Base + Caller, &Reloc.LinkRecord.OrigCallerWord, 4);
-        memcpy(Base + Thunk, &Reloc.LinkRecord.OrigThunkWord, 4);
-        memcpy(Ptr, &Zero, sizeof(Zero));
-      } else {
-        uint32_t CallerWord, ThunkWord;
-        uint64_t HostCode;
-        memcpy(&CallerWord, Base + Caller, 4);
-        memcpy(&ThunkWord, Base + Thunk, 4);
-        memcpy(&HostCode, Ptr, sizeof(HostCode));
-        if (CallerWord != Reloc.LinkRecord.OrigCallerWord || ThunkWord != Reloc.LinkRecord.OrigThunkWord || HostCode != 0) {
-          return false;
-        }
-      }
-      break;
-    }
+    case CPU::RelocationTypes::RELOC_LINK_RECORD: break;
     default: LogMan::Msg::EFmt("Unknown code cache relocation type {}", ToUnderlying(Reloc.Header.Type)); return false;
     }
+  }
+
+  for (const auto& Reloc : EntryRelocations) {
+    if (Reloc.Header.Type != CPU::RelocationTypes::RELOC_LINK_RECORD) {
+      continue;
+    }
+    int64_t Record, Caller, Thunk;
+    if (!LinkSites(Reloc, Record, Caller, Thunk)) {
+      return false;
+    }
+    uint32_t CallerWord, ThunkWord;
+    uint64_t HostCode;
+    memcpy(&CallerWord, Base + Caller, 4);
+    memcpy(&ThunkWord, Base + Thunk, 4);
+    memcpy(&HostCode, Base + Record, sizeof(HostCode));
+    if (!ForStorage && (HostCode != 0 || ThunkWord != Reloc.LinkRecord.OrigThunkWord)) {
+      return false;
+    }
+    memcpy(Base + Record + RecordOrigWordsOffset, &CallerWord, 4);
+    memcpy(Base + Record + RecordOrigWordsOffset + 4, &ThunkWord, 4);
   }
   return true;
 }
