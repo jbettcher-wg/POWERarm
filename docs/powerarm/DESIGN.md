@@ -424,6 +424,86 @@ the generator's layout-repacking work mostly disappears. What remains:
 - **No conflict:** this rig registers FEX only for `x86_64` and `x86` (`binfmt.d/` `[CODE]`).
   Check for a stale `qemu-aarch64` registration from `qemu-user-static` before registering.
 
+### 6.2a Rootfs layout and lookup (decided 2026-09-16)
+
+POWERarm follows XDG and FHS conventions, so the layout used in development is the same one
+packages install to. The inherited FEX lookup code already resolves these paths
+(`Source/Common/Config.cpp` `GetDataDirectory`/`GetConfigDirectory`) `[CODE]`.
+
+| Kind | Per user (default) | System-wide (packaged) |
+|---|---|---|
+| Rootfs base images | `$XDG_DATA_HOME/powerarm/RootFS/<name>` (= `~/.local/share/powerarm/RootFS/`) | `/usr/share/powerarm/RootFS/<name>` |
+| Per-user writable rootfs layer | `~/.local/share/powerarm/RootFS/<name>-overlay/` | none (always per user) |
+| Guest thunk stubs | `~/.local/share/powerarm/GuestThunks/` | `/usr/share/powerarm/GuestThunks/` |
+| Config | `~/.config/powerarm/Config.json` | `/usr/share/powerarm/Config.json` |
+| Code cache, thunk preflight cache | `~/.cache/powerarm/` | n/a |
+
+- **Lookup order:** explicit config or env → per user → system.
+- **Two layers.** The base image is a read-only erofs/squashfs built from Arch Linux ARM
+  packages, shipped as e.g. `powerarm-rootfs-alarm` or fetched per user. On top sits a
+  writable per-user layer where `pacman -S` inside the guest installs packages. Upgrading the
+  base keeps user installs, and nothing needs root, because the overlay is path redirection
+  inside the emulator, not a kernel mount.
+- **Guest thunk stubs live outside the rootfs,** versioned with the emulator they must match,
+  so a rootfs update can't break them.
+- **Minimal base before the Arch Linux ARM image exists:** if Arch's
+  `aarch64-linux-gnu-glibc` cross package is installed, `/usr/aarch64-linux-gnu` provides a
+  real aarch64 `ld.so` + glibc and can serve as a zero-download base for the first dynamically
+  linked programs.
+- **One image serves 4K and 64K hosts,** because aarch64 packages are 64K-aligned.
+- **During development,** the image builder writes into `~/.local/share/powerarm/RootFS/`,
+  the same place the fetcher does, so nothing moves when packages arrive.
+
+### 6.2b Automatic thunk selection with fallback (proposed)
+
+**Today, inherited from FEX `[CODE]`:** thunks are opt-in per library through `ThunksDB.json`
++ `ThunkConfig`. When one is enabled, the guest's `libvulkan.so.1` (and friends) is path-overlaid
+with the stub. If the host library then fails to load, `Thunks.cpp:334-357` calls
+`ERROR_AND_DIE`. There's no fallback, no detection and no user-facing report.
+
+**Proposed behaviour:**
+1. **Preflight before the overlay decision.** Redirecting a guest library to a thunk is decided
+   at the moment the guest opens that path. A library is thunked only if all of these hold:
+   - the guest stub exists
+   - the host thunk half and its native dependency (e.g. host `libvulkan.so.1`) exist and
+     `dlopen` cleanly
+   - required symbol versions are present
+   - the ABI version recorded when the stub was built matches the host library
+
+   Otherwise the redirect is skipped, and the guest's `ld.so` loads the real aarch64 library
+   from the rootfs, which runs fully emulated.
+2. **Preflight runs in `POWERarmServer`, not in the guest process.** A trial `dlopen` of a large
+   host library (a GL or Vulkan driver) must not pollute or slow the emulated process. Results
+   are cached in `~/.cache/powerarm/thunk-preflight.json`, keyed by host library path, mtime and
+   build ID, so later launches only `stat`.
+3. **Decide once, never swap mid-run.** After the guest has bound symbols to a stub, there's
+   nothing to fall back to. A host-side failure after preflight passed stays a hard error with a
+   message naming the library and pointing at `POWERARM_THUNK_<LIB>=0`.
+4. **Per-library override:** `POWERARM_THUNK_<LIB>=auto|0|1` and matching config keys.
+   `auto` is the default. `1` forces the thunk even if preflight fails, for debugging.
+5. **The banner.** Printed once per launch tree (an env marker stops exec'd children from
+   repeating it), only when stderr is a TTY and `POWERARM_QUIET` is unset, and **before guest
+   code starts**, so it can't interleave with the program's own terminal output. For example:
+   ```
+   POWERarm 0.1 · aarch64 → ppc64le (POWER9, 64K pages)
+     thunked : vulkan (host radv 26.2), EGL, GL, drm, wayland-client
+     emulated: asound (no host libasound), SDL2 (disabled in config)
+     rootfs  : ArchLinuxARM-2026.09 (+ user overlay)
+   ```
+   Libraries opened later with `dlopen` (Vulkan ICDs, GL via libglvnd) are decided when opened.
+   If a TTY is present they get a one-line follow-up; they're always logged.
+6. **Progress bars only for work that actually takes time:**
+   - fetching or unpacking a rootfs image
+   - mounting and indexing a new base image
+   - populating the code cache on a first launch
+     (`POWERarmOfflineCompiler`, or the background cache fill)
+
+   Each gets a real progress bar driven by bytes or blocks done. A preflight check takes
+   milliseconds, and a progress bar for it would be fake. Without a TTY (desktop launches),
+   all of this goes to the log only.
+
+Belongs to M5 (thunks). The server-side preflight cache also serves the rootfs work in M3.
+
 ### 6.3 Scope decision: library thunks only
 
 Decided 2026-09-16: "thunk the toolchains" means **library thunks** (§6.1). Exec redirection
