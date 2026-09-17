@@ -56,7 +56,9 @@ const IRBuilder::HandlerEntry IRBuilder::HandlerTable[] = {
   // System. Every hint (NOP, YIELD, WFE, WFI, SEV, SEVL, BTI, PAC*SP, ...) is a NOP.
   {"HINT", &IRBuilder::HINT}, {"NOP", &IRBuilder::HINT}, {"YIELD", &IRBuilder::HINT},
   {"WFE", &IRBuilder::HINT}, {"WFI", &IRBuilder::HINT}, {"SEV", &IRBuilder::HINT}, {"SEVL", &IRBuilder::HINT},
-  {"DSB", &IRBuilder::HINT}, {"DMB", &IRBuilder::HINT}, {"ISB", &IRBuilder::HINT},
+  // DSB/DMB carry ordering a weakly-ordered host must reproduce; only ISB is a
+  // pure instruction-fetch barrier, which mtrack SMC tracking already covers.
+  {"DSB", &IRBuilder::Barrier}, {"DMB", &IRBuilder::Barrier}, {"ISB", &IRBuilder::HINT},
   {"CLREX", &IRBuilder::CLREX},
   {"MRS", &IRBuilder::MRS}, {"MSR_reg", &IRBuilder::MSR_reg},
   {"DC_ZVA", &IRBuilder::DC_ZVA},
