@@ -28,7 +28,7 @@ for src in *.S; do
 done
 
 # Static libc programs.
-corpus="hello printf_float strmem fpmath lse"
+corpus="hello printf_float strmem fpmath lse nosve"
 for t in $corpus; do
   gcc -static -O2 -o "$t" "$here/$t.c" -lm
 done
