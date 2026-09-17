@@ -624,7 +624,18 @@ DEF_OP(VAddV) {
     vsumsws (Dst,   VTMP2, VTMP1);
     break;
   case IR::OpSize::i32Bit:
-    vsumsws (Dst,   V, VTMP1);
+    // NOT vsumsws: that is a *saturating* signed sum and it also sets VSCR.SAT,
+    // while VAddV (ADDV.4S) wraps modulo 2^32 [FP research §10.3].  Fold with
+    // modular vadduwm instead: rotate 8, add, rotate 4, add — all four words
+    // then hold the total, and the last vsldoi keeps word 0 and zeroes the
+    // rest.  V is dead after the first vadduwm, so Dst may alias it.
+    // (The i8/i16 arms above cannot saturate: 16x255 and 8x32767 both fit in a
+    // signed word, and vsum4{u,s}{b,h}s' partials fit too.)
+    vsldoi (VTMP2, V, V, 8);
+    vadduwm(VTMP2, V, VTMP2);
+    vsldoi (Dst,   VTMP2, VTMP2, 4);
+    vadduwm(VTMP2, VTMP2, Dst);
+    vsldoi (Dst,   VTMP1, VTMP2, 4);
     break;
   case IR::OpSize::i64Bit:
     // Two-element add: rotate by 8 bytes, vaddudm, then place result in elem 0.
