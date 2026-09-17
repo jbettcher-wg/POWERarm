@@ -1,0 +1,49 @@
+# cpu=128 date=2026-09-16T21:08:58-06:00 load=6.49 5.74 6.04
+solo,A_indep8,0.728,cycles:u=31201706 instructions:u=75562931 
+solo,A_chain1,4.246,cycles:u=83521225 instructions:u=75562877 
+solo,S_ctx_rt1,4.701,cycles:u=90057467 instructions:u=55542389 
+solo,S_ctx_crcshape,7.438,cycles:u=171537161 instructions:u=127616186 
+solo,D_bctr_rand4,7.434,cycles:u=165184646 instructions:u=101589721 
+solo,D_bctr_rep8,7.444,cycles:u=162913506 instructions:u=101589727 
+solo,B_r2_bl_blr,5.531,cycles:u=119449119 instructions:u=77563549 
+solo,B_bctr_next,1.591,cycles:u=43144438 instructions:u=55542425 
+solo,powerarm_crc32,1477334858,
+solo,native_crc32,178207366,
+solo,powerarm_vm,3313438521,
+solo,native_vm,457457140,
+sib1,A_indep8,4.516,cycles:u=131363668 instructions:u=75562970 
+sib1,A_chain1,4.727,cycles:u=131070980 instructions:u=75562879 
+sib1,S_ctx_rt1,4.367,cycles:u=121909577 instructions:u=55542418 
+sib1,S_ctx_crcshape,7.391,cycles:u=214237538 instructions:u=127616194 
+sib1,D_bctr_rand4,14.067,cycles:u=307844650 instructions:u=101589743 
+sib1,D_bctr_rep8,14.286,cycles:u=311234439 instructions:u=101589727 
+sib1,B_r2_bl_blr,10.497,cycles:u=217899083 instructions:u=77563550 
+sib1,B_bctr_next,2.628,cycles:u=97462737 instructions:u=55542424 
+sib1,powerarm_crc32,1383189840,
+sib1,native_crc32,190383830,
+sib1,powerarm_vm,6255434076,
+sib1,native_vm,1317202164,
+sib3,A_indep8,3.170,cycles:u=95433147 instructions:u=75562941 
+sib3,A_chain1,4.336,cycles:u=111888169 instructions:u=75562887 
+sib3,S_ctx_rt1,4.366,cycles:u=110432409 instructions:u=55542397 
+sib3,S_ctx_crcshape,6.983,cycles:u=191313231 instructions:u=127616213 
+sib3,D_bctr_rand4,11.014,cycles:u=238296248 instructions:u=101589694 
+sib3,D_bctr_rep8,11.015,cycles:u=237280495 instructions:u=101589727 
+sib3,B_r2_bl_blr,7.701,cycles:u=160910756 instructions:u=77563548 
+sib3,B_bctr_next,2.661,cycles:u=85765493 instructions:u=55542401 
+sib3,powerarm_crc32,1314727756,
+sib3,native_crc32,182259348,
+sib3,powerarm_vm,5930913981,
+sib3,native_vm,1040418159,
+far3,A_indep8,0.728,cycles:u=30592811 instructions:u=75562941 
+far3,A_chain1,4.238,cycles:u=83124769 instructions:u=75562880 
+far3,S_ctx_rt1,4.692,cycles:u=90174669 instructions:u=55542435 
+far3,S_ctx_crcshape,7.425,cycles:u=171430839 instructions:u=127616215 
+far3,D_bctr_rand4,7.444,cycles:u=141060029 instructions:u=101589700 
+far3,D_bctr_rep8,7.448,cycles:u=141306596 instructions:u=101589727 
+far3,B_r2_bl_blr,5.524,cycles:u=102979434 instructions:u=77563528 
+far3,B_bctr_next,1.589,cycles:u=43126880 instructions:u=55542401 
+far3,powerarm_crc32,1454320958,
+far3,native_crc32,177905735,
+far3,powerarm_vm,3303501704,
+far3,native_vm,454645519,
