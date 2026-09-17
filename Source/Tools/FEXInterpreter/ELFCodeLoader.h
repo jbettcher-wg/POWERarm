@@ -1110,7 +1110,8 @@ public:
     // the frontend implements more; a feature is only advertised once it passes
     // Pi parity.
     using namespace FEX::HLE::Arm64::ABI;
-    HWCap = GUEST_HWCAP_FP | GUEST_HWCAP_ASIMD | GUEST_HWCAP_CPUID;
+    // fphp/asimdhp: half precision passes Pi parity (fp_half), tier 1 since 2026-09-16.
+    HWCap = GUEST_HWCAP_FP | GUEST_HWCAP_ASIMD | GUEST_HWCAP_FPHP | GUEST_HWCAP_ASIMDHP | GUEST_HWCAP_CPUID;
     HWCap2 = 0;
   }
 
