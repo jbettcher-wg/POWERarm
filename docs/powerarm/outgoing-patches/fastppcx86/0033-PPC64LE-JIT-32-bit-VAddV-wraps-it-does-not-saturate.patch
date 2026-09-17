@@ -1,0 +1,45 @@
+From 266aee8fd8bb558195547f9c774d56b8673434bf Mon Sep 17 00:00:00 2001
+From: Jordan Bettcher <thebettcher@gmail.com>
+Date: Thu, 17 Sep 2026 12:31:27 -0600
+Subject: [PATCH 33/33] PPC64LE JIT: 32-bit VAddV wraps, it does not saturate
+
+vsumsws is a signed *saturating* sum across words and it sets VSCR.SAT, while
+VAddV is a modular sum: any four words whose signed total leaves
+[-2^31, 2^31) came back clamped. Fold with modular vadduwm instead - rotate 8,
+add, rotate 4, add, then keep word 0. Five instructions against two, and the
+source is dead after the first add so Dst may still alias it.
+
+The i8 and i16 arms keep vsum4{u,s}{b,h}s + vsumsws: 16 x 255 and 8 x 32767
+both fit in a signed word and neither the partials nor the final sum can
+saturate there.
+---
+ .../Source/Interface/Core/JIT/PPC64LE/VectorOps.cpp | 13 ++++++++++++-
+ 1 file changed, 12 insertions(+), 1 deletion(-)
+
+diff --git a/FEXCore/Source/Interface/Core/JIT/PPC64LE/VectorOps.cpp b/FEXCore/Source/Interface/Core/JIT/PPC64LE/VectorOps.cpp
+index 5e193bd62..a8b9a19a7 100644
+--- a/FEXCore/Source/Interface/Core/JIT/PPC64LE/VectorOps.cpp
++++ b/FEXCore/Source/Interface/Core/JIT/PPC64LE/VectorOps.cpp
+@@ -583,7 +583,18 @@ DEF_OP(VAddV) {
+     vsumsws (Dst,   VTMP2, VTMP1);
+     break;
+   case IR::OpSize::i32Bit:
+-    vsumsws (Dst,   V, VTMP1);
++    // NOT vsumsws: that is a *saturating* signed sum and it also sets VSCR.SAT,
++    // while VAddV wraps modulo 2^32.  Fold with modular vadduwm instead:
++    // rotate 8, add, rotate 4, add - all four words then hold the total, and
++    // the last vsldoi keeps word 0 and zeroes the rest.  V is dead after the
++    // first vadduwm, so Dst may alias it.
++    // (The i8/i16 arms above cannot saturate: 16x255 and 8x32767 both fit in a
++    // signed word, and vsum4{u,s}{b,h}s' partials fit too.)
++    vsldoi (VTMP2, V, V, 8);
++    vadduwm(VTMP2, V, VTMP2);
++    vsldoi (Dst,   VTMP2, VTMP2, 4);
++    vadduwm(VTMP2, VTMP2, Dst);
++    vsldoi (Dst,   VTMP1, VTMP2, 4);
+     break;
+   case IR::OpSize::i64Bit:
+     // Two-element add: rotate by 8 bytes, vaddudm, then place result in elem 0.
+-- 
+2.55.0
+

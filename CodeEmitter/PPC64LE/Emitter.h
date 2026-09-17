@@ -936,6 +936,14 @@ public:
   void xvnmaddadp(VSXR t, VSXR a, VSXR b) { EmitXX3VSX(t.idx, a.idx, b.idx, 225); }
   void xvnmsubadp(VSXR t, VSXR a, VSXR b) { EmitXX3VSX(t.idx, a.idx, b.idx, 241); }
 
+  // XX2-form over the full vs0-vs63 file: TX is bit 0, BX bit 1.
+  void EmitXX2VSX(uint32_t t, uint32_t b, uint32_t xo) {
+    Emit32((60u << 26) | ((t & 31u) << 21) | ((b & 31u) << 11) | ((xo & 0x1FFu) << 2) |
+           (((b >> 5) & 1u) << 1) /*BX*/ | ((t >> 5) & 1u) /*TX*/);
+  }
+  void xvnegsp (VSXR t, VSXR b) { EmitXX2VSX(t.idx, b.idx, 441); }
+  void xvnegdp (VSXR t, VSXR b) { EmitXX2VSX(t.idx, b.idx, 505); }
+
   void xxpermdi(VSXR t, VSXR a, VSXR b, uint32_t dm) {
     assert(dm < 4);
     EmitXX3VSX(t.idx, a.idx, b.idx, 10u | ((dm & 3u) << 5));

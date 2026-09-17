@@ -10,6 +10,7 @@ authored against `daedalao-wt` (9da3ccf9f).
 | 0018–0021 | v2 replacements for the four held patches (0009, 0012, 0013, 0015); `HELD-0009-0012-0013-0015.md` maps each review comment to its fix | daedalao-wt + landed 0001–0008, 0010, 0011, 0014, 0016. Apply 0018–0021 as a set (built and tested as a stack) |
 | 0022 | Code cache: hash the detected host features (ISA 3.0 etc.) into the cache config id | same base |
 | 0023–0030 | Code cache fixes and shared-code performance; `SERIES-0023.md` has the type, dependencies, evidence and skipped items for each | same base; independent of 0018–0022; 0030 depends on 0029 |
+| 0031–0033 | Three FP/SIMD backend correctness bugs found by POWERarm's scalar-FP research: `VFNMLA`/`VFNMLS` negating after rounding, `Float_FromGPR_S` double-rounding i64→f32, and 32-bit `VAddV` saturating. Independent of everything above; apply in order (0031 touches `Emitter.h` too) | `daedalao-wt` directly |
 
 `CODE-CACHE-GAPS.md` compares this tree's code cache with POWERarm's rewrite, and says which gaps
 these patches close and which need the new design.

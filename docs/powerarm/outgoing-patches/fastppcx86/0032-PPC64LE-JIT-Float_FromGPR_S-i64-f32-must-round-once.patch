@@ -1,0 +1,36 @@
+From ba43f70e0b81f2317c877e68179f0754ae7e9ccc Mon Sep 17 00:00:00 2001
+From: Jordan Bettcher <thebettcher@gmail.com>
+Date: Thu, 17 Sep 2026 12:31:27 -0600
+Subject: [PATCH 32/33] PPC64LE JIT: Float_FromGPR_S i64->f32 must round once
+
+The i32-destination arm converted with fcfid followed by frsp, which rounds
+twice. For 0x8000004000000001 (-2^63 + 2^38 + 1) the double rounding lands on
+0xdf000000 (-2^63) where the single rounding gives 0xdeffffff. fcfids (ISA
+2.06) does it in one instruction with one rounding; i32 sources are exact in
+f64 and were never affected, but fcfids is correct for them too.
+---
+ FEXCore/Source/Interface/Core/JIT/PPC64LE/VectorOps.cpp | 8 ++++++--
+ 1 file changed, 6 insertions(+), 2 deletions(-)
+
+diff --git a/FEXCore/Source/Interface/Core/JIT/PPC64LE/VectorOps.cpp b/FEXCore/Source/Interface/Core/JIT/PPC64LE/VectorOps.cpp
+index d6c998cb5..5e193bd62 100644
+--- a/FEXCore/Source/Interface/Core/JIT/PPC64LE/VectorOps.cpp
++++ b/FEXCore/Source/Interface/Core/JIT/PPC64LE/VectorOps.cpp
+@@ -4588,8 +4588,12 @@ DEF_OP(Float_FromGPR_S) {
+       std(TMP2, -8, r1);
+       lfd(f0, -8, r1);
+     }
+-    fcfid(f0, f0);
+-    frsp(f0, f0);
++    // fcfids rounds i64 -> f32 once.  `fcfid; frsp` rounds twice and is not the
++    // same function: 0x8000004000000001 (-2^63 + 2^38 + 1) double-rounds to
++    // 0xdf000000 (-2^63) where the single rounding gives 0xdeffffff.  i32
++    // sources are exact in f64 so they were never affected, but fcfids is
++    // correct for both and is one instruction.
++    fcfids(f0, f0);
+     // Store f0 back as a 4-byte float, then bring it in through a GPR: the
+     // value reaches the vector via mtvsrd below, so neither an lvx of the
+     // spill slot nor a pre-zeroed Dst is needed. vspltw overwrites all 128
+-- 
+2.55.0
+
