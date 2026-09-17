@@ -24,6 +24,7 @@
 #include <sys/resource.h>
 #include <sys/stat.h>
 #include <sys/types.h>
+#include <dirent.h>
 #include <sys/wait.h>
 #include <time.h>
 #include <unistd.h>
@@ -103,6 +104,22 @@ struct row {
   char* stdin_path;
   int argc;
   char** argv;
+  /* block jobs ("job ... end"): see load_jobs */
+  int block;
+  char* rootfs;
+  double timeout;
+  int nsteps, ninputs, noutputs, nenv;
+  struct step* steps;
+  char** inputs;
+  char** outputs;
+  char** env;
+};
+
+struct step {
+  char* stdin_path; /* NULL: /dev/null; relative: to the job's working directory */
+  int argc;
+  char** argv;
+  int may_fail; /* "try": a non-zero status doesn't stop the sequence */
 };
 
 struct table {
@@ -185,28 +202,103 @@ static char* subst_root(const char* s, const char* root) {
   return out;
 }
 
+static void push_str(char*** arr, int* n, char* v) {
+  *arr = realloc(*arr, sizeof(char*) * (*n + 2));
+  if (!*arr) die("out of memory");
+  (*arr)[(*n)++] = v;
+  (*arr)[*n] = NULL;
+}
+
+/* Jobs file, two forms (TAB-separated fields, '#' comments):
+ *
+ *   id class required stdin argv...          one command, stdout/stderr/status compared
+ *
+ *   job id class required                    a block, ended by "end"; directives
+ *     rootfs NAME                            run inside the named AArch64 rootfs
+ *     input PATH                             copy a file or a directory's contents into the working directory
+ *     env KEY=VALUE                          added to every step's environment
+ *     timeout SEC                            for the whole block
+ *     run STDIN argv...                      a step; the block stops at the first non-zero status
+ *     try STDIN argv...                      a step whose non-zero status doesn't stop the block
+ *     output PATH                            a file (or, ending in '/', every file below a directory)
+ *                                            in the working directory, byte-compared
+ *   end
+ *
+ * Leading blanks before a directive are ignored.  @ROOT@ expands to --root
+ * everywhere.  stdin '-' means /dev/null. */
 static struct table load_jobs(const char* path, const char* root) {
   size_t len;
   char* buf = slurp(path, &len);
   if (!buf) die("cannot read jobs file %s", path);
   struct table t = {0};
+  struct row cur = {0};
+  int in_block = 0, lineno = 0;
   for (char* line = strtok(buf, "\n"); line; line = strtok(NULL, "\n")) {
+    lineno++;
+    while (*line == ' ' || *line == '\t') line++;
     if (line[0] == '#' || line[0] == 0) continue;
     char* f[64];
     int n = split_tabs(line, f, 64);
+    for (int i = 0; i < n; i++) f[i] = subst_root(f[i], root);
+    if (!in_block && !strcmp(f[0], "job")) {
+      if (n < 4) die("%s: 'job' needs id class required", path);
+      memset(&cur, 0, sizeof cur);
+      cur.id = f[1];
+      cur.cls = f[2];
+      cur.sub = f[2];
+      cur.required = atoi(f[3]);
+      cur.block = 1;
+      cur.disasm = "";
+      in_block = 1;
+      continue;
+    }
+    if (in_block) {
+      const char* d = f[0];
+      if (!strcmp(d, "end")) {
+        if (cur.nsteps == 0) die("%s: job %s has no run/try step", path, cur.id);
+        cur.argc = cur.steps[0].argc; /* for reports */
+        cur.argv = cur.steps[0].argv;
+        table_push(&t, &cur);
+        in_block = 0;
+      } else if (!strcmp(d, "rootfs") && n == 2) {
+        cur.rootfs = f[1];
+      } else if (!strcmp(d, "input") && n == 2) {
+        push_str(&cur.inputs, &cur.ninputs, f[1]);
+      } else if (!strcmp(d, "output") && n == 2) {
+        push_str(&cur.outputs, &cur.noutputs, f[1]);
+      } else if (!strcmp(d, "env") && n == 2 && strchr(f[1], '=')) {
+        push_str(&cur.env, &cur.nenv, f[1]);
+      } else if (!strcmp(d, "timeout") && n == 2) {
+        cur.timeout = atof(f[1]);
+      } else if ((!strcmp(d, "run") || !strcmp(d, "try")) && n >= 3) {
+        cur.steps = realloc(cur.steps, sizeof(struct step) * (cur.nsteps + 1));
+        if (!cur.steps) die("out of memory");
+        struct step* st = &cur.steps[cur.nsteps++];
+        st->may_fail = d[0] == 't';
+        st->stdin_path = strcmp(f[1], "-") ? f[1] : NULL;
+        st->argc = n - 2;
+        st->argv = xmalloc(sizeof(char*) * (st->argc + 1));
+        for (int i = 0; i < st->argc; i++) st->argv[i] = f[2 + i];
+      } else {
+        die("%s: job %s: bad directive '%s' (%d fields)", path, cur.id, d, n);
+      }
+      continue;
+    }
     if (n < 5) die("%s: malformed job line %s", path, f[0]);
     struct row r = {0};
     r.id = f[0];
     r.cls = f[1];
     r.sub = f[1];
     r.required = atoi(f[2]);
-    r.stdin_path = strcmp(f[3], "-") ? subst_root(f[3], root) : NULL;
+    r.stdin_path = strcmp(f[3], "-") ? f[3] : NULL;
     r.argc = n - 4;
     r.argv = xmalloc(sizeof(char*) * (r.argc + 1));
-    for (int i = 0; i < r.argc; i++) r.argv[i] = subst_root(f[4 + i], root);
+    for (int i = 0; i < r.argc; i++) r.argv[i] = f[4 + i];
     r.disasm = "";
     table_push(&t, &r);
   }
+  if (in_block) die("%s: job %s is missing 'end'", path, cur.id);
+  (void)lineno;
   return t;
 }
 
@@ -233,6 +325,12 @@ struct opts {
   unsigned seed;
   char** prefix;
   int nprefix;
+  /* rootfs jobs */
+  char* rootfs_names[16];
+  char* rootfs_paths[16];
+  int nrootfs;
+  const char* rootfs_exec; /* native: wrapper ROOTFS CWD -- argv... */
+  int break_outputs;       /* test-only: damage declared outputs before hashing */
 };
 
 static int selected(const struct opts* o, const struct row* r) {
@@ -331,6 +429,328 @@ static pid_t spawn(const struct opts* o, const struct row* r, const char* testdi
   return pid;
 }
 
+
+/* ------------------------------------------------------------------ sha256 */
+
+struct sha256 {
+  uint32_t h[8];
+  uint64_t len;
+  uint8_t buf[64];
+  size_t n;
+};
+
+static const uint32_t sha_k[64] = {
+  0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1, 0x923f82a4, 0xab1c5ed5, 0xd807aa98, 0x12835b01, 0x243185be,
+  0x550c7dc3, 0x72be5d74, 0x80deb1fe, 0x9bdc06a7, 0xc19bf174, 0xe49b69c1, 0xefbe4786, 0x0fc19dc6, 0x240ca1cc, 0x2de92c6f, 0x4a7484aa,
+  0x5cb0a9dc, 0x76f988da, 0x983e5152, 0xa831c66d, 0xb00327c8, 0xbf597fc7, 0xc6e00bf3, 0xd5a79147, 0x06ca6351, 0x14292967, 0x27b70a85,
+  0x2e1b2138, 0x4d2c6dfc, 0x53380d13, 0x650a7354, 0x766a0abb, 0x81c2c92e, 0x92722c85, 0xa2bfe8a1, 0xa81a664b, 0xc24b8b70, 0xc76c51a3,
+  0xd192e819, 0xd6990624, 0xf40e3585, 0x106aa070, 0x19a4c116, 0x1e376c08, 0x2748774c, 0x34b0bcb5, 0x391c0cb3, 0x4ed8aa4a, 0x5b9cca4f,
+  0x682e6ff3, 0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208, 0x90befffa, 0xa4506ceb, 0xbef9a3f7, 0xc67178f2};
+
+#define ROR32(x, n) (((x) >> (n)) | ((x) << (32 - (n))))
+
+static void sha_block(struct sha256* c, const uint8_t* p) {
+  uint32_t w[64];
+  for (int i = 0; i < 16; i++) w[i] = (uint32_t)p[4 * i] << 24 | p[4 * i + 1] << 16 | p[4 * i + 2] << 8 | p[4 * i + 3];
+  for (int i = 16; i < 64; i++) {
+    uint32_t s0 = ROR32(w[i - 15], 7) ^ ROR32(w[i - 15], 18) ^ (w[i - 15] >> 3);
+    uint32_t s1 = ROR32(w[i - 2], 17) ^ ROR32(w[i - 2], 19) ^ (w[i - 2] >> 10);
+    w[i] = w[i - 16] + s0 + w[i - 7] + s1;
+  }
+  uint32_t a = c->h[0], b = c->h[1], cc = c->h[2], d = c->h[3], e = c->h[4], f = c->h[5], g = c->h[6], h = c->h[7];
+  for (int i = 0; i < 64; i++) {
+    uint32_t t1 = h + (ROR32(e, 6) ^ ROR32(e, 11) ^ ROR32(e, 25)) + ((e & f) ^ (~e & g)) + sha_k[i] + w[i];
+    uint32_t t2 = (ROR32(a, 2) ^ ROR32(a, 13) ^ ROR32(a, 22)) + ((a & b) ^ (a & cc) ^ (b & cc));
+    h = g;
+    g = f;
+    f = e;
+    e = d + t1;
+    d = cc;
+    cc = b;
+    b = a;
+    a = t1 + t2;
+  }
+  c->h[0] += a; c->h[1] += b; c->h[2] += cc; c->h[3] += d; c->h[4] += e; c->h[5] += f; c->h[6] += g; c->h[7] += h;
+}
+
+static void sha256_hex(const uint8_t* p, size_t n, char out[65]) {
+  struct sha256 c = {{0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a, 0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19}, 0, {0}, 0};
+  size_t i = 0;
+  for (; i + 64 <= n; i += 64) sha_block(&c, p + i);
+  uint8_t tail[128] = {0};
+  size_t r = n - i;
+  memcpy(tail, p + i, r);
+  tail[r] = 0x80;
+  size_t tl = r + 1 + 8 <= 64 ? 64 : 128;
+  uint64_t bits = (uint64_t)n * 8;
+  for (int k = 0; k < 8; k++) tail[tl - 1 - k] = bits >> (8 * k);
+  sha_block(&c, tail);
+  if (tl == 128) sha_block(&c, tail + 64);
+  for (int k = 0; k < 8; k++) sprintf(out + 8 * k, "%08x", c.h[k]);
+}
+
+/* ------------------------------------------------------------------ block jobs */
+
+static const char* rootfs_path(const struct opts* o, const char* name) {
+  for (int i = 0; i < o->nrootfs; i++)
+    if (!strcmp(o->rootfs_names[i], name)) return o->rootfs_paths[i];
+  return NULL;
+}
+
+static void mkdir_parents(const char* path) {
+  char* p = xstrdup(path);
+  for (char* q = p + 1; *q; q++)
+    if (*q == '/') {
+      *q = 0;
+      mkdir(p, 0755);
+      *q = '/';
+    }
+  free(p);
+}
+
+/* Copy SRC (a file, or a directory's contents) into DST. */
+static int copy_tree(const char* src, const char* dst) {
+  struct stat st;
+  if (lstat(src, &st)) return -1;
+  if (S_ISDIR(st.st_mode)) {
+    mkdir(dst, st.st_mode & 07777);
+    DIR* d = opendir(src);
+    if (!d) return -1;
+    struct dirent* e;
+    int rc = 0;
+    while ((e = readdir(d))) {
+      if (!strcmp(e->d_name, ".") || !strcmp(e->d_name, "..")) continue;
+      char* s2 = path2(src, e->d_name, ""), *d2 = path2(dst, e->d_name, "");
+      rc |= copy_tree(s2, d2);
+      free(s2);
+      free(d2);
+    }
+    closedir(d);
+    return rc;
+  }
+  if (S_ISLNK(st.st_mode)) {
+    char tgt[4096];
+    ssize_t n = readlink(src, tgt, sizeof tgt - 1);
+    if (n < 0) return -1;
+    tgt[n] = 0;
+    return symlink(tgt, dst);
+  }
+  size_t len;
+  char* b = slurp(src, &len);
+  if (!b) return -1;
+  int fd = open(dst, O_WRONLY | O_CREAT | O_TRUNC, st.st_mode & 07777);
+  int rc = fd < 0 || write(fd, b, len) != (ssize_t)len ? -1 : 0;
+  if (fd >= 0) close(fd);
+  free(b);
+  return rc;
+}
+
+static int cmp_str(const void* a, const void* b) {
+  return strcmp(*(char* const*)a, *(char* const*)b);
+}
+
+/* Every non-directory below DIR (relative to BASE), sorted. */
+static void list_files(const char* base, const char* rel, char*** out, int* n) {
+  char* dir = rel[0] ? path2(base, rel, "") : xstrdup(base);
+  DIR* d = opendir(dir);
+  if (!d) {
+    free(dir);
+    return;
+  }
+  char** names = NULL;
+  int nn = 0;
+  struct dirent* e;
+  while ((e = readdir(d)))
+    if (strcmp(e->d_name, ".") && strcmp(e->d_name, "..")) push_str(&names, &nn, xstrdup(e->d_name));
+  closedir(d);
+  if (nn) qsort(names, nn, sizeof(char*), cmp_str);
+  for (int i = 0; i < nn; i++) {
+    char* r2 = rel[0] ? path2(rel, names[i], "") : xstrdup(names[i]);
+    char* full = path2(base, r2, "");
+    struct stat st;
+    if (!lstat(full, &st) && S_ISDIR(st.st_mode))
+      list_files(base, r2, out, n);
+    else
+      push_str(out, n, xstrdup(r2));
+    free(full);
+  }
+  free(dir);
+}
+
+/* Hash and keep a copy of every declared output: <id>.outputs has one line
+ * per file, "<sha256> <size> <path>", "link <target> <path>" or "missing - <path>". */
+static void collect_outputs(const struct opts* o, const struct row* r, const char* cwd) {
+  char* manp = path2(o->out, r->id, ".outputs");
+  FILE* man = fopen(manp, "w");
+  if (!man) _exit(125);
+  char* keep = path2(o->out, r->id, ".files");
+  mkdir(keep, 0755);
+  for (int i = 0; i < r->noutputs; i++) {
+    const char* want = r->outputs[i];
+    size_t wl = strlen(want);
+    char** files = NULL;
+    int nf = 0;
+    if (wl && want[wl - 1] == '/') {
+      char* rel = xstrdup(want);
+      rel[wl - 1] = 0;
+      list_files(cwd, rel, &files, &nf);
+      if (nf == 0) fprintf(man, "missing - %s\n", want);
+      free(rel);
+    } else {
+      push_str(&files, &nf, xstrdup(want));
+    }
+    for (int k = 0; k < nf; k++) {
+      char* full = path2(cwd, files[k], "");
+      struct stat st;
+      if (lstat(full, &st)) {
+        fprintf(man, "missing - %s\n", files[k]);
+      } else if (S_ISLNK(st.st_mode)) {
+        char tgt[4096];
+        ssize_t n = readlink(full, tgt, sizeof tgt - 1);
+        tgt[n < 0 ? 0 : n] = 0;
+        fprintf(man, "link %s %s\n", tgt, files[k]);
+      } else {
+        size_t len;
+        char* b = slurp(full, &len);
+        if (b && len && o->break_outputs) b[len / 2] ^= 0x10;
+        char hex[65];
+        sha256_hex((const uint8_t*)(b ? b : ""), b ? len : 0, hex);
+        fprintf(man, "%s %zu %s\n", hex, len, files[k]);
+        char* dst = path2(keep, files[k], "");
+        mkdir_parents(dst);
+        int fd = open(dst, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+        if (fd >= 0) {
+          if (b && write(fd, b, len) != (ssize_t)len) fprintf(man, "# short copy %s\n", files[k]);
+          close(fd);
+        }
+        free(b);
+      }
+      free(full);
+    }
+  }
+  fclose(man);
+  free(manp);
+  free(keep);
+}
+
+/* A block job runs in a supervisor process (its own process group, so a
+ * timeout kills every step).  It prepares the working directory, runs the
+ * steps, records "<k> exit N" / "<k> signal N" lines in <id>.steps, collects
+ * the outputs and finally exits with the status of the last step it ran. */
+static pid_t spawn_block(const struct opts* o, const struct row* r) {
+  pid_t pid = fork();
+  if (pid < 0) die("fork: %s", strerror(errno));
+  if (pid) return pid;
+  setpgid(0, 0);
+  struct rlimit rl = {0, 0};
+  setrlimit(RLIMIT_CORE, &rl);
+  sigset_t all;
+  sigemptyset(&all);
+  sigprocmask(SIG_SETMASK, &all, NULL);
+  umask(022);
+  char* cwd = path2(o->out, r->id, ".cwd");
+  char* stepsp = path2(o->out, r->id, ".steps");
+  FILE* steps = fopen(stepsp, "w");
+  if (!steps) _exit(125);
+  setvbuf(steps, NULL, _IOLBF, 0);
+  mkdir(cwd, 0755);
+  char* err1 = path2(o->out, r->id, ".1.err");
+  const char* rootfs = NULL;
+  if (r->rootfs) {
+    rootfs = rootfs_path(o, r->rootfs);
+    if (!rootfs || (!o->rootfs_exec && !o->nprefix)) {
+      FILE* e = fopen(err1, "w");
+      if (e) {
+        fprintf(e, "a64diff: job needs rootfs '%s' but %s\n", r->rootfs,
+                !rootfs ? "no --rootfs NAME=PATH provides it" : "neither --rootfs-exec nor an emulator prefix was given");
+        fclose(e);
+      }
+      fprintf(steps, "setup error\n");
+      _exit(125);
+    }
+  }
+  for (int i = 0; i < r->ninputs; i++)
+    if (copy_tree(r->inputs[i], cwd)) {
+      FILE* e = fopen(err1, "w");
+      if (e) {
+        fprintf(e, "a64diff: cannot copy input %s\n", r->inputs[i]);
+        fclose(e);
+      }
+      fprintf(steps, "setup error\n");
+      _exit(125);
+    }
+  /* environment: fixed base + job env (+ POWERARM_ROOTFS under an emulator) */
+  char** base = child_env();
+  char** env = NULL;
+  int nenv = 0;
+  for (char** e = base; *e; e++) {
+    int over = 0;
+    for (int i = 0; i < r->nenv; i++) {
+      size_t kl = strchr(r->env[i], '=') - r->env[i] + 1;
+      if (!strncmp(*e, r->env[i], kl)) over = 1;
+    }
+    if (rootfs && o->nprefix && !o->rootfs_exec && !strncmp(*e, "POWERARM_ROOTFS=", 16)) over = 1;
+    if (!over) push_str(&env, &nenv, *e);
+  }
+  for (int i = 0; i < r->nenv; i++) push_str(&env, &nenv, r->env[i]);
+  if (rootfs && o->nprefix && !o->rootfs_exec) {
+    char* v = xmalloc(strlen(rootfs) + 20);
+    sprintf(v, "POWERARM_ROOTFS=%s", rootfs);
+    push_str(&env, &nenv, v);
+  }
+  if (chdir(cwd)) _exit(125);
+  int last = 0;
+  for (int k = 0; k < r->nsteps; k++) {
+    const struct step* sp = &r->steps[k];
+    char ext[32];
+    snprintf(ext, sizeof ext, ".%d.out", k + 1);
+    char* outp = path2(o->out, r->id, ext);
+    snprintf(ext, sizeof ext, ".%d.err", k + 1);
+    char* errp = path2(o->out, r->id, ext);
+    char** argv = NULL;
+    int na = 0;
+    if (rootfs && o->rootfs_exec) {
+      push_str(&argv, &na, (char*)o->rootfs_exec);
+      push_str(&argv, &na, (char*)rootfs);
+      push_str(&argv, &na, cwd);
+      push_str(&argv, &na, "--");
+    }
+    for (int i = 0; i < o->nprefix; i++) push_str(&argv, &na, o->prefix[i]);
+    for (int i = 0; i < sp->argc; i++) push_str(&argv, &na, sp->argv[i]);
+    pid_t c = fork();
+    if (c == 0) {
+      int in = open(sp->stdin_path ? sp->stdin_path : "/dev/null", O_RDONLY);
+      int of = open(outp, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+      int ef = open(errp, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+      if (in < 0 || of < 0 || ef < 0) _exit(126);
+      dup2(in, 0);
+      dup2(of, 1);
+      dup2(ef, 2);
+      execvpe(argv[0], argv, env);
+      dprintf(2, "a64diff: exec %s: %s\n", argv[0], strerror(errno));
+      _exit(127);
+    }
+    int st = 0;
+    while (waitpid(c, &st, 0) < 0 && errno == EINTR) {
+    }
+    last = st;
+    if (WIFEXITED(st))
+      fprintf(steps, "%d exit %d\n", k + 1, WEXITSTATUS(st));
+    else
+      fprintf(steps, "%d signal %d\n", k + 1, WTERMSIG(st));
+    free(outp);
+    free(errp);
+    if (!sp->may_fail && !(WIFEXITED(st) && WEXITSTATUS(st) == 0)) break;
+  }
+  collect_outputs(o, r, cwd);
+  fclose(steps);
+  if (WIFSIGNALED(last)) {
+    signal(WTERMSIG(last), SIG_DFL);
+    raise(WTERMSIG(last));
+  }
+  _exit(WIFEXITED(last) ? WEXITSTATUS(last) : 125);
+}
+
 static void mkdir_p(const char* path) {
   char* p = xstrdup(path);
   for (char* q = p + 1; *q; q++)
@@ -357,6 +777,10 @@ static int cmd_run(struct opts* o) {
   }
   if (!o->out) die("run needs --out");
   mkdir_p(o->out);
+  /* Block jobs chdir into their working directory: keep every path absolute. */
+  char* absout = realpath(o->out, NULL);
+  if (!absout) die("cannot resolve %s", o->out);
+  o->out = absout;
   int j = o->jobsn > 0 ? o->jobsn : 4;
   struct slot* slots = xmalloc(sizeof(struct slot) * j);
   int next = 0, running = 0, done = 0, total = 0, notrun = 0;
@@ -381,7 +805,7 @@ static int cmd_run(struct opts* o) {
       slots[s].row = next;
       slots[s].start = now_s();
       slots[s].timed_out = 0;
-      slots[s].pid = spawn(o, &t.rows[next], testdir);
+      slots[s].pid = t.rows[next].block ? spawn_block(o, &t.rows[next]) : spawn(o, &t.rows[next], testdir);
       running++;
       next++;
     }
@@ -413,7 +837,8 @@ static int cmd_run(struct opts* o) {
     double tn = now_s();
     for (int s = 0; s < j; s++) {
       if (!slots[s].pid || slots[s].timed_out) continue;
-      int over = o->timeout > 0 && tn - slots[s].start > o->timeout;
+      double lim = t.rows[slots[s].row].timeout > 0 ? t.rows[slots[s].row].timeout : o->timeout;
+      int over = lim > 0 && tn - slots[s].start > lim;
       int dl = o->deadline > 0 && tn - t0 > o->deadline;
       if (over || dl) {
         kill(-slots[s].pid, SIGKILL);
@@ -981,12 +1406,227 @@ static void first_diff_line(FILE* f, const char* what, const char* g, size_t gl,
   }
 }
 
-static int prog_diff(const struct loaded* g, const struct loaded* a, int* stdout_d, int* stderr_d, int* st_d) {
-  *stdout_d = g->outlen != a->outlen || (g->outlen && memcmp(g->out, a->out, g->outlen));
-  size_t ge = g->err ? strlen(g->err) : 0, ae = a->err ? strlen(a->err) : 0;
-  *stderr_d = ge != ae || (ge && memcmp(g->err, a->err, ge));
-  *st_d = !status_eq(g->st, a->st);
-  return *stdout_d + *stderr_d + *st_d;
+#define MAXSTEPS 32
+
+/* One program job's results: legacy jobs have one step (<id>.out/.err); block
+ * jobs have <id>.steps, <id>.<k>.out/.err and <id>.outputs. */
+struct presult {
+  struct status st;
+  char* steps;
+  int nsteps;
+  char* out[MAXSTEPS], *err[MAXSTEPS];
+  size_t outlen[MAXSTEPS], errlen[MAXSTEPS];
+  char* outputs;
+};
+
+enum { PD_STATUS = 1, PD_STEPS = 2, PD_STDOUT = 4, PD_STDERR = 8, PD_OUTPUTS = 16 };
+
+static struct presult load_presult(const char* dir, const struct row* r) {
+  struct presult p = {0};
+  p.st = read_status(dir, r->id);
+  size_t n;
+  if (!r->block) {
+    char* q = path2(dir, r->id, ".out");
+    p.out[0] = slurp(q, &p.outlen[0]);
+    free(q);
+    q = path2(dir, r->id, ".err");
+    p.err[0] = slurp(q, &p.errlen[0]);
+    free(q);
+    p.nsteps = 1;
+    return p;
+  }
+  char* q = path2(dir, r->id, ".steps");
+  p.steps = slurp(q, &n);
+  free(q);
+  q = path2(dir, r->id, ".outputs");
+  p.outputs = slurp(q, &n);
+  free(q);
+  for (int k = 0; k < MAXSTEPS && k < r->nsteps; k++) {
+    char ext[32];
+    snprintf(ext, sizeof ext, ".%d.out", k + 1);
+    q = path2(dir, r->id, ext);
+    p.out[k] = slurp(q, &p.outlen[k]);
+    free(q);
+    snprintf(ext, sizeof ext, ".%d.err", k + 1);
+    q = path2(dir, r->id, ext);
+    p.err[k] = slurp(q, &p.errlen[k]);
+    free(q);
+  }
+  p.nsteps = r->nsteps < MAXSTEPS ? r->nsteps : MAXSTEPS;
+  return p;
+}
+
+static void free_presult(struct presult* p) {
+  free(p->steps);
+  free(p->outputs);
+  for (int k = 0; k < MAXSTEPS; k++) {
+    free(p->out[k]);
+    free(p->err[k]);
+  }
+}
+
+static int buf_ne(const char* a, size_t al, const char* b, size_t bl) {
+  return al != bl || (al && memcmp(a, b, al));
+}
+
+static int str_ne(const char* a, const char* b) {
+  return strcmp(a ? a : "", b ? b : "");
+}
+
+static int prog_diff(const struct presult* g, const struct presult* a) {
+  int d = 0;
+  if (!status_eq(g->st, a->st)) d |= PD_STATUS;
+  if (str_ne(g->steps, a->steps)) d |= PD_STEPS;
+  for (int k = 0; k < g->nsteps; k++) {
+    if (buf_ne(g->out[k], g->outlen[k], a->out[k], a->outlen[k])) d |= PD_STDOUT;
+    if (buf_ne(g->err[k], g->errlen[k], a->err[k], a->errlen[k])) d |= PD_STDERR;
+  }
+  if (str_ne(g->outputs, a->outputs)) d |= PD_OUTPUTS;
+  return d;
+}
+
+/* The manifest line for PATH in an <id>.outputs text, or NULL. */
+static char* output_line(const char* text, const char* path, char* buf, size_t n) {
+  if (!text) return NULL;
+  size_t pl = strlen(path);
+  for (const char* l = text; *l;) {
+    const char* e = strchr(l, '\n');
+    size_t ll = e ? (size_t)(e - l) : strlen(l);
+    if (ll > pl + 1 && l[ll - pl - 1] == ' ' && !strncmp(l + ll - pl, path, pl)) {
+      snprintf(buf, n, "%.*s", (int)ll, l);
+      return buf;
+    }
+    if (!e) break;
+    l = e + 1;
+  }
+  return NULL;
+}
+
+static void report_outputs(FILE* f, const struct row* r, const struct presult* g, const struct presult* a, const char* gdir, const char* adir) {
+  /* Walk the union of paths in both manifests. */
+  for (int side = 0; side < 2; side++) {
+    const char* text = side ? a->outputs : g->outputs;
+    if (!text) continue;
+    char* copy = xstrdup(text);
+    for (char* l = strtok(copy, "\n"); l; l = strtok(NULL, "\n")) {
+      if (l[0] == '#') continue;
+      const char* sp2 = strchr(l, ' ');
+      sp2 = sp2 ? strchr(sp2 + 1, ' ') : NULL;
+      if (!sp2) continue;
+      const char* path = sp2 + 1;
+      char gb[8192], ab[8192];
+      char* gl = output_line(g->outputs, path, gb, sizeof gb), *al = output_line(a->outputs, path, ab, sizeof ab);
+      if (side == 1 && gl) continue; /* already reported from the golden side */
+      if (gl && al && !strcmp(gl, al)) continue;
+      fprintf(f, "    output %s:\n      golden: %s\n      actual: %s\n", path, gl ? gl : "(not listed)", al ? al : "(not listed)");
+      if (gl && al && strncmp(gl, "missing", 7) && strncmp(al, "missing", 7) && strncmp(gl, "link", 4) && strncmp(al, "link", 4)) {
+        char* gp = path2(gdir, r->id, ".files/"), *ap = path2(adir, r->id, ".files/");
+        char* gpf = path2(gp, path, ""), *apf = path2(ap, path, "");
+        size_t gn, an;
+        char* gc = slurp(gpf, &gn), *ac = slurp(apf, &an);
+        if (gc && ac) {
+          size_t i = 0;
+          while (i < gn && i < an && gc[i] == ac[i]) i++;
+          fprintf(f, "      first difference at byte %zu (golden %zu bytes, actual %zu bytes)\n", i, gn, an);
+        }
+        free(gc);
+        free(ac);
+        free(gp);
+        free(ap);
+        free(gpf);
+        free(apf);
+      }
+    }
+    free(copy);
+  }
+}
+
+static void report_prog(FILE* f, const struct row* r, const char* what, const struct presult* g, const struct presult* a, int d,
+                        const struct opts* o) {
+  fprintf(f, "FAIL %s  [%s, %s] %s\n", r->id, r->cls, r->required ? "required" : "optional", what);
+  if (r->rootfs) fprintf(f, "    rootfs: %s\n", r->rootfs);
+  for (int k = 0; k < (r->block ? r->nsteps : 1); k++) {
+    int argc = r->block ? r->steps[k].argc : r->argc;
+    char** argv = r->block ? r->steps[k].argv : r->argv;
+    const char* in = r->block ? r->steps[k].stdin_path : r->stdin_path;
+    fprintf(f, "    %s%d:", r->block ? "step " : "argv", r->block ? k + 1 : 0);
+    for (int ai = 0; ai < argc; ai++) fprintf(f, " '%s'", argv[ai]);
+    fprintf(f, "%s%s\n", in ? " < " : "", in ? in : "");
+  }
+  char b1[64], b2[64];
+  if (d & PD_STATUS) fprintf(f, "    status:  golden %s, actual %s\n", status_str(g->st, b1, sizeof b1), status_str(a->st, b2, sizeof b2));
+  if (d & PD_STEPS) {
+    fprintf(f, "    steps:   golden [");
+    for (const char* c = g->steps ? g->steps : ""; *c; c++) fputc(*c == '\n' ? ';' : *c, f);
+    fprintf(f, "] actual [");
+    for (const char* c = a->steps ? a->steps : ""; *c; c++) fputc(*c == '\n' ? ';' : *c, f);
+    fprintf(f, "]\n");
+  }
+  for (int k = 0; k < g->nsteps; k++) {
+    char what2[32];
+    if (buf_ne(g->out[k], g->outlen[k], a->out[k], a->outlen[k])) {
+      snprintf(what2, sizeof what2, r->block ? "step %d stdout" : "stdout", k + 1);
+      first_diff_line(f, what2, g->out[k] ? g->out[k] : "", g->outlen[k], a->out[k] ? a->out[k] : "", a->outlen[k]);
+    }
+    if (buf_ne(g->err[k], g->errlen[k], a->err[k], a->errlen[k])) {
+      snprintf(what2, sizeof what2, r->block ? "step %d stderr" : "stderr", k + 1);
+      first_diff_line(f, what2, g->err[k] ? g->err[k] : "", g->errlen[k], a->err[k] ? a->err[k] : "", a->errlen[k]);
+    }
+  }
+  if (d & PD_OUTPUTS) report_outputs(f, r, g, a, o->golden, o->actual);
+}
+
+static enum cat classify_prog(const struct presult* a) {
+  char* all = NULL;
+  size_t n = 0;
+  for (int k = 0; k < a->nsteps; k++)
+    if (a->err[k]) {
+      all = realloc(all, n + a->errlen[k] + 1);
+      memcpy(all + n, a->err[k], a->errlen[k]);
+      n += a->errlen[k];
+      all[n] = 0;
+    }
+  enum cat k = C_MISMATCH;
+  if (!a->st.present || a->st.timeout || (all && strstr(all, "unimplemented A64 instruction")) ||
+      (all && strstr(all, "HOSTPAGEMODE") && !strstr(all, "continuing")))
+    k = classify_missing(a->st, all);
+  free(all);
+  return k;
+}
+
+/* Replace the manifest line of the first hashed output with one for a copy of
+ * the golden file that has one byte flipped.  Returns 0 if there is none. */
+static int corrupt_output(struct presult* p, const struct row* r, const char* gdir, uint32_t h, const char** path_out) {
+  if (!p->outputs) return 0;
+  char* copy = xstrdup(p->outputs);
+  int done = 0;
+  for (char* l = strtok(copy, "\n"); l && !done; l = strtok(NULL, "\n")) {
+    if (strlen(l) < 66 || l[64] != ' ') continue;
+    char* sp2 = strchr(l + 65, ' ');
+    if (!sp2) continue;
+    const char* path = sp2 + 1;
+    char* dirp = path2(gdir, r->id, ".files/"), *fp = path2(dirp, path, "");
+    size_t n;
+    char* b = slurp(fp, &n);
+    free(dirp);
+    free(fp);
+    if (!b || !n) {
+      free(b);
+      continue;
+    }
+    b[(h >> 5) % n] ^= 0x01;
+    char hex[65];
+    sha256_hex((const uint8_t*)b, n, hex);
+    free(b);
+    char* pos = strstr(p->outputs, l);
+    memcpy(pos, hex, 64);
+    static char keep[4096];
+    snprintf(keep, sizeof keep, "%s", path);
+    *path_out = keep;
+    done = 1;
+  }
+  free(copy);
+  return done;
 }
 
 static int cmd_pcompare(struct opts* o) {
@@ -1002,98 +1642,102 @@ static int cmd_pcompare(struct opts* o) {
     struct classsum* c = class_get(cs, &ncs, r->cls);
     c->tests++;
     c->required |= r->required;
-    struct loaded g = load_result(o->golden, r->id);
-    struct loaded a = load_result(o->actual, r->id);
-    if (!g.st.present) {
-      fprintf(stderr, "GOLDEN-INVALID %s: no golden status\n", r->id);
+    struct presult g = load_presult(o->golden, r);
+    struct presult a = load_presult(o->actual, r);
+    if (!g.st.present || (r->block && (!g.steps || !g.outputs || strstr(g.steps, "setup error")))) {
+      fprintf(stderr, "GOLDEN-INVALID %s: no golden status/steps/outputs, or setup failed\n", r->id);
       golden_bad++;
       c->ncat[C_CRASH]++;
     } else {
-      int od, ed, sd;
-      if (!prog_diff(&g, &a, &od, &ed, &sd)) {
+      int d = prog_diff(&g, &a);
+      if (!d) {
         c->ncat[C_PASS]++;
       } else {
-        enum cat k = C_MISMATCH;
-        if (!a.st.present || a.st.timeout || (a.err && strstr(a.err, "unimplemented A64 instruction")) ||
-            (a.err && strstr(a.err, "HOSTPAGEMODE") && !strstr(a.err, "continuing")))
-          k = classify_missing(a.st, a.err);
+        enum cat k = classify_prog(&a);
         c->ncat[k]++;
         FILE* outs[2] = {s.report, s.shown < s.max ? stdout : NULL};
-        for (int q = 0; q < 2; q++) {
-          FILE* f = outs[q];
-          if (!f) continue;
-          fprintf(f, "FAIL %s  [%s, %s] %s\n", r->id, r->cls, r->required ? "required" : "optional", cat_text[k]);
-          fprintf(f, "    argv:");
-          for (int ai = 0; ai < r->argc; ai++) fprintf(f, " '%s'", r->argv[ai]);
-          fprintf(f, "%s%s\n", r->stdin_path ? " < " : "", r->stdin_path ? r->stdin_path : "");
-          char b1[64], b2[64];
-          if (sd) fprintf(f, "    status:  golden %s, actual %s\n", status_str(g.st, b1, sizeof b1), status_str(a.st, b2, sizeof b2));
-          if (od) first_diff_line(f, "stdout", g.out ? g.out : "", g.outlen, a.out ? a.out : "", a.outlen);
-          if (ed) {
-            size_t ge = g.err ? strlen(g.err) : 0, ae = a.err ? strlen(a.err) : 0;
-            first_diff_line(f, "stderr", g.err ? g.err : "", ge, a.err ? a.err : "", ae);
-          }
-        }
+        for (int q = 0; q < 2; q++)
+          if (outs[q]) report_prog(outs[q], r, cat_text[k], &g, &a, d, o);
         s.shown++;
       }
     }
-    free_result(&g);
-    free_result(&a);
+    free_presult(&g);
+    free_presult(&a);
   }
   if (s.shown > s.max) printf("... %d more failures (see --report)\n", s.shown - s.max);
   printf("\n");
-  /* Controls: per class, corrupt one golden's stdout (or exit status) and one's stderr/status. */
+  /* Controls, per class: corrupt one golden's stdout, one's exit status and,
+   * when the class declares output files, one output file.  The corrupted
+   * golden must differ from the pristine goldens in exactly that record and
+   * exactly that part, and must be flagged against the actual result. */
   for (int ci = 0; ci < ncs; ci++) {
     struct classsum* c = &cs[ci];
-    int members[4096], nm = 0;
+    int members[4096], nm = 0, with_outputs = 0;
     for (int i = 0; i < t.n && nm < 4096; i++)
-      if (selected(o, &t.rows[i]) && !strcmp(t.rows[i].cls, c->cls)) members[nm++] = i;
-    for (int variant = 0; variant < 2; variant++) {
+      if (selected(o, &t.rows[i]) && !strcmp(t.rows[i].cls, c->cls)) {
+        members[nm++] = i;
+        with_outputs |= t.rows[i].noutputs > 0;
+      }
+    for (int variant = 0; variant < (with_outputs ? 3 : 2); variant++) {
       uint32_t h = hash32(c->cls, o->seed + variant * 7919);
       int ctl = members[h % nm];
+      if (variant == 2) /* pick a member that declares outputs */
+        for (int m = 0; m < nm; m++) {
+          int cand = members[(h + m) % nm];
+          if (t.rows[cand].noutputs) {
+            ctl = cand;
+            break;
+          }
+        }
       struct row* cr = &t.rows[ctl];
       c->ctl_total++;
       ctl_total++;
-      int flagged = 0, wrong = 0, exact = 0, act_ok = 0;
-      const char* what = "";
+      int flagged = 0, wrong = 0, exact = 0, act_ok = 0, want = variant == 0 ? PD_STDOUT : variant == 1 ? PD_STATUS : PD_OUTPUTS;
+      char what[4200] = "";
       for (int m = 0; m < nm; m++) {
-        struct loaded gm = load_result(o->golden, t.rows[members[m]].id);
-        struct loaded expect = load_result(o->golden, t.rows[members[m]].id);
-        int od, ed, sd;
+        struct row* r = &t.rows[members[m]];
+        struct presult gm = load_presult(o->golden, r);
+        struct presult expect = load_presult(o->golden, r);
         if (members[m] == ctl) {
-          if (variant == 0 && expect.outlen) {
-            expect.out[(h >> 8) % expect.outlen] ^= 0x01;
-            what = "stdout byte";
-          } else if (variant == 0) {
-            free(expect.out);
-            expect.out = xstrdup("x");
-            expect.outlen = 1;
-            what = "stdout (added byte)";
-          } else {
-            struct loaded a0 = load_result(o->actual, cr->id);
+          struct presult a = load_presult(o->actual, cr);
+          if (variant == 0) {
+            int k = 0;
+            while (k < expect.nsteps - 1 && !expect.outlen[k]) k++;
+            if (expect.outlen[k]) {
+              expect.out[k][(h >> 8) % expect.outlen[k]] ^= 0x01;
+            } else {
+              free(expect.out[k]);
+              expect.out[k] = xstrdup("x");
+              expect.outlen[k] = 1;
+            }
+            snprintf(what, sizeof what, "stdout byte (step %d)", k + 1);
+          } else if (variant == 1) {
             expect.st.code ^= 0x55;
-            if (a0.st.exited && a0.st.code == expect.st.code) expect.st.code ^= 0x0f;
-            free_result(&a0);
-            what = "exit status";
+            if (a.st.exited && a.st.code == expect.st.code) expect.st.code ^= 0x0f;
+            snprintf(what, sizeof what, "exit status");
+          } else {
+            const char* path = "?";
+            if (!corrupt_output(&expect, r, o->golden, h, &path)) snprintf(what, sizeof what, "output file (none hashed!)");
+            else snprintf(what, sizeof what, "output file %s (one byte)", path);
           }
-          struct loaded a = load_result(o->actual, cr->id);
-          if (prog_diff(&expect, &a, &od, &ed, &sd)) act_ok = variant == 0 ? od : sd;
-          free_result(&a);
+          int da = prog_diff(&expect, &a);
+          act_ok = (da & want) != 0;
+          free_presult(&a);
         }
-        int n = prog_diff(&expect, &gm, &od, &ed, &sd);
-        if (n) {
+        int dg = prog_diff(&expect, &gm);
+        if (dg) {
           flagged++;
           if (members[m] != ctl) wrong++;
-          else if (n == 1 && (variant == 0 ? od : sd)) exact = 1;
+          else if (dg == want) exact = 1;
         }
-        free_result(&gm);
-        free_result(&expect);
+        free_presult(&gm);
+        free_presult(&expect);
       }
       int fired = flagged == 1 && wrong == 0 && exact && act_ok;
       c->ctl_fired += fired;
       ctl_fired += fired;
-      printf("%s %-10s %s corrupt %s: flagged %d/%d%s\n", fired ? "CONTROL-FIRED" : "CONTROL-FAIL ", c->cls, cr->id, what, flagged,
-             nm, fired ? " (exactly the control; also flagged against actual)" : " (WRONG SET, FIELD, OR NOT FLAGGED VS ACTUAL)");
+      printf("%s %-10s %s corrupt %s: flagged %d/%d%s\n", fired ? "CONTROL-FIRED" : "CONTROL-FAIL ", c->cls, cr->id, what, flagged, nm,
+             fired ? " (exactly the control; also flagged against actual)" : " (WRONG SET, FIELD, OR NOT FLAGGED VS ACTUAL)");
     }
   }
   if (s.report) fclose(s.report);
@@ -1115,6 +1759,9 @@ static void usage(void) {
         "  a64diff compare  --manifest M --golden DIR --actual DIR [--report FILE] [--max-detail N]\n"
         "                   [--only C,..] [--skip C,..] [--require C,..] [--optional C,..] [--seed N]\n"
         "  a64diff pcompare --jobs FILE --golden DIR --actual DIR [same options]\n"
+        "  program runs: [--rootfs NAME=PATH ...] [--rootfs-exec WRAPPER] [--break-outputs (test only)]\n"
+        "                a rootfs job runs as WRAPPER PATH CWD -- argv (native), or as PREFIX argv with\n"
+        "                POWERARM_ROOTFS=PATH (emulator prefix)\n"
         "exit: 0 pass, 1 required tests failed, 2 harness error or a control did not fire, 3 deadline hit\n",
         stderr);
   exit(2);
@@ -1152,6 +1799,19 @@ int main(int argc, char** argv) {
     else if (ARG("--deadline")) o.deadline = atof(argv[++i]);
     else if (ARG("--max-detail")) o.max_detail = atoi(argv[++i]);
     else if (ARG("--seed")) o.seed = strtoul(argv[++i], NULL, 0);
+    else if (ARG("--rootfs")) {
+      char* v = argv[++i], *eq = strchr(v, '=');
+      if (!eq || o.nrootfs == 16) die("--rootfs wants NAME=PATH");
+      *eq = 0;
+      o.rootfs_names[o.nrootfs] = v;
+      char* abs = realpath(eq + 1, NULL); /* block jobs chdir: keep it absolute */
+      o.rootfs_paths[o.nrootfs++] = abs ? abs : eq + 1;
+    }
+    else if (ARG("--rootfs-exec")) o.rootfs_exec = argv[++i];
+    else if (!strcmp(a, "--break-outputs")) {
+      o.break_outputs = 1;
+      fprintf(stderr, "a64diff: TEST MODE: declared output files are damaged before hashing\n");
+    }
     else if (ARG("--blind-field")) {
       const char* want = argv[++i];
       char nb[32];
