@@ -2,7 +2,7 @@
 # aot-translate.sh: translate RootFS binaries into the POWERarm code cache
 # ahead of time, so their first run loads blocks instead of compiling them.
 #
-#   aot-translate.sh [-j JOBS] [-m all|entries] <POWERarm> [guest path or dir ...]
+#   aot-translate.sh [-j JOBS] [-m all|entries] [-s MAXBYTES] <POWERarm> [guest path ...]
 #
 # Paths are guest paths (/usr/bin/bash) or directories under the RootFS;
 # default: /usr/bin /usr/lib. The RootFS is $POWERARM_ROOTFS. Every other
@@ -15,23 +15,34 @@
 # JOBS at a time (default: CPUs in this process's affinity mask). Pin the
 # script with taskset to keep it off guest cores. Mode "all" (default) seeds
 # function entries and call return points; "entries" only function entries,
-# about a seventh of the cache size. Already cached blocks are skipped, so a
+# about a tenth of the cache size. Already cached blocks are skipped, so a
 # rerun only adds what is new.
+#
+# -s MAXBYTES skips ELFs larger than MAXBYTES. That is the cold-run policy
+# that pays: the short-lived tools a build spawns (sh, the gcc driver, as,
+# ar, ld, collect2, coreutils, libc) spend a large share of every run in
+# translation and their cached code is small, while one giant binary such as
+# cc1 (39 MB; 1.2 GiB of cache in mode "all") is re-run often enough inside a
+# build to be warm anyway. See CODE-CACHE.md, "Pre-translating the tools a
+# build spawns".
 set -u
 JOBS=$(nproc)
 MODE=all
-while getopts "j:m:" opt; do
+MAXSIZE=0
+while getopts "j:m:s:" opt; do
   case $opt in
     j) JOBS=$OPTARG ;;
     m) MODE=$OPTARG ;;
+    s) MAXSIZE=$OPTARG ;;
     *) exit 2 ;;
   esac
 done
 shift $((OPTIND - 1))
 if [ $# -lt 1 ] || [ -z "${POWERARM_ROOTFS:-}" ]; then
-  echo "usage: POWERARM_ROOTFS=<rootfs> $0 [-j JOBS] [-m all|entries] <POWERarm> [guest path ...]" >&2
+  echo "usage: POWERARM_ROOTFS=<rootfs> $0 [-j JOBS] [-m all|entries] [-s MAXBYTES] <POWERarm> [guest path ...]" >&2
   exit 2
 fi
+case $MAXSIZE in *[!0-9]*) echo "aot-translate: -s wants a byte count" >&2; exit 2 ;; esac
 EMU=$(realpath "$1"); shift
 ROOT=$(realpath "$POWERARM_ROOTFS")
 [ $# -gt 0 ] || set -- /usr/bin /usr/lib
@@ -56,11 +67,13 @@ for p in "$@"; do
 done | while read -r f; do
   f=$(realpath -e "$f") || continue
   case $f in "$ROOT"/*) ;; *) continue ;; esac
-  is_elf "$f" && printf '%s %s\n' "$(stat -c %s "$f")" "/${f#"$ROOT"/}"
+  sz=$(stat -c %s "$f") || continue
+  [ "$MAXSIZE" -eq 0 ] || [ "$sz" -le "$MAXSIZE" ] || continue
+  is_elf "$f" && printf '%s %s\n' "$sz" "/${f#"$ROOT"/}"
 done | sort -u -k2,2 | sort -rn -k1,1 | cut -d' ' -f2- > "$LIST"
 
 N=$(wc -l < "$LIST")
-echo "aot-translate: $N files, $JOBS jobs, mode $MODE" >&2
+echo "aot-translate: $N files, $JOBS jobs, mode $MODE, size cap $MAXSIZE" >&2
 s=$(date +%s.%N)
 tr '\n' '\0' < "$LIST" | POWERARM_AOTTRANSLATE=$MODE xargs -0 -r -P "$JOBS" -I{} \
   nice -n 19 timeout 1800 "$EMU" {}

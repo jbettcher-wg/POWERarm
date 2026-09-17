@@ -255,6 +255,43 @@ Optimizing only the warm number hides that cost.
 - **AOT pre-translation** (`POWERARM_AOTTRANSLATE`, `Scripts/powerarm/aot-translate.sh`) is the
   other lever on cold, especially for the short-lived tools a build spawns.
 
+### Where a cold run's time actually goes (Q4, 2026-09-17)
+
+Measured on the q4-cold build at 4bef173bf. Slice on CPU 108, `POWERARM_PORTABLE=1`,
+private cache: **cold 24.42 s, warm 21.30 s**. `POWERARM_STARTUPTIMES=1` over the same
+slice, summed across its 35 emulated processes: own user time **23.07 s cold vs 20.65 s
+warm** (+2.42 s) and sys 0.61 vs 0.45 s, so the whole cold penalty is user cycles in
+POWERarm, and **cache writing is 0.34 s of it** (the `save` phase; 1 ms warm).
+
+One-shot cold, `gcc -c empty.c` with an empty cache: **311 ms, against 93 ms warm**.
+Per process (`save` is the cache write): `cc1` guest 181 ms / save 27 ms cold vs 52 / 0
+warm; `as` 32 / 3.8 vs 12 / 0; the `gcc` driver's own user time 40 vs 7.5 ms.
+
+`perf record -e cycles:u -F 10000` over that cold `gcc -c empty.c` (the run must
+be wrapped in `env -u LD_LIBRARY_PATH PATH=/usr/local/bin:/usr/bin`, or the perf
+shim's `LD_LIBRARY_PATH` leaks into the guest and it runs host-native tools --
+that silently produced a "0.6% POWERarm" profile first time round):
+
+| Share of all user cycles | Where |
+|---|---|
+| 82.6% | POWERarm itself |
+| 7.7 + 1.1 + 0.4% | translated guest code (`[JIT] tid N`) |
+| 2.5% | libxxhash (cache write: `GuestHash` and `EntryHash` per block) |
+
+Inside POWERarm, by self time over the whole run: backend `PPC64JITCore::CompileCode`
+15.6%, `ConstrainedRAPass::Run` 8.8% + `AssignReg` 3.1%, A64 decoder 3.8%, DFCE 3.5%,
+`ExitFunctionLinkWithRecord` 3.5%, `ContextImpl::CompileCode` 2.7%, compare-branch
+fusion 2.2%, high-zero elision 2.0%, `FindBlock` 2.0%, `SpillStaticRegs` 1.9%,
+`Op_ExitFunction` 1.7%, `CollectLiveBlocks` 1.6%, allocator 1.3%,
+`ApplyCodeRelocations` 1.0%. So on a cold run **translation is ~55-60%, block
+install/linking ~6%, and the cache write ~5%** of user cycles. The X series is
+where cold time is, and the two items it left open -- the register allocator's
+per-op work (11.9%) and backend emission (15.6%) -- are the two biggest.
+
+| ID | Item | Touches | Status | Result |
+|---|---|---|---|---|
+| Q4-A1 | AOT policy for cold runs: pre-translate the short-lived tools a build spawns in mode `entries`, not `cc1`; `-s MAXBYTES` size cap in `aot-translate.sh` for the whole-rootfs form | `Scripts/powerarm/aot-translate.sh`, CODE-CACHE.md | done | 11 tools (`bash`, `gcc`, `as`, `ar`, `ld`, `ld.bfd`, `collect2`, `libc`, `ld.so`, `libbfd`, `libopcodes`), mode `entries`: 0.14 s of AOT, **28 MiB** of cache, slice **cold 24.42 -> 23.73 s (-2.8%), warm 21.30 -> 21.20 s**. Mode `all` is 268 MiB for cold 23.65 s, i.e. 10x the size for another 0.08 s; adding `cc1` in mode `entries` (115 MiB total) gives cold 23.70 s, no win, matching the earlier `cc1`-only finding. `-m entries -s 4194304 /usr/bin /usr/lib` covers 877 files in 2.5 s for 466 MiB. Recipe and table in CODE-CACHE.md, "Pre-translating the tools a build spawns" |
+
 ## Queue (scheduled 2026-09-17, in order)
 
 Starts after the CLAUDE-SIMD workstream (Claude CLI instruction gaps) merges.
