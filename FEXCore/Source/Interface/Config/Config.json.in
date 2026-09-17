@@ -41,17 +41,19 @@
       },
       "EnableCodeCachingWIP": {
         "Type": "bool",
-        "Default": "false",
+        "Default": "true",
         "Desc": [
-          "Enable the code cache: translated blocks of guest files are kept on disk",
-          "and installed instead of recompiled in later processes. See",
+          "Code cache, on by default: translated blocks of guest files are kept on",
+          "disk and installed instead of recompiled in later processes. See",
           "docs/powerarm/CODE-CACHE.md. Which files are written is set by",
           "CodeCacheScope; the cache directory is POWERARM_APP_CACHE_LOCATION or",
-          "$XDG_CACHE_HOME/powerarm/, subdirectory cache/.",
+          "$XDG_CACHE_HOME/powerarm/, subdirectory cache/, capped by CodeCacheMaxSize.",
           "Each cached block is installed only if the guest bytes it was translated",
           "from still match, so a replaced binary or self-modified code costs a",
-          "recompile, not wrong code. Codegen in this mode uses fixed-width guest",
-          "address loads (about 4% slower steady-state code, measured on cc1 -O2)."
+          "recompile, not wrong code.",
+          "Turn it off with POWERARM_ENABLECODECACHINGWIP=0. It is also off when",
+          "SMCSemanticPatch, SMCLazyInval, SMCCheapTier, SMCStoreEmulation or",
+          "SMCStoreBackpatch is enabled."
         ]
       },
       "CodeCacheMaxSize": {
@@ -75,13 +77,13 @@
       },
       "CodeCacheScope": {
         "Type": "str",
-        "Default": "off",
+        "Default": "rootfs",
         "Desc": [
           "Which guest files the code cache may write. EnableCodeCachingWIP remains",
           "the master switch: with it off nothing is loaded or written.",
-          "\toff (default): caches are loaded for any file but never written.",
-          "\trootfs: load and write caches only for files under the configured",
-          "\t     RootFS (the toolchain and system libraries).",
+          "\toff: caches are loaded for any file but never written.",
+          "\trootfs (default): load and write caches only for files under the",
+          "\t     configured RootFS (the toolchain and system libraries).",
           "\tall: load and write caches for every file-backed executable mapping.",
           "A writing process saves the blocks it compiled at exit, before execve,",
           "and every 50000 blocks or 60 seconds, as append-only segments that",
