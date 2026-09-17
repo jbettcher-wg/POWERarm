@@ -1718,6 +1718,11 @@ public:
   // mflr RT
   void mflr(GPR rt) { EmitSPR(rt.idx, 8, 339); }
 
+  // lnia RT (addpcis RT, 0; DX form, ISA 3.0): RT = address of the next
+  // instruction, without touching LR. Callers gate on SupportsISA30; the
+  // POWER8 form is bcl 20,31,$+4 ; mflr.
+  void lnia(GPR rt) { Emit32((19u << 26) | (rt.idx << 21) | (2u << 1)); }
+
   // =========================================================================
   // Special purpose registers
   // =========================================================================

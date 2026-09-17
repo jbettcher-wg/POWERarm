@@ -187,7 +187,9 @@ struct PPC64BlockLinkRecord {
   // Shadow-call exits (FEX_SHADOWRETSTACK, link-stack pairing): the linked
   // entry the caller word is patched to branch to, and the Final word the
   // linker rewrites to `bl HostCode` / `bl ThunkStart`. Both relative to
-  // &record; both zero for a plain jump exit.
+  // &record; both zero for a plain jump exit. FinalOffset bit 0 set: the Final
+  // word takes a plain `b` instead (a BR inline-cache slot). An A64 paired
+  // call has FinalOffset == CallerOffset: the caller word itself becomes `bl`.
   int64_t LinkedEntryOffset;
   int64_t FinalOffset;
 };
@@ -300,6 +302,15 @@ private:
   // frame. A fallthrough target is by construction forward/unbound, so the
   // backward-edge suspend poke in the jump handlers is never skipped by this.
   uint32_t FallthroughBlockID {UINT32_MAX};
+
+  // P6 conditional-exit shape (DEF_OP(CondJump)): the IDs of the two blocks
+  // emitted after the current one (UINT32_MAX when absent or an EntryPoint),
+  // and, per CodeBlock ID, whether the block is nothing but a constant-target
+  // plain ExitFunction. Filled by CompileCode before the block loop.
+  uint32_t NextBlockID {UINT32_MAX};
+  uint32_t NextNextBlockID {UINT32_MAX};
+  fextl::vector<uint32_t> BlockEmissionIDs;
+  fextl::vector<uint8_t> ConstExitOnlyBlock;
 
   // -------------------------------------------------------------------------
   // 32-bit tail-mask elision (FEX_ZEXTOPT=0 kill switch).
@@ -655,6 +666,7 @@ private:
     PPC64Emitter::Label LinkPath {};
     uint64_t LinkedEntryAddress {}; // shadow call: linked leg entry (0 otherwise)
     uint64_t FinalAddress {};       // shadow call: the word the linker writes `bl` into
+    bool FinalPlainBranch {};       // the linker writes `b` (not `bl`) into FinalAddress: a BR inline-cache slot
   };
   fextl::list<PendingJumpThunk> PendingJumpThunks;
 
@@ -1110,6 +1122,16 @@ private:
   // enclosing exit handler emitted anything, or the handler's own re-zero
   // will feed back into the decision. Policy comment: BranchOps.cpp.
   void EmitExitR0Zero(bool UnitR0Dirty);
+
+  // A64 guest call/return pairing (FEX_SHADOWRETSTACK; BranchOps.cpp).
+  // ConstantCallReturnAddress: the compile-time value of an ExitFunction's
+  // CallReturnAddress, when it has one. EmitA64PairedCall lowers a BL/BLR exit
+  // whose return continuation lives in another compile unit.
+  bool ConstantCallReturnAddress(const IR::OrderedNodeWrapper& WNode, uint64_t* Value) const;
+  void EmitA64PairedCall(const IR::IROp_ExitFunction* Op, bool ConstRIP, uint64_t NewRIP, uint64_t ReturnAddress, bool UnitR0Dirty);
+  // A constant exit to Target that goes to the record linker until it is
+  // linked, then is one `b` (the link-first form). Clobbers TMP1.
+  void EmitLinkFirstConstExit(uint64_t Target);
 
   // -----------------------------------------------------------------------
   // Memory operation helpers (defined in MemoryOps.cpp)
