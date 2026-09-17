@@ -2717,9 +2717,8 @@ DEF_OP(Select) {
   // W-form csel). A 32-bit Select must honour the same IR contract: every
   // i32 def leaves bits 63:32 clear. Without this, a 32-bit CMOV kept the
   // dirty high half of the destination (condition false) or copied the
-  // source's high half (condition true); JSC's NaN-boxed int32 toLength
-  // turned into 0xFFFE0000_0000000N and Bun 1.3.14+/Claude Code threw
-  // "Out of memory" on Buffer.alloc.
+  // source's high half (condition true), e.g. a NaN-boxed int32 read back as
+  // 0xFFFE0000_0000000N.
   if (IROp->Size <= IR::OpSize::i32Bit) Mask32Tail(Dst, Node);
 }
 
@@ -2796,9 +2795,8 @@ DEF_OP(NZCVSelect) {
   // W-form csel). A 32-bit Select must honour the same IR contract: every
   // i32 def leaves bits 63:32 clear. Without this, a 32-bit CMOV kept the
   // dirty high half of the destination (condition false) or copied the
-  // source's high half (condition true); JSC's NaN-boxed int32 toLength
-  // turned into 0xFFFE0000_0000000N and Bun 1.3.14+/Claude Code threw
-  // "Out of memory" on Buffer.alloc.
+  // source's high half (condition true), e.g. a NaN-boxed int32 read back as
+  // 0xFFFE0000_0000000N.
   if (IROp->Size <= IR::OpSize::i32Bit) Mask32Tail(Dst, Node);
 }
 
