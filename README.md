@@ -1,5 +1,8 @@
 <p align="center">
-  <img src="docs/powerarm/assets/powerarm-logo.png" alt="POWERarm: AArch64 on POWER" width="640">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/powerarm/assets/logo/powerarm-lockup-horizontal-dark.png">
+    <img src="docs/powerarm/assets/logo/powerarm-lockup-horizontal-light.png" alt="POWERarm: AArch64 on POWER" width="560">
+  </picture>
 </p>
 
 <p align="center">

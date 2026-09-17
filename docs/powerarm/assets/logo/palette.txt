@@ -1,0 +1,21 @@
+POWERarm palette
+
+Mark, light grounds
+  POWER stream   #316da2   oklch(0.52 0.105 248)
+  arm stream     #975529   oklch(0.52 0.105 52)
+
+Mark + type, black grounds
+  POWER stream   #6db1f0   oklch(0.74 0.115 248)
+  arm stream     #eca667   oklch(0.78 0.115 62)
+
+Neutrals
+  ink            #15171a
+  paper          #fbfaf8
+  black ground   #0a0b0c
+  hairline dark  #23262a
+  muted dark     #7e838a
+  muted light    #6b6f75
+
+Type
+  Archivo 800 / 500 — wordmark
+  JetBrains Mono 400 — tagline, labels
