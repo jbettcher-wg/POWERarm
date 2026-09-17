@@ -277,7 +277,9 @@ private:
   bool TestBranch(uint32_t Word, bool IsNonZero);
   bool BranchRegister(uint32_t Word, FEXCore::IR::BranchHint Hint);
   // One load or store of Size bytes at Address, with the A64 opc decode already done.
-  void LoadStoreSingle(bool IsLoad, OpSize Size, bool SignExtend, bool Is64Dest, uint32_t Rt, Ref Address);
+  // Offset, when given, is an InlineConstant byte offset added to Address by
+  // the memory op itself (a D-form displacement on the host).
+  void LoadStoreSingle(bool IsLoad, OpSize Size, bool SignExtend, bool Is64Dest, uint32_t Rt, Ref Address, Ref Offset = nullptr);
   // One SIMD&FP register load or store of Size bytes at Address.
   void LoadStoreV(bool IsLoad, OpSize Size, uint32_t Rt, Ref Address);
 

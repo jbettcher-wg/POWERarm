@@ -34,7 +34,14 @@ namespace {
     // Buckets in CSR form: bucket i is BucketEntries[BucketStart[i] ..
     // BucketStart[i + 1]), in matcher priority order.
     std::array<uint32_t, 0x1001> BucketStart {};
-    std::vector<const InstMatcher*> BucketEntries;
+    // Mask and Expect are copied next to the matcher pointer so the bucket
+    // scan does not load each candidate matcher.
+    struct BucketEntry {
+      uint32_t Mask;
+      uint32_t Expect;
+      const InstMatcher* Matcher;
+    };
+    std::vector<BucketEntry> BucketEntries;
     size_t HandledEntries {};
   };
 
@@ -112,7 +119,7 @@ namespace {
     std::array<uint32_t, 0x1000> Cursor {};
     std::copy_n(T.BucketStart.begin(), Cursor.size(), Cursor.begin());
     for (const auto& M : T.Matchers) {
-      ForEachBucket(M, [&](uint32_t i) { T.BucketEntries[Cursor[i]++] = &M; });
+      ForEachBucket(M, [&](uint32_t i) { T.BucketEntries[Cursor[i]++] = {M.Mask, M.Expect, &M}; });
     }
     return T;
   }
@@ -128,8 +135,8 @@ const InstMatcher* DecodeInstruction(uint32_t Word) {
   const size_t Index = FastLookupIndex(Word);
   const auto* const End = T.BucketEntries.data() + T.BucketStart[Index + 1];
   for (auto* It = T.BucketEntries.data() + T.BucketStart[Index]; It != End; ++It) {
-    if ((Word & (*It)->Mask) == (*It)->Expect) {
-      return *It;
+    if ((Word & It->Mask) == It->Expect) {
+      return It->Matcher;
     }
   }
   return nullptr;

@@ -317,17 +317,31 @@ void IRBuilder::ExitToPC(uint64_t Target) {
 }
 
 void IRBuilder::EmitConditionalExit(IRPair<IROp_CondJump> Jump, uint64_t Target) {
-  auto CurrentBlock = GetCurrentBlock();
+  // A successor that is a block of this compile unit is the CondJump's target
+  // itself. Routing it through a new block holding only a Jump cost the host
+  // code a `b` hop per edge (up to three taken branches per guest B.cond).
+  // Only successors outside the unit get a block, which holds their exit.
+  Ref LastBlock = GetCurrentBlock();
+  if (auto It = JumpTargets.find(Target); It != JumpTargets.end()) {
+    SetTrueJumpTarget(Jump, It->second.BlockEntry);
+  } else {
+    auto TakenBlock = CreateNewCodeBlockAfter(LastBlock);
+    SetTrueJumpTarget(Jump, TakenBlock);
+    SetCurrentCodeBlock(TakenBlock);
+    ExitToPC(Target);
+    LastBlock = TakenBlock;
+  }
 
-  auto TakenBlock = CreateNewCodeBlockAfter(CurrentBlock);
-  SetTrueJumpTarget(Jump, TakenBlock);
-  SetCurrentCodeBlock(TakenBlock);
-  ExitToPC(Target);
-
-  auto NotTakenBlock = CreateNewCodeBlockAfter(TakenBlock);
-  SetFalseJumpTarget(Jump, NotTakenBlock);
-  SetCurrentCodeBlock(NotTakenBlock);
-  ExitToPC(CurrentPC + INSTRUCTION_SIZE);
+  const uint64_t NextPC = CurrentPC + INSTRUCTION_SIZE;
+  if (auto It = JumpTargets.find(NextPC); It != JumpTargets.end()) {
+    SetFalseJumpTarget(Jump, It->second.BlockEntry);
+  } else {
+    auto NotTakenBlock = CreateNewCodeBlockAfter(LastBlock);
+    SetFalseJumpTarget(Jump, NotTakenBlock);
+    SetCurrentCodeBlock(NotTakenBlock);
+    ExitToPC(NextPC);
+  }
+  BlockSetPC = true;
 }
 
 void IRBuilder::RaiseGuestSignal(uint64_t PC, BreakDefinition Reason) {
@@ -339,7 +353,7 @@ void IRBuilder::RaiseGuestSignal(uint64_t PC, BreakDefinition Reason) {
 bool IRBuilder::TranslateInstruction(const Decoder::DecodedInst& Inst) {
   CurrentPC = Inst.PC;
 
-  const auto* Matcher = DecodeInstruction(Inst.Word);
+  const auto* Matcher = Inst.Matcher;
   if (!Matcher || !Matcher->Handler || !(this->*(Matcher->Handler))(Inst.Word)) {
     // Handlers reject before emitting anything, so the signal is the whole
     // translation of this instruction.

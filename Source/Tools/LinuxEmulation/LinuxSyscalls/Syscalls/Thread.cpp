@@ -380,31 +380,64 @@ namespace {
 
   // Parent side: copy every guest page the child changed into this process.
   // The parent has been blocked since the clone, so a page that differs from
-  // the child's copy was written by the child. Only private, writable,
-  // non-executable guest mappings are copied (shared mappings are already
-  // shared; executable ones carry SMC protection). Mappings the child created
-  // or removed are not reflected.
-  void VForkCopyBack(pid_t Child) {
+  // the child's copy was written by the child. Private, writable guest
+  // mappings are copied (shared mappings are already shared). Mappings the
+  // child created or removed are not reflected.
+  //
+  // A host page the SMC tracker has write-protected is read-only while its VMA
+  // still says writable: an executable page with translated code, or on a 64K
+  // host any page sharing a granule with one. A memcpy into it faults, and with
+  // every signal blocked here the kernel kills the process. So a changed page
+  // is written through /proc/self/mem first, which (FOLL_FORCE) goes through
+  // the protection and leaves it armed, and its translated code is invalidated.
+  // Kernels that refuse forced /proc/pid/mem writes (proc_mem.force_override)
+  // fail that write; the page is then disarmed and unprotected the way a guest
+  // write fault would do it (UnprotectGuestRangeForHostWrite, which also
+  // invalidates) and copied directly.
+  void VForkCopyBack(FEXCore::Core::InternalThreadState* Thread, pid_t Child) {
     const size_t HostPage = FEXCore::HostPage::Size();
     constexpr size_t Chunk = 1ULL << 20;
     fextl::vector<char> Buffer(FEXCore::AlignUp(Chunk, HostPage));
+    struct Range {
+      uint64_t Start;
+      uint64_t End;
+    };
     auto* Handler = FEX::HLE::_SyscallHandler;
-    std::shared_lock lk(Handler->VMATracking.Mutex);
-    for (const auto& [Base, VMA] : Handler->VMATracking.VMAs) {
-      if (!VMA.Prot.Readable || !VMA.Prot.Writable || VMA.Prot.Executable || VMA.Flags.Shared) {
-        continue;
+
+    // The parent is single-threaded and blocked, so the mappings cannot change
+    // underneath; take them out of the tracker and drop its lock, which ranks
+    // after the CodeInvalidationMutex the invalidation below takes.
+    fextl::vector<Range> Mappings;
+    {
+      std::shared_lock lk(Handler->VMATracking.Mutex);
+      for (const auto& [Base, VMA] : Handler->VMATracking.VMAs) {
+        if (!VMA.Prot.Readable || !VMA.Prot.Writable || VMA.Flags.Shared) {
+          continue;
+        }
+        const uint64_t Start = FEXCore::HostPage::AlignDown(VMA.Base);
+        const uint64_t End = FEXCore::HostPage::AlignUp(VMA.Base + VMA.Length);
+        if (!Mappings.empty() && Mappings.back().End >= Start) {
+          Mappings.back().End = std::max(Mappings.back().End, End);
+        } else {
+          Mappings.push_back({Start, End});
+        }
       }
-      const uint64_t Start = FEXCore::HostPage::AlignDown(VMA.Base);
-      const uint64_t End = FEXCore::HostPage::AlignUp(VMA.Base + VMA.Length);
-      for (uint64_t Addr = Start; Addr < End;) {
-        const size_t Len = std::min<uint64_t>(Buffer.size(), End - Addr);
+    }
+
+    const int MemFD = open("/proc/self/mem", O_WRONLY | O_CLOEXEC);
+    // Pages written through MemFD, merged, for invalidation.
+    fextl::vector<Range> Written;
+    for (const auto& M : Mappings) {
+      for (uint64_t Addr = M.Start; Addr < M.End;) {
+        const size_t Len = std::min<uint64_t>(Buffer.size(), M.End - Addr);
         iovec Local {Buffer.data(), Len};
         iovec Remote {reinterpret_cast<void*>(Addr), Len};
         const ssize_t Got = process_vm_readv(Child, &Local, 1, &Remote, 1, 0);
         if (Got <= 0) {
           if (Got < 0 && errno != EFAULT) {
             LogMan::Msg::IFmt("vfork: can't read the child's memory ({}); its writes stay invisible", errno);
-            return;
+            Mappings.clear();
+            break;
           }
           // An unreadable host page in the child; skip it.
           Addr += HostPage;
@@ -412,13 +445,30 @@ namespace {
         }
         const size_t Whole = FEXCore::AlignDown(static_cast<uint64_t>(Got), HostPage);
         for (size_t Off = 0; Off < Whole; Off += HostPage) {
-          auto* Mine = reinterpret_cast<char*>(Addr + Off);
-          if (memcmp(Mine, Buffer.data() + Off, HostPage) != 0) {
-            memcpy(Mine, Buffer.data() + Off, HostPage);
+          const uint64_t Page = Addr + Off;
+          const char* Theirs = Buffer.data() + Off;
+          if (memcmp(reinterpret_cast<const char*>(Page), Theirs, HostPage) == 0) {
+            continue;
           }
+          if (MemFD != -1 && pwrite(MemFD, Theirs, HostPage, static_cast<off_t>(Page)) == static_cast<ssize_t>(HostPage)) {
+            if (!Written.empty() && Written.back().End == Page) {
+              Written.back().End = Page + HostPage;
+            } else {
+              Written.push_back({Page, Page + HostPage});
+            }
+            continue;
+          }
+          Handler->UnprotectGuestRangeForHostWrite(Thread, Page, HostPage);
+          memcpy(reinterpret_cast<char*>(Page), Theirs, HostPage);
         }
         Addr += Whole ? Whole : HostPage;
       }
+    }
+    if (MemFD != -1) {
+      close(MemFD);
+    }
+    for (const auto& R : Written) {
+      Handler->TM.InvalidateGuestCodeRange(Thread, R.Start, R.End - R.Start);
     }
   }
 } // namespace
@@ -622,7 +672,7 @@ uint64_t ForkGuest(FEXCore::Core::InternalThreadState* Thread, FEXCore::Core::Cp
             break;
           }
           if (Result > 0) {
-            VForkCopyBack(Result);
+            VForkCopyBack(Thread, Result);
           }
           (void)!write(AckFDs[1], &Byte, 1);
         }
@@ -813,6 +863,9 @@ void RegisterThread(FEX::HLE::SyscallHandler* Handler) {
 
   REGISTER_SYSCALL_IMPL(exit_group, [](FEXCore::Core::CpuStateFrame* Frame, int status) -> uint64_t {
     FEX::HLE::VForkChildSync();
+    if ((status & 0xff) != 0 && FEX::HLE::GuestErrorExitHook) {
+      FEX::HLE::GuestErrorExitHook();
+    }
     // Keep what this process compiled (a no-op unless it writes code caches).
     FEX::HLE::_SyscallHandler->CodeCacheImageExit(Frame->Thread);
     // Release this thread's shared-lock holdings before the kernel kills it

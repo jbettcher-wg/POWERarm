@@ -108,6 +108,18 @@ int main(void)
 	T("pipe2(bad ptr)", syscall(SYS_pipe2, (void *)1, 0));
 	T("fstat(bad ptr)", syscall(SYS_fstat, rfd, (void *)1));
 	T("getcwd(bad ptr)", syscall(SYS_getcwd, (void *)1, 4096));
+	/* the path copy stops at the NUL: a path whose NUL is the last byte
+	 * before an unmapped page is fine, one running into it is EFAULT */
+	char *pg = mmap(NULL, 2 * ps, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+	munmap(pg + ps, ps);
+	memset(pg, 'a', ps);
+	pg[ps - 1] = 0;
+	T("openat(path NUL at page end)", syscall(SYS_openat, AT_FDCWD, pg + ps - 9, O_RDONLY));
+	T("openat(path NUL at page end, 30)", syscall(SYS_openat, AT_FDCWD, pg + ps - 30, O_RDONLY));
+	pg[ps - 1] = 'a';
+	T("openat(path into unmapped)", syscall(SYS_openat, AT_FDCWD, pg + ps - 9, O_RDONLY));
+	T("newfstatat(path into unmapped)", syscall(SYS_newfstatat, AT_FDCWD, pg + ps - 100, buf, 0));
+	munmap(pg, ps);
 	struct iovec biov = { (void *)1, 10 };
 	T("writev(bad iov_base)", syscall(SYS_writev, p[1], &biov, 1));
 	T("readv(bad iov ptr)", syscall(SYS_readv, p[0], (void *)1, 1));

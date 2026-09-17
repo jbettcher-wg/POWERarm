@@ -309,10 +309,14 @@ int StartServer(std::string_view InterpreterPath, int watch_fd) {
       uint64_t error {1};
       write(fds[1], &error, sizeof(error));
 
-      // Give a hopefully helpful error message for users
-      LogMan::Msg::EFmt("Couldn't execute: {}", argv[0]);
-      LogMan::Msg::EFmt("This means the squashFS rootfs won't be mounted.");
-      LogMan::Msg::EFmt("Expect errors!");
+      // Give a hopefully helpful error message for users. Straight to stderr:
+      // this child exits right away, so a message the log handler holds until
+      // the log destination is known would be lost with it, and the parent
+      // fails client setup, so the guest never runs.
+      fextl::fmt::print(stderr, "E Couldn't execute: {}\n", argv[0]);
+      fextl::fmt::print(stderr, "E This means the squashFS rootfs won't be mounted.\n");
+      fextl::fmt::print(stderr, "E Expect errors!\n");
+      fflush(stderr);
       // Destroy this fork
       exit(1);
     }

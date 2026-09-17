@@ -1163,6 +1163,14 @@ DEF_OP(Jump) {
   if (IR->GetOp<IR::IROp_CodeBlock>(Op->TargetBlock)->ID == FallthroughBlockID) {
     return;
   }
+  // A forward jump to the next emitted block falls into it (NextBlockID is
+  // never an EntryPoint block, whose prologue must not run on this edge).
+  // POWERARM_NOSHORTCOND=1 keeps the `b`.
+  static const bool NoShortCond = getenv("POWERARM_NOSHORTCOND") != nullptr;
+  if (!NoShortCond && !Target->bound && SpinBackedges.empty() && SpinRestoreEdges.empty() &&
+      IR->GetOp<IR::IROp_CodeBlock>(Op->TargetBlock)->ID == NextBlockID) {
+    return;
+  }
   b(Target);
 }
 
@@ -1290,6 +1298,42 @@ DEF_OP(CondJump) {
       SpinRestoreEdges.empty()) {
     bc(InvertCond(CC), JumpTarget(Op->FalseBlock));
     return;
+  }
+
+  // Branch shape between two blocks of the unit (P6 leftovers). The generic
+  // shape below is `bc !cc, skip; b True; skip: b False`: two taken branches
+  // on the false path even when a leg is the next block. When the next block
+  // is a leg, fall into it and take one `bc` to the other; otherwise
+  // `bc cc, True; b False`, one taken branch either way. Forward legs only
+  // take the short `bc` (ShortCondLabel, islands keep them in reach); a
+  // backward leg keeps its suspend poke and long `b`.
+  // POWERARM_NOSHORTCOND=1 restores the generic shape.
+  static const bool NoShortCond = getenv("POWERARM_NOSHORTCOND") != nullptr;
+  if (!NoShortCond && TrueID != FalseID && SpinBackedges.empty() && SpinRestoreEdges.empty()) {
+    auto* TrueTarget = JumpTarget(Op->TrueBlock);
+    auto* FalseTarget = JumpTarget(Op->FalseBlock);
+    if (!TrueTarget->bound && !FalseTarget->bound) {
+      if (TrueID == NextBlockID) {
+        bc(InvertCond(CC), ShortCondLabel(FalseID));
+      } else if (FalseID == NextBlockID) {
+        bc(CC, ShortCondLabel(TrueID));
+      } else {
+        bc(CC, ShortCondLabel(TrueID));
+        b(FalseTarget);
+      }
+      return;
+    }
+    if (TrueTarget->bound != FalseTarget->bound) {
+      const bool TrueBackward = TrueTarget->bound;
+      const uint32_t ForwardID = TrueBackward ? FalseID : TrueID;
+      const Cond ToForward = TrueBackward ? InvertCond(CC) : CC;
+      PPC64Emitter::Label Skip {};
+      bc(ToForward, ForwardID == NextBlockID ? &Skip : ShortCondLabel(ForwardID));
+      EmitSuspendInterruptCheck();
+      b(TrueBackward ? TrueTarget : FalseTarget);
+      Bind(&Skip);
+      return;
+    }
   }
 
   // Fallthrough elision (see FallthroughBlockID in JITClass.h). A fallthrough

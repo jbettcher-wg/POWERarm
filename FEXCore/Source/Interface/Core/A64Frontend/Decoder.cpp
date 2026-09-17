@@ -123,7 +123,7 @@ void Decoder::DecodeInstructionsAtEntry(FEXCore::Core::InternalThreadState*, uin
 
   if (!CheckRangeExecutable(PC, INSTRUCTION_SIZE)) {
     // Emitted as a guest SIGSEGV at PC by the IR builder, exactly like the x86 decoder's NOEXEC_INST.
-    DecodedBuffer[0] = {.PC = PC, .Word = 0};
+    DecodedBuffer[0] = {.PC = PC, .Word = 0, .Matcher = DecodeInstruction(0)};
     BlockInfo.Blocks.push_back(DecodedBlocks {
       .Entry = PC,
       .Size = 0,
@@ -167,6 +167,7 @@ void Decoder::DecodeInstructionsAtEntry(FEXCore::Core::InternalThreadState*, uin
   if (SlotStamp.size() < NumSlots) {
     SlotStamp.assign(NumSlots, 0);
     SlotWord.resize(NumSlots);
+    SlotMatcher.resize(NumSlots);
     Generation = 0;
   }
   if (++Generation == 0) {
@@ -175,7 +176,10 @@ void Decoder::DecodeInstructionsAtEntry(FEXCore::Core::InternalThreadState*, uin
   }
   const uint32_t DecodedBit = 1u << 31;
   const uint32_t LeaderBit = 1u << 30;
-  const uint32_t GenMask = LeaderBit - 1;
+  // Set on a decoded slot whose instruction ends its run (no handler, or
+  // EndsBlock), so the layout pass needs no second decode.
+  const uint32_t StopBit = 1u << 29;
+  const uint32_t GenMask = StopBit - 1;
   const uint32_t Gen = Generation & GenMask;
   auto SlotOf = [&](uint64_t Addr) -> size_t {
     return (Addr - WindowLow) / INSTRUCTION_SIZE;
@@ -219,10 +223,13 @@ void Decoder::DecodeInstructionsAtEntry(FEXCore::Core::InternalThreadState*, uin
       ++Decoded;
 
       const auto* Matcher = DecodeInstruction(Word);
+      SlotMatcher[SlotOf(InstPC)] = Matcher;
       if (!Matcher || !Matcher->Handler) {
+        SetFlag(InstPC, StopBit);
         break;
       }
       if (EndsBlock(Word)) {
+        SetFlag(InstPC, StopBit);
         if (FollowBranches) {
           const auto Succ = GetDirectSuccessors(Word, InstPC);
           for (uint32_t i = 0; i < Succ.Count; ++i) {
@@ -251,6 +258,7 @@ void Decoder::DecodeInstructionsAtEntry(FEXCore::Core::InternalThreadState*, uin
   }
   std::sort(Leaders.begin() + 1, Leaders.end());
   size_t Used = 0;
+  uint64_t LastPage = PC & FEXCore::Utils::FEX_GUEST_PAGE_MASK;
   for (uint64_t Leader : Leaders) {
     if (!(Flags(Leader) & DecodedBit)) {
       continue;
@@ -269,14 +277,19 @@ void Decoder::DecodeInstructionsAtEntry(FEXCore::Core::InternalThreadState*, uin
       if (!(F & DecodedBit) || (InstPC != Leader && (F & LeaderBit))) {
         break;
       }
-      const uint32_t Word = SlotWord[SlotOf(InstPC)];
-      DecodedBuffer[Used++] = {.PC = InstPC, .Word = Word};
+      const size_t Slot = SlotOf(InstPC);
+      DecodedBuffer[Used++] = {.PC = InstPC, .Word = SlotWord[Slot], .Matcher = SlotMatcher[Slot]};
       ++Block.NumInstructions;
       Block.Size += INSTRUCTION_SIZE;
-      BlockInfo.CodePages.insert(InstPC & FEXCore::Utils::FEX_GUEST_PAGE_MASK);
+      // CodePages is a set: insert only on a page change (the set already
+      // holds the entry page and every page an earlier block touched).
+      const uint64_t Page = InstPC & FEXCore::Utils::FEX_GUEST_PAGE_MASK;
+      if (Page != LastPage) {
+        BlockInfo.CodePages.insert(Page);
+        LastPage = Page;
+      }
       InstPC += INSTRUCTION_SIZE;
-      const auto* Matcher = DecodeInstruction(Word);
-      if (!Matcher || !Matcher->Handler || EndsBlock(Word)) {
+      if (F & StopBit) {
         break;
       }
     }
