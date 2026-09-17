@@ -265,6 +265,13 @@ public:
   virtual size_t SaveNewBlocks(Core::InternalThreadState&, std::span<const CodeCacheSaveTarget> Targets) = 0;
 
   /**
+   * Folds every segment of the file cache at BasePath into one, under the
+   * namespace lock (skipped if busy). Used after ahead-of-time translation, so
+   * runtime appends do not start by compacting a large AOT namespace.
+   */
+  virtual bool CompactAllSegments(const fextl::string& BasePath, uint64_t FileId) = 0;
+
+  /**
    * Function to be called before compiling any code for caching purposes
    */
   virtual void InitiateCacheGeneration() = 0;

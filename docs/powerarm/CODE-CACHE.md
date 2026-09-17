@@ -269,6 +269,33 @@ On since OPT2-CACHEDEFAULT (`CodeCacheScope=rootfs`). The earlier blockers:
    nothing (a cold `cc1 -O2 lvm.c`). Builds come out ahead because later
    processes of the same binary load what earlier ones wrote.
 
+## Ahead-of-time translation (Q1)
+
+`Scripts/powerarm/aot-translate.sh [-j JOBS] [-m all|calls|entries] <POWERarm> [guest paths or dirs]`
+fills the cache before a binary first runs. The default paths are `/usr/bin`
+and `/usr/lib` of `$POWERARM_ROOTFS`. The script runs one `POWERarm <file>` per
+ELF with `POWERARM_AOTTRANSLATE=<mode>` at nice 19. That process starts up
+exactly like a normal run, so the cache name (FileId, and the ConfigId of this
+executable and its options) matches the runs that follow. It compiles the
+seeds and saves them through `SaveCodeCaches`. It then folds the namespace
+into one segment (`CompactAllSegments`). The guest is never executed.
+Translate with the same build and the same `POWERARM_*` codegen settings as
+the later runs.
+
+The seeds (`Source/Tools/FEXInterpreter/AOT/AOTGenerator.cpp`) are the ELF
+entry, the `.eh_frame_hdr` FDE starts and the function symbols. Mode `calls`
+adds the return points after BL and BLR. Mode `all` (the default) also adds
+direct-branch targets beyond the decoder's 128-byte region window. Jump-table
+targets are not found and are still compiled at run time. Libraries load at the
+main-ELF base rather than where ld.so would put them. Cached addresses are
+relative to the base, so a different base can only cause a `reloc-failed`
+reject, and none were seen. Every block is validated on install as usual.
+
+The cost is size. `cc1` in mode `all` takes 1.2 GiB of the 2 GiB default
+`CodeCacheMaxSize`. Pre-translating all of `/usr/lib` therefore needs a larger
+cap, or mode `calls` or `entries`. The numbers are in the checklist's Queue
+section.
+
 ## Next targets
 
 1. **Install cost.** A warm block costs about 1.2 µs to install, register and
