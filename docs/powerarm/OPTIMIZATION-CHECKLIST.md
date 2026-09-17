@@ -38,12 +38,36 @@ An item dropped on measurement stays `done`, with the reason in **Result**.
 
 | ID | Item | Spec | Touches | ISA | Status | Result |
 |---|---|---|---|---|---|---|
-| B1 | `VFNMLA`/`VFNMLS`/`xsnm*`/`xvnm*` negate after rounding: negate the multiplicand, never the result | FP §10, §6.2; NEON §5 | `JIT/PPC64LE/VectorOps.cpp` ~3747/3767, FMA frontend | 2.06 | not touched | |
-| B2 | `Float_FromGPR_S` rounds i64→f32 twice | FP §10 | `VectorOps.cpp` ~4557 | 2.07 | not touched | |
-| B3 | 32-bit `VAddV` uses saturating `vsumsws` (also sets VSCR.SAT) | NEON §5 | `VectorOps.cpp` ~586 | 2.03 | not touched | |
+| B1 | `VFNMLA`/`VFNMLS`/`xsnm*`/`xvnm*` negate after rounding: negate the multiplicand, never the result | FP §10, §6.2; NEON §5 | `JIT/PPC64LE/VectorOps.cpp` ~3747/3767, FMA frontend | 2.06 | done df0da97a9 | `xvnegdp t,V1` then the plain `xvmaddadp`/`xvmsubadp` with T = Add, in the four vector DEF_OPs and in `DEF_FMA_SCALAR_INSERT` (new `NEGA` flag, negate into VTMP2, no extra pressure). `Emitter.h` gains `EmitXX2VSX` plus vs0-vs63 `xvnegsp`/`xvnegdp`. Not reachable from the A64 frontend (it pre-negates FMA operands and uses VFMLA/VFMLS), so no POWERarm-visible change: A64Frontend 53/53 before and after, slice 21.8-23.8 s (unchanged, integer workload). fastppcx86 patch `outgoing-patches/fastppcx86/0031-*`. |
+| B2 | `Float_FromGPR_S` rounds i64→f32 twice | FP §10 | `VectorOps.cpp` ~4557 | 2.07 | done 0424fac91 | `fcfid; frsp` → `fcfids`, one instruction and one rounding. Also not reachable from A64 (the frontend has its own `A64FloatFromGPR`, already single-rounding). fastppcx86 patch `0032-*`. |
+| B3 | 32-bit `VAddV` uses saturating `vsumsws` (also sets VSCR.SAT) | NEON §5 | `VectorOps.cpp` ~586 | 2.03 | done 0575dcc1a | modular `vsldoi/vadduwm` fold (5 instructions). The A64 frontend had open-coded the same fold at two sites to dodge the bug (`TranslateSIMD` ADDV, `TranslateSIMDSaturate` widening across-lane adds); both go back to `_VAddV`, 4 IR ops fewer each for the same host sequence, which also puts the backend arm under the `simd_arith`/`simd_sat` Pi goldens. fastppcx86 patch `0033-*`. |
 
 Also check whether each B item affects fastppcx86. If it does, add a patch under
 `outgoing-patches/fastppcx86/`.
+
+All three are in `outgoing-patches/fastppcx86/0031-0033` (applied and committed on a
+`daedalao-wt` worktree, so they are that tree's own commits, not rewrites of the POWERarm ones —
+B3 there is the backend hunk only, since fastppcx86 has no A64 frontend).
+
+**None of B1-B3 was reachable from an A64 guest.** The frontend had already routed around each:
+FMA operands are pre-negated into `VFMLA`/`VFMLS`, `SCVTF` uses `A64FloatFromGPR`, and both
+across-lane adders open-coded the modular fold. `unittests/A64Frontend/fpbugs.S` (commit
+5b96f1396, 134 lines, Pi golden) enumerates the discriminating cases anyway — FMA sign-of-zero
+over every operand sign, the directed rounding modes, NaN sign and payload, the i64→f32 rounding
+witnesses and overflowing ADDV word vectors — and passes both before and after the fixes. It is
+the test that fails if a later change routes an A64 op onto a shorter host form without the
+matching semantics, and it is the reason B3's frontend workaround could be removed with the
+existing `simd_arith`/`simd_sat` goldens as the gate.
+
+**Not started, and why it is more than an afternoon:** F1-F6 and N5 all need the same new backend
+mechanism — a NaN pre-check that branches to an out-of-line cold block. The frontend cannot
+express it (splitting an IR block per FP op is worse than the fix-up it replaces), so it wants a
+fused arithmetic IR op per family whose backend lowering emits `xvcmpeqdp. / bc` over a local
+label, plus a shared cold routine per rule (binary, FMA with Inf x 0, min/max). The frontend side
+is then deleting `PropagateNaNOperand` and `FPMinMax` in favour of those ops. F4 (`xxpermdi`
+zero-upper in `VMov` i64), F5 (CR0-direct FCMP consumers, branch-free FCSEL) and N1 (the
+`CMEQ→UMAXP→FMOV→CBZ` fusion into `CondJump{VCmpElementSize}`) are independent of that mechanism
+and are the cheapest next three.
 
 ## P: pipeline and code shape (largest multipliers)
 
