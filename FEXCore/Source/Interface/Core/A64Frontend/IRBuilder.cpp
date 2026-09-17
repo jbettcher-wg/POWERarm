@@ -165,6 +165,7 @@ const IRBuilder::HandlerEntry IRBuilder::HandlerTable[] = {
   {"EXT", &IRBuilder::EXT},
   {"UZP1", &IRBuilder::UZP1}, {"UZP2", &IRBuilder::UZP2}, {"ZIP1", &IRBuilder::ZIP1}, {"ZIP2", &IRBuilder::ZIP2},
   {"TRN1", &IRBuilder::TRN1}, {"TRN2", &IRBuilder::TRN2},
+  {"TBL", &IRBuilder::TBL}, {"TBX", &IRBuilder::TBX},
   // Scalar floating point.
   {"FMOV_float_gen", &IRBuilder::FMOV_float_gen}, {"FMOV_float", &IRBuilder::FMOV_float}, {"FMOV_float_imm", &IRBuilder::FMOV_float_imm},
   {"FABS_float", &IRBuilder::FABS_float}, {"FNEG_float", &IRBuilder::FNEG_float}, {"FSQRT_float", &IRBuilder::FSQRT_float},

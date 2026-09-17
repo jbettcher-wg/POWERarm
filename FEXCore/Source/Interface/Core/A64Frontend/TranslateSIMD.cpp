@@ -14,6 +14,7 @@
 #include "Interface/Core/A64Frontend/IRBuilder.h"
 #include "Interface/Core/A64Frontend/TranslateCommon.h"
 
+#include <array>
 #include <bit>
 
 namespace FEXCore::A64 {
@@ -712,5 +713,62 @@ bool IRBuilder::ZIP1(uint32_t Word) { return SIMDPermute(Word, PermuteOp::Zip1);
 bool IRBuilder::ZIP2(uint32_t Word) { return SIMDPermute(Word, PermuteOp::Zip2); }
 bool IRBuilder::TRN1(uint32_t Word) { return SIMDPermute(Word, PermuteOp::Trn1); }
 bool IRBuilder::TRN2(uint32_t Word) { return SIMDPermute(Word, PermuteOp::Trn2); }
+
+// ---------------------------------------------------------------------------
+// Table lookup
+// ---------------------------------------------------------------------------
+
+bool IRBuilder::TableLookup(uint32_t Word, bool IsTBX) {
+  // TBL/TBX with 1-4 tables Vn..Vn+len. Indices 0..16n-1 select table bytes;
+  // TBL gives zero for larger indices, TBX keeps Rd's byte. VTBL1/VTBL2 give
+  // zero for indices past their 16/32 bytes.
+  const bool Q = Bit(Word, 30);
+  const uint32_t Rm = Bits(Word, 20, 16);
+  const uint32_t Tables = Bits(Word, 14, 13) + 1;
+  const uint32_t Rn = Bits(Word, 9, 5);
+  const uint32_t Rd = Bits(Word, 4, 0);
+  const auto RS = OpSize::i128Bit;
+
+  Ref Indices = LoadV(Rm);
+  std::array<Ref, 4> Table {};
+  for (uint32_t i = 0; i < Tables; ++i) {
+    Table[i] = LoadV((Rn + i) % 32);
+  }
+
+  if (IsTBX && Tables == 1) {
+    StoreVQ(Rd, Q, _VTBX1(RS, LoadV(Rd), Table[0], Indices));
+    return true;
+  }
+
+  Ref Result {};
+  switch (Tables) {
+  case 1: Result = _VTBL1(RS, Table[0], Indices); break;
+  case 2: Result = _VTBL2(RS, Table[0], Table[1], Indices); break;
+  default: {
+    // Indices 32..63 index the second pair after subtracting 32; smaller
+    // indices wrap to 224..255 and select nothing there.
+    Ref High = _VSub(RS, OpSize::i8Bit, Indices, VectorConstant64(0x2020202020202020ULL));
+    Ref Upper = Tables == 3 ? _VTBL1(RS, Table[2], High).Node : _VTBL2(RS, Table[2], Table[3], High).Node;
+    Result = _VOr(RS, RS, _VTBL2(RS, Table[0], Table[1], Indices), Upper);
+    break;
+  }
+  }
+
+  if (IsTBX) {
+    // In range: min(index, 16n - 1) == index.
+    const uint64_t Last = (16ULL * Tables - 1) * 0x0101010101010101ULL;
+    Ref InRange = _VCMPEQ(RS, OpSize::i8Bit, _VUMin(RS, OpSize::i8Bit, Indices, VectorConstant64(Last)), Indices);
+    Result = _VBSL(RS, InRange, Result, LoadV(Rd));
+  }
+  StoreVQ(Rd, Q, Result);
+  return true;
+}
+
+bool IRBuilder::TBL(uint32_t Word) {
+  return TableLookup(Word, false);
+}
+bool IRBuilder::TBX(uint32_t Word) {
+  return TableLookup(Word, true);
+}
 
 } // namespace FEXCore::A64

@@ -168,6 +168,7 @@ public:
   bool EXT(uint32_t Word);
   bool UZP1(uint32_t Word); bool UZP2(uint32_t Word); bool ZIP1(uint32_t Word); bool ZIP2(uint32_t Word);
   bool TRN1(uint32_t Word); bool TRN2(uint32_t Word);
+  bool TBL(uint32_t Word); bool TBX(uint32_t Word);
   // Scalar floating point.
   bool FMOV_float_gen(uint32_t Word); bool FMOV_float(uint32_t Word); bool FMOV_float_imm(uint32_t Word);
   bool FABS_float(uint32_t Word); bool FNEG_float(uint32_t Word); bool FSQRT_float(uint32_t Word); bool FCVT_float(uint32_t Word);
@@ -281,6 +282,7 @@ private:
   void StoreNarrow(uint32_t Rd, bool Upper, Ref Narrow);
   // Byte permutation of up to four 16-byte sources (TranslateSIMDLoadStore.cpp).
   Ref PermuteBytes(const std::array<Ref, 4>& Sources, uint32_t NumSources, const std::array<uint8_t, 16>& Map);
+  bool TableLookup(uint32_t Word, bool IsTBX);
   // A 128-bit vector with Pattern in both 64-bit lanes.
   Ref VectorConstant64(uint64_t Pattern);
 
