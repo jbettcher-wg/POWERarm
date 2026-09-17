@@ -159,6 +159,11 @@ class ELFCodeLoader final : public FEX::CodeLoader {
       return false;
     }
 
+    // The file-backed part of this segment is now anonymous memory, so a
+    // destructive madvise over it would zero bytes a real mapping would have
+    // re-read. Record it so the madvise shim can put them back.
+    FEX::HostPageMapping::RegisterFallbackRange(Base + Header.p_vaddr, Header.p_filesz, file.fd, Header.p_offset);
+
     // A real file mapping gets the tail of its last page zeroed by the kernel;
     // pread does not. BSS frequently starts inside this tail.
     if (FileEnd < HostEnd) {

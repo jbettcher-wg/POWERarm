@@ -5,6 +5,7 @@ tags: LinuxSyscalls|syscalls-shared
 $end_info$
 */
 
+#include "Common/HostPageMapping.h"
 #include "LinuxSyscalls/GranuleMemory.h"
 #include "LinuxSyscalls/Syscalls.h"
 #include "LinuxSyscalls/Arm64/Syscalls.h"
@@ -39,6 +40,12 @@ void RegisterMemory(FEX::HLE::SyscallHandler* Handler) {
     uint64_t Result = ::madvise(addr, length, advice);
 
     if (Result != -1) {
+      // A range the 64K fallback turned into anonymous memory has no file
+      // underneath it, so the kernel just zeroed what a private file mapping
+      // would have re-read. Read it back.
+      if (FEX::HostPageMapping::AdviceDiscardsPrivateCopy(advice)) {
+        FEX::HostPageMapping::RestoreAfterDiscard((uint64_t)addr, length);
+      }
       FEX::HLE::_SyscallHandler->TrackMadvise(Frame->Thread, (uintptr_t)addr, length, advice);
     }
     SYSCALL_ERRNO();
