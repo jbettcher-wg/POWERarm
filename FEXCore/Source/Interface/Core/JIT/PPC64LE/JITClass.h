@@ -312,6 +312,25 @@ private:
   fextl::vector<uint32_t> BlockEmissionIDs;
   fextl::vector<uint8_t> ConstExitOnlyBlock;
 
+  // Short conditional branches to forward blocks of the unit (DEF_OP(CondJump)).
+  // A `bc` reaches +-32 KB, so each one goes through a private label that is
+  // bound at its target block, or at an island (`b over; b Target`) emitted
+  // between IR ops once the branch is kShortCondIslandAge bytes old. Kept in
+  // emission order, so the front entry is the oldest.
+  struct ShortCondBranch {
+    uint32_t BlockID;
+    size_t Offset;
+    PPC64Emitter::Label Label {};
+  };
+  fextl::list<ShortCondBranch> ShortCondBranches;
+  static constexpr size_t kShortCondIslandAge = 12000;
+  PPC64Emitter::Label* ShortCondLabel(uint32_t BlockID) {
+    ShortCondBranches.push_back({BlockID, GetOffset()});
+    return &ShortCondBranches.back().Label;
+  }
+  void BindShortCondBranches(uint32_t BlockID);
+  void EmitShortCondIsland();
+
   // -------------------------------------------------------------------------
   // 32-bit tail-mask elision (FEX_ZEXTOPT=0 kill switch).
   //
