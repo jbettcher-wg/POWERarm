@@ -1013,13 +1013,13 @@ void ReportGranuleFlips() {
   // line used to print.
   if (Demoted) {
     LogMan::Msg::IFmt("SMC granule {:#x}-{:#x} flipped {} times in one second with {} of {} guest pages tracked; demoted (#{}): no longer "
-                      "armed, its blocks carry per-instruction validation (FEX_SMCGRANULEMIXED)",
+                      "armed, its blocks carry per-instruction validation (POWERARM_SMCGRANULEMIXED)",
                       Granule, Granule + FEXCore::HostPage::Size(), Flips, Tracked, FEX::HLE::SMCGranule::PagesPerGranule(),
                       FEX::HLE::SMCGranule::Table().Demoted());
     return;
   }
   LogMan::Msg::IFmt("SMC granule {:#x}-{:#x} flipped {} times in one second with {} of {} guest pages tracked; mtrack is paying the "
-                    "whole granule for a fraction of it (FEX_SMCGRANULEFLIPLOG)",
+                    "whole granule for a fraction of it (POWERARM_SMCGRANULEFLIPLOG)",
                     Granule, Granule + FEXCore::HostPage::Size(), Flips, Tracked, FEX::HLE::SMCGranule::PagesPerGranule());
 }
 

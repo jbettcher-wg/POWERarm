@@ -1349,12 +1349,12 @@ static void DiagnoseSuspectGuestRIP(uint64_t GuestRIP, uint64_t HostLR,
     uint64_t RAX = Frame->State.x[8];
     uint64_t TCR = Frame->Pointers.ThunkCallbackRet;
     int n = snprintf(buf, sizeof(buf),
-                     "[FEX] suspect GuestRIP=0x%lx DispatcherRetAddr=0x%lx (const, not the JIT block)\n",
+                     "[POWERarm] suspect GuestRIP=0x%lx DispatcherRetAddr=0x%lx (const, not the JIT block)\n",
                      (unsigned long)GuestRIP, (unsigned long)HostLR);
     [[maybe_unused]] auto _ = write(2, buf, n);
 #if FEX_PPC64_RIP_TRACE
     n = snprintf(buf, sizeof(buf),
-                 "[FEX]   recent: [-1]=0x%lx [-2]=0x%lx [-3]=0x%lx [-4]=0x%lx [-5]=0x%lx [-6]=0x%lx\n",
+                 "[POWERarm]   recent: [-1]=0x%lx [-2]=0x%lx [-3]=0x%lx [-4]=0x%lx [-5]=0x%lx [-6]=0x%lx\n",
                  (unsigned long)RecentDispatchedRIP(1),
                  (unsigned long)RecentDispatchedRIP(2),
                  (unsigned long)RecentDispatchedRIP(3),
@@ -1366,11 +1366,11 @@ static void DiagnoseSuspectGuestRIP(uint64_t GuestRIP, uint64_t HostLR,
     // dispatch history during a corruption investigation, which is worse than
     // having none.
     n = snprintf(buf, sizeof(buf),
-                 "[FEX]   recent: (RIP trace unavailable - build with -DENABLE_ASSERTIONS=TRUE)\n");
+                 "[POWERarm]   recent: (RIP trace unavailable - build with -DENABLE_ASSERTIONS=TRUE)\n");
 #endif
     _ = write(2, buf, n);
     n = snprintf(buf, sizeof(buf),
-                 "[FEX]   RSP=0x%lx RDI=0x%lx RSI=0x%lx RAX=0x%lx ThunkCallbackRet=0x%lx\n",
+                 "[POWERarm]   RSP=0x%lx RDI=0x%lx RSI=0x%lx RAX=0x%lx ThunkCallbackRet=0x%lx\n",
                  (unsigned long)RSP, (unsigned long)RDI, (unsigned long)RSI,
                  (unsigned long)RAX, (unsigned long)TCR);
     _ = write(2, buf, n);
@@ -1380,7 +1380,7 @@ static void DiagnoseSuspectGuestRIP(uint64_t GuestRIP, uint64_t HostLR,
       return *reinterpret_cast<volatile uint64_t*>(addr);
     };
     n = snprintf(buf, sizeof(buf),
-                 "[FEX]   *RSP=0x%lx *RSP+8=0x%lx *RSI=0x%lx *RSI+8=0x%lx *RSI+16=0x%lx\n",
+                 "[POWERarm]   *RSP=0x%lx *RSP+8=0x%lx *RSI=0x%lx *RSI+8=0x%lx *RSI+16=0x%lx\n",
                  (unsigned long)peek8(RSP),
                  (unsigned long)peek8(RSP + 8),
                  (unsigned long)peek8(RSI),
@@ -1483,7 +1483,7 @@ static void DiagnoseSuspectGuestRIP(uint64_t GuestRIP, uint64_t HostLR,
         uint64_t idx = (cur - off) & 255;
         if (g_compile_log[idx].guest_rip == prev_rip) {
           auto& e = g_compile_log[idx];
-          LogMan::Msg::EFmt("    >>> COMPILE-LOG: bytes FEX saw at rip[-1] when compiling <<<");
+          LogMan::Msg::EFmt("    >>> COMPILE-LOG: bytes POWERarm saw at rip[-1] when compiling <<<");
           LogMan::Msg::EFmt("        compile-log[#{}] guest_rip=0x{:x} src_host_va=0x{:x}",
                             (cur - off), e.guest_rip, e.src_host_va);
           LogMan::Msg::EFmt("        bytes-at-compile-time: {:02x} {:02x} {:02x} {:02x} {:02x} {:02x} {:02x} {:02x} {:02x} {:02x} {:02x} {:02x} {:02x} {:02x} {:02x} {:02x}",
@@ -1559,7 +1559,7 @@ static void DiagnoseSuspectGuestRIP(uint64_t GuestRIP, uint64_t HostLR,
     }
   }
 
-  LogMan::Msg::EFmt("Aborting on suspect ExitFunctionLink. To suppress, set FEX_EXITLINK_NOABORT=1.");
+  LogMan::Msg::EFmt("Aborting on suspect ExitFunctionLink. To suppress, set POWERARM_EXITLINK_NOABORT=1.");
   std::abort();
 }
 
@@ -1945,7 +1945,7 @@ uint64_t PPC64JITCore::ExitFunctionLink(FEXCore::Core::CpuStateFrame* Frame, uin
             Frame->State.sp = slot_addr;
             char buf[256];
             int n = snprintf(buf, sizeof(buf),
-                             "[FEX] suspect GuestRIP=0x%lx in callback flow — bypassing via ThunkCallbackRet=0x%lx (adjusted RSP from 0x%lx to 0x%lx)\n",
+                             "[POWERarm] suspect GuestRIP=0x%lx in callback flow — bypassing via ThunkCallbackRet=0x%lx (adjusted RSP from 0x%lx to 0x%lx)\n",
                              (unsigned long)GuestRIP, (unsigned long)TCR,
                              (unsigned long)RSP, (unsigned long)slot_addr);
             [[maybe_unused]] auto _ = write(2, buf, n);
@@ -2118,9 +2118,9 @@ PPC64JITCore::PPC64JITCore(FEXCore::Context::ContextImpl* ctx,
   // links via SeverBlockLinks(), same as legacy Erase.
   const bool LazyLinkArmed = FEXCore::Config::Get_SMCLAZYLINK() && FEXCore::Config::Get_SMCLAZYSCRUB() && !CTX->Config.SMCSemanticPatch();
   if (BlockLinkingEnabled && (CTX->Config.SMCSemanticPatch() || (FEXCore::Config::Get_SMCLAZYINVAL() && !LazyLinkArmed))) {
-    LogMan::Msg::IFmt("BlockLinking disabled: incompatible with FEX_SMCSEMANTICPATCH/FEX_SMCLAZYINVAL "
+    LogMan::Msg::IFmt("BlockLinking disabled: incompatible with POWERARM_SMCSEMANTICPATCH/POWERARM_SMCLAZYINVAL "
                       "(both need every constant-target exit to re-probe the lookup path; "
-                      "FEX_SMCLAZYLINK=1 lifts the LAZYINVAL restriction).");
+                      "POWERARM_SMCLAZYLINK=1 lifts the LAZYINVAL restriction).");
     BlockLinkingEnabled = false;
   } else if (BlockLinkingEnabled && FEXCore::Config::Get_SMCLAZYINVAL() && LazyLinkArmed) {
     // Announce the decision once per process (this constructor runs per guest
@@ -2130,7 +2130,7 @@ PPC64JITCore::PPC64JITCore(FEXCore::Context::ContextImpl* ctx,
     // exit-RIP-width Announce below.
     static std::once_flag SMCLazyLinkAnnounce;
     std::call_once(SMCLazyLinkAnnounce, [] {
-      LogMan::Msg::IFmt("FEX_SMCLAZYLINK: BlockLinking stays ON under lazy SMC invalidation; "
+      LogMan::Msg::IFmt("POWERARM_SMCLAZYLINK: BlockLinking stays ON under lazy SMC invalidation; "
                         "same-thread drains ride the InterruptFaultPage poke.");
     });
   }
@@ -2165,7 +2165,7 @@ PPC64JITCore::PPC64JITCore(FEXCore::Context::ContextImpl* ctx,
   // exactly the configuration this interlock gates.
   ShadowRetStackEnabled = CTX->Config.ShadowRetStack();
   if (ShadowRetStackEnabled && FEXCore::Config::Get_SMCLAZYINVAL() && !LazyLinkArmed) {
-    LogMan::Msg::IFmt("ShadowRetStack disabled: incompatible with FEX_SMCLAZYINVAL without FEX_SMCLAZYLINK "
+    LogMan::Msg::IFmt("ShadowRetStack disabled: incompatible with POWERARM_SMCLAZYINVAL without POWERARM_SMCLAZYLINK "
                       "(the RET fast path skips ExitFunctionLink's same-thread drain).");
     ShadowRetStackEnabled = false;
   }
@@ -2463,7 +2463,7 @@ static GuestSerializeState* GuestSerializeLock() {
     if (M == MAP_FAILED) {
       return nullptr;
     }
-    LogMan::Msg::IFmt("FEX_GUESTSERIALIZE: armed, {} region(s)", GuestSerializeLists().first->size());
+    LogMan::Msg::IFmt("POWERARM_GUESTSERIALIZE: armed, {} region(s)", GuestSerializeLists().first->size());
     return static_cast<GuestSerializeState*>(M);
   }();
   return Lock;
@@ -2602,7 +2602,7 @@ static void GuestAnchorTryDiscover(uint64_t GuestEntry) {
   const uint64_t Base = GuestEntry - Anchor->RVA;
   uint64_t Expected = 0;
   if (GuestAnchorBaseAtomic.compare_exchange_strong(Expected, Base, std::memory_order_release)) {
-    LogMan::Msg::IFmt("FEX_GUESTANCHOR: module base discovered: 0x{:x} (anchor rva 0x{:x})", Base, Anchor->RVA);
+    LogMan::Msg::IFmt("POWERARM_GUESTANCHOR: module base discovered: 0x{:x} (anchor rva 0x{:x})", Base, Anchor->RVA);
     if (auto* Ring = GuestTraceRingPtrFwd()) {
       Ring->Reserved = Base;
     }
@@ -2618,7 +2618,7 @@ static GuestTraceRingHeader* GuestTraceRingPtr() {
     snprintf(Path, sizeof(Path), "/tmp/fex-guesttrace-%d.bin", ::getpid());
     const int FD = ::open(Path, O_CREAT | O_RDWR, 0644);
     if (FD < 0) {
-      LogMan::Msg::EFmt("FEX_GUESTTRACE: cannot open {}: {}", Path, errno);
+      LogMan::Msg::EFmt("POWERARM_GUESTTRACE: cannot open {}: {}", Path, errno);
       return nullptr;
     }
     const size_t Size = GuestTraceHeaderBytes + ((1ull << GuestTraceCapacityLog2) << GuestTraceRecordSizeLog2);
@@ -2629,7 +2629,7 @@ static GuestTraceRingHeader* GuestTraceRingPtr() {
     void* M = ::mmap(nullptr, Size, PROT_READ | PROT_WRITE, MAP_SHARED, FD, 0);
     ::close(FD);
     if (M == MAP_FAILED) {
-      LogMan::Msg::EFmt("FEX_GUESTTRACE: mmap of {} byte ring failed: {}", Size, errno);
+      LogMan::Msg::EFmt("POWERARM_GUESTTRACE: mmap of {} byte ring failed: {}", Size, errno);
       return nullptr;
     }
     auto* H = static_cast<GuestTraceRingHeader*>(M);
@@ -2640,7 +2640,7 @@ static GuestTraceRingHeader* GuestTraceRingPtr() {
     H->DerefLen = static_cast<uint64_t>(GuestTraceDeref().second);
     H->Reserved = 0;
     H->Idx.store(0, std::memory_order_relaxed);
-    LogMan::Msg::IFmt("FEX_GUESTTRACE: ring {} armed, {} targets", Path, GuestTraceTargets().size());
+    LogMan::Msg::IFmt("POWERARM_GUESTTRACE: ring {} armed, {} targets", Path, GuestTraceTargets().size());
     return H;
   }();
   return Ring;
@@ -3045,7 +3045,7 @@ static void Dump() {
   const uint64_t Blocks = BlocksCompiled.load(std::memory_order_relaxed);
 
   fextl::string Out;
-  Out += fextl::fmt::format("# FEX PPC64LE JIT per-IR-op host expansion profile\n");
+  Out += fextl::fmt::format("# POWERarm PPC64LE JIT per-IR-op host expansion profile\n");
   Out += fextl::fmt::format("# pid={} compiles={} \n", ::getpid(), Blocks);
   Out += fextl::fmt::format("# reserve model in CompileCode: SSACount * ({} + {}) bytes\n", kMaxHostBytesPerIROp, kMaxRIPEntryBytesPerIROp);
   Out += fextl::fmt::format("# max_at_rip is the CompileCode Entry RIP of the block the maximum was seen in,\n"

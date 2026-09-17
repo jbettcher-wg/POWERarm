@@ -666,7 +666,7 @@ namespace CPU {
 #endif
     int MDWE = ::prctl(PR_GET_MDWE, 0, 0, 0, 0);
     if (MDWE != -1 && MDWE != 0) {
-      LogMan::Msg::EFmt("MDWE was set to 0x{:x} which means FEX can't allocate executable memory", MDWE);
+      LogMan::Msg::EFmt("MDWE was set to 0x{:x} which means POWERarm can't allocate executable memory", MDWE);
     }
 #endif
 

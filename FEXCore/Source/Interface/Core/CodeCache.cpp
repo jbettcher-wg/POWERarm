@@ -647,7 +647,7 @@ CodeCache::CodeCache(ContextImpl& CTX_)
       LogMan::Msg::EFmt("EnableCodeCacheValidation is set. Two things it does NOT mean:");
       LogMan::Msg::EFmt("  1. A pass does not say the cached code matches what a production run emits. The reference compile decodes with "
                         "the same section bounds and guest relocations the cache was generated with, so it compares cache-mode bytes "
-                        "against cache-mode bytes. It catches JIT-config drift and missing FEX relocations, not differences between "
+                        "against cache-mode bytes. It catches JIT-config drift and missing POWERarm relocations, not differences between "
                         "cached and uncached codegen.");
       LogMan::Msg::EFmt("  2. It is not observation-only. This flag also puts the main thread's own decoding on the section-bounded, "
                         "relocation-aware path (Frontend.cpp), so it changes the code under test. A bug that reproduces only with it on, "
@@ -1282,7 +1282,7 @@ bool CodeCache::LoadData(Core::InternalThreadState* Thread, std::byte* MappedCac
   }
 
   if (!ranges::equal(header.FEXVersion, GIT_HASH)) {
-    LogMan::Msg::IFmt("Cache generated from old FEX version {:02x}, current is {:02x}; skipping", fmt::join(header.FEXVersion, ""),
+    LogMan::Msg::IFmt("Cache generated from old POWERarm version {:02x}, current is {:02x}; skipping", fmt::join(header.FEXVersion, ""),
                       fmt::join(GIT_HASH, ""));
     return false;
   }
@@ -1528,7 +1528,7 @@ bool CodeCache::LoadData(Core::InternalThreadState* Thread, std::byte* MappedCac
       uint64_t CodePage;
       ::memcpy(&CodePage, Cursor, sizeof(CodePage));
       if (CTX.SyscallHandler && CTX.SyscallHandler->GuestCodePageValidateOnly(CodePage + BinarySection.FileStartVA)) {
-        LogMan::Msg::IFmt("Rejecting code cache for {}: guest page {:#x} lies in a demoted mixed code/data granule (FEX_SMCGRANULEMIXED) "
+        LogMan::Msg::IFmt("Rejecting code cache for {}: guest page {:#x} lies in a demoted mixed code/data granule (POWERARM_SMCGRANULEMIXED) "
                           "and cached blocks carry no validation guards",
                           BinarySection.FileInfo.Filename, CodePage + BinarySection.FileStartVA);
         CTX.LatestOffset -= header.CodeBufferSize;

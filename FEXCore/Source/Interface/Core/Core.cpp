@@ -682,7 +682,7 @@ bool ContextImpl::InitCore() {
   // process, and only when the user explicitly asked for unsound lowering.
   if (Config.LockOnlyTSO() && Config.TSOEnabled()) {
     static constexpr std::string_view LockOnlyTSOWarning =
-      "FEX: FEX_LOCKONLYTSO=1 is UNSOUND. Only LOCK-prefixed guest operations keep TSO\n"
+      "POWERarm: POWERARM_LOCKONLYTSO=1 is UNSOUND. Only LOCK-prefixed guest operations keep TSO\n"
       "     ordering; plain loads and stores lose their barriers, so the guest can observe\n"
       "     memory orderings x86 forbids.\n"
       "     Measured on this port, same guest binary: the MP litmus shape fired 659, 12 and\n"

@@ -173,7 +173,7 @@ void HostOwnedRanges::SnapshotSelf() {
   std::lock_guard lk {RangesLock};
   fextl::vector<Range> Parsed;
   if (!ParseSelfMaps(Parsed)) {
-    LogMan::Msg::EFmt("HostOwnedRanges: could not read /proc/self/maps; FEX's own image is unprotected "
+    LogMan::Msg::EFmt("HostOwnedRanges: could not read /proc/self/maps; POWERarm's own image is unprotected "
                       "against guest MAP_FIXED. See docs/fex-teardown-crash.md.");
     return;
   }
@@ -210,7 +210,7 @@ void HostOwnedRanges::SnapshotSelf() {
       }
       const uint64_t Stop = ::strtoull(End + 1, &End, 16);
       AddLocked(Start, Stop);
-      LogMan::Msg::IFmt("HostOwnedRanges: FEX_TEST_HOSTOWNED_ADD [0x{:x}, 0x{:x})", Start, Stop);
+      LogMan::Msg::IFmt("HostOwnedRanges: POWERARM_TEST_HOSTOWNED_ADD [0x{:x}, 0x{:x})", Start, Stop);
       if (*End != ',') {
         break;
       }
@@ -287,7 +287,7 @@ void HostOwnedRanges::ReportRefusal(const char* Op, uint64_t Base, uint64_t Size
   const auto Hit = FindOverlap(Base, Size);
   char Buf[320];
   const int Len = ::snprintf(Buf, sizeof(Buf),
-                             "FEX: refusing guest %s of [0x%llx, 0x%llx): it overlaps FEX's own host mapping "
+                             "POWERarm: refusing guest %s of [0x%llx, 0x%llx): it overlaps POWERarm's own host mapping "
                              "[0x%llx, 0x%llx) and would destroy it (ppc64le PIE-base vs PE-ImageBase "
                              "collision).%s\n",
                              Op, (unsigned long long)Base, (unsigned long long)(Base + Size), (unsigned long long)Hit.Base,

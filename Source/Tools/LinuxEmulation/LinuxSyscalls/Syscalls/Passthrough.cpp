@@ -615,7 +615,7 @@ uint64_t ObservedFutexSyscall(FEXCore::Core::CpuStateFrame* Frame,
       if (!is_expected) {
         char buf[256];
         int n = snprintf(buf, sizeof(buf),
-                         "[FEX-futex-bad] op=0x%lx uaddr=0x%lx val=0x%lx timeout=0x%lx uaddr2=0x%lx val3=0x%lx -> errno=%d\n",
+                         "[POWERarm-futex-bad] op=0x%lx uaddr=0x%lx val=0x%lx timeout=0x%lx uaddr2=0x%lx val3=0x%lx -> errno=%d\n",
                          (unsigned long)futex_op, (unsigned long)uaddr, (unsigned long)val,
                          (unsigned long)timeout, (unsigned long)uaddr2, (unsigned long)val3, err);
         [[maybe_unused]] auto _ = write(2, buf, n);

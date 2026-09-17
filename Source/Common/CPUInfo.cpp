@@ -42,7 +42,7 @@ static uint32_t GetCPUCountOverride() {
   if (Value == 0 || Value > 4096) {
     return 0;
   }
-  LogMan::Msg::IFmt("FEX_REPORTED_CPUS override active: reporting {} CPUs to guest", Value);
+  LogMan::Msg::IFmt("POWERARM_REPORTED_CPUS override active: reporting {} CPUs to guest", Value);
   return Value;
 }
 

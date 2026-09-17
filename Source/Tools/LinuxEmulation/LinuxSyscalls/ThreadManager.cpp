@@ -167,7 +167,7 @@ void ThreadManager::StatAlloc::CleanupForExit() {
     const double Wall = std::chrono::duration<double>(Now - P5_1_ProcessStart).count();
     const double Pct = Wall > 0.0 ? Seconds / Wall * 100.0 : 0.0;
 
-    std::fprintf(stderr, "[FEX JIT] blocks=%lu ticks=%lu seconds=%.6f wall=%.6f pct=%.3f freq=%luHz\n",
+    std::fprintf(stderr, "[POWERarm JIT] blocks=%lu ticks=%lu seconds=%.6f wall=%.6f pct=%.3f freq=%luHz\n",
                  static_cast<unsigned long>(TotalJITCount), static_cast<unsigned long>(TotalJITTime), Seconds, Wall, Pct,
                  static_cast<unsigned long>(Freq));
   }

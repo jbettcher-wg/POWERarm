@@ -396,7 +396,7 @@ namespace GCS {
     // Kernel supports shadow stack.
     if (ShadowStackWord & PR_SHADOW_STACK_ENABLE) {
       // Welp.
-      ERROR_AND_DIE_FMT("Shadow stack is enabled which FEX is incompatible with!");
+      ERROR_AND_DIE_FMT("Shadow stack is enabled which POWERarm is incompatible with!");
     }
 
     // Disable if we've gotten this far, to ensure guest can't try.
@@ -540,7 +540,7 @@ int main(int argc, char** argv, char** const envp) {
   // Ensure FEXServer is setup before config options try to pull CONFIG_ROOTFS
   auto SelfPath = FEX::GetSelfPath();
   if (!FEXServerClient::SetupClient(SelfPath.value_or(argv[0]))) {
-    LogMan::Msg::EFmt("FEXServerClient: Failure to setup client");
+    LogMan::Msg::EFmt("POWERarmServerClient: Failure to setup client");
     FEX::Logging::FlushEarlyMessagesToStderr();
     return -1;
   }
@@ -581,7 +581,7 @@ int main(int argc, char** argv, char** const envp) {
 
   uint32_t KernelVersion = FEX::HLE::SyscallHandler::CalculateHostKernelVersion();
   if (KernelVersion < FEX::HLE::SyscallHandler::KernelVersion(5, 15)) {
-    LogMan::Msg::EFmt("FEX requires kernel 5.15 minimum. Expect problems.");
+    LogMan::Msg::EFmt("POWERarm requires kernel 5.15 minimum. Expect problems.");
   }
 
   // Before we go any further, set all of our host environment variables that the config has provided

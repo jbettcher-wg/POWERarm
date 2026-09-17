@@ -149,7 +149,7 @@ static void TraceSyncSignal(int Signal, siginfo_t* Info, ucontext_t* _context) {
     return len;
   };
   int len = 0;
-  const char* prefix = "FEX-SIG tid=";
+  const char* prefix = "POWERarm-SIG tid=";
   for (const char* p = prefix; *p; p++) buf[len++] = *p;
   len += write_hex(buf + len, (uint64_t)::syscall(SYS_gettid));
   const char* sig = " sig="; for (const char* p = sig; *p; p++) buf[len++] = *p;
@@ -314,7 +314,7 @@ static void TraceSyncSignal(int Signal, siginfo_t* Info, ucontext_t* _context) {
         gbuf[glen++] = *p;
       }
     };
-    put("FEX-SIG-GUEST tid=");
+    put("POWERarm-SIG-GUEST tid=");
     glen += write_hex(gbuf + glen, (uint64_t)::syscall(SYS_gettid));
 
     if (!InJITCode) {
@@ -764,7 +764,7 @@ bool SignalDelegator::HandleDispatcherGuestSignal(FEXCore::Core::InternalThreadS
     if (FEX::HLE::_SyscallHandler && FEX::HLE::_SyscallHandler->VMATracking.Mutex.WriteHeldBySelfDiag()) [[unlikely]] {
       char Buf[160];
       const int N = ::snprintf(Buf, sizeof(Buf),
-                               "FEX: LOCKDIAG guest signal %d (code %d, addr %p, guest rip 0x%llx) delivered while this thread HOLDS the VMA write lock\n",
+                               "POWERarm: LOCKDIAG guest signal %d (code %d, addr %p, guest rip 0x%llx) delivered while this thread HOLDS the VMA write lock\n",
                                Signal, HostSigInfo->si_code, HostSigInfo->si_addr, (unsigned long long)Frame->State.pc);
       ::write(STDERR_FILENO, Buf, N > 0 ? static_cast<size_t>(N) : 0);
       FEX::HLE::_SyscallHandler->VMATracking.Mutex.ReportAcquirerDiag();
@@ -1244,7 +1244,7 @@ void SignalDelegator::HandleGuestSignal(FEX::HLE::ThreadStateObject* ThreadObjec
       static const bool DeliverAnyway = getenv("FEX_HOSTFAULTTOGUEST") != nullptr;
       char Buf[640];
       const int N = ::snprintf(Buf, sizeof(Buf),
-                               "FEX: FATAL host fault: signal %d (si_code %d, addr 0x%lx) at host nip 0x%lx lr 0x%lx, raised in %s; tid %u; "
+                               "POWERarm: FATAL host fault: signal %d (si_code %d, addr 0x%lx) at host nip 0x%lx lr 0x%lx, raised in %s; tid %u; "
                                "guest rip 0x%lx (block-boundary value, may be stale); DeferredSignalRefCount %lu; InSyscallInfo 0x%lx. "
                                "%s\n",
                                Signal, SigInfo.si_code, reinterpret_cast<unsigned long>(SigInfo.si_addr), (unsigned long)HostPC,
@@ -1252,14 +1252,14 @@ void SignalDelegator::HandleGuestSignal(FEX::HLE::ThreadStateObject* ThreadObjec
                                (unsigned long)Thread->CurrentFrame->State.pc,
                                (unsigned long)Thread->CurrentFrame->State.DeferredSignalRefCount.Load(),
                                (unsigned long)Thread->CurrentFrame->InSyscallInfo,
-                               DeliverAnyway ? "FEX_HOSTFAULTTOGUEST is set: delivering it to the guest anyway." :
+                               DeliverAnyway ? "POWERARM_HOSTFAULTTOGUEST is set: delivering it to the guest anyway." :
                                                "Not delivered to the guest (the host frame and any locks it holds would be abandoned); "
-                                               "terminating with the default disposition. FEX_HOSTFAULTTOGUEST=1 delivers it instead.");
+                                               "terminating with the default disposition. POWERARM_HOSTFAULTTOGUEST=1 delivers it instead.");
       ::write(STDERR_FILENO, Buf, N > 0 ? static_cast<size_t>(N) : 0);
       {
         void* Frames[48];
         const int Count = ::backtrace(Frames, 48);
-        static const char Hdr[] = "FEX: host backtrace (this handler first, the faulting frame follows the kernel sigtramp):\n";
+        static const char Hdr[] = "POWERarm: host backtrace (this handler first, the faulting frame follows the kernel sigtramp):\n";
         ::write(STDERR_FILENO, Hdr, sizeof(Hdr) - 1);
         ::backtrace_symbols_fd(Frames, Count, STDERR_FILENO);
       }

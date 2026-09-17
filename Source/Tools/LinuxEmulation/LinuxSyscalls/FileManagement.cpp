@@ -382,7 +382,7 @@ FileManager::FileManager(FEXCore::Context::Context* ctx)
       ProcFSDev = Buffer.st_dev;
     }
   } else {
-    LogMan::Msg::EFmt("Couldn't open `/proc`. Is ProcFS mounted? FEX won't be able to track FD conflicts");
+    LogMan::Msg::EFmt("Couldn't open `/proc`. Is ProcFS mounted? POWERarm won't be able to track FD conflicts");
   }
 
   UpdatePID(::getpid());
@@ -1006,7 +1006,7 @@ uint64_t FileManager::Open(const char* pathname, int flags, uint32_t mode) {
 uint64_t FileManager::Close(int fd) {
 #if defined(ASSERTIONS_ENABLED) && ASSERTIONS_ENABLED
   if (CheckIfFDInTrackedSet(fd)) {
-    LogMan::Msg::EFmt("{} closing FEX FD {}", __func__, fd);
+    LogMan::Msg::EFmt("{} closing POWERarm FD {}", __func__, fd);
     RemoveFEXFD(fd);
   }
 #endif
@@ -1020,7 +1020,7 @@ uint64_t FileManager::CloseRange(unsigned int first, unsigned int last, unsigned
 #endif
 #if defined(ASSERTIONS_ENABLED) && ASSERTIONS_ENABLED
   if (!(flags & CLOSE_RANGE_CLOEXEC) && CheckIfFDRangeInTrackedSet(first, last)) {
-    LogMan::Msg::EFmt("{} closing FEX FDs in range ({}, {})", __func__, first, last);
+    LogMan::Msg::EFmt("{} closing POWERarm FDs in range ({}, {})", __func__, first, last);
     RemoveFEXFDRange(first, last);
   }
 #endif

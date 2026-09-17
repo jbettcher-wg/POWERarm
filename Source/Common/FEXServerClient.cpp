@@ -189,7 +189,7 @@ int ConnectToServer(ConnectionOption ConnectionOption) {
 
   if (connect(SocketFD, reinterpret_cast<struct sockaddr*>(&addr), SizeOfAddr) == -1) {
     if (ConnectionOption == ConnectionOption::Default || errno != ECONNREFUSED) {
-      LogMan::Msg::EFmt("Couldn't connect to FEXServer socket {} {}", ServerSocketName, errno);
+      LogMan::Msg::EFmt("Couldn't connect to POWERarmServer socket {} {}", ServerSocketName, errno);
     }
   } else {
     return FEX::MoveFDOutOfGuestRange(SocketFD);
@@ -205,7 +205,7 @@ int ConnectToServer(ConnectionOption ConnectionOption) {
   SizeOfAddr = sizeof(addr.sun_family) + SizeOfSocketString;
   if (connect(SocketFD, reinterpret_cast<struct sockaddr*>(&addr), SizeOfAddr) == -1) {
     if (ConnectionOption == ConnectionOption::Default || (errno != ECONNREFUSED && errno != ENOENT)) {
-      LogMan::Msg::EFmt("Couldn't connect to FEXServer socket {} {}", ServerSocketPath, errno);
+      LogMan::Msg::EFmt("Couldn't connect to POWERarmServer socket {} {}", ServerSocketPath, errno);
     }
   } else {
     return FEX::MoveFDOutOfGuestRange(SocketFD);
@@ -352,7 +352,7 @@ int StartServer(std::string_view InterpreterPath, int watch_fd) {
 
     if (LocalServerFD == -1) {
       // Still couldn't connect to the socket.
-      LogMan::Msg::EFmt("Couldn't connect to FEXServer socket after launching the process");
+      LogMan::Msg::EFmt("Couldn't connect to POWERarmServer socket after launching the process");
     }
   }
 
