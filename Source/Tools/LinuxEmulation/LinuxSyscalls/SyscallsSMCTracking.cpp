@@ -307,10 +307,9 @@ bool SyscallHandler::HandleSegfault(FEXCore::Core::InternalThreadState* Thread, 
     // therefore deadlocks against a concurrent fork(): the forking thread owns
     // CodeInvalidationMutex and waits for our VMATracking read lock, we own
     // VMATracking and wait for its CodeInvalidationMutex, and
-    // TakeCodeInvalidationWriteLockOrSteal dies after 4s (the SIGTRAP Claude
-    // Code / Bun hit on every process spawn under FEX, 2026-09-08; two cores
-    // with the fork thread in ForkableSharedMutex::lock and this thread in
-    // ForcedAssert). Fork could not be reordered instead without inverting
+    // TakeCodeInvalidationWriteLockOrSteal dies after 4s (observed as a SIGTRAP
+    // on process spawn: two cores with the fork thread in
+    // ForkableSharedMutex::lock and this thread in ForcedAssert). Fork could not be reordered instead without inverting
     // against CompileBlock.
     //
     // So read everything the handler needs out of the VMA now and drop the

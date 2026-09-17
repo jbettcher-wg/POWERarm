@@ -52,8 +52,7 @@ static_assert(sizeof(GuestTermios) == 36, "x86 kernel struct termios is 36 bytes
 
 // The x86 kernel's struct termios2 (TCGETS2/TCSETS2/TCSETSW2/TCSETSF2): the
 // 36-byte termios followed by numeric input/output baud rates. 44 bytes.
-// Bun/Zig (and anything using the raw termios2 ABI instead of glibc's
-// tcgetattr) probes the tty with TCGETS2, so isatty()-style checks fail with
+// Programs using the raw termios2 ABI instead of glibc's tcgetattr probe the tty with TCGETS2, so isatty()-style checks fail with
 // ENOTTY unless this family is marshalled too.
 struct GuestTermios2 {
   GuestTermios base;
