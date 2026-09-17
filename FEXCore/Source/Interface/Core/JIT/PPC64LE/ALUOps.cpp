@@ -3114,16 +3114,13 @@ DEF_OP(CondAddNZCV) {
     addco_(TMP3, TMP1, TMP2);   // CA/OV at 32-bit boundary; CR0 from shifted result
   } else {
     if (S2Inline) {
-      if (static_cast<int64_t>(Const) >= -32768 && static_cast<int64_t>(Const) <= 32767) {
-        addic_(TMP3, S1, static_cast<int16_t>(Const));   // CA + CR0; OV unchanged from prior op
-        // addic. doesn't set OV; force OV=0 (addic.+small-const can't overflow
-        // the 64-bit boundary in a way ccmn cares about). One addo, preserving
-        // the CA addic. just produced — was a full XER round-trip.
-        SetOVConstant(false, r0, TMP1);
-      } else {
-        LoadConstant(TMP4, Const);
-        addco_(TMP3, S1, TMP4);
-      }
+      // Always the register form. There used to be an `addic.` shortcut for
+      // constants that fit in int16, followed by forcing OV=0 on the claim that
+      // a small constant cannot overflow. It can: CCMN x1, #1 with
+      // x1 = INT64_MAX must set V, and addic. computes no overflow at all.
+      // addco. sets CA, OV and CR0 from the same 64-bit add.
+      LoadConstant(TMP4, Const);
+      addco_(TMP3, S1, TMP4);
     } else {
       addco_(TMP3, S1, GetReg(Op->Src2));
     }

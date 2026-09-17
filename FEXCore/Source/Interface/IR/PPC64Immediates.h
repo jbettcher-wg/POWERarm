@@ -284,10 +284,13 @@ constexpr AndMaskForm ClassifyAndMask(uint64_t M, bool Is32Bit) {
 // ---------------------------------------------------------------------------
 // InlineAddSub: CondJump, Select, CondAddNZCV, CondSubNZCV.
 //
-// Every one of these routes its second operand into a compare -- EmitCompare
-// (JIT.cpp) or, for CondAddNZCV at i64, `addic.` -- whose immediate field is
-// either the signed 16-bit SI of cmpdi/cmpwi/addic. or the unsigned 16-bit UI
-// of cmpldi/cmplwi. Both are free; the operand disappears into the instruction.
+// CondJump and Select route their second operand into a compare (EmitCompare,
+// JIT.cpp) whose immediate field is either the signed 16-bit SI of
+// cmpdi/cmpwi or the unsigned 16-bit UI of cmpldi/cmplwi. Both are free; the
+// operand disappears into the instruction. CondAddNZCV and CondSubNZCV load an
+// inline constant into a scratch register instead (they need CA and OV from
+// one carrying add/subtract, which has no immediate form), which still costs
+// no allocatable register.
 //
 // The third clause covers constants that need one `lis` in a scratch and then
 // the register-form compare: two instructions, no allocatable register. That
