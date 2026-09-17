@@ -62,6 +62,7 @@ private:
 // ppc64le translation, or that have no shared implementation.
 void RegisterMemory(FEX::HLE::SyscallHandler* Handler);
 void RegisterFD(FEX::HLE::SyscallHandler* Handler);
+void RegisterSignals(FEX::HLE::SyscallHandler* Handler);
 void RegisterThread(FEX::HLE::SyscallHandler* Handler);
 
 fextl::unique_ptr<FEX::HLE::SyscallHandler>

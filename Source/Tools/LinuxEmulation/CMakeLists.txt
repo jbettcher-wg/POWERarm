@@ -30,6 +30,7 @@ add_library(LinuxEmulation STATIC
   LinuxSyscalls/Arm64/Syscalls.cpp
   LinuxSyscalls/Arm64/FD.cpp
   LinuxSyscalls/Arm64/Memory.cpp
+  LinuxSyscalls/Arm64/Signals.cpp
   LinuxSyscalls/Arm64/Thread.cpp
   LinuxSyscalls/Syscalls/EPoll.cpp
   LinuxSyscalls/Syscalls/FD.cpp

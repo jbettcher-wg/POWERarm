@@ -43,6 +43,7 @@ void Arm64SyscallHandler::RegisterSyscallHandlers() {
 
   FEX::HLE::Arm64::RegisterMemory(this);
   FEX::HLE::Arm64::RegisterFD(this);
+  FEX::HLE::Arm64::RegisterSignals(this);
   FEX::HLE::Arm64::RegisterThread(this);
 
   // Everything not registered above keeps the default UnimplementedSyscall
