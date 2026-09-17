@@ -137,20 +137,30 @@ __attribute__((noinline)) static uint64_t tail_rec(uint64_t x, uint64_t n) {
 
 // ---- 5. signals: a handler entered mid-recursion that makes calls ----
 // A handler is entered without a guest call and returns through the signal
-// trampoline, so its RET never matches the shadow stack. (No siglongjmp out of
-// the handler: abandoning a handler frame is a separate, pre-existing
-// signal-delegator bug that crashes or hangs POWERarm intermittently.)
+// trampoline, so its RET never matches the shadow stack.
 static uint64_t handler_sum;
+static int dive_signal = SIGUSR1;
 static void handler(int sig) {
   handler_sum = mix(handler_sum, rec(100) + (uint64_t)sig);
 }
 __attribute__((noinline)) static uint64_t dive_and_signal(uint64_t n) {
   if (n == 0) {
-    kill(getpid(), SIGUSR1);
+    kill(getpid(), dive_signal);
     return 17;
   }
   uint64_t r = dive_and_signal(n - 1);
   return mix(r, n);
+}
+
+// ---- 5b. siglongjmp out of that handler ----
+// The handler makes calls and then abandons itself and the recursion it
+// interrupted, so the shadow stack keeps entries nothing will pop. 5000 times:
+// more than a leaked host frame per abandoned handler would survive.
+static sigjmp_buf sig_jb;
+static uint64_t jump_sum;
+static void jumping_handler(int sig) {
+  jump_sum = mix(jump_sum, rec(60) + (uint64_t)sig);
+  siglongjmp(sig_jb, 1);
 }
 
 // ---- 6. stack switching with ucontext ----
@@ -236,6 +246,20 @@ int main(void) {
     h = mix(h, rec(i % 40));
   }
   printf("signals %016llx %016llx\n", (unsigned long long)h, (unsigned long long)handler_sum);
+  fflush(stdout);
+
+  sa.sa_handler = jumping_handler;
+  sigaction(SIGUSR2, &sa, NULL);
+  dive_signal = SIGUSR2;
+  h = 0;
+  for (uint64_t i = 0; i < 5000; i++) {
+    if (sigsetjmp(sig_jb, 1) == 0) {
+      h = mix(h, dive_and_signal(i % 120)); // not reached: the handler jumps
+    } else {
+      h = mix(h, rec(i % 40) ^ i); // calls and returns right after the jump
+    }
+  }
+  printf("siglongjmp %016llx %016llx\n", (unsigned long long)h, (unsigned long long)jump_sum);
   fflush(stdout);
 
   h = 0;

@@ -505,13 +505,202 @@ void SignalDelegator::SpillSRA(FEXCore::Core::InternalThreadState* Thread, void*
 #endif
 }
 
-ArchHelpers::Context::ContextBackup* SignalDelegator::StoreThreadState(FEXCore::Core::InternalThreadState* Thread, int Signal, void* ucontext) {
+// ---------------------------------------------------------------------------
+// Abandoned guest handlers
+// ---------------------------------------------------------------------------
+//
+// A guest handler runs on a dispatcher entered below the host frame of the
+// context it interrupted: the ContextBackup goes under the interrupted host SP
+// (StoreThreadState) and the dispatcher runs with SP at the backup. rt_sigreturn
+// finds the backup through the guest frame and puts the host SP back. A guest
+// that leaves its handler with siglongjmp/longjmp/setcontext instead never
+// makes that call, so it keeps running on the handler's dispatcher, 3.3 KB lower
+// on the host stack than before, and every abandoned handler costs that again:
+// about 2,500 of them exhaust an 8 MB host stack. (Upstream FEX has the same
+// structure and the same leak.)
+//
+// Two ways out were considered.
+//
+//  (a) Run handlers without a nested host frame, keeping the resume state in
+//      the guest frame as the kernel does, so abandoning a handler costs
+//      nothing. That only works when nothing on the host stack is needed to
+//      resume, and on this port most deliveries are not like that: every
+//      async signal that arrives in a syscall is delivered at the fault-page
+//      poke in the DeferredSignalRefCountGuard destructor, with the syscall's
+//      C++ frames still live under the SP (raise(), kill(), a timer during a
+//      blocking read), and JIT blocks own a stack frame (the stdu in the
+//      block prologue) that a mid-block resume needs. Moving those deliveries
+//      to a JIT boundary changes when handlers run for every program.
+//
+//  (b) Keep the nested frames, and when the next handler is delivered, notice
+//      the levels the guest has abandoned and build the new frame where the
+//      outermost abandoned one was. Chosen.
+//
+// Every delivery pushes a GuestHandlerLevel (ThreadManager.h) next to its
+// backup: the backup address (the handler's dispatcher SP), the guest frame's
+// range, and the sigaltstack range if the frame is on it. rt_sigreturn pops
+// its own level and every level inside it, which is what already happened to
+// the host SP. A level is abandoned (IsHandlerAbandoned) when any of these
+// holds:
+//
+//   - the guest SP is past the frame: at or above its top for a frame on the
+//     main stack (the handler, its callees and handlers nested on the same
+//     stack are all below it); above it on the altstack, or off the altstack
+//     entirely, for a frame on the sigaltstack. Checked at every delivery and
+//     at every guest syscall (NoteGuestSyscall), because after the jump the
+//     guest may well go deeper than the dead frame before its next signal
+//     (callret.c's handler fires at a different recursion depth each time),
+//     and the syscall that sigsetjmp makes to save the mask, or any other,
+//     catches it while it is still shallow;
+//   - the frame's two private words (host backup address and level serial,
+//     the top 16 bytes of the frame) no longer hold what the delivery wrote:
+//     the guest has reused that stack. Read with process_vm_readv, since the
+//     memory may be gone.
+//
+// Only the innermost level is tested, and popping stops at the first live one,
+// so nested levels (SA_NODEFER recursion, a handler interrupted by another,
+// an altstack handler inside a main-stack one) are judged against the SP the
+// guest actually has. The SP rule gets one case wrong: a handler that switches
+// to a stack at a higher address (swapcontext out of the handler) and makes a
+// syscall or takes a signal there before switching back and returning. Its
+// level is taken as abandoned. rt_sigreturn then does not find it (the serial in the guest frame
+// no longer matches), says so once on stderr, and resumes the guest from the
+// frame's ucontext through the dispatcher instead of crashing. That pattern
+// was already broken before this change whenever such handlers did not return
+// in LIFO order, because rt_sigreturn has always reset the host SP past every
+// inner level.
+//
+// Reclaiming the abandoned levels: the guest is running on the innermost
+// abandoned level's dispatcher, and the context being interrupted has live
+// host stack from its SP (less the red zone) up to that dispatcher's base plus
+// the ELFv2 caller-frame area the base reserves (the backup's LinkageArea).
+// Everything above that, up to the base of the innermost live level (or the
+// thread's dispatcher frame, ReturningStackLocation), belongs to abandoned
+// handlers and the contexts they interrupted. The delivery saves the live
+// bytes with the new backup, builds the backup right under the live base, and
+// rt_sigreturn copies the bytes back to the same addresses before resuming,
+// so pointers into that stack (C++ frames, JIT block back chains) stay valid
+// and nothing has to be relocated. The saved region is small: a JIT block
+// frame, or the syscall handler's frames down to the guard destructor. That
+// rt_sigreturn puts the guest back on the abandoned handler's dispatcher, deep
+// in the stack, so it leaves a marker record (Serial 0) in that dispatcher's
+// old backup area saying so; the next delivery treats it as an abandoned level
+// and reclaims past it again. Without it the next handler would nest under
+// the deep SP and a return/abandon cycle would drift down the stack. The SMC
+// fault redirect, which resets the host SP to ReturningStackLocation when no
+// handler holds the refcount, drops the markers with it.
+//
+// It is done only where no other code can be holding the address of that
+// stack while the handler runs: JIT code, the dispatcher, and C++ at a
+// drained fault-page poke (the deferred section is over). A synchronous fault
+// in other host code, or when a host-to-guest callback dispatcher is active
+// (SignalHandlerRefCounter counts those too), nests as before and the levels
+// stay recorded until a later delivery can reclaim them.
+//
+// A handler that returns to a different guest PC is resumed through the
+// dispatcher; it now does so at the interrupted level's dispatcher base
+// rather than at the interrupted SP, so handlers that skip a faulting
+// instruction by editing the ucontext no longer leave a JIT block frame
+// behind each time.
+//
+// The call-return stack needs nothing: it lives in its own mapping, guest
+// CALL/RET only predict through it (a mismatch falls back to the lookup), and
+// its guard pages reset it on overflow, so a jump out of a handler that leaves
+// entries behind costs mispredictions, not correctness. rt_sigreturn restores
+// callret_sp with the rest of the guest state as before.
+static bool IsGuestSPPastHandler(const ThreadStateObject::GuestHandlerLevel* Level, uint64_t GuestSP) {
+  if (Level->AltStackHi) {
+    if (GuestSP >= Level->AltStackLo && GuestSP < Level->AltStackHi) {
+      return GuestSP >= Level->GuestFrameHi;
+    }
+    return true;
+  }
+  return GuestSP >= Level->GuestFrameHi;
+}
+
+static bool IsHandlerAbandoned(const ThreadStateObject::GuestHandlerLevel* Level, uint64_t GuestSP) {
+  if (Level->Serial == 0 || Level->KnownAbandoned || IsGuestSPPastHandler(Level, GuestSP)) {
+    return true;
+  }
+  uint64_t Words[2] {};
+  const struct iovec Local {Words, sizeof(Words)};
+  const struct iovec Remote {reinterpret_cast<void*>(Level->GuestFrameHi - sizeof(Words)), sizeof(Words)};
+  if (::process_vm_readv(::getpid(), &Local, 1, &Remote, 1, 0) != sizeof(Words)) {
+    return true;
+  }
+  return Words[0] != Level->HostBase || Words[1] != Level->Serial;
+}
+
+void SignalDelegator::NoteGuestSyscall(FEXCore::Core::InternalThreadState* Thread) {
+  auto* Level = FEX::HLE::ThreadManager::GetStateObjectFromFEXCoreThread(Thread)->SignalInfo.InnermostHandler;
+  while (Level && Level->Serial == 0) {
+    Level = Level->Outer;
+  }
+  if (Level && !Level->KnownAbandoned && IsGuestSPPastHandler(Level, Thread->CurrentFrame->State.sp)) {
+    // Only marked: the next delivery pops it (and whatever it finds under it).
+    Level->KnownAbandoned = true;
+  }
+}
+
+SignalDelegator::HandlerPlacement SignalDelegator::PlaceGuestHandler(FEXCore::Core::InternalThreadState* Thread, void* ucontext, bool WasInJIT) {
+  HandlerPlacement Placement {};
+#ifdef ARCHITECTURE_ppc64le
+  auto* ThreadObject = FEX::HLE::ThreadManager::GetStateObjectFromFEXCoreThread(Thread);
+  auto& SignalInfo = ThreadObject->SignalInfo;
+  const auto* Frame = Thread->CurrentFrame;
+
+  // Every nested dispatcher on this thread is one of our levels; otherwise a
+  // host-to-guest callback sits somewhere in between and no base is known.
+  if (Frame->SignalHandlerRefCounter != SignalInfo.HandlerLevels || Frame->ReturningStackLocation == 0) {
+    return Placement;
+  }
+
+  const uint64_t GuestSP = Frame->State.sp;
+  const uint64_t HostSP = ArchHelpers::Context::GetSp(ucontext);
+  auto* Level = SignalInfo.InnermostHandler;
+  uint32_t Popped = 0;
+
+  Placement.InterruptedBase = Level ? Level->HostBase : Frame->ReturningStackLocation;
+  if (Level && IsHandlerAbandoned(Level, GuestSP)) {
+    const uint64_t HostPC = ArchHelpers::Context::GetPc(ucontext);
+    const bool Reclaimable = WasInJIT || IsAddressInDispatcher(HostPC) || SignalInfo.DeliveringDrainedSignal;
+    const uint64_t LiveTop = Level->HostBase + sizeof(ArchHelpers::Context::ContextBackup::LinkageArea);
+    const uint64_t SaveLo = FEXCore::AlignDown(HostSP - ArchHelpers::Context::ContextBackup::RedZoneSize, 16);
+    // Larger than any JIT block frame or syscall handler stack by far; past it
+    // the context is not one this was written for, so nest as before.
+    constexpr uint64_t MaxSavedHostStack = 1024 * 1024;
+    if (Reclaimable && HostSP <= Level->HostBase && LiveTop - SaveLo <= MaxSavedHostStack) {
+      while (Level && IsHandlerAbandoned(Level, GuestSP)) {
+        Popped += Level->Serial != 0;
+        Level = Level->Outer;
+      }
+      Placement.BaseSP = Level ? Level->HostBase : Frame->ReturningStackLocation;
+      Placement.SaveLo = SaveLo;
+      Placement.SaveHi = LiveTop;
+      // A redirecting return abandons the saved context too.
+      Placement.InterruptedBase = Placement.BaseSP;
+      SIGTRACE("RECLAIM base=0x%lx save=[0x%lx,0x%lx) guest_sp=0x%lx", (unsigned long)Placement.BaseSP, (unsigned long)SaveLo,
+               (unsigned long)LiveTop, (unsigned long)GuestSP);
+    }
+  }
+
+  SignalInfo.InnermostHandler = Level;
+  SignalInfo.HandlerLevels -= Popped;
+  Thread->CurrentFrame->SignalHandlerRefCounter -= Popped;
+#endif
+  return Placement;
+}
+
+ArchHelpers::Context::ContextBackup* SignalDelegator::StoreThreadState(FEXCore::Core::InternalThreadState* Thread, int Signal, void* ucontext,
+                                                                       const HandlerPlacement& Placement) {
   // We can end up getting a signal at any point in our host state
   // Jump to a handler that saves all state so we can safely return
-  uint64_t OldSP = ArchHelpers::Context::GetSp(ucontext);
+  uint64_t OldSP = Placement.BaseSP ? Placement.BaseSP : ArchHelpers::Context::GetSp(ucontext);
   uintptr_t NewSP = OldSP;
+  const size_t SaveLen = Placement.SaveHi - Placement.SaveLo;
 
-  size_t StackOffset = sizeof(ArchHelpers::Context::ContextBackup);
+  // The backup, its handler level record, then any saved host stack bytes.
+  size_t StackOffset = sizeof(ArchHelpers::Context::ContextBackup) + sizeof(ThreadStateObject::GuestHandlerLevel) + SaveLen;
 
   // We need to back up behind the host's red zone
   // We do this on the guest side as well
@@ -520,6 +709,13 @@ ArchHelpers::Context::ContextBackup* SignalDelegator::StoreThreadState(FEXCore::
 
   NewSP -= StackOffset;
   NewSP = FEXCore::AlignDown(NewSP, 16);
+
+  if (SaveLen) {
+    // Before anything else is written: the backup may overlap the bytes being
+    // saved. This runs on the host sigaltstack, so the thread stack is free.
+    memmove(reinterpret_cast<void*>(NewSP + sizeof(ArchHelpers::Context::ContextBackup) + sizeof(ThreadStateObject::GuestHandlerLevel)),
+            reinterpret_cast<void*>(Placement.SaveLo), SaveLen);
+  }
 
   auto Context = reinterpret_cast<ArchHelpers::Context::ContextBackup*>(NewSP);
   ArchHelpers::Context::BackupContext(ucontext, Context);
@@ -549,7 +745,9 @@ ArchHelpers::Context::ContextBackup* SignalDelegator::StoreThreadState(FEXCore::
 }
 
 void SignalDelegator::RestoreThreadState(FEXCore::Core::InternalThreadState* Thread, void* ucontext, RestoreType Type) {
+  auto* ThreadObject = FEX::HLE::ThreadManager::GetStateObjectFromFEXCoreThread(Thread);
   uint64_t OldSP {};
+  ThreadStateObject::GuestHandlerLevel* Level {};
   if (Type == RestoreType::TYPE_PAUSE) [[unlikely]] {
     OldSP = ArchHelpers::Context::GetSp(ucontext);
   } else {
@@ -558,11 +756,55 @@ void SignalDelegator::RestoreThreadState(FEXCore::Core::InternalThreadState* Thr
     // We need to inspect the guest state coming in, so we can get our host stack back.
     // AArch64: rt_sigreturn is entered with SP at the rt_sigframe that
     // SetupFrame_Arm64 built; the frame record and then the host stack slot
-    // sit directly above it.
+    // sit directly above it, followed by the handler level's serial.
     uint64_t GuestSP = Thread->CurrentFrame->State.sp;
+    const uint64_t RTSigFrame = GuestSP;
     GuestSP += sizeof(FEXCore::arm64::rt_sigframe) + sizeof(FEXCore::arm64::frame_record);
 
     OldSP = *reinterpret_cast<uint64_t*>(GuestSP);
+    const uint64_t Serial = *reinterpret_cast<uint64_t*>(GuestSP + 8);
+
+    // Find the level this frame belongs to. Levels inside it were abandoned
+    // by the guest (a jump out of a nested handler back into this one); the
+    // host SP is about to move past them, so they go too.
+    auto& SignalInfo = ThreadObject->SignalInfo;
+    Level = SignalInfo.InnermostHandler;
+    uint32_t Inner = 0;
+    while (Level && !(Level->HostBase == OldSP && Level->Serial == Serial && Serial != 0)) {
+      Inner += Level->Serial != 0;
+      Level = Level->Outer;
+    }
+
+    if (!Level) [[unlikely]] {
+      // Not a frame of a live level: its level was taken as abandoned and its
+      // host frame reused (see "Abandoned guest handlers"), or the guest built
+      // the frame itself. The host context is gone; resume the guest from the
+      // frame's ucontext through the dispatcher on the current host stack.
+      static std::atomic<bool> Reported {};
+      if (!Reported.exchange(true)) {
+        static constexpr char Msg[] = "POWERarm: rt_sigreturn for a signal frame whose host frame was already reclaimed; resuming from "
+                                      "the guest ucontext only\n";
+        [[maybe_unused]] auto _ = ::write(STDERR_FILENO, Msg, sizeof(Msg) - 1);
+      }
+      const auto* uc = &reinterpret_cast<const FEXCore::arm64::rt_sigframe*>(RTSigFrame)->uc;
+      auto Frame = Thread->CurrentFrame;
+      auto& State = Frame->State;
+      memcpy(State.x, uc->uc_mcontext.regs, sizeof(State.x));
+      State.sp = uc->uc_mcontext.sp;
+      State.pc = uc->uc_mcontext.pc;
+      State.nzcv = static_cast<uint32_t>(uc->uc_mcontext.pstate) & 0xF000'0000U;
+      Frame->InSyscallInfo = 0;
+      SignalInfo.CurrentSignalMask.Val = uc->uc_sigmask & ~((1ULL << (SIGKILL - 1)) | (1ULL << (SIGSTOP - 1)));
+      ArchHelpers::Context::SetPc(ucontext, Config.AbsoluteLoopTopAddressFillSRA);
+      ArchHelpers::Context::SetFillSRASingleInst(ucontext, false);
+      ArchHelpers::Context::SetState(ucontext, reinterpret_cast<uint64_t>(Frame));
+      CheckForPendingSignals(ThreadObject);
+      return;
+    }
+
+    SignalInfo.InnermostHandler = Level->Outer;
+    SignalInfo.HandlerLevels -= Inner + 1;
+    Thread->CurrentFrame->SignalHandlerRefCounter -= Inner;
   }
 
   uintptr_t NewSP = OldSP;
@@ -585,6 +827,7 @@ void SignalDelegator::RestoreThreadState(FEXCore::Core::InternalThreadState* Thr
   // Reset the guest state
   memcpy(&Thread->CurrentFrame->State, &Context->GuestState, sizeof(FEXCore::Core::CPUState));
 
+  bool Redirected = false;
   if (Context->UContextLocation) {
     auto Frame = Thread->CurrentFrame;
 
@@ -610,26 +853,46 @@ void SignalDelegator::RestoreThreadState(FEXCore::Core::InternalThreadState* Thr
 
     // rt_sigreturn restores the mask from the frame, which the handler may
     // have changed.
-    auto* ThreadObject = FEX::HLE::ThreadManager::GetStateObjectFromFEXCoreThread(Thread);
     const auto* GuestUContext = reinterpret_cast<const FEXCore::arm64::ucontext_t*>(Context->UContextLocation);
     ThreadObject->SignalInfo.CurrentSignalMask.Val =
       GuestUContext->uc_sigmask & ~((1ULL << (SIGKILL - 1)) | (1ULL << (SIGSTOP - 1)));
 
-    RestoreFrame_Arm64(Thread, Context, Frame, ucontext);
+    Redirected = RestoreFrame_Arm64(Thread, Context, Frame, ucontext);
 
     CheckForPendingSignals(ThreadObject);
   }
+
+  if (Level) {
+    if (Redirected) {
+      // The interrupted host context is not resumed: run the dispatcher at its
+      // level's base instead of under the frame it left behind.
+      if (Level->InterruptedBase) {
+        ArchHelpers::Context::SetSp(ucontext, Level->InterruptedBase);
+      }
+    } else if (Level->SavedStackLen) {
+      // Put back the interrupted host stack this delivery saved. Last, since
+      // the destination may overlap the backup read above.
+      const uint64_t DeadBase = Level->SavedStackAddr + Level->SavedStackLen - sizeof(ArchHelpers::Context::ContextBackup::LinkageArea);
+      auto* Outer = Level->Outer;
+      memmove(reinterpret_cast<void*>(Level->SavedStackAddr), Level + 1, Level->SavedStackLen);
+      // The guest resumes on an abandoned handler's dispatcher at DeadBase.
+      // Record that where that handler's own record was: above the live
+      // bytes just restored and no longer part of any backup.
+      auto* Marker = reinterpret_cast<ThreadStateObject::GuestHandlerLevel*>(DeadBase + sizeof(ArchHelpers::Context::ContextBackup));
+      *Marker = ThreadStateObject::GuestHandlerLevel {.Outer = Outer, .HostBase = DeadBase};
+      ThreadObject->SignalInfo.InnermostHandler = Marker;
+    }
+  }
+
+  // Ref count our faults
+  // We use this to track if it is safe to clear cache
+  --Thread->CurrentFrame->SignalHandlerRefCounter;
 }
 
 bool SignalDelegator::HandleDispatcherGuestSignal(FEXCore::Core::InternalThreadState* Thread, int Signal, void* info, void* ucontext,
                                                   GuestSigAction* GuestAction, stack_t* GuestStack) {
-  auto ContextBackup = StoreThreadState(Thread, Signal, ucontext);
-
   auto Frame = Thread->CurrentFrame;
-
-  // Ref count our faults
-  // We use this to track if it is safe to clear cache
-  ++Thread->CurrentFrame->SignalHandlerRefCounter;
+  auto* ThreadObject = FEX::HLE::ThreadManager::GetStateObjectFromFEXCoreThread(Thread);
 
   uint64_t OldPC = ArchHelpers::Context::GetPc(ucontext);
   const bool WasInJIT = CTX->IsAddressInCodeBuffer(Thread, OldPC);
@@ -637,6 +900,9 @@ bool SignalDelegator::HandleDispatcherGuestSignal(FEXCore::Core::InternalThreadS
   // Spill the SRA regardless of signal handler type
   // We are going to be returning to the top of the dispatcher which will fill again
   // Otherwise we might load garbage
+  //
+  // Spilled before StoreThreadState (which copies the guest state into the
+  // backup) because PlaceGuestHandler needs the interrupted guest SP.
   if (WasInJIT) {
     uint32_t IgnoreMask {};
 #if defined(ARCHITECTURE_arm64) || defined(ARCHITECTURE_ppc64le)
@@ -654,17 +920,18 @@ bool SignalDelegator::HandleDispatcherGuestSignal(FEXCore::Core::InternalThreadS
 
     // We are in jit, SRA must be spilled
     SpillSRA(Thread, ucontext, IgnoreMask);
+  }
 
-#if defined(ARCHITECTURE_ppc64le)
-    // StoreThreadState captured GuestState BEFORE SpillSRA ran. SpillSRA has
-    // now committed the correct x86 state (gregs, rip, xmm) from the actual
-    // signal-arrival register file into Thread->CurrentFrame->State. Re-capture
-    // so that RestoreThreadState's memcpy(State, GuestState) restores the
-    // authoritative pre-signal values rather than a stale one-block-behind copy.
-    memcpy(&ContextBackup->GuestState, &Thread->CurrentFrame->State,
-           sizeof(FEXCore::Core::CPUState));
-#endif
+  // Where the handler's host frame goes: under the interrupted SP, or where
+  // abandoned handlers' frames were (see "Abandoned guest handlers").
+  const HandlerPlacement Placement = PlaceGuestHandler(Thread, ucontext, WasInJIT);
+  auto ContextBackup = StoreThreadState(Thread, Signal, ucontext, Placement);
 
+  // Ref count our faults
+  // We use this to track if it is safe to clear cache
+  ++Thread->CurrentFrame->SignalHandlerRefCounter;
+
+  if (WasInJIT) {
     ContextBackup->Flags |= ArchHelpers::Context::ContextFlags::CONTEXT_FLAG_INJIT;
 
     // We are leaving the syscall information behind. Make sure to store the previous state.
@@ -772,6 +1039,35 @@ bool SignalDelegator::HandleDispatcherGuestSignal(FEXCore::Core::InternalThreadS
     NewGuestSP = SetupFrame_Arm64(Thread, ContextBackup, Frame, Signal, HostSigInfo, ucontext, GuestAction, GuestStack, NewGuestSP);
   }
 
+  // Record the handler level next to its backup.
+  {
+    auto& SignalInfo = ThreadObject->SignalInfo;
+    auto* Level = reinterpret_cast<ThreadStateObject::GuestHandlerLevel*>(reinterpret_cast<uint64_t>(ContextBackup) +
+                                                                            sizeof(ArchHelpers::Context::ContextBackup));
+    Level->Outer = SignalInfo.InnermostHandler;
+    Level->HostBase = reinterpret_cast<uint64_t>(ContextBackup);
+    Level->Serial = ++SignalInfo.HandlerSerial;
+    Level->GuestFrameLo = NewGuestSP;
+    Level->GuestFrameHi = NewGuestSP + sizeof(FEXCore::arm64::rt_sigframe) + sizeof(FEXCore::arm64::frame_record) + 16;
+    // The slot above the host stack location (SetupFrame_Arm64's 32-byte block).
+    *reinterpret_cast<uint64_t*>(Level->GuestFrameHi - 8) = Level->Serial;
+    const uint64_t AltLo = reinterpret_cast<uint64_t>(GuestStack->ss_sp);
+    const uint64_t AltHi = AltLo + GuestStack->ss_size;
+    if (!(GuestStack->ss_flags & SS_DISABLE) && NewGuestSP >= AltLo && NewGuestSP < AltHi) {
+      Level->AltStackLo = AltLo;
+      Level->AltStackHi = AltHi;
+    } else {
+      Level->AltStackLo = 0;
+      Level->AltStackHi = 0;
+    }
+    Level->InterruptedBase = Placement.InterruptedBase;
+    Level->SavedStackAddr = Placement.SaveLo;
+    Level->SavedStackLen = Placement.SaveHi - Placement.SaveLo;
+    Level->KnownAbandoned = false;
+    SignalInfo.InnermostHandler = Level;
+    ++SignalInfo.HandlerLevels;
+  }
+
   Frame->State.pc = reinterpret_cast<uint64_t>(GuestAction->sigaction_handler.sigaction);
   Frame->State.sp = NewGuestSP;
 
@@ -796,10 +1092,6 @@ bool SignalDelegator::HandleSIGILL(FEXCore::Core::InternalThreadState* Thread, i
                        ArchHelpers::Context::GetPc(ucontext) == Config.SignalHandlerReturnAddressRT ? RestoreType::TYPE_REALTIME :
                                                                                                       RestoreType::TYPE_NONREALTIME);
 
-    // Ref count our faults
-    // We use this to track if it is safe to clear cache
-    --Thread->CurrentFrame->SignalHandlerRefCounter;
-
     if (ThreadObject->SignalInfo.DeferredSignalFrames.size() != 0) {
       // If we have more deferred frames to process then mprotect back to PROT_NONE.
       // It will have been RW coming in to this sigreturn and now we need to remove permissions
@@ -811,10 +1103,6 @@ bool SignalDelegator::HandleSIGILL(FEXCore::Core::InternalThreadState* Thread, i
 
   if (ArchHelpers::Context::GetPc(ucontext) == Config.PauseReturnInstruction) {
     RestoreThreadState(Thread, ucontext, RestoreType::TYPE_PAUSE);
-
-    // Ref count our faults
-    // We use this to track if it is safe to clear cache
-    --Thread->CurrentFrame->SignalHandlerRefCounter;
     return true;
   }
 
@@ -828,7 +1116,7 @@ bool SignalDelegator::HandleSignalPause(FEXCore::Core::InternalThreadState* Thre
 
   if (SignalReason == SignalEvent::Pause) {
     // Store our thread state so we can come back to this
-    StoreThreadState(Thread, Signal, ucontext);
+    StoreThreadState(Thread, Signal, ucontext, HandlerPlacement {});
 
     if (CTX->IsAddressInCodeBuffer(Thread, ArchHelpers::Context::GetPc(ucontext))) {
       // We are in jit, SRA must be spilled
@@ -861,6 +1149,8 @@ bool SignalDelegator::HandleSignalPause(FEXCore::Core::InternalThreadState* Thre
 
     // Our ref counting doesn't matter anymore
     Thread->CurrentFrame->SignalHandlerRefCounter = 0;
+    ThreadObject->SignalInfo.InnermostHandler = nullptr;
+    ThreadObject->SignalInfo.HandlerLevels = 0;
 
     // Set the new PC
     if (CTX->IsAddressInCodeBuffer(Thread, ArchHelpers::Context::GetPc(ucontext))) {
@@ -890,10 +1180,6 @@ bool SignalDelegator::HandleSignalPause(FEXCore::Core::InternalThreadState* Thre
 
   if (SignalReason == SignalEvent::Return || SignalReason == SignalEvent::ReturnRT) {
     RestoreThreadState(Thread, ucontext, SignalReason == SignalEvent::ReturnRT ? RestoreType::TYPE_REALTIME : RestoreType::TYPE_NONREALTIME);
-
-    // Ref count our faults
-    // We use this to track if it is safe to clear cache
-    --Thread->CurrentFrame->SignalHandlerRefCounter;
 
     ThreadObject->SignalReason.store(SignalEvent::Nothing);
     return true;
@@ -1032,6 +1318,7 @@ void SignalDelegator::HandleGuestSignal(FEX::HLE::ThreadStateObject* ThreadObjec
   auto SigInfo = *static_cast<siginfo_t*>(Info);
 
   auto MustDeferSignal = (Thread->CurrentFrame->State.DeferredSignalRefCount.Load() != 0);
+  bool DrainedFrame = false;
 
 #if defined(ARCHITECTURE_ppc64le)
   // PPC64LE: also defer async signals whose host PC lies inside the JIT code
@@ -1128,6 +1415,7 @@ void SignalDelegator::HandleGuestSignal(FEX::HLE::ThreadStateObject* ThreadObjec
       // sig mask has been updated at the defer time, recover the original mask
       memcpy(&_context->uc_sigmask, &Top.SigMask, sizeof(uint64_t));
       ThreadObject->SignalInfo.DeferredSignalFrames.pop_back();
+      DrainedFrame = true;
       SIGTRACE("DRAIN sig=%d mask=0x%lx qleft=%zu", Signal, Top.SigMask, ThreadObject->SignalInfo.DeferredSignalFrames.size());
 
       // Until we re-protect the page to PROT_NONE, FEX will now *permanently* defer signals and /not/ check them.
@@ -1440,8 +1728,11 @@ void SignalDelegator::HandleGuestSignal(FEX::HLE::ThreadStateObject* ThreadObjec
       _SyscallHandler->DrainSMCLazyDirtyPages(Thread, FEX::HLE::SMCLazy::DrainPoint::GuestSignal);
     }
 
-    if (Handler.GuestHandler &&
-        Handler.GuestHandler(Thread, Signal, &SigInfo, UContext, &Handler.GuestAction, &ThreadObject->SignalInfo.GuestAltStack)) {
+    ThreadObject->SignalInfo.DeliveringDrainedSignal = DrainedFrame;
+    const bool Delivered = Handler.GuestHandler && Handler.GuestHandler(Thread, Signal, &SigInfo, UContext, &Handler.GuestAction,
+                                                                        &ThreadObject->SignalInfo.GuestAltStack);
+    ThreadObject->SignalInfo.DeliveringDrainedSignal = false;
+    if (Delivered) {
       // Guest SA_RESTART bookkeeping. A guest handler is now committed to run on
       // this thread; record whether the guest asked for interrupted syscalls to
       // be restarted around it. HandleSyscall's restart loop reads these once

@@ -1315,6 +1315,11 @@ uint64_t SyscallHandler::HandleSyscall(FEXCore::Core::CpuStateFrame* Frame, FEXC
   // this frame: it is the one the JIT calls directly.
   const uint64_t JITPC = reinterpret_cast<uint64_t>(__builtin_extract_return_addr(__builtin_return_address(0)));
 
+  // A guest that jumped out of a signal handler is found here while its SP is
+  // still above the handler's frame (SignalDelegator.cpp, "Abandoned guest
+  // handlers"). Frame->State.sp is spilled for the syscall.
+  GetSignalDelegator()->NoteGuestSyscall(Frame->Thread);
+
 #ifndef ARCHITECTURE_ppc64le
   return HandleSyscallImpl(Frame, Args, JITPC);
 #else

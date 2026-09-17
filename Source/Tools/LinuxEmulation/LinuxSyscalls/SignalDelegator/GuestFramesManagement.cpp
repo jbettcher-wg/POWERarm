@@ -20,6 +20,7 @@ $end_info$
 namespace FEX::HLE {
 
 // Layout (growing down from NewGuestSP), mirroring arch/arm64/kernel/signal.c:
+//   handler level serial (FEX-private, checked by RestoreThreadState)
 //   host stack location (FEX-private, read back by RestoreThreadState)
 //   frame_record {fp, lr}
 //   rt_sigframe {siginfo_t, ucontext_t}
@@ -96,13 +97,13 @@ uint64_t SignalDelegator::SetupFrame_Arm64(FEXCore::Core::InternalThreadState* T
   return NewGuestSP;
 }
 
-void SignalDelegator::RestoreFrame_Arm64(FEXCore::Core::InternalThreadState* Thread, ArchHelpers::Context::ContextBackup* Context,
+bool SignalDelegator::RestoreFrame_Arm64(FEXCore::Core::InternalThreadState* Thread, ArchHelpers::Context::ContextBackup* Context,
                                          FEXCore::Core::CpuStateFrame* Frame, void* ucontext) {
   auto* uc = reinterpret_cast<FEXCore::arm64::ucontext_t*>(Context->UContextLocation);
 
   if (Context->OriginalRIP == uc->uc_mcontext.pc && !Context->FaultToTopAndGeneratedException) {
     // The handler did not redirect the guest; the backed-up host context resumes it.
-    return;
+    return false;
   }
 
   Frame->InSyscallInfo = Context->InSyscallInfo;
@@ -118,6 +119,7 @@ void SignalDelegator::RestoreFrame_Arm64(FEXCore::Core::InternalThreadState* Thr
   State.pc = uc->uc_mcontext.pc;
   State.nzcv = static_cast<uint32_t>(uc->uc_mcontext.pstate) & 0xF000'0000U;
   // POWERARM-M0-TODO(signals): restore FPCR/FPSR/V0-V31 from the fpsimd_context record once SetupFrame_Arm64 emits it.
+  return true;
 }
 
 } // namespace FEX::HLE
