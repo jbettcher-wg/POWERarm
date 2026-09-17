@@ -173,7 +173,12 @@ bool IsFaultLocation(uint64_t PC) {
 //
 // Calling convention (PPC64LE ELFv2): r3=Dest, r4=Src, r5=Size; return in r3.
 // We use r6 as the loop temp (caller-clobbered scratch under ELFv2).
-__attribute__((naked)) size_t CopyFromUser(void* Dest, const void* Src, size_t Size) {
+//
+// `used`: with the x86-32 syscall handlers gone nothing calls these yet, and
+// ThinLTO would otherwise drop the functions together with the *_FaultInst
+// labels that IsFaultLocation still references.
+// POWERARM-M0-TODO(syscalls): the arm64 handlers that copy guest structs through possibly-bad pointers should call these.
+__attribute__((naked, used)) size_t CopyFromUser(void* Dest, const void* Src, size_t Size) {
   __asm volatile(R"(
     cmpdi   3, 5, 0
     beq     3, 2f
@@ -193,7 +198,7 @@ __attribute__((naked)) size_t CopyFromUser(void* Dest, const void* Src, size_t S
                    : "memory");
 }
 
-__attribute__((naked)) size_t CopyToUser(void* Dest, const void* Src, size_t Size) {
+__attribute__((naked, used)) size_t CopyToUser(void* Dest, const void* Src, size_t Size) {
   __asm volatile(R"(
     cmpdi   3, 5, 0
     beq     3, 2f

@@ -14,7 +14,6 @@
 
 #include <FEXCore/Utils/LogManager.h>
 #include <FEXCore/Core/CoreState.h>
-#include <FEXCore/Core/X86Enums.h>
 
 #include <signal.h>
 #include <string.h>
@@ -29,6 +28,14 @@ namespace FEX::ArchHelpers::Context {
 
 enum ContextFlags : uint32_t {
   CONTEXT_FLAG_INJIT = (1U << 0),
+};
+
+// Fault classification GetProtectFlags reports (the bit values of the x86 page
+// fault error code this layer was written against).
+// POWERARM-M0-TODO(signals): AArch64 describes the fault through ESR_EL1 (esr_context); map DSISR to an ESR data-abort syndrome instead.
+enum ProtectFlagBits : uint32_t {
+  PROTECT_FLAG_WRITE = (1U << 1),
+  PROTECT_FLAG_USER = (1U << 2),
 };
 
 #if defined(ASSERTIONS_ENABLED) && ASSERTIONS_ENABLED

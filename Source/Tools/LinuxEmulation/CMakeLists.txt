@@ -27,34 +27,7 @@ add_library(LinuxEmulation STATIC
   LinuxSyscalls/ThreadManager.cpp
   LinuxSyscalls/SignalDelegator/GuestFramesManagement.cpp
   LinuxSyscalls/Utils/Threads.cpp
-  LinuxSyscalls/x32/Syscalls.cpp
-  LinuxSyscalls/x32/EPoll.cpp
-  LinuxSyscalls/x32/FD.cpp
-  LinuxSyscalls/x32/FS.cpp
-  LinuxSyscalls/x32/Info.cpp
-  LinuxSyscalls/x32/IO.cpp
-  LinuxSyscalls/x32/Memory.cpp
-  LinuxSyscalls/x32/Msg.cpp
-  LinuxSyscalls/x32/NotImplemented.cpp
-  LinuxSyscalls/x32/Semaphore.cpp
-  LinuxSyscalls/x32/Sched.cpp
-  LinuxSyscalls/x32/Signals.cpp
-  LinuxSyscalls/x32/Socket.cpp
-  LinuxSyscalls/x32/Stubs.cpp
-  LinuxSyscalls/x32/Thread.cpp
-  LinuxSyscalls/x32/Time.cpp
-  LinuxSyscalls/x32/Timer.cpp
-  LinuxSyscalls/x32/IoctlEmulation.cpp
-  LinuxSyscalls/x64/EPoll.cpp
-  LinuxSyscalls/x64/FD.cpp
-  LinuxSyscalls/x64/Info.cpp
-  LinuxSyscalls/x64/Memory.cpp
-  LinuxSyscalls/x64/NotImplemented.cpp
-  LinuxSyscalls/x64/Semaphore.cpp
-  LinuxSyscalls/x64/Signals.cpp
-  LinuxSyscalls/x64/Thread.cpp
-  LinuxSyscalls/x64/Syscalls.cpp
-  LinuxSyscalls/x64/Time.cpp
+  LinuxSyscalls/Arm64/Syscalls.cpp
   LinuxSyscalls/Syscalls/EPoll.cpp
   LinuxSyscalls/Syscalls/FD.cpp
   LinuxSyscalls/Syscalls/FS.cpp
@@ -98,19 +71,8 @@ target_link_libraries(LinuxEmulation PRIVATE
 target_link_libraries(LinuxEmulation INTERFACE FEXCore)
 
 set(HEADERS_TO_VERIFY
-  # These need to match structs to 32bit structs
-  LinuxSyscalls/x32/Types.h          x86_32
-  LinuxSyscalls/x32/Ioctl/asound.h   x86_32
-  LinuxSyscalls/x32/Ioctl/drm.h      x86_32
-  LinuxSyscalls/x32/Ioctl/streams.h  x86_32
-  LinuxSyscalls/x32/Ioctl/usbdev.h   x86_32
-  LinuxSyscalls/x32/Ioctl/input.h    x86_32
-  LinuxSyscalls/x32/Ioctl/sockios.h  x86_32
-  LinuxSyscalls/x32/Ioctl/joystick.h x86_32
-  LinuxSyscalls/x32/Ioctl/v4l2.h     x86_32
-
-  # This needs to match structs to 64bit structs
-  LinuxSyscalls/x64/Types.h          x86_64)
+  # POWERARM-M0-TODO(syscalls): the x86_32/x86_64 guest struct headers were deleted with LinuxSyscalls/x32 and x64; arm64 guest layout headers go here (verified as aarch64).
+)
 
 list(LENGTH HEADERS_TO_VERIFY ARG_COUNT)
 math(EXPR ARG_COUNT "${ARG_COUNT}-1")

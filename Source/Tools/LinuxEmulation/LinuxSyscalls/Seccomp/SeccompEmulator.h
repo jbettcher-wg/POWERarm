@@ -95,7 +95,6 @@ public:
   std::atomic<uint64_t> FilterGeneration {1};
 
 private:
-  FEX_CONFIG_OPT(Is64BitMode, IS64BIT_MODE);
   FEX_CONFIG_OPT(NeedsSeccomp, NEEDSSECCOMP);
   FEX_CONFIG_OPT(Filename, APP_FILENAME);
   FEX::HLE::SyscallHandler* SyscallHandler;

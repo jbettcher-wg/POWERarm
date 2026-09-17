@@ -8,10 +8,8 @@ $end_info$
 #include "LinuxSyscalls/SignalDelegator.h"
 #include "LinuxSyscalls/Syscalls.h"
 #include "LinuxSyscalls/Syscalls/Thread.h"
-#include "LinuxSyscalls/x64/Syscalls.h"
-#include "LinuxSyscalls/x32/Syscalls.h"
+#include "LinuxSyscalls/Arm64/Syscalls.h"
 
-#include <FEXCore/Core/X86Enums.h>
 #include <FEXCore/Core/SignalDelegator.h>
 
 #include <signal.h>

@@ -167,7 +167,7 @@ static const auto P5_1_ProcessStart = std::chrono::steady_clock::now();
 ThreadManager::StatAlloc::StatAlloc() {
   (void)P5_1_ProcessStart;  // force init at first StatAlloc construction
   Initialize();
-  SaveHeader(Is64BitMode() ? FEXCore::SHMStats::AppType::LINUX_64 : FEXCore::SHMStats::AppType::LINUX_32);
+  SaveHeader(FEXCore::SHMStats::AppType::LINUX_64);
 }
 
 void ThreadManager::StatAlloc::Initialize() {
@@ -335,7 +335,7 @@ void ThreadManager::StatAlloc::UnlockAfterFork(FEXCore::Core::InternalThreadStat
   Thread->ThreadStats = nullptr;
 
   Initialize();
-  SaveHeader(Is64BitMode() ? FEXCore::SHMStats::AppType::LINUX_64 : FEXCore::SHMStats::AppType::LINUX_32);
+  SaveHeader(FEXCore::SHMStats::AppType::LINUX_64);
 
   // Update this thread's ThreadStats object
   auto ThreadObject = FEX::HLE::ThreadManager::GetStateObjectFromFEXCoreThread(Thread);
@@ -412,43 +412,6 @@ FEX::HLE::ThreadStateObject* ThreadManager::CreateThread(uint64_t InitialRIP, ui
     ThreadStateObject->Thread->ThreadStats = Stat.AllocateSlot(ThreadStateObject->ThreadInfo.TID);
   }
 
-  // GDT and LDT are tracked per thread.
-  Frame->State.segment_arrays[FEXCore::Core::CPUState::SEGMENT_ARRAY_INDEX_GDT] = &ThreadStateObject->gdt[0];
-  // Mirror LDT to the GDT by default. Not technically correctly, but fixes crashes in unittests.
-  Frame->State.segment_arrays[FEXCore::Core::CPUState::SEGMENT_ARRAY_INDEX_LDT] = &ThreadStateObject->gdt[0];
-
-  if (InheritThread) {
-    // If we are inheriting thread data then we inherit both the gdt and ldt arrays.
-    // They are then forked from the parent thread.
-    static_assert(sizeof(ThreadStateObject->gdt) == (8 * 32));
-    memcpy(ThreadStateObject->gdt, InheritThread->gdt, sizeof(ThreadStateObject->gdt));
-    if (InheritThread->ldt_entry_count) {
-      const auto new_ldt_size = InheritThread->ldt_entry_count * FEX::HLE::SyscallHandler::LDT_ENTRY_SIZE;
-      ThreadStateObject->ldt_entries = reinterpret_cast<FEXCore::Core::CPUState::gdt_segment*>(
-        FEXCore::Allocator::mmap(nullptr, new_ldt_size, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0));
-      FEXCore::Allocator::VirtualName("FEXMem_Misc", reinterpret_cast<void*>(ThreadStateObject->ldt_entries), new_ldt_size);
-
-      ThreadStateObject->ldt_entry_count = InheritThread->ldt_entry_count;
-      memcpy(ThreadStateObject->ldt_entries, InheritThread->ldt_entries, new_ldt_size);
-    }
-  } else {
-    // Without any thread data to inherit, setup the default gdt.
-    // Default code segment indexes match the numbers that the Linux kernel uses.
-    Frame->State.cs_idx = FEXCore::Core::CPUState::DEFAULT_USER_CS << 3;
-    auto GDT = FEXCore::Core::CPUState::GetSegmentFromIndex(Frame->State, Frame->State.cs_idx);
-    FEXCore::Core::CPUState::SetGDTBase(GDT, 0);
-    FEXCore::Core::CPUState::SetGDTLimit(GDT, 0xF'FFFFU);
-    Frame->State.cs_cached =
-      FEXCore::Core::CPUState::CalculateGDTBase(*FEXCore::Core::CPUState::GetSegmentFromIndex(Frame->State, Frame->State.cs_idx));
-
-    if (Is64BitMode()) {
-      GDT->L = 1; // L = Long Mode = 64-bit
-      GDT->D = 0; // D = Default Operand SIze = Reserved
-    } else {
-      GDT->L = 0; // L = Long Mode = 32-bit
-      GDT->D = 1; // D = Default Operand Size = 32-bit
-    }
-  }
 
   if (InheritThread) {
     FEX::HLE::_SyscallHandler->SeccompEmulator.InheritSeccompFilters(InheritThread, ThreadStateObject);
@@ -482,15 +445,6 @@ void ThreadManager::StopThread(FEX::HLE::ThreadStateObject* Thread) {
 }
 
 void ThreadManager::HandleThreadDeletion(FEX::HLE::ThreadStateObject* Thread, bool NeedsTLSUninstall) {
-  // Robust-futex cleanup for 32-bit guests. The kernel performs this for
-  // 64-bit guests via the native set_robust_list registration (passthrough);
-  // 32-bit needs us to walk the list manually because the kernel can't parse
-  // the 32-bit list layout from our 64-bit task. See WalkAndCleanupRobustList32.
-  if (Thread->ThreadInfo.robust_list_head != 0 && !Is64BitMode()) {
-    WalkAndCleanupRobustList32(static_cast<uint32_t>(Thread->ThreadInfo.robust_list_head),
-                               static_cast<uint32_t>(Thread->ThreadInfo.TID));
-  }
-
   if (Thread->ExecutionThread) {
     if (Thread->ExecutionThread->joinable()) {
       Thread->ExecutionThread->join(nullptr);
@@ -516,10 +470,6 @@ void ThreadManager::HandleThreadDeletion(FEX::HLE::ThreadStateObject* Thread, bo
   // Free the call-ret stack
   FEXCore::Allocator::munmap(reinterpret_cast<void*>(Thread->GetCallRetStackInfo().AllocationBase), CallRetStackAllocSize());
 
-  // If the LDT segment exists then deallocate it.
-  if (Thread->ldt_entry_count) {
-    FEXCore::Allocator::munmap(Thread->ldt_entries, Thread->ldt_entry_count * FEX::HLE::SyscallHandler::LDT_ENTRY_SIZE);
-  }
 
   FEX::HLE::_SyscallHandler->SeccompEmulator.FreeSeccompFilters(Thread);
 

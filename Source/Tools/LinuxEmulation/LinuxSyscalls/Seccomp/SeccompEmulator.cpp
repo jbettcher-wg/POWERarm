@@ -8,8 +8,7 @@ $end_info$
 #include "LinuxSyscalls/Seccomp/BPFInterpreter.h"
 #include "LinuxSyscalls/Seccomp/SeccompEmulator.h"
 
-#include "LinuxSyscalls/x32/Syscalls.h"
-#include "LinuxSyscalls/x64/Syscalls.h"
+#include "LinuxSyscalls/Arm64/Syscalls.h"
 #include "LinuxSyscalls/SignalDelegator.h"
 
 #include <FEXCore/Core/CoreState.h>
@@ -447,7 +446,7 @@ SeccompEmulator::ExecuteFilterResult SeccompEmulator::ExecuteFilterSlow(FEXCore:
     return RIP;
   };
 
-  const auto Arch = Is64BitMode() ? AUDIT_ARCH_X86_64 : AUDIT_ARCH_I386;
+  const auto Arch = AUDIT_ARCH_AARCH64;
   bool ShouldLog {};
   uint32_t SeccompResult {};
 
@@ -620,11 +619,9 @@ uint64_t SeccompEmulator::SetModeStrict(FEXCore::Core::CpuStateFrame* Frame, uin
 
 #define syscall_nr (offsetof(struct seccomp_data, nr))
 #define ALLOW_SYSCALL(name) \
-  BPF_JUMP(BPF_JMP + BPF_JEQ + BPF_K, FEX::HLE::x64::SYSCALL_x64_##name, 0, 1), BPF_STMT(BPF_RET + BPF_K, SECCOMP_RET_ALLOW)
-#define ALLOW_SYSCALL_x32(name) \
-  BPF_JUMP(BPF_JMP + BPF_JEQ + BPF_K, FEX::HLE::x32::SYSCALL_x86_##name, 0, 1), BPF_STMT(BPF_RET + BPF_K, SECCOMP_RET_ALLOW)
+  BPF_JUMP(BPF_JMP + BPF_JEQ + BPF_K, FEX::HLE::Arm64::SYSCALL_Arm64_##name, 0, 1), BPF_STMT(BPF_RET + BPF_K, SECCOMP_RET_ALLOW)
 
-  constexpr static struct sock_filter strict_filter_x64[] = {
+  constexpr static struct sock_filter strict_filter_arm64[] = {
     // Load syscall number
     BPF_STMT(BPF_LD + BPF_W + BPF_ABS, syscall_nr),
 
@@ -637,31 +634,12 @@ uint64_t SeccompEmulator::SetModeStrict(FEXCore::Core::CpuStateFrame* Frame, uin
     BPF_STMT(BPF_RET + BPF_K, SECCOMP_RET_KILL_PROCESS),
   };
 
-  constexpr static struct sock_filter strict_filter_x32[] = {
-    // Load syscall number
-    BPF_STMT(BPF_LD + BPF_W + BPF_ABS, syscall_nr),
-
-    // Allow read, write, exit, exit_group, and sigreturn
-    ALLOW_SYSCALL_x32(read),
-    ALLOW_SYSCALL_x32(write),
-    ALLOW_SYSCALL_x32(exit),
-    ALLOW_SYSCALL_x32(exit_group),
-    ALLOW_SYSCALL_x32(rt_sigreturn),
-    ALLOW_SYSCALL_x32(sigreturn),
-    BPF_STMT(BPF_RET + BPF_K, SECCOMP_RET_KILL_PROCESS),
-  };
-
-  const sock_fprog prog_x64 {
-    .len = (unsigned short)(sizeof(strict_filter_x64) / sizeof(strict_filter_x64[0])),
-    .filter = const_cast<struct sock_filter*>(strict_filter_x64),
-  };
-
-  const sock_fprog prog_x32 {
-    .len = (unsigned short)(sizeof(strict_filter_x32) / sizeof(strict_filter_x32[0])),
-    .filter = const_cast<struct sock_filter*>(strict_filter_x32),
+  const sock_fprog prog_arm64 {
+    .len = (unsigned short)(sizeof(strict_filter_arm64) / sizeof(strict_filter_arm64[0])),
+    .filter = const_cast<struct sock_filter*>(strict_filter_arm64),
   };
   CurrentKillSignal = SIGKILL;
-  const sock_fprog* prog = Is64BitMode() ? &prog_x64 : &prog_x32;
+  const sock_fprog* prog = &prog_arm64;
   SetModeFilter(Frame, 0, prog);
   Thread->SeccompMode = SECCOMP_MODE_STRICT;
 

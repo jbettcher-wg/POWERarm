@@ -52,8 +52,8 @@ $end_info$
 #define SYSCALL_ARCH_NAME PPC64LE
 #endif
 
-#include "LinuxSyscalls/x64/SyscallsEnum.h"
-#include "LinuxSyscalls/x32/SyscallsEnum.h"
+#include "LinuxSyscalls/Arm64/SyscallsEnum.h"
+#include "LinuxSyscalls/Arm64/LegacySyscallsEnum.h"
 
 #define CONCAT_(a, b) a##b
 #define CONCAT(a, b) CONCAT_(a, b)
@@ -91,6 +91,7 @@ void RegisterThread(FEX::HLE::SyscallHandler* Handler);
 void RegisterTimer(FEX::HLE::SyscallHandler* Handler);
 void RegisterNotImplemented(FEX::HLE::SyscallHandler* Handler);
 void RegisterStubs(FEX::HLE::SyscallHandler* Handler);
+void RegisterPassthrough(FEX::HLE::SyscallHandler* Handler);
 
 uint64_t UnimplementedSyscall(FEXCore::Core::CpuStateFrame* Frame, uint64_t SyscallNumber);
 uint64_t UnimplementedSyscallSafe(FEXCore::Core::CpuStateFrame* Frame, uint64_t SyscallNumber);
@@ -323,13 +324,6 @@ public:
     return &Definitions.at(Syscall);
   }
 
-  virtual void RegisterSyscall_32(int SyscallNumber,
-#ifdef DEBUG_STRACE
-                                  const fextl::string& TraceFormatString,
-#endif
-                                  void* SyscallHandler, int ArgumentCount) {
-  }
-
   virtual void RegisterSyscall_64(int SyscallNumber,
 #ifdef DEBUG_STRACE
                                   const fextl::string& TraceFormatString,
@@ -357,7 +351,6 @@ public:
   FEX_CONFIG_OPT(IsInterpreterInstalled, INTERPRETER_INSTALLED);
   FEX_CONFIG_OPT(Filename, APP_FILENAME);
   FEX_CONFIG_OPT(RootFSPath, ROOTFS);
-  FEX_CONFIG_OPT(Is64BitMode, IS64BIT_MODE);
   FEX_CONFIG_OPT(SMCChecks, SMCCHECKS);
   FEX_CONFIG_OPT(SMCMarkMemo, SMCMARKMEMO);
   FEX_CONFIG_OPT(SMCStoreEmulation, SMCSTOREEMULATION);
@@ -858,8 +851,6 @@ public:
   }
 
   constexpr static uint64_t TASK_MAX_64BIT = (1ULL << 48);
-  constexpr static size_t MAX_LDT_ENTRIES = 8192;
-  constexpr static size_t LDT_ENTRY_SIZE = sizeof(FEXCore::Core::CPUState::gdt_segment);
 
   VMATracking::VMATracking VMATracking;
 
@@ -903,13 +894,11 @@ public:
   std::mutex CodeCacheLoadedMutex;
   fextl::set<uint64_t> CodeCacheLoadedFileIds;
 
-  uint64_t read_ldt(FEXCore::Core::CpuStateFrame* Frame, void* ptr, unsigned long bytecount);
-  uint64_t write_ldt(FEXCore::Core::CpuStateFrame* Frame, void* ptr, unsigned long bytecount, bool legacy);
 
 protected:
   SyscallHandler(FEXCore::Context::Context* _CTX, FEX::HLE::SignalDelegator* _SignalDelegation, FEX::HLE::ThunkHandler* ThunkHandler);
 
-  fextl::vector<SyscallFunctionDefinition> Definitions {std::max<std::size_t>(FEX::HLE::x64::SYSCALL_x64_MAX, FEX::HLE::x32::SYSCALL_x86_MAX),
+  fextl::vector<SyscallFunctionDefinition> Definitions {FEX::HLE::Arm64::SYSCALL_Arm64_MAX,
                                                         {
                                                           .Ptr = reinterpret_cast<void*>(&UnimplementedSyscall),
                                                           .NumArgs = 255,
@@ -1197,8 +1186,6 @@ static bool HasSyscallError(const void* Result) {
   return HasSyscallError(reinterpret_cast<uintptr_t>(Result));
 }
 
-template<bool IncrementOffset, typename T>
-uint64_t GetDentsEmulation(int fd, T* dirp, uint32_t count);
 
 namespace FaultSafeUserMemAccess {
   // These are little helper functions for cases when FEX needs to copy data to or from the application in a robust fashion.
@@ -1288,9 +1275,8 @@ inline static uint64_t futimesat_compat(int dirfd, const char* pathname, const T
 
 } // namespace FEX::HLE
 
-// Registers syscall for both 32bit and 64bit
-#define REGISTER_SYSCALL_IMPL(name, lambda)                                                      \
-  do {                                                                                           \
-    FEX::HLE::x64::RegisterSyscall(Handler, FEX::HLE::x64::SYSCALL_x64_##name, #name, (lambda)); \
-    FEX::HLE::x32::RegisterSyscall(Handler, FEX::HLE::x32::SYSCALL_x86_##name, #name, (lambda)); \
+// Registers a syscall in the AArch64 guest table (asm-generic numbers).
+#define REGISTER_SYSCALL_IMPL(name, lambda)                                                            \
+  do {                                                                                                 \
+    FEX::HLE::Arm64::RegisterSyscall(Handler, FEX::HLE::Arm64::SYSCALL_Arm64_##name, #name, (lambda)); \
   } while (false)

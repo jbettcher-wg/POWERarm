@@ -21,7 +21,6 @@ $end_info$
 #include <FEXCore/Core/Context.h>
 #include <FEXCore/Core/CoreState.h>
 #include <FEXCore/Core/SignalDelegator.h>
-#include <FEXCore/Core/X86Enums.h>
 #include <FEXCore/Debug/InternalThreadState.h>
 #include <FEXCore/HLE/SyscallHandler.h>
 #include <FEXCore/Utils/CompilerDefs.h>
@@ -301,31 +300,14 @@ GdbServer::GDBContextDefinition GdbServer::GenerateContextDefinition(const FEX::
   memcpy(&state, ThreadObject->Thread->CurrentFrame, sizeof(state));
 
   // Encode the GDB context definition
-  memcpy(&GDB.gregs[0], &state.gregs[0], sizeof(GDB.gregs));
-  GDB.rip = ThreadObject->Thread->CurrentFrame->State.rip;
-  GDB.eflags = CTX->ReconstructCompactedEFLAGS(ThreadObject->Thread, false, nullptr, 0);
-
-  for (size_t i = 0; i < FEXCore::Core::CPUState::NUM_MMS; ++i) {
-    memcpy(&GDB.mm[i], &state.mm[i], sizeof(GDB.mm[i]));
-  }
-
-  GDB.fctrl = state.FCW;
-
-  GDB.fstat = static_cast<uint32_t>(state.flags[FEXCore::X86State::X87FLAG_TOP_LOC]) << 11;
-  GDB.fstat |= static_cast<uint32_t>(state.flags[FEXCore::X86State::X87FLAG_C0_LOC]) << 8;
-  GDB.fstat |= static_cast<uint32_t>(state.flags[FEXCore::X86State::X87FLAG_C1_LOC]) << 9;
-  GDB.fstat |= static_cast<uint32_t>(state.flags[FEXCore::X86State::X87FLAG_C2_LOC]) << 10;
-  GDB.fstat |= static_cast<uint32_t>(state.flags[FEXCore::X86State::X87FLAG_C3_LOC]) << 14;
-  GDB.fstat |= static_cast<uint32_t>(state.flags[FEXCore::X86State::X87FLAG_IE_LOC]);
-
-  __uint128_t XMM_Low[FEXCore::Core::CPUState::NUM_XMMS];
-  __uint128_t YMM_High[FEXCore::Core::CPUState::NUM_XMMS];
-
-  CTX->ReconstructXMMRegisters(ThreadObject->Thread, XMM_Low, YMM_High);
-  for (size_t i = 0; i < FEXCore::Core::CPUState::NUM_XMMS; ++i) {
-    memcpy(&GDB.xmm[i][0], &XMM_Low[i], sizeof(__uint128_t));
-    memcpy(&GDB.xmm[i][2], &YMM_High[i], sizeof(__uint128_t));
-  }
+  memcpy(GDB.x, state.x, sizeof(GDB.x));
+  GDB.sp = state.sp;
+  GDB.pc = state.pc;
+  // POWERARM-M0-TODO(cpustate): reconstruct NZCV from the host CR0/XER flag cache when the thread is stopped inside JIT code.
+  GDB.cpsr = state.nzcv;
+  memcpy(GDB.v, state.v, sizeof(GDB.v));
+  GDB.fpsr = state.fpsr;
+  GDB.fpcr = state.fpcr;
 
   return GDB;
 }
@@ -427,7 +409,7 @@ GdbServer::HandledPacketType GdbServer::XferCommandExecFile(const fextl::string&
 
 GdbServer::HandledPacketType GdbServer::XferCommandFeatures(const fextl::string& annex, int offset, int length) {
   if (annex == "target.xml") {
-    return {EncodeXferString(GDB::Info::BuildTargetXML(Is64BitMode()), offset, length), HandledPacketType::TYPE_ACK};
+    return {EncodeXferString(GDB::Info::BuildTargetXML(), offset, length), HandledPacketType::TYPE_ACK};
   }
 
   return {"E00", HandledPacketType::TYPE_ACK};
@@ -478,21 +460,8 @@ GdbServer::HandledPacketType GdbServer::XferCommandAuxv(const fextl::string& ann
   const auto [auxv_ptr, auxv_size] = CodeLoader->GetAuxv();
 
   fextl::string data;
-  if (Is64BitMode()) {
-    data.resize(auxv_size);
-    memcpy(data.data(), reinterpret_cast<void*>(auxv_ptr), data.size());
-  } else {
-    // We need to transcode from 32-bit auxv_t to 64-bit
-    data.resize(auxv_size / sizeof(Elf32_auxv_t) * sizeof(Elf64_auxv_t));
-    size_t NumAuxv = auxv_size / sizeof(Elf32_auxv_t);
-    for (size_t i = 0; i < NumAuxv; ++i) {
-      Elf32_auxv_t* auxv = reinterpret_cast<Elf32_auxv_t*>(auxv_ptr + i * sizeof(Elf32_auxv_t));
-      Elf64_auxv_t tmp;
-      tmp.a_type = auxv->a_type;
-      tmp.a_un.a_val = auxv->a_un.a_val;
-      memcpy(data.data() + i * sizeof(Elf64_auxv_t), &tmp, sizeof(Elf64_auxv_t));
-    }
-  }
+  data.resize(auxv_size);
+  memcpy(data.data(), reinterpret_cast<void*>(auxv_ptr), data.size());
 
   return {EncodeXferString(data, offset, length), HandledPacketType::TYPE_ACK};
 }
@@ -660,37 +629,19 @@ GdbServer::HandledPacketType GdbServer::CommandReadRegisters(const fextl::string
   // Pause up front
   SyscallHandler->TM.Pause();
   const FEX::HLE::ThreadStateObject* CurrentThread = FindThreadByTID(CurrentDebuggingThread);
-  const size_t NumGPR = Is64BitMode() ? FEXCore::Core::CPUState::NUM_GPRS : FEXCore::Core::CPUState::NUM_GPRS / 2;
-  const size_t GPRSize = Is64BitMode() ? sizeof(uint64_t) : sizeof(uint32_t);
-  const size_t NumXMM = Is64BitMode() ? FEXCore::Core::CPUState::NUM_XMMS : FEXCore::Core::CPUState::NUM_XMMS / 2;
-  const size_t XMMSize = Is64BitMode() ? sizeof(__uint128_t) * 2 : sizeof(__uint128_t);
   fextl::string str;
   auto GDB = GenerateContextDefinition(CurrentThread);
-  for (size_t i = 0; i < NumGPR; ++i) {
-    str += appendHex(reinterpret_cast<const char*>(&GDB.gregs[i]), GPRSize);
+  for (auto& Reg : GDB.x) {
+    str += appendHex(reinterpret_cast<const char*>(&Reg), sizeof(uint64_t));
   }
-  str += appendHex(reinterpret_cast<const char*>(&GDB.rip), GPRSize);
-  str += appendHex(reinterpret_cast<const char*>(&GDB.eflags), sizeof(uint32_t));
-
-  str += appendHex(reinterpret_cast<const char*>(&GDB.cs), sizeof(uint32_t));
-  str += appendHex(reinterpret_cast<const char*>(&GDB.ss), sizeof(uint32_t));
-  str += appendHex(reinterpret_cast<const char*>(&GDB.ds), sizeof(uint32_t));
-  str += appendHex(reinterpret_cast<const char*>(&GDB.es), sizeof(uint32_t));
-  str += appendHex(reinterpret_cast<const char*>(&GDB.fs), sizeof(uint32_t));
-  str += appendHex(reinterpret_cast<const char*>(&GDB.gs), sizeof(uint32_t));
-  for (auto& mm : GDB.mm) {
-    str += appendHex(reinterpret_cast<const char*>(&mm), sizeof(X80Float));
+  str += appendHex(reinterpret_cast<const char*>(&GDB.sp), sizeof(uint64_t));
+  str += appendHex(reinterpret_cast<const char*>(&GDB.pc), sizeof(uint64_t));
+  str += appendHex(reinterpret_cast<const char*>(&GDB.cpsr), sizeof(uint32_t));
+  for (auto& Reg : GDB.v) {
+    str += appendHex(reinterpret_cast<const char*>(&Reg), sizeof(__uint128_t));
   }
-
-  str += appendHex(reinterpret_cast<const char*>(&GDB.fctrl), sizeof(uint32_t));
-  str += appendHex(reinterpret_cast<const char*>(&GDB.fstat), sizeof(uint32_t));
-  str += appendHex(reinterpret_cast<const char*>(&GDB.dummies), sizeof(GDB.dummies));
-
-  for (size_t i = 0; i < NumXMM; ++i) {
-    str += appendHex(reinterpret_cast<const char*>(&GDB.xmm[i]), XMMSize);
-  }
-
-  str += appendHex(reinterpret_cast<const char*>(&GDB.mxcsr), sizeof(uint32_t));
+  str += appendHex(reinterpret_cast<const char*>(&GDB.fpsr), sizeof(uint32_t));
+  str += appendHex(reinterpret_cast<const char*>(&GDB.fpcr), sizeof(uint32_t));
 
   return {std::move(str), HandledPacketType::TYPE_ACK};
 }
@@ -780,29 +731,23 @@ GdbServer::HandledPacketType GdbServer::CommandReadReg(const fextl::string& pack
   const FEX::HLE::ThreadStateObject* CurrentThread = FindThreadByTID(CurrentDebuggingThread);
   auto GDB = GenerateContextDefinition(CurrentThread);
 
-  if (addr >= offsetof(GDBContextDefinition, gregs[0]) && addr < offsetof(GDBContextDefinition, gregs[16])) {
-    return {encodeHex((unsigned char*)(&GDB.gregs[addr / sizeof(uint64_t)]), sizeof(uint64_t)), HandledPacketType::TYPE_ACK};
-  } else if (addr == offsetof(GDBContextDefinition, rip)) {
-    return {encodeHex((unsigned char*)(&GDB.rip), sizeof(uint64_t)), HandledPacketType::TYPE_ACK};
-  } else if (addr == offsetof(GDBContextDefinition, eflags)) {
-    return {encodeHex((unsigned char*)(&GDB.eflags), sizeof(uint32_t)), HandledPacketType::TYPE_ACK};
-  } else if (addr >= offsetof(GDBContextDefinition, cs) && addr < offsetof(GDBContextDefinition, mm[0])) {
-    uint32_t Empty {};
-    return {encodeHex((unsigned char*)(&Empty), sizeof(uint32_t)), HandledPacketType::TYPE_ACK};
-  } else if (addr >= offsetof(GDBContextDefinition, mm[0]) && addr < offsetof(GDBContextDefinition, mm[8])) {
-    return {encodeHex((unsigned char*)(&GDB.mm[(addr - offsetof(GDBContextDefinition, mm[0])) / sizeof(X80Float)]), sizeof(X80Float)),
-            HandledPacketType::TYPE_ACK};
-  } else if (addr == offsetof(GDBContextDefinition, fctrl)) {
-    return {encodeHex((unsigned char*)(&GDB.fctrl), sizeof(uint32_t)), HandledPacketType::TYPE_ACK};
-  } else if (addr == offsetof(GDBContextDefinition, fstat)) {
-    return {encodeHex((unsigned char*)(&GDB.fstat), sizeof(uint32_t)), HandledPacketType::TYPE_ACK};
-  } else if (addr >= offsetof(GDBContextDefinition, dummies[0]) && addr < offsetof(GDBContextDefinition, dummies[6])) {
-    return {encodeHex((unsigned char*)(&GDB.dummies[0]), sizeof(uint32_t)), HandledPacketType::TYPE_ACK};
-  } else if (addr >= offsetof(GDBContextDefinition, xmm[0][0]) && addr < offsetof(GDBContextDefinition, xmm[16][0])) {
-    const auto XmmIndex = (addr - offsetof(GDBContextDefinition, xmm[0][0])) / FEXCore::Core::CPUState::XMM_AVX_REG_SIZE;
-    return {encodeHex(reinterpret_cast<const uint8_t*>(&GDB.xmm[XmmIndex]), FEXCore::Core::CPUState::XMM_AVX_REG_SIZE), HandledPacketType::TYPE_ACK};
-  } else if (addr == offsetof(GDBContextDefinition, mxcsr)) {
-    return {encodeHex((unsigned char*)(&GDB.mxcsr), sizeof(uint32_t)), HandledPacketType::TYPE_ACK};
+  // addr is the register number from target.xml.
+  const size_t NumX = FEXCore::Core::CPUState::NUM_XREGS;
+  const size_t NumV = FEXCore::Core::CPUState::NUM_VREGS;
+  if (addr < NumX) {
+    return {encodeHex((unsigned char*)(&GDB.x[addr]), sizeof(uint64_t)), HandledPacketType::TYPE_ACK};
+  } else if (addr == NumX) {
+    return {encodeHex((unsigned char*)(&GDB.sp), sizeof(uint64_t)), HandledPacketType::TYPE_ACK};
+  } else if (addr == NumX + 1) {
+    return {encodeHex((unsigned char*)(&GDB.pc), sizeof(uint64_t)), HandledPacketType::TYPE_ACK};
+  } else if (addr == NumX + 2) {
+    return {encodeHex((unsigned char*)(&GDB.cpsr), sizeof(uint32_t)), HandledPacketType::TYPE_ACK};
+  } else if (addr >= NumX + 3 && addr < NumX + 3 + NumV) {
+    return {encodeHex((unsigned char*)(&GDB.v[addr - (NumX + 3)]), sizeof(__uint128_t)), HandledPacketType::TYPE_ACK};
+  } else if (addr == NumX + 3 + NumV) {
+    return {encodeHex((unsigned char*)(&GDB.fpsr), sizeof(uint32_t)), HandledPacketType::TYPE_ACK};
+  } else if (addr == NumX + 4 + NumV) {
+    return {encodeHex((unsigned char*)(&GDB.fpcr), sizeof(uint32_t)), HandledPacketType::TYPE_ACK};
   }
 
   LogMan::Msg::EFmt("Unknown GDB register 0x{:x}", addr);
@@ -833,7 +778,7 @@ GdbServer::HandledPacketType GdbServer::CommandQuery(const fextl::string& packet
     return {"OK", HandledPacketType::TYPE_ACK};
   }
   if (match("qSupported:")) {
-    // eg: qSupported:multiprocess+;swbreak+;hwbreak+;qRelocInsn+;fork-events+;vfork-events+;exec-events+;vContSupported+;QThreadEvents+;no-resumed+;memory-tagging+;xmlRegisters=i386
+    // eg: qSupported:multiprocess+;swbreak+;hwbreak+;qRelocInsn+;fork-events+;vfork-events+;exec-events+;vContSupported+;QThreadEvents+;no-resumed+;memory-tagging+;xmlRegisters=aarch64
     auto Features = split(packet.substr(strlen("qSupported:")), ';');
 
     // For feature documentation
@@ -842,7 +787,7 @@ GdbServer::HandledPacketType GdbServer::CommandQuery(const fextl::string& packet
 
     // Required features
     SupportedFeatures += "PacketSize=32768;";
-    SupportedFeatures += "xmlRegisters=i386;";
+    SupportedFeatures += "xmlRegisters=aarch64;";
 
     SupportedFeatures += "qXfer:auxv:read+;";
     SupportedFeatures += "qXfer:exec-file:read+;";
@@ -997,8 +942,7 @@ GdbServer::HandledPacketType GdbServer::CommandQuery(const fextl::string& packet
     fextl::string HostFeatures {};
 
     // 64-bit always returned for the host environment.
-    // qProcessInfo will return i386 or not.
-    HostFeatures += fextl::fmt::format("triple:{};", encodeHex("x86_64-pc-linux-gnu"));
+    HostFeatures += fextl::fmt::format("triple:{};", encodeHex("aarch64-unknown-linux-gnu"));
     HostFeatures += "ptrsize:8;";
 
     // Always little-endian.

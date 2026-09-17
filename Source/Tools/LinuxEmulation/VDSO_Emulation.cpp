@@ -3,7 +3,6 @@
 
 #include "Common/CPUInfo.h"
 #include "LinuxSyscalls/Syscalls.h"
-#include "LinuxSyscalls/x32/Types.h"
 
 #include <FEXCore/Config/Config.h>
 #include <FEXCore/Core/Context.h>
@@ -229,216 +228,6 @@ namespace x64 {
   HandlerPtr Handler_getcpu = FEX::VDSO::x64::glibc::getcpu;
   HandlerPtr Handler_getrandom = FEX::VDSO::x64::glibc::getrandom;
 } // namespace x64
-namespace x32 {
-  namespace glibc {
-    static int SyscallRet(int Result) {
-      if (Result == -1) {
-        return -errno;
-      }
-      return Result;
-    }
-
-    // glibc handlers
-    static void time(void* ArgsRV) {
-      struct __attribute__((packed)) ArgsRV_t {
-        HLE::x32::compat_ptr<FEX::HLE::x32::old_time32_t> a_0;
-        int rv;
-      }* args = reinterpret_cast<ArgsRV_t*>(ArgsRV);
-
-      time_t Host {};
-      int Result = ::time(&Host);
-      args->rv = SyscallRet(Result);
-      if (Result != -1 && args->a_0) {
-        *args->a_0 = Host;
-      }
-    }
-
-    static void gettimeofday(void* ArgsRV) {
-      struct __attribute__((packed)) ArgsRV_t {
-        HLE::x32::compat_ptr<FEX::HLE::x32::timeval32> tv;
-        HLE::x32::compat_ptr<struct timezone> tz;
-        int rv;
-      }* args = reinterpret_cast<ArgsRV_t*>(ArgsRV);
-
-      struct timeval tv64 {};
-      struct timeval* tv_ptr {};
-      if (args->tv) {
-        tv_ptr = &tv64;
-      }
-
-      int Result = ::gettimeofday(tv_ptr, args->tz);
-      args->rv = SyscallRet(Result);
-
-      if (Result != -1 && args->tv) {
-        *args->tv = tv64;
-      }
-    }
-
-    static void clock_gettime(void* ArgsRV) {
-      struct __attribute__((packed)) ArgsRV_t {
-        clockid_t clk_id;
-        HLE::x32::compat_ptr<HLE::x32::timespec32> tp;
-        int rv;
-      }* args = reinterpret_cast<ArgsRV_t*>(ArgsRV);
-
-      struct timespec tp64 {};
-      int Result = ::clock_gettime(args->clk_id, &tp64);
-      args->rv = SyscallRet(Result);
-
-      if (Result != -1 && args->tp) {
-        *args->tp = tp64;
-      }
-    }
-
-    static void clock_gettime64(void* ArgsRV) {
-      struct __attribute__((packed)) ArgsRV_t {
-        clockid_t clk_id;
-        HLE::x32::compat_ptr<struct timespec> tp;
-        int rv;
-      }* args = reinterpret_cast<ArgsRV_t*>(ArgsRV);
-
-      int Result = ::clock_gettime(args->clk_id, args->tp);
-      args->rv = SyscallRet(Result);
-    }
-
-    static void clock_getres(void* ArgsRV) {
-      struct __attribute__((packed)) ArgsRV_t {
-        clockid_t clk_id;
-        HLE::x32::compat_ptr<HLE::x32::timespec32> tp;
-        int rv;
-      }* args = reinterpret_cast<ArgsRV_t*>(ArgsRV);
-
-      struct timespec tp64 {};
-
-      int Result = ::clock_getres(args->clk_id, &tp64);
-      args->rv = SyscallRet(Result);
-
-      if (Result != -1 && args->tp) {
-        *args->tp = tp64;
-      }
-    }
-
-    static void getcpu(void* ArgsRV) {
-      struct __attribute__((packed)) ArgsRV_t {
-        HLE::x32::compat_ptr<uint32_t> cpu;
-        HLE::x32::compat_ptr<uint32_t> node;
-        int rv;
-      }* args = reinterpret_cast<ArgsRV_t*>(ArgsRV);
-
-      int Result = FHU::Syscalls::getcpu(args->cpu, args->node);
-      if (Result == 0 && args->cpu) {
-        *args->cpu = FEX::CPUInfo::MapHostToGuestCPU(*args->cpu);
-      }
-      args->rv = SyscallRet(Result);
-    }
-  } // namespace glibc
-
-  namespace VDSO {
-    static bool SyscallErr(uint64_t Result) {
-      return Result >= -4095;
-    }
-
-    // VDSO handlers
-    static void time(void* ArgsRV) {
-      struct __attribute__((packed)) ArgsRV_t {
-        HLE::x32::compat_ptr<FEX::HLE::x32::old_time32_t> a_0;
-        int rv;
-      }* args = reinterpret_cast<ArgsRV_t*>(ArgsRV);
-
-      time_t Host {};
-      uint64_t Result = VDSOHandlers::TimePtr(&Host);
-      args->rv = Result;
-      if (!SyscallErr(Result) && args->a_0) {
-        *args->a_0 = Host;
-      }
-    }
-
-    static void gettimeofday(void* ArgsRV) {
-      struct __attribute__((packed)) ArgsRV_t {
-        HLE::x32::compat_ptr<FEX::HLE::x32::timeval32> tv;
-        HLE::x32::compat_ptr<struct timezone> tz;
-        int rv;
-      }* args = reinterpret_cast<ArgsRV_t*>(ArgsRV);
-
-      struct timeval tv64 {};
-      struct timeval* tv_ptr {};
-      if (args->tv) {
-        tv_ptr = &tv64;
-      }
-
-      uint64_t Result = VDSOHandlers::GetTimeOfDayPtr(tv_ptr, args->tz);
-      args->rv = Result;
-
-      if (!SyscallErr(Result) && args->tv) {
-        *args->tv = tv64;
-      }
-    }
-
-    static void clock_gettime(void* ArgsRV) {
-      struct __attribute__((packed)) ArgsRV_t {
-        clockid_t clk_id;
-        HLE::x32::compat_ptr<HLE::x32::timespec32> tp;
-        int rv;
-      }* args = reinterpret_cast<ArgsRV_t*>(ArgsRV);
-
-      struct timespec tp64 {};
-      uint64_t Result = VDSOHandlers::ClockGetTimePtr(args->clk_id, &tp64);
-      args->rv = Result;
-
-      if (!SyscallErr(Result) && args->tp) {
-        *args->tp = tp64;
-      }
-    }
-
-    static void clock_gettime64(void* ArgsRV) {
-      struct __attribute__((packed)) ArgsRV_t {
-        clockid_t clk_id;
-        HLE::x32::compat_ptr<struct timespec> tp;
-        int rv;
-      }* args = reinterpret_cast<ArgsRV_t*>(ArgsRV);
-
-      args->rv = VDSOHandlers::ClockGetTimePtr(args->clk_id, args->tp);
-    }
-
-    static void clock_getres(void* ArgsRV) {
-      struct __attribute__((packed)) ArgsRV_t {
-        clockid_t clk_id;
-        HLE::x32::compat_ptr<HLE::x32::timespec32> tp;
-        int rv;
-      }* args = reinterpret_cast<ArgsRV_t*>(ArgsRV);
-
-      struct timespec tp64 {};
-
-      uint64_t Result = VDSOHandlers::ClockGetResPtr(args->clk_id, &tp64);
-      args->rv = Result;
-
-      if (!SyscallErr(Result) && args->tp) {
-        *args->tp = tp64;
-      }
-    }
-
-    static void getcpu(void* ArgsRV) {
-      struct __attribute__((packed)) ArgsRV_t {
-        HLE::x32::compat_ptr<uint32_t> cpu;
-        HLE::x32::compat_ptr<uint32_t> node;
-        int rv;
-      }* args = reinterpret_cast<ArgsRV_t*>(ArgsRV);
-
-      const auto Result = VDSOHandlers::GetCPUPtr(args->cpu, args->node);
-      if (Result == 0 && args->cpu) {
-        *args->cpu = FEX::CPUInfo::MapHostToGuestCPU(*args->cpu);
-      }
-      args->rv = Result;
-    }
-  } // namespace VDSO
-
-  HandlerPtr Handler_time = FEX::VDSO::x32::glibc::time;
-  HandlerPtr Handler_gettimeofday = FEX::VDSO::x32::glibc::gettimeofday;
-  HandlerPtr Handler_clock_gettime = FEX::VDSO::x32::glibc::clock_gettime;
-  HandlerPtr Handler_clock_gettime64 = FEX::VDSO::x32::glibc::clock_gettime64;
-  HandlerPtr Handler_clock_getres = FEX::VDSO::x32::glibc::clock_getres;
-  HandlerPtr Handler_getcpu = FEX::VDSO::x32::glibc::getcpu;
-} // namespace x32
 
 class VDSOParser final {
 public:
@@ -567,7 +356,6 @@ void LoadHostVDSO() {
   if (SymbolPtr) {
     VDSOHandlers::TimePtr = reinterpret_cast<VDSOHandlers::TimeType>(SymbolPtr);
     x64::Handler_time = x64::VDSO::time;
-    x32::Handler_time = x32::VDSO::time;
   }
 
   SymbolPtr = VDSO.FindSymbol("__kernel_gettimeofday");
@@ -578,7 +366,6 @@ void LoadHostVDSO() {
   if (SymbolPtr) {
     VDSOHandlers::GetTimeOfDayPtr = reinterpret_cast<VDSOHandlers::GetTimeOfDayType>(SymbolPtr);
     x64::Handler_gettimeofday = x64::VDSO::gettimeofday;
-    x32::Handler_gettimeofday = x32::VDSO::gettimeofday;
   }
 
   SymbolPtr = VDSO.FindSymbol("__kernel_clock_gettime");
@@ -589,8 +376,6 @@ void LoadHostVDSO() {
   if (SymbolPtr) {
     VDSOHandlers::ClockGetTimePtr = reinterpret_cast<VDSOHandlers::ClockGetTimeType>(SymbolPtr);
     x64::Handler_clock_gettime = x64::VDSO::clock_gettime;
-    x32::Handler_clock_gettime = x32::VDSO::clock_gettime;
-    x32::Handler_clock_gettime64 = x32::VDSO::clock_gettime64;
   }
 
   SymbolPtr = VDSO.FindSymbol("__kernel_clock_getres");
@@ -601,7 +386,6 @@ void LoadHostVDSO() {
   if (SymbolPtr) {
     VDSOHandlers::ClockGetResPtr = reinterpret_cast<VDSOHandlers::ClockGetResType>(SymbolPtr);
     x64::Handler_clock_getres = x64::VDSO::clock_getres;
-    x32::Handler_clock_getres = x32::VDSO::clock_getres;
   }
 
   SymbolPtr = VDSO.FindSymbol("__kernel_getcpu");
@@ -612,7 +396,6 @@ void LoadHostVDSO() {
   if (SymbolPtr) {
     VDSOHandlers::GetCPUPtr = reinterpret_cast<VDSOHandlers::GetCPUType>(SymbolPtr);
     x64::Handler_getcpu = x64::VDSO::getcpu;
-    x32::Handler_getcpu = x32::VDSO::getcpu;
   }
 
   SymbolPtr = VDSO.FindSymbol("__kernel_getrandom");
@@ -732,13 +515,12 @@ static std::array<FEXCore::IR::ThunkDefinition, 7> VDSODefinitions = {{
   },
 }};
 
-template<bool Is64Bit>
 void LoadGuestVDSOSymbols(char* VDSOBase) {
-  using ELFHeaderType = std::conditional_t<Is64Bit, Elf64_Ehdr, Elf32_Ehdr>;
-  using ELFSHeaderType = std::conditional_t<Is64Bit, Elf64_Shdr, Elf32_Shdr>;
-  using ELFSymbolType = std::conditional_t<Is64Bit, Elf64_Sym, Elf32_Sym>;
-  constexpr auto ELFClass = Is64Bit ? ELFCLASS64 : ELFCLASS32;
-  constexpr auto ELFMachine = Is64Bit ? EM_X86_64 : EM_386;
+  using ELFHeaderType = Elf64_Ehdr;
+  using ELFSHeaderType = Elf64_Shdr;
+  using ELFSymbolType = Elf64_Sym;
+  constexpr auto ELFClass = ELFCLASS64;
+  constexpr auto ELFMachine = EM_AARCH64;
 
   // We need to load symbols we care about.
   auto Header = reinterpret_cast<const ELFHeaderType*>(VDSOBase);
@@ -807,8 +589,8 @@ void LoadGuestVDSOSymbols(char* VDSOBase) {
   }
 }
 
-void LoadFEXGeneratedCode(FEXCore::Core::InternalThreadState* Thread, bool Is64Bit, VDSOMapping* Mapping, FEX::HLE::SyscallHandler* const Handler) {
-  if (VDSOPointers.VDSO_FEX_CallbackRET && (!Is64Bit || (VDSOPointers.VDSO_kernel_sigreturn && VDSOPointers.VDSO_kernel_rt_sigreturn))) {
+void LoadFEXGeneratedCode(FEXCore::Core::InternalThreadState* Thread, VDSOMapping* Mapping, FEX::HLE::SyscallHandler* const Handler) {
+  if (VDSOPointers.VDSO_FEX_CallbackRET && VDSOPointers.VDSO_kernel_rt_sigreturn) {
     // Unnecessary if all VDSO paths have already been loaded.
     return;
   }
@@ -818,26 +600,9 @@ void LoadFEXGeneratedCode(FEXCore::Core::InternalThreadState* Thread, bool Is64B
   PageSize = PageSize > 0 ? PageSize : static_cast<long>(FEXCore::HostPage::Size());
   Mapping->X86GeneratedCodeSize = PageSize;
 
-  if (Is64Bit) {
-    // 64bit mode can have its code anywhere
-    auto Result =
-      Handler->GuestMmap(Is64Bit, Thread, nullptr, Mapping->X86GeneratedCodeSize, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
-
-    if (!FEX::HLE::HasSyscallError(Result)) {
-      Mapping->X86GeneratedCodePtr = Result;
-    }
-  } else {
-    // We need to have the sigret handler in the lower 32bits of memory space
-    // Scan top down and try to allocate a location
-    for (size_t Location = 0xFFFF'E000; Location != 0x0; Location -= PageSize) {
-      auto Ptr = Handler->GuestMmap(Is64Bit, Thread, reinterpret_cast<void*>(Location), PageSize, PROT_READ | PROT_WRITE,
-                                    MAP_FIXED_NOREPLACE | MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
-
-      if (!FEX::HLE::HasSyscallError(Ptr)) {
-        Mapping->X86GeneratedCodePtr = Ptr;
-        break;
-      }
-    }
+  auto Result = Handler->GuestMmap(true, Thread, nullptr, Mapping->X86GeneratedCodeSize, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+  if (!FEX::HLE::HasSyscallError(Result)) {
+    Mapping->X86GeneratedCodePtr = Result;
   }
 
   // Can't do anything about this
@@ -848,42 +613,8 @@ void LoadFEXGeneratedCode(FEXCore::Core::InternalThreadState* Thread, bool Is64B
 
   FEXCore::Allocator::VirtualName("FEXMem_Misc", Mapping->X86GeneratedCodePtr, Mapping->X86GeneratedCodeSize);
 
+  // POWERARM-M0-TODO(signals): the fallback trampolines are still the x86 FEX CALLBACKRET instruction bytes; the A64 guest needs an __kernel_rt_sigreturn (mov x8, #139; svc #0) and a callback-return encoding the A64 frontend decodes.
   size_t CurrentCodeOffset {};
-
-  if (!Is64Bit) {
-    // Signal return handlers need to be bit-exact to what the Linux kernel provides in VDSO.
-    // GDB and unwinding libraries key off of these instructions to understand if the stack frame is a signal frame or not.
-    // This two code sections match exactly what libSegFault expects.
-    //
-    // Typically this handlers are provided by the 32-bit VDSO thunk library, but that isn't available in all cases.
-    // Falling back to this generated code segment still allows a backtrace to work, just might not show
-    // the symbol as VDSO since there is no ELF to parse.
-    constexpr std::array<uint8_t, 9> sigreturn_32_code = {
-      0x58,                         // pop eax
-      0xb8, 0x77, 0x00, 0x00, 0x00, // mov eax, 0x77
-      0xcd, 0x80,                   // int 0x80
-      0x90,                         // nop
-    };
-
-    constexpr std::array<uint8_t, 7> rt_sigreturn_32_code = {
-      0xb8, 0xad, 0x00, 0x00, 0x00, // mov eax, 0xad
-      0xcd, 0x80,                   // int 0x80
-    };
-
-    if (!VDSOPointers.VDSO_kernel_sigreturn) {
-      VDSOPointers.VDSO_kernel_sigreturn = reinterpret_cast<void*>(reinterpret_cast<uintptr_t>(Mapping->X86GeneratedCodePtr) + CurrentCodeOffset);
-      memcpy(VDSOPointers.VDSO_kernel_sigreturn, sigreturn_32_code.data(), sigreturn_32_code.size());
-      CurrentCodeOffset += sigreturn_32_code.size();
-    }
-
-    if (!VDSOPointers.VDSO_kernel_rt_sigreturn) {
-      VDSOPointers.VDSO_kernel_rt_sigreturn =
-        reinterpret_cast<void*>(reinterpret_cast<uintptr_t>(Mapping->X86GeneratedCodePtr) + CurrentCodeOffset);
-      memcpy(VDSOPointers.VDSO_kernel_rt_sigreturn, rt_sigreturn_32_code.data(), rt_sigreturn_32_code.size());
-      CurrentCodeOffset += rt_sigreturn_32_code.size();
-    }
-  }
-
   if (!VDSOPointers.VDSO_FEX_CallbackRET) {
     constexpr std::array<uint8_t, 2> CallbackRetCode = {
       0x0F, 0x3E, // CALLBACKRET FEX Instruction
@@ -907,14 +638,15 @@ void UnloadVDSOMapping(FEXCore::Core::InternalThreadState* Thread, FEX::HLE::Sys
   }
 }
 
-VDSOMapping LoadVDSOThunks(FEXCore::Core::InternalThreadState* Thread, bool Is64Bit, FEX::HLE::SyscallHandler* const Handler) {
+VDSOMapping LoadVDSOThunks(FEXCore::Core::InternalThreadState* Thread, FEX::HLE::SyscallHandler* const Handler) {
   VDSOMapping Mapping {};
   FEX_CONFIG_OPT(ThunkGuestLibs, THUNKGUESTLIBS);
   fextl::string ThunkGuestPath = ThunkGuestLibs();
   while (ThunkGuestPath.ends_with('/')) {
     ThunkGuestPath.pop_back();
   }
-  ThunkGuestPath = fextl::fmt::format("{}{}/libVDSO-guest.so", ThunkGuestPath, Is64Bit ? "" : "_32");
+  // POWERARM-M0-TODO(syscalls): the guest vDSO is still the thunked x86 libVDSO-guest.so; arm64 needs its own (__kernel_clock_gettime, __kernel_rt_sigreturn; DESIGN.md §5).
+  ThunkGuestPath = fextl::fmt::format("{}/libVDSO-guest.so", ThunkGuestPath);
   // Load VDSO if we can
   int VDSOFD = ::open(ThunkGuestPath.c_str(), O_RDONLY);
 
@@ -932,17 +664,13 @@ VDSOMapping LoadVDSOThunks(FEXCore::Core::InternalThreadState* Thread, bool Is64
 
       auto VASize = FEXCore::Allocator::DetermineVASize();
       uint64_t VDSOHint {};
-      if (Is64Bit) {
-        if (VASize > 47) {
-          // If VA size is at least as large as minimum x86 specification, then set to max.
-          VASize = 47;
-        }
-
-        // Calculate the highest point the vdso could go.
-        VDSOHint = (1ULL << VASize) - Mapping.VDSOSize;
-      } else {
-        VDSOHint = 0x1'0000'0000ULL - Mapping.VDSOSize;
+      if (VASize > 48) {
+        // AArch64 user VA is 48-bit (without LVA).
+        VASize = 48;
       }
+
+      // Calculate the highest point the vdso could go.
+      VDSOHint = (1ULL << VASize) - Mapping.VDSOSize;
 
       auto PageSize = sysconf(_SC_PAGESIZE);
       PageSize = PageSize > 0 ? PageSize : static_cast<long>(FEXCore::HostPage::Size());
@@ -950,7 +678,7 @@ VDSOMapping LoadVDSOThunks(FEXCore::Core::InternalThreadState* Thread, bool Is64
       // Scan top down and try to allocate a location
       void* VDSOPointerBase {};
       do {
-        VDSOPointerBase = Handler->GuestMmap(Is64Bit, Thread, reinterpret_cast<void*>(VDSOHint), Mapping.VDSOSize, PROT_READ | PROT_EXEC,
+        VDSOPointerBase = Handler->GuestMmap(true, Thread, reinterpret_cast<void*>(VDSOHint), Mapping.VDSOSize, PROT_READ | PROT_EXEC,
                                              MAP_FIXED_NOREPLACE | MAP_SHARED, VDSOFD, 0);
         // Scan-downward until we fit.
         VDSOHint -= PageSize;
@@ -973,35 +701,19 @@ VDSOMapping LoadVDSOThunks(FEXCore::Core::InternalThreadState* Thread, bool Is64
       return {};
     }
 
-    if (Is64Bit) {
-      LoadGuestVDSOSymbols<true>(reinterpret_cast<char*>(Mapping.VDSOBase));
-    } else {
-      LoadGuestVDSOSymbols<false>(reinterpret_cast<char*>(Mapping.VDSOBase));
-    }
+    LoadGuestVDSOSymbols(reinterpret_cast<char*>(Mapping.VDSOBase));
   }
 
   // If VDSO couldn't find sigreturn then FEX needs to provide unique implementations.
-  LoadFEXGeneratedCode(Thread, Is64Bit, &Mapping, Handler);
+  LoadFEXGeneratedCode(Thread, &Mapping, Handler);
 
-  if (Is64Bit) {
-    // Set the Thunk definition pointers for x86-64
-    VDSODefinitions[0].ThunkFunction = FEX::VDSO::x64::Handler_time;
-    VDSODefinitions[1].ThunkFunction = FEX::VDSO::x64::Handler_gettimeofday;
-    VDSODefinitions[2].ThunkFunction = FEX::VDSO::x64::Handler_clock_gettime;
-    VDSODefinitions[3].ThunkFunction = FEX::VDSO::x64::Handler_clock_gettime;
-    VDSODefinitions[4].ThunkFunction = FEX::VDSO::x64::Handler_clock_getres;
-    VDSODefinitions[5].ThunkFunction = FEX::VDSO::x64::Handler_getcpu;
-    VDSODefinitions[6].ThunkFunction = FEX::VDSO::x64::Handler_getrandom;
-  } else {
-    // Set the Thunk definition pointers for x86
-    VDSODefinitions[0].ThunkFunction = FEX::VDSO::x32::Handler_time;
-    VDSODefinitions[1].ThunkFunction = FEX::VDSO::x32::Handler_gettimeofday;
-    VDSODefinitions[2].ThunkFunction = FEX::VDSO::x32::Handler_clock_gettime;
-    VDSODefinitions[3].ThunkFunction = FEX::VDSO::x32::Handler_clock_gettime64;
-    VDSODefinitions[4].ThunkFunction = FEX::VDSO::x32::Handler_clock_getres;
-    VDSODefinitions[5].ThunkFunction = FEX::VDSO::x32::Handler_getcpu;
-    // getrandom doesn't exist on 32-bit, so leave VDSODefinitions[6] unfilled
-  }
+  VDSODefinitions[0].ThunkFunction = FEX::VDSO::x64::Handler_time;
+  VDSODefinitions[1].ThunkFunction = FEX::VDSO::x64::Handler_gettimeofday;
+  VDSODefinitions[2].ThunkFunction = FEX::VDSO::x64::Handler_clock_gettime;
+  VDSODefinitions[3].ThunkFunction = FEX::VDSO::x64::Handler_clock_gettime;
+  VDSODefinitions[4].ThunkFunction = FEX::VDSO::x64::Handler_clock_getres;
+  VDSODefinitions[5].ThunkFunction = FEX::VDSO::x64::Handler_getcpu;
+  VDSODefinitions[6].ThunkFunction = FEX::VDSO::x64::Handler_getrandom;
 
   return Mapping;
 }
@@ -1021,8 +733,8 @@ uint64_t GetVSyscallEntry(const void* VDSOBase) {
   return 0;
 }
 
-const std::span<FEXCore::IR::ThunkDefinition> GetVDSOThunkDefinitions(bool Is64Bit) {
-  return std::span(VDSODefinitions.begin(), VDSODefinitions.end() - (Is64Bit ? 0 : 1));
+const std::span<FEXCore::IR::ThunkDefinition> GetVDSOThunkDefinitions() {
+  return std::span(VDSODefinitions.begin(), VDSODefinitions.end());
 }
 
 const VDSOEntrypoints& GetVDSOSymbols() {

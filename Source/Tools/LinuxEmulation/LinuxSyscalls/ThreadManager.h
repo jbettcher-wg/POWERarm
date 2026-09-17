@@ -11,7 +11,6 @@ $end_info$
 #include "Common/SHMStats.h"
 
 #include "LinuxSyscalls/Types.h"
-#include "LinuxSyscalls/x32/IoctlEmulation.h"
 
 #include <FEXCore/Config/Config.h>
 #include <FEXCore/Core/Context.h>
@@ -188,13 +187,6 @@ struct ThreadStateObject : public FEXCore::Allocator::FEXAllocOperators {
             Base + FEXCore::Core::InternalThreadState::CALLRET_STACK_SIZE / 4};
   }
 
-  // GDT and LDT tracking
-  FEXCore::Core::CPUState::gdt_segment gdt[32] {};
-  size_t ldt_entry_count {};
-  FEXCore::Core::CPUState::gdt_segment* ldt_entries {};
-
-  // 32-bit FD cache for DRM handlers.
-  fextl::unique_ptr<x32::DRMLRUCacheFDCache> DRMLRUCache {};
 };
 
 class ThreadManager final {
@@ -223,7 +215,6 @@ public:
 
     uint32_t FrontendAllocateSlots(uint32_t NewSize) override;
     FEX_CONFIG_OPT(ProfileStats, PROFILESTATS);
-    FEX_CONFIG_OPT(Is64BitMode, IS64BIT_MODE);
 
     constexpr static int USER_PERMS = S_IRWXU | S_IRWXG | S_IRWXO;
     FEXCore::ForkableUniqueMutex StatMutex;
@@ -533,7 +524,6 @@ private:
   void HandleThreadDeletion(FEX::HLE::ThreadStateObject* Thread, bool NeedsTLSUninstall = false);
   void NotifyPause();
   FEX_CONFIG_OPT(ProfileStats, PROFILESTATS);
-  FEX_CONFIG_OPT(Is64BitMode, IS64BIT_MODE);
 };
 
 } // namespace FEX::HLE

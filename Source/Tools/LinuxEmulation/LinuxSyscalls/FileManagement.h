@@ -227,7 +227,6 @@ private:
   FEX_CONFIG_OPT(ThunkGuestLibs, THUNKGUESTLIBS);
   FEX_CONFIG_OPT(ThunkConfig, THUNKCONFIG);
   FEX_CONFIG_OPT(AppConfigName, APP_CONFIG_NAME);
-  FEX_CONFIG_OPT(Is64BitMode, IS64BIT_MODE);
   uint32_t CurrentPID {};
   int RootFSFD {AT_FDCWD};
   int ProcFD {0};

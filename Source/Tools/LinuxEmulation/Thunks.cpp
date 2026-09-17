@@ -12,7 +12,6 @@ $end_info$
 
 #include <FEXCore/Config/Config.h>
 #include <FEXCore/Core/CoreState.h>
-#include <FEXCore/Core/X86Enums.h>
 #include <FEXCore/Core/Thunks.h>
 #include <FEXCore/Debug/InternalThreadState.h>
 #include <FEXCore/Utils/ArchHelpers/PPC64CacheFlush.h>
@@ -239,22 +238,10 @@ struct ThunkHandler_impl final : public FEX::HLE::ThunkHandler {
     }
 
     auto CTX = static_cast<FEXCore::Context::Context*>(ThreadObject->Thread->CTX);
-    auto ThunkHandler = reinterpret_cast<ThunkHandler_impl*>(FEX::HLE::_SyscallHandler->GetThunkHandler());
 
-    if (ThunkHandler->Is64BitMode()) {
-      ThreadObject->Thread->CurrentFrame->State.gregs[FEXCore::X86State::REG_RDI] = (uintptr_t)arg0;
-      ThreadObject->Thread->CurrentFrame->State.gregs[FEXCore::X86State::REG_RSI] = (uintptr_t)arg1;
-    } else {
-      // 32-bit guest: both arg slots are 32-bit pointers. Guard both — a host
-      // library returning a >4 GiB pointer in either slot would silently leak
-      // the high bits into the guest GPR, undebuggable downstream.
-      if ((reinterpret_cast<uintptr_t>(arg0) >> 32) != 0 ||
-          (reinterpret_cast<uintptr_t>(arg1) >> 32) != 0) {
-        ERROR_AND_DIE_FMT("Tried to call guest function with arguments packed to a 64-bit address");
-      }
-      ThreadObject->Thread->CurrentFrame->State.gregs[FEXCore::X86State::REG_RCX] = (uintptr_t)arg0;
-      ThreadObject->Thread->CurrentFrame->State.gregs[FEXCore::X86State::REG_RDX] = (uintptr_t)arg1;
-    }
+    // POWERARM-M0-TODO(thunks): callback ABI is still FEX's x86-64 one moved onto X0/X1; the guest-side thunk callback unpackers must be rebuilt for AAPCS64.
+    ThreadObject->Thread->CurrentFrame->State.x[0] = (uintptr_t)arg0;
+    ThreadObject->Thread->CurrentFrame->State.x[1] = (uintptr_t)arg1;
 
     CTX->HandleCallback(ThreadObject->Thread, (uintptr_t)callback);
   }
@@ -319,7 +306,6 @@ private:
      &ThunkFunctions::RegisterCallbackUnpacker},
   };
 
-  FEX_CONFIG_OPT(Is64BitMode, IS64BIT_MODE);
   FEX_CONFIG_OPT(ThunkHostLibsPath, THUNKHOSTLIBS);
 };
 
@@ -341,7 +327,7 @@ void ThunkHandler_impl::LoadLib(std::string_view Name) {
   while (SOName.ends_with('/')) {
     SOName.pop_back();
   }
-  SOName = fmt::format("{}{}/{}-host.so", SOName, (Is64BitMode() ? "" : "_32"), Name);
+  SOName = fmt::format("{}/{}-host.so", SOName, Name);
 
   LogMan::Msg::DFmt("LoadLib: {} -> {}", Name, SOName);
 
@@ -447,41 +433,10 @@ MakeHostTrampolineForGuestFunction(void* HostPacker, uintptr_t GuestTarget, uint
     const auto allocation_step = 16 * 1024;
     ThunkHandler->HostTrampolineInstanceDataAvailable = allocation_step;
 
-    // For 32-bit guests the trampoline pointer is stored in guest function-pointer
-    // slots, which are 32 bits wide. A naked mmap(0,...) lets the kernel pick any
-    // host address; on PPC64LE that's typically a 64-bit address well above 4 GiB.
-    // The guest truncates it to its low 32 bits, the host VK / GL library then
-    // calls the truncated address as a host function pointer, and the host SEGVs
-    // at the unmapped low-address (e.g. host PC 0x63315230 = a guest-space
-    // address). Route through the guest's 32-bit allocator so the trampoline
-    // lives in the low 4 GiB and 32-bit truncation is lossless.
-    if (!FEX::HLE::_SyscallHandler->Is64BitMode()) {
-      auto* Alloc = FEX::HLE::_SyscallHandler->Get32BitAllocator();
-      auto* Result = Alloc->Mmap(nullptr, ThunkHandler->HostTrampolineInstanceDataAvailable,
-                                 PROT_READ | PROT_WRITE | PROT_EXEC, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
-      // ERROR_AND_DIE_FMT, not LOGMAN_THROW_A_FMT: the latter compiles to
-      // nothing unless ASSERTIONS_ENABLED is set, which CMake only does for
-      // DEBUG builds. On failure Alloc->Mmap returns -errno, which would sail
-      // through an inert guard and be memcpy'd into below as a pointer.
-      //
-      // The allocator cannot return an address above 4 GiB (it rejects
-      // Addr+length > UINT32_MAX and its page scan is bounded), so that case
-      // needs no runtime check beyond this one.
-      if (FEX::HLE::HasSyscallError(reinterpret_cast<uint64_t>(Result))) {
-        ERROR_AND_DIE_FMT("Failed to allocate 32-bit host trampoline page (errno {})",
-                          -static_cast<int64_t>(reinterpret_cast<intptr_t>(Result)));
-      }
-      // Tell the allocator these pages are host-owned so a guest MAP_FIXED,
-      // munmap or MREMAP_FIXED cannot replace the trampolines we are about to
-      // write here and have the host branch into guest bytes.
-      Alloc->ReserveHostRange(reinterpret_cast<uintptr_t>(Result), ThunkHandler->HostTrampolineInstanceDataAvailable);
-      ThunkHandler->HostTrampolineInstanceDataPtr = static_cast<uint8_t*>(Result);
-    } else {
-      ThunkHandler->HostTrampolineInstanceDataPtr = (uint8_t*)mmap(0, ThunkHandler->HostTrampolineInstanceDataAvailable,
-                                                                   PROT_READ | PROT_WRITE | PROT_EXEC, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
-      if (ThunkHandler->HostTrampolineInstanceDataPtr == MAP_FAILED) {
-        ERROR_AND_DIE_FMT("Failed to mmap HostTrampolineInstanceDataPtr");
-      }
+    ThunkHandler->HostTrampolineInstanceDataPtr = (uint8_t*)mmap(0, ThunkHandler->HostTrampolineInstanceDataAvailable,
+                                                                 PROT_READ | PROT_WRITE | PROT_EXEC, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    if (ThunkHandler->HostTrampolineInstanceDataPtr == MAP_FAILED) {
+      ERROR_AND_DIE_FMT("Failed to mmap HostTrampolineInstanceDataPtr");
     }
   }
 
@@ -685,13 +640,9 @@ FEX_DEFAULT_VISIBILITY uintptr_t LookupGuestCallbackUnpacker(const char* signatu
  * are invisible to every explicit-address guest request.
  */
 FEX_DEFAULT_VISIBILITY void ReserveLow32HostRange(uintptr_t Base, size_t Length) {
-  if (!FEX::HLE::_SyscallHandler || FEX::HLE::_SyscallHandler->Is64BitMode()) {
-    return;
-  }
-  auto* Alloc = FEX::HLE::_SyscallHandler->Get32BitAllocator();
-  if (Alloc) {
-    Alloc->ReserveHostRange(Base, Length);
-  }
+  // POWERARM-M0-TODO(thunks): low-4GB host ranges only mattered for 32-bit x86 guests; drop this export with the host thunk pool once thunks are redesigned.
+  (void)Base;
+  (void)Length;
 }
 
 /**
@@ -709,18 +660,8 @@ FEX_DEFAULT_VISIBILITY void ReserveLow32HostRange(uintptr_t Base, size_t Length)
  * accounts for it, with no probing and no race.
  */
 FEX_DEFAULT_VISIBILITY void* AllocateLow32HostRange(size_t Length) {
-  if (!FEX::HLE::_SyscallHandler || FEX::HLE::_SyscallHandler->Is64BitMode()) {
-    return nullptr;
-  }
-  auto* Alloc = FEX::HLE::_SyscallHandler->Get32BitAllocator();
-  if (!Alloc) {
-    return nullptr;
-  }
-  void* Result = Alloc->Mmap(nullptr, Length, PROT_NONE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE, -1, 0);
-  if (FEX::HLE::HasSyscallError(Result)) {
-    return nullptr;
-  }
-  return Result;
+  (void)Length;
+  return nullptr;
 }
 
 FEX_DEFAULT_VISIBILITY void* GetGuestStack() {
@@ -728,7 +669,7 @@ FEX_DEFAULT_VISIBILITY void* GetGuestStack() {
     ERROR_AND_DIE_FMT("Thunked library attempted to query guest stack pointer asynchronously");
   }
 
-  return (void*)(uintptr_t)((ThreadObject->Thread->CurrentFrame->State.gregs[FEXCore::X86State::REG_RSP]));
+  return (void*)(uintptr_t)((ThreadObject->Thread->CurrentFrame->State.sp));
 }
 
 FEX_DEFAULT_VISIBILITY void MoveGuestStack(uintptr_t NewAddress) {
@@ -736,15 +677,7 @@ FEX_DEFAULT_VISIBILITY void MoveGuestStack(uintptr_t NewAddress) {
     ERROR_AND_DIE_FMT("Thunked library attempted to query guest stack pointer asynchronously");
   }
 
-  // 32-bit guest: RSP must fit in 32 bits. 64-bit guest: accept any address
-  // the caller chose. The bump allocator on a cross-arch host (THUNK_HOST_NOT_X86_64)
-  // derives Next from the current guest RSP, so values stay inside guest VA
-  // space provided the guest didn't already have a stray RSP set.
-  if (!FEX::HLE::_SyscallHandler->Is64BitMode() && (NewAddress >> 32)) {
-    ERROR_AND_DIE_FMT("Tried to set stack pointer for 32-bit guest to a 64-bit address");
-  }
-
-  ThreadObject->Thread->CurrentFrame->State.gregs[FEXCore::X86State::REG_RSP] = NewAddress;
+  ThreadObject->Thread->CurrentFrame->State.sp = NewAddress;
 }
 
 fextl::unique_ptr<ThunkHandler> CreateThunkHandler() {

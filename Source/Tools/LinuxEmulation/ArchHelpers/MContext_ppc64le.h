@@ -401,9 +401,9 @@ static inline uint64_t GetPPCVSXLowBankDW1(void* ucontext, uint32_t n) {
 static inline uint32_t GetProtectFlags(void* ucontext) {
   // DSISR bit 25 (0x02000000) indicates a store-caused fault (write).
   const uint64_t dsisr = GetMContext(ucontext)->gp_regs[PPC_PT_DSISR];
-  uint32_t ProtectFlags = FEXCore::X86State::X86_PF_USER;
+  uint32_t ProtectFlags = PROTECT_FLAG_USER;
   if (dsisr & 0x02000000ULL) {
-    ProtectFlags |= FEXCore::X86State::X86_PF_WRITE;
+    ProtectFlags |= PROTECT_FLAG_WRITE;
   }
   return ProtectFlags;
 }

@@ -11,14 +11,10 @@ $end_info$
 #include "LinuxSyscalls/Syscalls.h"
 #include "LinuxSyscalls/Syscalls/Thread.h"
 #include "LinuxSyscalls/ThreadCensus.h"
-#include "LinuxSyscalls/x64/Syscalls.h"
-#include "LinuxSyscalls/x64/Thread.h"
-#include "LinuxSyscalls/x32/Syscalls.h"
-#include "LinuxSyscalls/x32/Thread.h"
+#include "LinuxSyscalls/Arm64/Syscalls.h"
 #include "LinuxSyscalls/Utils/Threads.h"
 
 #include <FEXCore/Core/Context.h>
-#include <FEXCore/Core/X86Enums.h>
 #include <FEXCore/Debug/InternalThreadState.h>
 #include <FEXCore/IR/IR.h>
 #include <FEXCore/Utils/Allocator.h>
@@ -161,27 +157,19 @@ FEX::HLE::ThreadStateObject* CreateNewThread(FEXCore::Context::Context* CTX, FEX
   auto NewThread = FEX::HLE::_SyscallHandler->TM.CreateThread(0, 0, &Frame->State, args->args.parent_tid,
                                                               FEX::HLE::ThreadManager::GetStateObjectFromCPUState(Frame));
 
-  NewThread->Thread->CurrentFrame->State.gregs[FEXCore::X86State::REG_RAX] = 0;
+  NewThread->Thread->CurrentFrame->State.x[0] = 0;
   if (args->Type == TYPE_CLONE3) {
     // stack pointer points to the lowest address to the stack
     // set RSP to stack + size
-    NewThread->Thread->CurrentFrame->State.gregs[FEXCore::X86State::REG_RSP] = args->args.stack + args->args.stack_size;
+    NewThread->Thread->CurrentFrame->State.sp = args->args.stack + args->args.stack_size;
   } else {
-    NewThread->Thread->CurrentFrame->State.gregs[FEXCore::X86State::REG_RSP] = args->args.stack;
+    NewThread->Thread->CurrentFrame->State.sp = args->args.stack;
   }
 
-  if (FEX::HLE::_SyscallHandler->Is64BitMode()) {
-    if (flags & CLONE_SETTLS) {
-      x64::SetThreadArea(NewThread->Thread->CurrentFrame, reinterpret_cast<void*>(args->args.tls));
-    }
-    // Set us to start just after the syscall instruction
-    x64::AdjustRipForNewThread(NewThread->Thread->CurrentFrame);
-  } else {
-    if (flags & CLONE_SETTLS) {
-      x32::SetThreadArea(NewThread->Thread->CurrentFrame, reinterpret_cast<void*>(args->args.tls));
-    }
-    x32::AdjustRipForNewThread(NewThread->Thread->CurrentFrame);
+  if (flags & CLONE_SETTLS) {
+    NewThread->Thread->CurrentFrame->State.tpidr_el0 = args->args.tls;
   }
+  // POWERARM-M0-TODO(syscalls): the child resumes at State.pc; confirm the Syscall op has already advanced pc past svc #0 (x86 needed rip += 2 here).
 
   // Initialize a new thread for execution.
   ExecutionThreadHandler Arg {
@@ -207,13 +195,11 @@ FEX::HLE::ThreadStateObject* CreateNewThread(FEXCore::Context::Context* CTX, FEX
 
   // Census: a CLONE_THREAD guest thread just came up. ThreadInfo.TID was
   // filled in by the new host thread's own gettid(), so guest TID == host TID
-  // here. Frame->State.rip is still the guest RIP of the clone caller's
-  // syscall instruction (the child's copy is what gets advanced past it by
-  // AdjustRipForNewThread above), and is logged raw -- resolving it to a
+  // here. Frame->State.pc is the guest PC of the clone caller, and is logged raw -- resolving it to a
   // module would mean walking the VMA structures under their locks.
   if (FEX::HLE::ThreadCensus::Enabled()) {
     FEX::HLE::ThreadCensus::OnThreadCreate(FEX::HLE::ThreadCensus::CloneKind::Thread, Result, Result, FHU::Syscalls::gettid(),
-                                           Frame->State.rip, flags);
+                                           Frame->State.pc, flags);
   }
 
   // Sets the child TID to pointer in ParentTID
@@ -271,11 +257,11 @@ uint64_t HandleNewClone(FEX::HLE::ThreadStateObject* Thread, FEXCore::Context::C
     NewThread = FEX::HLE::_SyscallHandler->TM.CreateThread(0, 0, &Frame->State, GuestArgs->parent_tid,
                                                            FEX::HLE::ThreadManager::GetStateObjectFromCPUState(Frame));
 
-    NewThread->Thread->CurrentFrame->State.gregs[FEXCore::X86State::REG_RAX] = 0;
+    NewThread->Thread->CurrentFrame->State.x[0] = 0;
     if (GuestArgs->stack == 0) {
       // Copies in the original thread's stack
     } else {
-      NewThread->Thread->CurrentFrame->State.gregs[FEXCore::X86State::REG_RSP] = GuestArgs->stack;
+      NewThread->Thread->CurrentFrame->State.sp = GuestArgs->stack;
     }
 
     // CLONE_PARENT_SETTID, CLONE_CHILD_SETTID, CLONE_CHILD_CLEARTID, CLONE_PIDFD will be handled by kernel
@@ -290,31 +276,23 @@ uint64_t HandleNewClone(FEX::HLE::ThreadStateObject* Thread, FEXCore::Context::C
 
     ::syscall(SYS_rt_sigprocmask, SIG_SETMASK, &CloneArgs->SignalMask, nullptr, sizeof(CloneArgs->SignalMask));
 
-    Thread->Thread->CurrentFrame->State.gregs[FEXCore::X86State::REG_RAX] = 0;
+    Thread->Thread->CurrentFrame->State.x[0] = 0;
     if (GuestArgs->stack == 0) {
       // Copies in the original thread's stack
     } else {
-      Thread->Thread->CurrentFrame->State.gregs[FEXCore::X86State::REG_RSP] = GuestArgs->stack;
+      Thread->Thread->CurrentFrame->State.sp = GuestArgs->stack;
     }
   }
 
   if (CloneArgs->Type == TYPE_CLONE3) {
     // If we are coming from a clone3 handler then we need to adjust RSP.
-    Thread->Thread->CurrentFrame->State.gregs[FEXCore::X86State::REG_RSP] += CloneArgs->args.stack_size;
+    Thread->Thread->CurrentFrame->State.sp += CloneArgs->args.stack_size;
   }
 
-  if (FEX::HLE::_SyscallHandler->Is64BitMode()) {
-    if (flags & CLONE_SETTLS) {
-      x64::SetThreadArea(NewThread->Thread->CurrentFrame, reinterpret_cast<void*>(GuestArgs->tls));
-    }
-    // Set us to start just after the syscall instruction
-    x64::AdjustRipForNewThread(NewThread->Thread->CurrentFrame);
-  } else {
-    if (flags & CLONE_SETTLS) {
-      x32::SetThreadArea(NewThread->Thread->CurrentFrame, reinterpret_cast<void*>(GuestArgs->tls));
-    }
-    x32::AdjustRipForNewThread(NewThread->Thread->CurrentFrame);
+  if (flags & CLONE_SETTLS) {
+    NewThread->Thread->CurrentFrame->State.tpidr_el0 = GuestArgs->tls;
   }
+  // POWERARM-M0-TODO(syscalls): the child resumes at State.pc; confirm the Syscall op has already advanced pc past svc #0 (x86 needed rip += 2 here).
 
   // Depending on clone settings, our TID and PID could have changed
   Thread->ThreadInfo.TID = FHU::Syscalls::gettid();
@@ -463,21 +441,14 @@ uint64_t ForkGuest(FEXCore::Core::InternalThreadState* Thread, FEXCore::Core::Cp
     // Handle child setup now
     if (stack != nullptr) {
       // use specified stack
-      Frame->State.gregs[FEXCore::X86State::REG_RSP] = reinterpret_cast<uint64_t>(stack) + stack_size;
+      Frame->State.sp = reinterpret_cast<uint64_t>(stack) + stack_size;
     } else {
       // In the case of fork and nullptr stack then the child uses the same stack space as the parent
       // Same virtual address, different addressspace
     }
 
-    if (FEX::HLE::_SyscallHandler->Is64BitMode()) {
-      if (flags & CLONE_SETTLS) {
-        x64::SetThreadArea(Frame, tls);
-      }
-    } else {
-      // 32bit TLS doesn't just set the fs register
-      if (flags & CLONE_SETTLS) {
-        x32::SetThreadArea(Frame, tls);
-      }
+    if (flags & CLONE_SETTLS) {
+      Frame->State.tpidr_el0 = reinterpret_cast<uint64_t>(tls);
     }
 
     // Sets the child TID to the pointer in ChildTID
@@ -532,7 +503,7 @@ uint64_t ForkGuest(FEXCore::Core::InternalThreadState* Thread, FEXCore::Core::Cp
     // child shares the same census fd and would double-count.
     if (Result > 0 && FEX::HLE::ThreadCensus::Enabled()) {
       FEX::HLE::ThreadCensus::OnThreadCreate(FEX::HLE::ThreadCensus::CloneKind::Fork, Result, Result, FHU::Syscalls::gettid(),
-                                             Frame->State.rip, flags);
+                                             Frame->State.pc, flags);
     }
 
     // VFork needs the parent to wait for the child to exit.
@@ -715,49 +686,7 @@ void RegisterThread(FEX::HLE::SyscallHandler* Handler) {
                           SYSCALL_ERRNO();
                         });
 
-  REGISTER_SYSCALL_IMPL(arch_prctl, [](FEXCore::Core::CpuStateFrame* Frame, int code, unsigned long addr) -> uint64_t {
-    uint64_t Result {};
-    switch (code) {
-    case 0x1001: // ARCH_SET_GS
-      if (addr >= SyscallHandler::TASK_MAX_64BIT) {
-        // Ignore a non-canonical address
-        return -EPERM;
-      }
-      Frame->State.gs_cached = addr;
-      Result = 0;
-      break;
-    case 0x1002: // ARCH_SET_FS
-      if (addr >= SyscallHandler::TASK_MAX_64BIT) {
-        // Ignore a non-canonical address
-        return -EPERM;
-      }
-      Frame->State.fs_cached = addr;
-      Result = 0;
-      break;
-    case 0x1003: // ARCH_GET_FS
-      *reinterpret_cast<uint64_t*>(addr) = Frame->State.fs_cached;
-      Result = 0;
-      break;
-    case 0x1004: // ARCH_GET_GS
-      *reinterpret_cast<uint64_t*>(addr) = Frame->State.gs_cached;
-      Result = 0;
-      break;
-    case 0x3001:        // ARCH_CET_STATUS
-      Result = -EINVAL; // We don't support CET, return EINVAL
-      break;
-    case 0x1011: // ARCH_GET_CPUID
-      return 1;
-      break;
-    case 0x1012:      // ARCH_SET_CPUID
-      return -ENODEV; // Claim we don't support faulting on CPUID
-      break;
-    default:
-      LogMan::Msg::EFmt("Unknown prctl: 0x{:x}", code);
-      Result = -EINVAL;
-      break;
-    }
-    SYSCALL_ERRNO();
-  });
+  // arch_prctl is x86-only; AArch64 has no such syscall (LegacySyscallsEnum.h maps it to -1).
 
   REGISTER_SYSCALL_IMPL(set_tid_address, [](FEXCore::Core::CpuStateFrame* Frame, int* tidptr) -> uint64_t {
     auto ThreadObject = FEX::HLE::ThreadManager::GetStateObjectFromCPUState(Frame);

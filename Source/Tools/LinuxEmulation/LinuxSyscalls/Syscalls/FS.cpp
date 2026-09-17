@@ -6,8 +6,7 @@ $end_info$
 */
 
 #include "LinuxSyscalls/Syscalls.h"
-#include "LinuxSyscalls/x64/Syscalls.h"
-#include "LinuxSyscalls/x32/Syscalls.h"
+#include "LinuxSyscalls/Arm64/Syscalls.h"
 
 #include <FEXCore/IR/IR.h>
 
@@ -185,7 +184,7 @@ void RegisterFS(FEX::HLE::SyscallHandler* Handler) {
   // 32-bit process at startup.
   // The 32-bit path still needs RootFS translation; tracked separately so the
   // timespec32 conversion is not lost.
-  REGISTER_SYSCALL_IMPL_X64(utimensat,
+  REGISTER_SYSCALL_IMPL(utimensat,
                         [](FEXCore::Core::CpuStateFrame* Frame, int dirfd, const char* pathname, const struct timespec* times, int flags) -> uint64_t {
                           uint64_t Result = FEX::HLE::_SyscallHandler->FM.Utimensat(dirfd, pathname, times, flags);
                           SYSCALL_ERRNO();
@@ -215,7 +214,7 @@ void RegisterFS(FEX::HLE::SyscallHandler* Handler) {
                           SYSCALL_ERRNO();
                         });
 
-  REGISTER_SYSCALL_IMPL_X64(fchmodat2,
+  REGISTER_SYSCALL_IMPL(fchmodat2,
                             [](FEXCore::Core::CpuStateFrame* Frame, int dirfd, const char* pathname, mode_t mode, unsigned int flags) -> uint64_t {
                               uint64_t Result = FEX::HLE::_SyscallHandler->FM.Fchmodat2(dirfd, pathname, mode, flags);
                               SYSCALL_ERRNO();

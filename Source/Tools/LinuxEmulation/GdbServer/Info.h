@@ -12,25 +12,7 @@ $end_info$
 #include <cstdint>
 #include <string_view>
 
-namespace FEXCore::X86State {
-enum X86Reg : uint32_t;
-}
-
 namespace FEX::GDB::Info {
-/**
- * @brief Returns textual name of bit location from EFLAGs register.
- *
- * @param Bit Which bit of EFLAG to query
- */
-const std::string_view& GetFlagName(unsigned Bit);
-
-/**
- * @brief Returns the textual name of a GPR register
- *
- * @param Reg Index of the register to fetch
- */
-std::string_view GetGRegName(unsigned Reg);
-
 /**
  * @brief Fetches the thread's name
  *
@@ -47,5 +29,5 @@ fextl::string BuildOSXML();
 /**
  * @brief Returns the GDB specific construct of target describing XML.
  */
-fextl::string BuildTargetXML(bool Is64Bit);
+fextl::string BuildTargetXML();
 } // namespace FEX::GDB::Info

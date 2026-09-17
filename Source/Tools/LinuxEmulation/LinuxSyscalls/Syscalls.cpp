@@ -20,11 +20,7 @@ $end_info$
 #include "LinuxSyscalls/Syscalls/Thread.h"
 #include "LinuxSyscalls/ThreadCensus.h"
 #include "LinuxSyscalls/Utils/Threads.h"
-#include "LinuxSyscalls/x32/Syscalls.h"
-#include "LinuxSyscalls/x64/Syscalls.h"
-#include "LinuxSyscalls/x64/SyscallsEnum.h"
-#include "LinuxSyscalls/x32/Types.h"
-#include "LinuxSyscalls/x64/Types.h"
+#include "LinuxSyscalls/Arm64/Syscalls.h"
 #include "Thunks.h"
 
 #include <FEXCore/Config/Config.h>
@@ -314,80 +310,6 @@ inline int Hex(char* dst, uint64_t v) {
 }
 }  // namespace CloneTrace
 
-template<bool IncrementOffset, typename T>
-uint64_t GetDentsEmulation(int fd, T* dirp, uint32_t count) {
-  uint64_t Result = syscall(SYSCALL_DEF(getdents64), static_cast<uint64_t>(fd), dirp, static_cast<uint64_t>(count));
-
-  // Now copy back in to the array we were given
-  if (Result != -1) {
-    // If the outgoing d_ino is smaller than the incoming d_ino from the kernel
-    // Then we need to check for overflow before writing any of the data back
-    if constexpr (sizeof(decltype(FEX::HLE::x64::linux_dirent_64::d_ino)) > sizeof(decltype(T::d_ino))) {
-      uint64_t TmpOffset = 0;
-      while (TmpOffset < Result) {
-        FEX::HLE::x64::linux_dirent_64* Tmp = (FEX::HLE::x64::linux_dirent_64*)(reinterpret_cast<uint64_t>(dirp) + TmpOffset);
-        decltype(T::d_ino) Result_d_ino = Tmp->d_ino;
-
-        if (Result_d_ino != Tmp->d_ino) {
-          // The resulting d_ino truncated, return error
-          return -EOVERFLOW;
-        }
-        TmpOffset += Tmp->d_reclen;
-      }
-    }
-
-    uint64_t Offset = 0;
-    uint64_t TmpOffset = 0;
-    size_t OffsetIndex = 1;
-    // With how the emulation occurs we will always return a smaller buffer than what was given to us.
-    // We need to be careful with the in-place translation that occurs here, the data returning to the guest is guaranteed to be smaller
-    // than the data returned by getdents64.
-    // This means FEX is guaranteed to /never/ fill the full getdents buffer to the guest, but we may temporarily use it all.
-    while (TmpOffset < Result) {
-      T* Outgoing = (T*)(reinterpret_cast<uint64_t>(dirp) + Offset);
-      FEX::HLE::x64::linux_dirent_64* Tmp = (FEX::HLE::x64::linux_dirent_64*)(reinterpret_cast<uint64_t>(dirp) + TmpOffset);
-
-      if (!Tmp->d_reclen) {
-        break;
-      }
-
-      size_t NewRecLen = FEXCore::AlignUp(Tmp->d_reclen - (sizeof(std::remove_reference<decltype(*Tmp)>::type) - sizeof(*Outgoing)),
-                                          alignof(decltype(Tmp->d_ino)));
-      Outgoing->d_ino = Tmp->d_ino;
-
-      // 32-bit getdents can't safely handle d_off
-      // A safe way of emulating this is to just use an incrementing offset from 1
-      Outgoing->d_off = IncrementOffset ? OffsetIndex : Tmp->d_off;
-      size_t OffsetOfName = offsetof(std::remove_reference<decltype(*Tmp)>::type, d_name);
-      Outgoing->d_reclen = NewRecLen;
-
-      // Copies null character as well
-      size_t NameLength = Tmp->d_reclen - OffsetOfName - 1;
-      memmove(Outgoing->d_name, Tmp->d_name, NameLength);
-
-      // Copy the hidden d_type flag
-      Outgoing->d_name[Outgoing->d_reclen - offsetof(T, d_name) - 1] = Tmp->d_type;
-
-      TmpOffset += Tmp->d_reclen;
-
-      if (FEX::HLE::_SyscallHandler->FM.IsHiddenDentry(fd, Outgoing->d_ino, Outgoing->d_name)) {
-        continue;
-      }
-
-      // Outgoing is 5 bytes smaller
-      Offset += NewRecLen;
-
-      ++OffsetIndex;
-    }
-    Result = Offset;
-  }
-  SYSCALL_ERRNO();
-}
-
-template uint64_t GetDentsEmulation<false>(int, FEX::HLE::x64::linux_dirent*, uint32_t);
-
-template uint64_t GetDentsEmulation<true>(int, FEX::HLE::x32::linux_dirent_32*, uint32_t);
-
 static fextl::string GetShebangInterpFile(std::span<char> Data) {
   // File isn't large enough to even contain a shebang.
   if (Data.size() <= 2) {
@@ -570,7 +492,7 @@ uint64_t ExecveHandler(FEXCore::Core::CpuStateFrame* Frame, const char* pathname
   // If the FEX interpreter is installed then just execve the ELF file
   // This will stay inside of our emulated environment since binfmt_misc will capture it
   const bool IsBinfmtCompatible = SyscallHandler->IsInterpreterInstalled() && !NeedsFDCopy &&
-                                  (Type == ELFLoader::ELFContainer::ELFType::TYPE_X86_32 || Type == ELFLoader::ELFContainer::ELFType::TYPE_X86_64);
+                                  Type == ELFLoader::ELFContainer::ELFType::TYPE_AARCH64;
 
   // We are trying to execute an ELF of a different architecture
   // We can't know if we can support this without architecture specific checks and binfmt_misc parsing
@@ -960,7 +882,7 @@ uint64_t CloneHandler(FEXCore::Core::CpuStateFrame* Frame, FEX::HLE::clone3_args
         // is a child TID.
         if (static_cast<int64_t>(Result) > 0 && FEX::HLE::ThreadCensus::Enabled()) {
           FEX::HLE::ThreadCensus::OnThreadCreate(FEX::HLE::ThreadCensus::CloneKind::RawClone, Result, Result, FHU::Syscalls::gettid(),
-                                                 Frame->State.rip, args->args.flags);
+                                                 Frame->State.pc, args->args.flags);
         }
       }
       return Result;
@@ -1075,11 +997,6 @@ uint64_t SyscallHandler::HandleBRK(FEXCore::Core::CpuStateFrame* Frame, void* Ad
         DataSpaceMappedSize = NewSizeAligned;
       } else if (NewSize > DataSpaceMappedSize) {
         uint64_t AllocateNewSize = NewSizeAligned - DataSpaceMappedSize;
-        if (!Is64BitMode() && (DataSpace + DataSpaceMappedSize + AllocateNewSize > 0x1'0000'0000ULL)) {
-          // If we are 32bit and we tried going about the 32bit limit then out of memory
-          return DataSpace + DataSpaceSize;
-        }
-
         uint64_t NewBRK {};
         NewBRK = (uint64_t)GuestMmap(Frame->Thread, (void*)(DataSpace + DataSpaceMappedSize), AllocateNewSize, PROT_READ | PROT_WRITE,
                                      MAP_FIXED_NOREPLACE | MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
@@ -1274,7 +1191,7 @@ uint32_t SyscallHandler::CalculateGuestKernelVersion() {
 
 #ifdef ARCHITECTURE_ppc64le
 namespace {
-  // Guest SA_RESTART support: which x86-64 guest syscalls may be transparently
+  // Guest SA_RESTART support: which AArch64 guest syscalls may be transparently
   // re-issued after a guest signal handler with SA_RESTART ran.
   //
   // The list follows what a real Linux kernel restarts (-ERESTARTSYS): blocking
@@ -1290,33 +1207,33 @@ namespace {
   //     targets -- a 1s sleep pulsed every 100ms would never return.
   // FEX_SA_RESTART_TIMED=1 opts the timeout-carrying set in anyway, for
   // experiments; it is not on by default because of the hazard above.
-  bool IsRestartableGuestSyscall_x64(const FEXCore::HLE::SyscallArguments* Args) {
+  bool IsRestartableGuestSyscall_Arm64(const FEXCore::HLE::SyscallArguments* Args) {
     switch (Args->Argument[0]) {
-    case FEX::HLE::x64::SYSCALL_x64_read:
-    case FEX::HLE::x64::SYSCALL_x64_write:
-    case FEX::HLE::x64::SYSCALL_x64_ioctl:
-    case FEX::HLE::x64::SYSCALL_x64_pread_64:
-    case FEX::HLE::x64::SYSCALL_x64_pwrite_64:
-    case FEX::HLE::x64::SYSCALL_x64_readv:
-    case FEX::HLE::x64::SYSCALL_x64_writev:
-    case FEX::HLE::x64::SYSCALL_x64_connect:
-    case FEX::HLE::x64::SYSCALL_x64_accept:
-    case FEX::HLE::x64::SYSCALL_x64_sendto:
-    case FEX::HLE::x64::SYSCALL_x64_recvfrom:
-    case FEX::HLE::x64::SYSCALL_x64_sendmsg:
-    case FEX::HLE::x64::SYSCALL_x64_recvmsg:
-    case FEX::HLE::x64::SYSCALL_x64_wait4:
-    case FEX::HLE::x64::SYSCALL_x64_flock:
-    case FEX::HLE::x64::SYSCALL_x64_waitid:
-    case FEX::HLE::x64::SYSCALL_x64_accept4:
-    case FEX::HLE::x64::SYSCALL_x64_preadv:
-    case FEX::HLE::x64::SYSCALL_x64_pwritev:
-    case FEX::HLE::x64::SYSCALL_x64_recvmmsg:
-    case FEX::HLE::x64::SYSCALL_x64_sendmmsg:
-    case FEX::HLE::x64::SYSCALL_x64_preadv2:
-    case FEX::HLE::x64::SYSCALL_x64_pwritev2: return true;
+    case FEX::HLE::Arm64::SYSCALL_Arm64_read:
+    case FEX::HLE::Arm64::SYSCALL_Arm64_write:
+    case FEX::HLE::Arm64::SYSCALL_Arm64_ioctl:
+    case FEX::HLE::Arm64::SYSCALL_Arm64_pread64:
+    case FEX::HLE::Arm64::SYSCALL_Arm64_pwrite64:
+    case FEX::HLE::Arm64::SYSCALL_Arm64_readv:
+    case FEX::HLE::Arm64::SYSCALL_Arm64_writev:
+    case FEX::HLE::Arm64::SYSCALL_Arm64_connect:
+    case FEX::HLE::Arm64::SYSCALL_Arm64_accept:
+    case FEX::HLE::Arm64::SYSCALL_Arm64_sendto:
+    case FEX::HLE::Arm64::SYSCALL_Arm64_recvfrom:
+    case FEX::HLE::Arm64::SYSCALL_Arm64_sendmsg:
+    case FEX::HLE::Arm64::SYSCALL_Arm64_recvmsg:
+    case FEX::HLE::Arm64::SYSCALL_Arm64_wait4:
+    case FEX::HLE::Arm64::SYSCALL_Arm64_flock:
+    case FEX::HLE::Arm64::SYSCALL_Arm64_waitid:
+    case FEX::HLE::Arm64::SYSCALL_Arm64_accept4:
+    case FEX::HLE::Arm64::SYSCALL_Arm64_preadv:
+    case FEX::HLE::Arm64::SYSCALL_Arm64_pwritev:
+    case FEX::HLE::Arm64::SYSCALL_Arm64_recvmmsg:
+    case FEX::HLE::Arm64::SYSCALL_Arm64_sendmmsg:
+    case FEX::HLE::Arm64::SYSCALL_Arm64_preadv2:
+    case FEX::HLE::Arm64::SYSCALL_Arm64_pwritev2: return true;
 
-    case FEX::HLE::x64::SYSCALL_x64_futex: {
+    case FEX::HLE::Arm64::SYSCALL_Arm64_futex: {
       // Same shape restriction the internal-EINTR restart uses
       // (Passthrough.cpp ObservedFutexSyscall): only the wait commands, whose
       // re-issue is either exact (WAIT_BITSET carries an absolute deadline) or
@@ -1326,14 +1243,14 @@ namespace {
       return Cmd == 0 /* FUTEX_WAIT */ || Cmd == 9 /* FUTEX_WAIT_BITSET */;
     }
 
-    case FEX::HLE::x64::SYSCALL_x64_poll:
-    case FEX::HLE::x64::SYSCALL_x64_select:
-    case FEX::HLE::x64::SYSCALL_x64_nanosleep:
-    case FEX::HLE::x64::SYSCALL_x64_epoll_wait: {
+    case FEX::HLE::Arm64::SYSCALL_Arm64_ppoll:
+    case FEX::HLE::Arm64::SYSCALL_Arm64_pselect6:
+    case FEX::HLE::Arm64::SYSCALL_Arm64_nanosleep:
+    case FEX::HLE::Arm64::SYSCALL_Arm64_epoll_pwait: {
       static const bool Timed = (getenv("FEX_SA_RESTART_TIMED") != nullptr);
       return Timed;
     }
-    case FEX::HLE::x64::SYSCALL_x64_clock_nanosleep: {
+    case FEX::HLE::Arm64::SYSCALL_Arm64_clock_nanosleep: {
       static const bool Timed = (getenv("FEX_SA_RESTART_TIMED") != nullptr);
       // TIMER_ABSTIME(1) sleeps could be re-issued exactly, relative ones cannot.
       return Timed && (Args->Argument[2] & 1) == 0;
@@ -1375,14 +1292,14 @@ uint64_t SyscallHandler::HandleSyscall(FEXCore::Core::CpuStateFrame* Frame, FEXC
   //   - the attempt returned -EINTR,
   //   - at least one guest signal was actually delivered during the attempt,
   //   - every one of those handlers was registered SA_RESTART,
-  //   - the syscall is one Linux would restart (IsRestartableGuestSyscall_x64).
+  //   - the syscall is one Linux would restart (IsRestartableGuestSyscall_Arm64).
   // An internal-only interruption (no guest delivery) is not restarted here;
   // that case is handled per-syscall (Passthrough.cpp WrappedFutexObserved).
   //
   // Escape hatch: FEX_NO_GUEST_SA_RESTART=1 restores the old always-EINTR
   // behaviour.
   static const bool Disabled = (getenv("FEX_NO_GUEST_SA_RESTART") != nullptr);
-  if (Disabled || !Is64BitMode()) {
+  if (Disabled) {
     return HandleSyscallImpl(Frame, Args, JITPC);
   }
 
@@ -1400,7 +1317,7 @@ uint64_t SyscallHandler::HandleSyscall(FEXCore::Core::CpuStateFrame* Frame, FEXC
     const uint32_t Delivered = ThreadObject->SignalInfo.DeliveredGuestSignals - DeliveredBefore;
     const uint32_t NoRestart = ThreadObject->SignalInfo.DeliveredGuestSignalsWithoutRestart - NoRestartBefore;
 
-    if (static_cast<int64_t>(Result) != -EINTR || Delivered == 0 || NoRestart != 0 || !IsRestartableGuestSyscall_x64(Args)) {
+    if (static_cast<int64_t>(Result) != -EINTR || Delivered == 0 || NoRestart != 0 || !IsRestartableGuestSyscall_Arm64(Args)) {
       return Result;
     }
   }

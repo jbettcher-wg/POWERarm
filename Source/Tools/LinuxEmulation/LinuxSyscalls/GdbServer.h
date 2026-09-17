@@ -118,21 +118,15 @@ private:
    */
   const FEX::HLE::ThreadStateObject* FindThreadByTID(uint32_t TID);
 
-  struct X80Float {
-    uint8_t Data[10];
-  };
-
+  // Register block in org.gnu.gdb.aarch64.core / .fpu order.
   struct FEX_PACKED GDBContextDefinition {
-    uint64_t gregs[FEXCore::Core::CPUState::NUM_GPRS];
-    uint64_t rip;
-    uint32_t eflags;
-    uint32_t cs, ss, ds, es, fs, gs;
-    X80Float mm[FEXCore::Core::CPUState::NUM_MMS];
-    uint32_t fctrl;
-    uint32_t fstat;
-    uint32_t dummies[6];
-    uint64_t xmm[FEXCore::Core::CPUState::NUM_XMMS][4];
-    uint32_t mxcsr;
+    uint64_t x[FEXCore::Core::CPUState::NUM_XREGS];
+    uint64_t sp;
+    uint64_t pc;
+    uint32_t cpsr;
+    __uint128_t v[FEXCore::Core::CPUState::NUM_VREGS];
+    uint32_t fpsr;
+    uint32_t fpcr;
   };
 
   GDBContextDefinition GenerateContextDefinition(const FEX::HLE::ThreadStateObject* ThreadObject);
@@ -164,7 +158,6 @@ private:
   uint32_t CurrentDebuggingThread {};
   fextl::string GdbUnixSocketPath {};
   FEX_CONFIG_OPT(Filename, APP_FILENAME);
-  FEX_CONFIG_OPT(Is64BitMode, IS64BIT_MODE);
 };
 
 } // namespace FEX

@@ -16,7 +16,7 @@ $end_info$
 #include "LinuxSyscalls/FileManagement.h"
 #include "LinuxSyscalls/EmulatedFiles/EmulatedFiles.h"
 #include "LinuxSyscalls/Syscalls.h"
-#include "LinuxSyscalls/x64/Syscalls.h"
+#include "LinuxSyscalls/Arm64/Syscalls.h"
 
 #include <FEXCore/Utils/LogManager.h>
 #include <FEXCore/Utils/FileLoading.h>
@@ -58,7 +58,8 @@ void FileManager::LoadThunkDatabase(fextl::unordered_map<fextl::string, ThunkDBO
   if (FEXCore::FileLoading::LoadFile(FileData, ThunkDBPath)) {
 
     // If the thunksDB file exists then we need to check if the rootfs supports multi-arch or not.
-    const bool RootFSIsMultiarch = RootFSPathExists("/usr/lib/x86_64-linux-gnu/") || RootFSPathExists("/usr/lib/i386-linux-gnu/");
+    // POWERARM-M0-TODO(thunks): overlay paths are the AArch64 multiarch/lib64 layout; revisit with the Arch Linux ARM rootfs (DESIGN.md §6.4) and the M5 guest thunks.
+    const bool RootFSIsMultiarch = RootFSPathExists("/usr/lib/aarch64-linux-gnu/");
 
     fextl::vector<fextl::string> PathPrefixes {};
     if (RootFSIsMultiarch) {
@@ -70,8 +71,7 @@ void FileManager::LoadThunkDatabase(fextl::unordered_map<fextl::string, ThunkDBO
         "/lib",
       };
 
-      // We only need to generate 32-bit or 64-bit depending on the operating mode.
-      const auto ArchPrefix = Is64BitMode() ? "x86_64-linux-gnu" : "i386-linux-gnu";
+      const auto ArchPrefix = "aarch64-linux-gnu";
 
       for (auto Prefix : LibPrefixes) {
         PathPrefixes.emplace_back(fextl::fmt::format("{}/{}", Prefix, ArchPrefix));
@@ -86,8 +86,7 @@ void FileManager::LoadThunkDatabase(fextl::unordered_map<fextl::string, ThunkDBO
         "", // root, the '/' will be appended in the next step.
       };
 
-      // We only need to generate 32-bit or 64-bit depending on the operating mode.
-      const auto ArchPrefix = Is64BitMode() ? "lib64" : "lib";
+      const auto ArchPrefix = "lib64";
 
       for (auto Prefix : LibPrefixes) {
         PathPrefixes.emplace_back(fextl::fmt::format("{}/{}", Prefix, ArchPrefix));
@@ -96,22 +95,8 @@ void FileManager::LoadThunkDatabase(fextl::unordered_map<fextl::string, ThunkDBO
       // to /usr/lib). Without an explicit "lib" entry in 64-bit mode, the thunk
       // overlay map never matches the rootfs's actual paths and FEX silently loads
       // the real x86 library instead of substituting our guest thunk stub.
-      if (Is64BitMode()) {
-        for (auto Prefix : LibPrefixes) {
-          PathPrefixes.emplace_back(fextl::fmt::format("{}/{}", Prefix, "lib"));
-        }
-      } else {
-        // The mirror image of the above: Arch ships 32-bit libraries in /usr/lib32
-        // (with /lib32 symlinked to it), not in the "lib" folder this branch
-        // assumes for 32-bit. Without an explicit "lib32" entry the overlay map
-        // never matches, so a 32-bit guest loads the rootfs's own libGL/libvulkan
-        // and runs the entire Mesa driver stack under emulation - correct output,
-        // but the host GPU is never reached and the frame loop is CPU-bound.
-        // Measured on a 32-bit Unity title before this fix: ~99% of cycles in
-        // translated code with the GPU at ~5%.
-        for (auto Prefix : LibPrefixes) {
-          PathPrefixes.emplace_back(fextl::fmt::format("{}/{}", Prefix, "lib32"));
-        }
+      for (auto Prefix : LibPrefixes) {
+        PathPrefixes.emplace_back(fextl::fmt::format("{}/{}", Prefix, "lib"));
       }
     }
 
@@ -125,7 +110,7 @@ void FileManager::LoadThunkDatabase(fextl::unordered_map<fextl::string, ThunkDBO
     // of the thunk, glvnd finds no vendor library, glXQueryExtensionsString
     // returns NULL, and Chromium silently falls back to software rendering.
     {
-      const auto PVArch = Is64BitMode() ? "x86_64-linux-gnu" : "i386-linux-gnu";
+      const auto PVArch = "aarch64-linux-gnu";
       PathPrefixes.emplace_back(fextl::fmt::format("/usr/lib/pressure-vessel/overrides/lib/{}", PVArch));
       PathPrefixes.emplace_back(fextl::fmt::format("/usr/lib/pressure-vessel/overrides/lib/{}/aliases", PVArch));
 
@@ -137,14 +122,9 @@ void FileManager::LoadThunkDatabase(fextl::unordered_map<fextl::string, ThunkDBO
       // These captures are incomplete copies (observed: libGLX_mesa.so.0
       // missing while libEGL_mesa is present), so without overlay coverage
       // here the guest loads a broken glvnd stack instead of the thunk.
-      if (Is64BitMode()) {
-        PathPrefixes.emplace_back("/var/pressure-vessel/gfx/main/usr/lib");
-        PathPrefixes.emplace_back("/var/pressure-vessel/gfx/main/usr/lib64");
-        PathPrefixes.emplace_back("/var/pressure-vessel/gfx/main/usr/lib/x86_64-linux-gnu");
-      } else {
-        PathPrefixes.emplace_back("/var/pressure-vessel/gfx/main/usr/lib32");
-        PathPrefixes.emplace_back("/var/pressure-vessel/gfx/main/usr/lib/i386-linux-gnu");
-      }
+      PathPrefixes.emplace_back("/var/pressure-vessel/gfx/main/usr/lib");
+      PathPrefixes.emplace_back("/var/pressure-vessel/gfx/main/usr/lib64");
+      PathPrefixes.emplace_back("/var/pressure-vessel/gfx/main/usr/lib/aarch64-linux-gnu");
     }
 
     FEX::JSON::JsonAllocator Pool {};
@@ -331,9 +311,6 @@ FileManager::FileManager(FEXCore::Context::Context* ctx)
   while (ThunkGuestPath.ends_with('/')) {
     ThunkGuestPath.pop_back();
   }
-  if (!Is64BitMode()) {
-    ThunkGuestPath += "_32";
-  }
   for (const auto& DBObject : ThunkDB) {
     if (!DBObject.second.Enabled) {
       continue;
@@ -345,25 +322,10 @@ FileManager::FileManager(FEXCore::Context::Context* ctx)
       decltype(FileManager::ThunkOverlays)& ThunkOverlays;
       decltype(ThunkDB)& DB;
       const fextl::string& ThunkGuestPath;
-      bool Is64BitMode;
 
       void SetupOverlay(const ThunkDBObject& DBDepend) {
         auto ThunkPath = fextl::fmt::format("{}/{}", ThunkGuestPath, DBDepend.LibraryName);
         if (!FHU::Filesystem::Exists(ThunkPath)) {
-          if (!Is64BitMode) {
-            // Not every guest library is thunked on 32-bit; the whole thunk
-            // set may also simply not have been built (BUILD_THUNKS_32BIT=OFF
-            // is the default when the toolchain lacks 32-bit multilib). Log
-            // so an unbuilt thunk set does not fail silently -- the guest
-            // silently loads its own rootfs library instead, which for
-            // libGL/libvulkan means never reaching the host GPU and no
-            // symptom other than "gldriverquery returns nothing".
-            LogMan::Msg::DFmt("32-bit thunk not present: {} (guest will use its "
-                              "own copy in the rootfs; host acceleration not "
-                              "available for this library)",
-                              ThunkPath);
-            return;
-          }
           ERROR_AND_DIE_FMT("Requested thunking via guest library \"{}\" that does not exist", ThunkPath);
         }
 
@@ -387,7 +349,7 @@ FileManager::FileManager(FEXCore::Context::Context* ctx)
           InsertDependencies(DBDepend.Depends);
         }
       };
-    } DBObjectHandler {ThunkOverlays, ThunkDB, ThunkGuestPath, Is64BitMode()};
+    } DBObjectHandler {ThunkOverlays, ThunkDB, ThunkGuestPath};
 
     DBObjectHandler.SetupOverlay(DBObject.second);
     DBObjectHandler.InsertDependencies(DBObject.second.Depends);

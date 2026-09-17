@@ -12,7 +12,7 @@ $end_info$
 #include <FEXCore/Core/Context.h>
 #include <FEXCore/Core/CoreState.h>
 #include <FEXCore/Core/SignalDelegator.h>
-#include <FEXCore/Core/X86Enums.h>
+#include "ArchHelpers/UContext.h"
 #include <FEXCore/Debug/InternalThreadState.h>
 #include <FEXCore/Utils/Allocator.h>
 #include <FEXCore/Utils/THP.h>
@@ -179,7 +179,7 @@ static void TraceSyncSignal(int Signal, siginfo_t* Info, ucontext_t* _context) {
   // maps the host PC back to the guest RIP via the block's inline RIP table.
   //
   // IMPORTANT: RestoreRIPFromHostPC() has no failure return.  When the host PC
-  // is not inside the current JIT block it silently returns Frame->State.rip
+  // is not inside the current JIT block it silently returns Frame->State.pc
   // (FEXCore/Source/Interface/Core/Core.cpp), which is a stale block-boundary
   // value, not the fault site -- and printing that unqualified would be
   // actively misleading here, since a stale zero would read as a null guest
@@ -191,7 +191,7 @@ static void TraceSyncSignal(int Signal, siginfo_t* Info, ucontext_t* _context) {
   // blk_rip= is the guest RIP of the ENTRY of the block containing the host PC
   // (GetGuestBlockEntry, read straight out of the JITCodeTail).  Coarser than
   // guest_rip=, but it does not depend on the per-instruction vl64pair table,
-  // so trust it if the two disagree.  state_rip= is the raw Frame->State.rip and must ALWAYS be
+  // so trust it if the two disagree.  state_rip= is the raw Frame->State.pc and must ALWAYS be
   // read as "possibly stale" -- it is the value guest_rip= would have silently
   // degraded to on the fallback path.
   //
@@ -230,7 +230,7 @@ static void TraceSyncSignal(int Signal, siginfo_t* Info, ucontext_t* _context) {
       if (Thread && !ObjIsZombie && ObjTid == TraceHostTid) {
         InReconstruct = 1;
         const uint64_t HostPC = ArchHelpers::Context::GetPc(_context);
-        StateRIP = Thread->CurrentFrame->State.rip;
+        StateRIP = Thread->CurrentFrame->State.pc;
         HaveStateRIP = true;
         if (Thread->CTX->IsAddressInCodeBuffer(Thread, HostPC)) {
           InJITCode = true;
@@ -282,56 +282,31 @@ static void TraceSyncSignal(int Signal, siginfo_t* Info, ucontext_t* _context) {
   // with "this build does not have the patch".
   //
   // MAPPING SOURCE (duplicated by necessity, see below):
-  //   FEXCore/Source/Interface/Core/ArchHelpers/PPC64Emitter.h
-  //     x64::SRA -- std::array<GPR, 18>  (16 guest GPRs, then PF, AF)
-  //     x32::SRA -- std::array<GPR, 10>  ( 8 guest GPRs, then PF, AF)
-  //   Both arrays are indexed by the FEXCore::X86State::X86Reg enum
-  //   (FEXCore/include/FEXCore/Core/X86Enums.h: RAX=0, RCX=1, RDX=2, RBX=3,
-  //   RSP=4, RBP=5, RSI=6, RDI=7, R8..R15=8..15), because SRA[i] is the host
-  //   register dedicated to CpuStateFrame::State.gregs[i] -- see
+  //   FEXCore/Source/Interface/Core/ArchHelpers/PPC64Emitter.h a64::SRA, whose
+  //   slot i holds FEXCore::Core::StaticGPRGuestReg[i] (CoreState.h) -- see
   //   PPC64EmitterBase::SpillStaticRegs/FillStaticRegs in PPC64Emitter.cpp.
+  //   Host r13 is skipped; it is the ELFv2 thread pointer.
   //
-  //   *** The prose comment sitting above x64::SRA in that header claims the
-  //   order is "RAX, RDX, RCX, ..." -- that comment is WRONG, RCX and RDX are
-  //   transposed in it.  Index by the enum, not by that comment. ***
+  // WHY DUPLICATED RATHER THAN DERIVED: PPC64Emitter.h pulls in the external
+  // emitter headers, which are not on LinuxEmulation's include path, so
+  // a64::SRA is unreachable from this TU. If that array changes, this table
+  // must change with it.
   //
-  //   Resulting guest -> host GPR mapping (note host r13 is skipped; it is
-  //   the ELFv2 thread pointer and is not in any FEX pool):
-  //     rax->r7  rcx->r8  rdx->r9  rbx->r10 rsp->r11 rbp->r12 rsi->r14 rdi->r15
-  //     r8 ->r16 r9 ->r17 r10->r18 r11->r19 r12->r20 r13->r21 r14->r22 r15->r23
-  //   Corroborated by the existing host r11= field on the first line, whose
-  //   observed value (0x3ffffffab78) is a plausible guest stack pointer.
-  //
-  // WHY DUPLICATED RATHER THAN DERIVED: PPC64Emitter.h is under
-  // FEXCore/Source/, and it pulls in <PPC64LE/Emitter.h> / <PPC64LE/Registers.h>
-  // from the external emitter.  Neither is on LinuxEmulation's include path
-  // (target_include_directories in Source/Tools/LinuxEmulation/CMakeLists.txt
-  // lists only ${CMAKE_BINARY_DIR}/generated, this directory, and the drm
-  // headers), so x64::SRA / x32::SRA are unreachable from this TU.  If those
-  // arrays ever change, this table must change with them.
-  //
-  // Names are printed with a leading '%' (%rax=, %r11=) to make it
-  // unmistakable that these are GUEST x86 registers and not the HOST PPC64
-  // registers printed on the first line -- which also carries an r11=.
+  // Names are printed with a leading '%' (%x0=, %sp=) to make it unmistakable
+  // that these are GUEST AArch64 registers and not the HOST PPC64 registers
+  // printed on the first line.
   {
     struct GuestGPRMap {
       const char* Name;
       uint8_t HostGPR;
     };
-    static constexpr GuestGPRMap Map64[] = {
-      {" %rax=", 7},  {" %rcx=", 8},  {" %rdx=", 9},  {" %rbx=", 10},
-      {" %rsp=", 11}, {" %rbp=", 12}, {" %rsi=", 14}, {" %rdi=", 15},
-      {" %r8=", 16},  {" %r9=", 17},  {" %r10=", 18}, {" %r11=", 19},
-      {" %r12=", 20}, {" %r13=", 21}, {" %r14=", 22}, {" %r15=", 23},
-    };
-    // x32::SRA's first 8 entries are the same host registers as x64::SRA's.
-    static constexpr GuestGPRMap Map32[] = {
-      {" %eax=", 7},  {" %ecx=", 8},  {" %edx=", 9},  {" %ebx=", 10},
-      {" %esp=", 11}, {" %ebp=", 12}, {" %esi=", 14}, {" %edi=", 15},
+    // Mirrors FEXCore::Core::StaticGPRGuestReg and a64::SRA (PPC64Emitter.h).
+    static constexpr GuestGPRMap Map[] = {
+      {" %x0=", 7},   {" %x1=", 8},   {" %x2=", 9},   {" %x3=", 10},  {" %x4=", 11},  {" %x5=", 12},
+      {" %x6=", 14},  {" %x7=", 15},  {" %x8=", 16},  {" %x19=", 17}, {" %x20=", 18}, {" %x21=", 19},
+      {" %x22=", 20}, {" %x23=", 21}, {" %x24=", 22}, {" %x29=", 23}, {" %x30=", 28}, {" %sp=", 29},
     };
 
-    // 16 fields * (6 label + 18 hex) = 384, plus a ~40 byte prefix. 512 is
-    // enough; 640 leaves the same kind of headroom buf[512] has above.
     char gbuf[640];
     int glen = 0;
     auto put = [&](const char* s) {
@@ -342,29 +317,12 @@ static void TraceSyncSignal(int Signal, siginfo_t* Info, ucontext_t* _context) {
     put("FEX-SIG-GUEST tid=");
     glen += write_hex(gbuf + glen, (uint64_t)::syscall(SYS_gettid));
 
-    // Guest bitness. _SyscallHandler is a process-global set during startup;
-    // Is64BitMode() is a cached config read (plain member load, no lock, no
-    // allocation), so it is safe here. If it is somehow null we must not
-    // guess -- printing x64 names for a 32-bit guest is exactly the kind of
-    // mislabelling this line exists to prevent.
     if (!InJITCode) {
       put(" <not-in-jit-code:sra-does-not-hold-guest-state>");
-    } else if (FEX::HLE::_SyscallHandler == nullptr) {
-      put(" <unknown-guest-bitness>");
     } else {
-      const bool Is64Bit = FEX::HLE::_SyscallHandler->Is64BitMode();
-      const GuestGPRMap* Map = Is64Bit ? Map64 : Map32;
-      const size_t Count = Is64Bit ? 16u : 8u;
-      for (size_t i = 0; i < Count; ++i) {
-        put(Map[i].Name);
-        uint64_t Value = (uint64_t)_context->uc_mcontext.regs->gpr[Map[i].HostGPR];
-        if (!Is64Bit) {
-          // Only the low 32 bits are architecturally defined for an i686
-          // guest; FillStaticRegs zero-extends on entry but in-block results
-          // can leave junk in the upper half. Mask so it reads as x86 state.
-          Value &= 0xFFFF'FFFFULL;
-        }
-        glen += write_hex(gbuf + glen, Value);
+      for (const auto& Entry : Map) {
+        put(Entry.Name);
+        glen += write_hex(gbuf + glen, (uint64_t)_context->uc_mcontext.regs->gpr[Entry.HostGPR]);
       }
     }
     gbuf[glen++] = '\n';
@@ -452,13 +410,11 @@ void SignalDelegator::HandleSignal(FEX::HLE::ThreadStateObject* Thread, int Sign
       static const bool FaultWatch = getenv("FEX_SIGFAULTWATCH") != nullptr;
       if (FaultWatch) {
         const auto* SigInfo = static_cast<const siginfo_t*>(Info);
-        const auto& G = Thread->Thread->CurrentFrame->State.gregs;
-        LogMan::Msg::IFmt("SigFaultWatch: tid {} sig {} code {} fault_addr 0x{:x} guest rip 0x{:x} rsp 0x{:x} "
-                          "rax 0x{:x} rbx 0x{:x} rcx 0x{:x} rdx 0x{:x} rsi 0x{:x} rdi 0x{:x} rbp 0x{:x}",
+        const auto& St = Thread->Thread->CurrentFrame->State;
+        LogMan::Msg::IFmt("SigFaultWatch: tid {} sig {} code {} fault_addr 0x{:x} guest pc 0x{:x} sp 0x{:x} "
+                          "x0 0x{:x} x1 0x{:x} x2 0x{:x} x29 0x{:x} x30 0x{:x}",
                           FHU::Syscalls::gettid(), Signal, SigInfo->si_code, reinterpret_cast<uint64_t>(SigInfo->si_addr),
-                          Thread->Thread->CurrentFrame->State.rip, G[FEXCore::X86State::REG_RSP], G[FEXCore::X86State::REG_RAX],
-                          G[FEXCore::X86State::REG_RBX], G[FEXCore::X86State::REG_RCX], G[FEXCore::X86State::REG_RDX],
-                          G[FEXCore::X86State::REG_RSI], G[FEXCore::X86State::REG_RDI], G[FEXCore::X86State::REG_RBP]);
+                          St.pc, St.sp, St.x[0], St.x[1], St.x[2], St.x[29], St.x[30]);
       }
     }
 
@@ -487,7 +443,7 @@ void SignalDelegator::RegisterHostSignalHandler(int Signal, HostSignalDelegatorF
 
 void SignalDelegator::SpillSRA(FEXCore::Core::InternalThreadState* Thread, void* ucontext, uint32_t IgnoreMask) {
 #if defined(ARCHITECTURE_arm64) || defined(ARCHITECTURE_ppc64le)
-  Thread->CurrentFrame->State.rip = CTX->RestoreRIPFromHostPC(Thread, ArchHelpers::Context::GetPc(ucontext));
+  Thread->CurrentFrame->State.pc = CTX->RestoreRIPFromHostPC(Thread, ArchHelpers::Context::GetPc(ucontext));
 
   for (size_t i = 0; i < Config.SRAGPRCount; i++) {
     const uint8_t SRAIdxMap = Config.SRAGPRMapping[i];
@@ -495,108 +451,27 @@ void SignalDelegator::SpillSRA(FEXCore::Core::InternalThreadState* Thread, void*
       // Skip this one, it's already spilled
       continue;
     }
-    // NOTE: read the ucontext slot DIRECTLY, not via GetArmReg().
-    // GetArmReg() applies a cross-arch ARM-X-name -> PPC-r-reg `+3` shift
-    // (ARM X0 -> PPC r3 = TMP1, etc.) for callers like
-    // SyscallHandler::HandleSegfault that name registers in ARM terms.
-    // SRAGPRMapping[i] is the *host-native* register index (ARM xN on
-    // arm64, PPC rN on ppc64le); passing it through GetArmReg on ppc64le
-    // silently rotated every gregs[i] read by 3 slots, producing the
-    // recurring "bogus-RSP / RAX==RSP / ".com"-fragment" cascade seen
-    // during signal-during-JIT delivery (see project_spillsra_offset_bug).
-    // GetArmGPRs() returns the raw gp_regs[0] pointer on both arches,
-    // matching SRAGPRMapping's native-index semantics.
-    Thread->CurrentFrame->State.gregs[i] = ArchHelpers::Context::GetArmGPRs(ucontext)[SRAIdxMap];
-  }
-
-  // Spill the SRA-mapped host FPRs (guest XMM low-128) back into guest State.
-  //
-  // The destination view depends on whether the host keeps XMM/YMM in CONVERGED
-  // 256-bit registers (arm64 SVE256): converged hosts interleave low+high in the
-  // 32-byte-stride xmm.avx.data slots (low at [i][0], high at [i][2]); every
-  // other host keeps the low 128 in the 16-byte-stride xmm.sse.data view (high
-  // 128 lives separately in State.avx_high). This must match the JIT's own SRA
-  // fill/spill (PPC64Emitter/ARM emitter) or the values scatter — see the same
-  // branch in ContextImpl::SetXMMRegistersFromState.
-  //
-  // PPC64LE advertises AVX (guest CPUID) but has NO converged registers, and its
-  // JIT stores SRA XMMs in sse.data. Gating only on SupportsAVX — which on arm64
-  // implies SVE256 — silently selected the 32-byte avx.data stride here, writing
-  // xmm[k] into sse.data[2k] and zeroing the odd slots (the movss/movsd store in
-  // fpr_store_pattern.asm faults on its own code page under SMC mtrack, and this
-  // spill then corrupted the live XMM file). On ppc64le the low 128 must land in
-  // sse.data, exactly as the non-AVX path does.
-#ifdef ARCHITECTURE_ppc64le
-  constexpr bool UseConvergedAVXStorage = false;
-#else
-  const bool UseConvergedAVXStorage = SupportsAVX;
-#endif
-  if (UseConvergedAVXStorage) {
-    // TODO: This doesn't save the upper 128-bits of the 256-bit registers.
-    // This needs to be implemented still.
-    for (size_t i = 0; i < Config.SRAFPRCount; i++) {
-      auto FPR = ArchHelpers::Context::GetArmFPR(ucontext, Config.SRAFPRMapping[i]);
-      memcpy(&Thread->CurrentFrame->State.xmm.avx.data[i][0], &FPR, sizeof(__uint128_t));
-    }
-  } else {
-    for (size_t i = 0; i < Config.SRAFPRCount; i++) {
-      auto FPR = ArchHelpers::Context::GetArmFPR(ucontext, Config.SRAFPRMapping[i]);
-      memcpy(&Thread->CurrentFrame->State.xmm.sse.data[i][0], &FPR, sizeof(__uint128_t));
+    // NOTE: read the ucontext slot DIRECTLY, not via GetArmReg(). GetArmReg()
+    // applies a cross-arch ARM-X-name -> PPC-r-reg `+3` shift for callers like
+    // SyscallHandler::HandleSegfault that name registers in ARM terms, while
+    // SRAGPRMapping[i] is the *host-native* register index.
+    const uint32_t GuestReg = FEXCore::Core::StaticGPRGuestReg[i];
+    const uint64_t Value = ArchHelpers::Context::GetArmGPRs(ucontext)[SRAIdxMap];
+    if (GuestReg == FEXCore::Core::CPUState::SP_INDEX) {
+      Thread->CurrentFrame->State.sp = Value;
+    } else {
+      Thread->CurrentFrame->State.x[GuestReg] = Value;
     }
   }
 
-#ifdef ARCHITECTURE_ppc64le
-  // AVX-high VSX bank: guest YMM_hi[i] lives in host vs(First+i) while the
-  // thread runs JIT code (Count is zero unless AVX is advertised). Capture
-  // into State.avx_high so the guest sigframe XSTATE and any State readers
-  // see current high halves. Register layout is the VR convention: dw1 =
-  // guest LOW qword -> avx_high[i][0], dw0 = guest HIGH -> [i][1].
-  //
-  // Only when NO host-call crossing is armed. This used to be unconditional
-  // "the bank is ELFv2 callee-saved, so the frame values are valid even
-  // inside a host helper call" — which is false in the half that matters:
-  // ELFv2 preserves only the FPR half (dw0) of f16-f31, and a callee's
-  // `lfd f16` epilogue restore leaves dw1 (the guest's LOW qword) UNDEFINED.
-  // See the AVX-high bank + HAZARD comments in FEXCore ArchHelpers/
-  // PPC64Emitter.h. Every crossing (DEF_OP(Syscall), DEF_OP(Thunk), the FABI
-  // bridge stubs) publishes the bank to State.avx_high via SpillStaticRegs
-  // BEFORE arming InSyscallInfo, so a nonzero IgnoreMask means memory is
-  // already authoritative and re-capturing from the register file can only
-  // corrupt it. Same rule the GPR loop above applies per register; ppc64le
-  // arms all-or-nothing (low 16 bits = 0xFFFF).
-  //
-  // NB the SRA FPR (guest XMM low-128) loop above has the same structural
-  // exposure — v0-v15 are ELFv2-volatile, so in the post-bctrl window of an
-  // armed crossing it copies caller-clobbered registers over already-correct
-  // spilled state. Deliberately NOT changed here: unlike this bank it is live
-  // in the AVX-off configuration, so it needs its own measured/tested pass.
-  //
-  // Also only when the frame actually CARRIES the dw1 region. The dw0 half
-  // comes out of fp_regs, which is an inline member and always present, but
-  // dw1 lives in a conditional area the kernel only fills when MSR_VSX is set
-  // in the frame (see HasPPCVSXLowBankDW1 in ArchHelpers/MContext_ppc64le.h).
-  // The reachable configuration cannot violate that -- a thread executing JIT
-  // code has necessarily executed the dispatcher's own xxlxor and the bank's
-  // lxvd2x/xxpermdi fill, so used_vsr is set and the kernel emits the region --
-  // but that argument leans on a sticky kernel-internal flag, and one of this
-  // function's three callers (GdbServer's catch-all host handler) is not gated
-  // on WasInJIT at all, so it can arrive with a frame from anywhere. The check
-  // is a load and a test against a bit we would otherwise be betting
-  // correctness on; skipping the capture leaves State.avx_high[] holding the
-  // last published values, which is strictly better than seeding it with
-  // uninitialised sigframe stack.
-  if (IgnoreMask == 0 && ArchHelpers::Context::HasPPCVSXLowBankDW1(ucontext)) {
-    for (size_t i = 0; i < Config.SRAAVXHighBankCount; i++) {
-      const uint32_t Reg = Config.SRAAVXHighBankFirst + i;
-      Thread->CurrentFrame->State.avx_high[i][0] = ArchHelpers::Context::GetPPCVSXLowBankDW1(ucontext, Reg);
-      Thread->CurrentFrame->State.avx_high[i][1] = ArchHelpers::Context::GetPPCVSXLowBankDW0(ucontext, Reg);
-    }
+  // Spill the SRA-mapped host vector registers (guest V0-V15) back into guest State.
+  for (size_t i = 0; i < Config.SRAFPRCount; i++) {
+    auto FPR = ArchHelpers::Context::GetArmFPR(ucontext, Config.SRAFPRMapping[i]);
+    memcpy(&Thread->CurrentFrame->State.v[i][0], &FPR, sizeof(__uint128_t));
   }
-#endif
 
-  uint32_t EFlags =
-    CTX->ReconstructCompactedEFLAGS(Thread, true, ArchHelpers::Context::GetArmGPRs(ucontext), ArchHelpers::Context::GetArmPState(ucontext));
-  CTX->SetFlagsFromCompactedEFLAGS(Thread, EFlags);
+  // Guest NZCV lives in CR0 (N, Z) and XER (C, V) while in JIT code.
+  Thread->CurrentFrame->State.nzcv = static_cast<uint32_t>(ArchHelpers::Context::GetArmPState(ucontext));
 
   // Root-cause tripwire for the Ziggurat finalize spin (docs/
   // ZIGGURAT_FINALIZE_SPIN.md): FEX_SIGRIPWATCH=0xBEGIN-0xEND logs every
@@ -619,13 +494,12 @@ void SignalDelegator::SpillSRA(FEXCore::Core::InternalThreadState* Thread, void*
     return {Begin, std::strtoull(End + 1, nullptr, 0)};
   }();
   if (SigRIPWatch.second) {
-    const uint64_t RIP = Thread->CurrentFrame->State.rip;
+    const uint64_t RIP = Thread->CurrentFrame->State.pc;
     if (RIP >= SigRIPWatch.first && RIP < SigRIPWatch.second) {
-      const auto& G = Thread->CurrentFrame->State.gregs;
-      LogMan::Msg::IFmt("SigRIPWatch: tid {} host pc 0x{:x} -> guest rip 0x{:x} RBX=0x{:x} R12=0x{:x} R14=0x{:x} R15=0x{:x}",
+      const auto& St = Thread->CurrentFrame->State;
+      LogMan::Msg::IFmt("SigRIPWatch: tid {} host pc 0x{:x} -> guest pc 0x{:x} x0=0x{:x} x1=0x{:x} sp=0x{:x} x30=0x{:x}",
                         FHU::Syscalls::gettid(), reinterpret_cast<uint64_t>(ArchHelpers::Context::GetPc(ucontext)), RIP,
-                        G[FEXCore::X86State::REG_RBX], G[FEXCore::X86State::REG_R12], G[FEXCore::X86State::REG_R14],
-                        G[FEXCore::X86State::REG_R15]);
+                        St.x[0], St.x[1], St.sp, St.x[30]);
     }
   }
 #endif
@@ -682,66 +556,11 @@ void SignalDelegator::RestoreThreadState(FEXCore::Core::InternalThreadState* Thr
     // Some fun introspection here.
     // We store a pointer to our host-stack on the guest stack.
     // We need to inspect the guest state coming in, so we can get our host stack back.
-    uint64_t GuestSP = Thread->CurrentFrame->State.gregs[FEXCore::X86State::REG_RSP];
-
-    if (Is64BitMode) {
-      // Signal frame layout on stack needs to be as follows
-      // void* ReturnPointer
-      // ucontext_t
-      // siginfo_t
-      // FP state
-      // Host stack location
-
-      GuestSP += sizeof(FEXCore::x86_64::ucontext_t);
-      GuestSP = FEXCore::AlignUp(GuestSP, alignof(FEXCore::x86_64::ucontext_t));
-
-      GuestSP += sizeof(siginfo_t);
-      GuestSP = FEXCore::AlignUp(GuestSP, alignof(siginfo_t));
-
-      if (SupportsAVX) {
-        GuestSP += sizeof(FEXCore::x86_64::xstate);
-        GuestSP = FEXCore::AlignUp(GuestSP, alignof(FEXCore::x86_64::xstate));
-      } else {
-        GuestSP += sizeof(FEXCore::x86_64::_libc_fpstate);
-        GuestSP = FEXCore::AlignUp(GuestSP, alignof(FEXCore::x86_64::_libc_fpstate));
-      }
-    } else {
-      if (Type == RestoreType::TYPE_NONREALTIME) {
-        // Signal frame layout on stack needs to be as follows
-        // SigFrame_i32
-        // FPState
-        // Host stack location
-
-        // Remove the 4-byte pretcode /AND/ a legacy argument that is ignored.
-        GuestSP += sizeof(SigFrame_i32) - 8;
-        GuestSP = FEXCore::AlignUp(GuestSP, alignof(SigFrame_i32));
-
-        if (SupportsAVX) {
-          GuestSP += sizeof(FEXCore::x86::xstate);
-          GuestSP = FEXCore::AlignUp(GuestSP, alignof(FEXCore::x86::xstate));
-        } else {
-          GuestSP += sizeof(FEXCore::x86::_libc_fpstate);
-          GuestSP = FEXCore::AlignUp(GuestSP, alignof(FEXCore::x86::_libc_fpstate));
-        }
-      } else {
-        // Signal frame layout on stack needs to be as follows
-        // RTSigFrame_i32
-        // FPState
-        // Host stack location
-
-        // Remove the 4-byte pretcode.
-        GuestSP += sizeof(RTSigFrame_i32) - 4;
-        GuestSP = FEXCore::AlignUp(GuestSP, alignof(RTSigFrame_i32));
-
-        if (SupportsAVX) {
-          GuestSP += sizeof(FEXCore::x86::xstate);
-          GuestSP = FEXCore::AlignUp(GuestSP, alignof(FEXCore::x86::xstate));
-        } else {
-          GuestSP += sizeof(FEXCore::x86::_libc_fpstate);
-          GuestSP = FEXCore::AlignUp(GuestSP, alignof(FEXCore::x86::_libc_fpstate));
-        }
-      }
-    }
+    // AArch64: rt_sigreturn is entered with SP at the rt_sigframe that
+    // SetupFrame_Arm64 built; the frame record and then the host stack slot
+    // sit directly above it.
+    uint64_t GuestSP = Thread->CurrentFrame->State.sp;
+    GuestSP += sizeof(FEXCore::arm64::rt_sigframe) + sizeof(FEXCore::arm64::frame_record);
 
     OldSP = *reinterpret_cast<uint64_t*>(GuestSP);
   }
@@ -755,7 +574,7 @@ void SignalDelegator::RestoreThreadState(FEXCore::Core::InternalThreadState* Thr
   // finalize-spin corruption (docs/ZIGGURAT_FINALIZE_SPIN.md), and this line
   // is the only place that value is visible.
   SIGTRACE("RESTORE type=%d guest_rsp=0x%lx backup=0x%lx nip=0x%lx lr=0x%lx r10=0x%lx flags=0x%x isi=0x%x sig=%d",
-           (int)Type, (unsigned long)Thread->CurrentFrame->State.gregs[FEXCore::X86State::REG_RSP], (unsigned long)NewSP,
+           (int)Type, (unsigned long)Thread->CurrentFrame->State.sp, (unsigned long)NewSP,
            (unsigned long)Context->GPRs[32], (unsigned long)Context->GPRs[36], (unsigned long)Context->GPRs[10], Context->Flags,
            (unsigned)Context->InSyscallInfo, Context->Signal);
 #endif
@@ -789,15 +608,7 @@ void SignalDelegator::RestoreThreadState(FEXCore::Core::InternalThreadState* Thr
       Frame->InSyscallInfo = Context->InSyscallInfo;
     }
 
-    if (Is64BitMode) {
-      RestoreFrame_x64(Thread, Context, Frame, ucontext);
-    } else {
-      if (Type == RestoreType::TYPE_NONREALTIME) {
-        RestoreFrame_ia32(Thread, Context, Frame, ucontext);
-      } else {
-        RestoreRTFrame_ia32(Thread, Context, Frame, ucontext);
-      }
-    }
+    RestoreFrame_Arm64(Thread, Context, Frame, ucontext);
   }
 }
 
@@ -851,7 +662,7 @@ bool SignalDelegator::HandleDispatcherGuestSignal(FEXCore::Core::InternalThreadS
     ContextBackup->InSyscallInfo = Thread->CurrentFrame->InSyscallInfo;
     Thread->CurrentFrame->InSyscallInfo = 0;
     SIGTRACE("DELIVER sig=%d injit pc=0x%lx rip=0x%lx rsp=0x%lx backup=0x%lx isi=0x%x", Signal, OldPC,
-             (unsigned long)Frame->State.rip, (unsigned long)Frame->State.gregs[FEXCore::X86State::REG_RSP],
+             (unsigned long)Frame->State.pc, (unsigned long)Frame->State.sp,
              (unsigned long)(uintptr_t)ContextBackup, (unsigned)ContextBackup->InSyscallInfo);
   } else {
     // The interrupted context can still be mid-syscall even though the host
@@ -872,8 +683,8 @@ bool SignalDelegator::HandleDispatcherGuestSignal(FEXCore::Core::InternalThreadS
     ContextBackup->InSyscallInfo = Thread->CurrentFrame->InSyscallInfo;
     Thread->CurrentFrame->InSyscallInfo = 0;
     SIGTRACE("DELIVER sig=%d outside pc=0x%lx indisp=%d rip=0x%lx rsp=0x%lx backup=0x%lx isi=0x%x", Signal, OldPC,
-             IsAddressInDispatcher(OldPC) ? 1 : 0, (unsigned long)Frame->State.rip,
-             (unsigned long)Frame->State.gregs[FEXCore::X86State::REG_RSP], (unsigned long)(uintptr_t)ContextBackup,
+             IsAddressInDispatcher(OldPC) ? 1 : 0, (unsigned long)Frame->State.pc,
+             (unsigned long)Frame->State.sp, (unsigned long)(uintptr_t)ContextBackup,
              (unsigned)ContextBackup->InSyscallInfo);
     if (!IsAddressInDispatcher(OldPC)) {
       // This is likely to cause issues but in some cases it isn't fatal
@@ -887,7 +698,7 @@ bool SignalDelegator::HandleDispatcherGuestSignal(FEXCore::Core::InternalThreadS
     }
   }
 
-  uint64_t OldGuestSP = Frame->State.gregs[FEXCore::X86State::REG_RSP];
+  uint64_t OldGuestSP = Frame->State.sp;
 
   // Defensive: refuse to lay out a signal frame on a guest SP that is
   // clearly unusable. Threads created via clone() with unsupported flags
@@ -906,64 +717,13 @@ bool SignalDelegator::HandleDispatcherGuestSignal(FEXCore::Core::InternalThreadS
     auto& S = Thread->CurrentFrame->State;
     siginfo_t* si = reinterpret_cast<siginfo_t*>(info);
     LogMan::Msg::EFmt("HandleDispatcherGuestSignal: refusing to deliver "
-                      "signal {} to guest with bogus RSP {:#x}",
+                      "signal {} to guest with bogus SP {:#x}",
                       Signal, OldGuestSP);
     LogMan::Msg::EFmt("  tid={} si_code={} si_addr={:#x} si_pid={}",
                       FHU::Syscalls::gettid(),
                       si->si_code, reinterpret_cast<uint64_t>(si->si_addr), si->si_pid);
-    LogMan::Msg::EFmt("  guest RIP={:#x} RBP={:#x} CS={:x} SS={:x}",
-                      S.rip, S.gregs[FEXCore::X86State::REG_RBP],
-                      S.cs_idx, S.ss_idx);
-    LogMan::Msg::EFmt("  RAX={:#x} RBX={:#x} RCX={:#x} RDX={:#x}",
-                      S.gregs[0], S.gregs[3], S.gregs[1], S.gregs[2]);
-    LogMan::Msg::EFmt("  RSI={:#x} RDI={:#x} R8={:#x} R9={:#x}",
-                      S.gregs[6], S.gregs[7], S.gregs[8], S.gregs[9]);
-    LogMan::Msg::EFmt("  R10={:#x} R11={:#x} R12={:#x} R13={:#x}",
-                      S.gregs[10], S.gregs[11], S.gregs[12], S.gregs[13]);
-    LogMan::Msg::EFmt("  R14={:#x} R15={:#x}",
-                      S.gregs[14], S.gregs[15]);
-
-    // Guest code dump around RIP (16 bytes before, 32 after). Lets us
-    // decode the x86 instruction that was about to execute -- the trailing
-    // instruction is almost certainly the one that tried to use the bogus
-    // stack. Probe with msync to avoid a double-fault if RIP is unmapped.
-    auto dump_guest = [](uint64_t addr, size_t len, const char* label) {
-      if (addr < 0x1000ULL || addr > 0x00007FFFFFFFFFFFULL) {
-        LogMan::Msg::EFmt("  {} {:#x}: <out of range>", label, addr);
-        return;
-      }
-      // HOST: msync demands host-page alignment; a 4K-masked address reports
-      // "<unmapped>" for everything on a 64K kernel, i.e. it breaks exactly the
-      // diagnostics you need while bringing the port up.
-      uint64_t page = FEXCore::HostPage::AlignDown(addr);
-      if (msync(reinterpret_cast<void*>(page), FEXCore::HostPage::Size(), MS_ASYNC) != 0) {
-        LogMan::Msg::EFmt("  {} {:#x}: <unmapped>", label, addr);
-        return;
-      }
-      const uint8_t* mem = reinterpret_cast<const uint8_t*>(addr);
-      char buf[3 * 32 + 1];
-      size_t off = 0;
-      for (size_t i = 0; i < len && off + 3 < sizeof(buf); ++i) {
-        off += std::snprintf(buf + off, sizeof(buf) - off, "%02x ", mem[i]);
-      }
-      buf[sizeof(buf) - 1] = 0;
-      LogMan::Msg::EFmt("  {} {:#x}: {}", label, addr, buf);
-    };
-    if (S.rip >= 16) {
-      dump_guest(S.rip - 16, 16, "code[RIP-16]");
-    }
-    dump_guest(S.rip, 32, "code[RIP]   ");
-    // Stack walk via RBP -- the guest RBP often survives RSP corruption.
-    uint64_t rbp = S.gregs[FEXCore::X86State::REG_RBP];
-    if (rbp >= 0x1000ULL && rbp <= 0x00007FFFFFFFFFFFULL) {
-      // HOST: see dump_guest above.
-      uint64_t page = FEXCore::HostPage::AlignDown(rbp);
-      if (msync(reinterpret_cast<void*>(page), FEXCore::HostPage::Size(), MS_ASYNC) == 0) {
-        const uint64_t* fp = reinterpret_cast<const uint64_t*>(rbp);
-        LogMan::Msg::EFmt("  RBP frame: saved_RBP={:#x} return_RIP={:#x}",
-                          fp[0], fp[1]);
-      }
-    }
+    LogMan::Msg::EFmt("  guest PC={:#x} X29={:#x} X30={:#x}", S.pc, S.x[29], S.x[30]);
+    LogMan::Msg::EFmt("  X0={:#x} X1={:#x} X2={:#x} X3={:#x}", S.x[0], S.x[1], S.x[2], S.x[3]);
     return false;
   }
 
@@ -988,54 +748,23 @@ bool SignalDelegator::HandleDispatcherGuestSignal(FEXCore::Core::InternalThreadS
   // siginfo_t
   siginfo_t* HostSigInfo = reinterpret_cast<siginfo_t*>(info);
 
-  ContextBackup->OriginalRIP = Thread->CurrentFrame->State.rip;
-  uint32_t eflags = CTX->ReconstructCompactedEFLAGS(Thread, false, nullptr, 0);
-
-  if (Is64BitMode) {
+  ContextBackup->OriginalRIP = Thread->CurrentFrame->State.pc;
+  {
     // FEX_LOCKDIAG=1: a guest handler is about to run on top of this host frame.
     // If this thread holds VMATracking's write lock here, that lock is leaked.
     if (FEX::HLE::_SyscallHandler && FEX::HLE::_SyscallHandler->VMATracking.Mutex.WriteHeldBySelfDiag()) [[unlikely]] {
       char Buf[160];
       const int N = ::snprintf(Buf, sizeof(Buf),
                                "FEX: LOCKDIAG guest signal %d (code %d, addr %p, guest rip 0x%llx) delivered while this thread HOLDS the VMA write lock\n",
-                               Signal, HostSigInfo->si_code, HostSigInfo->si_addr, (unsigned long long)Frame->State.rip);
+                               Signal, HostSigInfo->si_code, HostSigInfo->si_addr, (unsigned long long)Frame->State.pc);
       ::write(STDERR_FILENO, Buf, N > 0 ? static_cast<size_t>(N) : 0);
       FEX::HLE::_SyscallHandler->VMATracking.Mutex.ReportAcquirerDiag();
     }
-    NewGuestSP = SetupFrame_x64(Thread, ContextBackup, Frame, Signal, HostSigInfo, ucontext, GuestAction, GuestStack, NewGuestSP, eflags);
-  } else {
-    const bool SigInfoFrame = (GuestAction->sa_flags & SA_SIGINFO) == SA_SIGINFO;
-    if (SigInfoFrame) {
-      NewGuestSP = SetupRTFrame_ia32(Thread, ContextBackup, Frame, Signal, HostSigInfo, ucontext, GuestAction, GuestStack, NewGuestSP, eflags);
-    } else {
-      NewGuestSP = SetupFrame_ia32(Thread, ContextBackup, Frame, Signal, HostSigInfo, ucontext, GuestAction, GuestStack, NewGuestSP, eflags);
-    }
+    NewGuestSP = SetupFrame_Arm64(Thread, ContextBackup, Frame, Signal, HostSigInfo, ucontext, GuestAction, GuestStack, NewGuestSP);
   }
 
-  Frame->State.rip = reinterpret_cast<uint64_t>(GuestAction->sigaction_handler.sigaction);
-  Frame->State.gregs[FEXCore::X86State::REG_RSP] = NewGuestSP;
-
-  // Linux clears DF, RF, and TF flags on signal.
-  Frame->State.flags[FEXCore::X86State::RFLAG_DF_RAW_LOC] = 1;
-  Frame->State.flags[FEXCore::X86State::RFLAG_RF_LOC] = 0;
-  Frame->State.flags[FEXCore::X86State::RFLAG_TF_RAW_LOC] = 0;
-
-  // Linux resets the CS and SS registers on signal handler.
-  // This way signal handlers always go back to their original operating mode.
-  // Doesn't matter for 32-bit processes as they can only be 32-bit, but does
-  // matter for 64-bit processes as they could have potentially installed a 32-bit code segment.
-  Frame->State.cs_idx = FEXCore::Core::CPUState::DEFAULT_USER_CS << 3;
-  Frame->State.ss_idx = 0;
-  Frame->State.cs_cached = Frame->State.CalculateGDTBase(*Frame->State.GetSegmentFromIndex(Frame->State, Frame->State.cs_idx));
-  Frame->State.ss_cached = Frame->State.CalculateGDTBase(*Frame->State.GetSegmentFromIndex(Frame->State, Frame->State.ss_idx));
-
-  // The guest starts its signal frame with a zero initialized FPU
-  // Set that up now. Little bit costly but it's a requirement
-  // This state will be restored on rt_sigreturn
-  memset(Frame->State.xmm.avx.data, 0, sizeof(Frame->State.xmm));
-  memset(Frame->State.mm, 0, sizeof(Frame->State.mm));
-  Frame->State.FCW = 0x37F;
-  Frame->State.AbridgedFTW = 0;
+  Frame->State.pc = reinterpret_cast<uint64_t>(GuestAction->sigaction_handler.sigaction);
+  Frame->State.sp = NewGuestSP;
 
   // Set the new PC
   ArchHelpers::Context::SetPc(ucontext, Config.AbsoluteLoopTopAddressFillSRA);
@@ -1339,7 +1068,7 @@ void SignalDelegator::HandleGuestSignal(FEX::HLE::ThreadStateObject* ThreadObjec
                               IsAddressInFABIStubs(DeferPc) || InFABICrossing;
   const bool MustDeferAsync = MustDeferSignal || InJIT_ForDefer;
   SIGTRACE("GUEST sig=%d code=%d pc=0x%lx rip=0x%lx defer=%d injit=%d q=%zu", Signal, SigInfo.si_code,
-           ArchHelpers::Context::GetPc(UContext), (unsigned long)Thread->CurrentFrame->State.rip, MustDeferSignal ? 1 : 0,
+           ArchHelpers::Context::GetPc(UContext), (unsigned long)Thread->CurrentFrame->State.pc, MustDeferSignal ? 1 : 0,
            InJIT_ForDefer ? 1 : 0, ThreadObject->SignalInfo.DeferredSignalFrames.size());
 #else
   const bool MustDeferAsync = MustDeferSignal;
@@ -1508,7 +1237,7 @@ void SignalDelegator::HandleGuestSignal(FEX::HLE::ThreadStateObject* ThreadObjec
                                "%s\n",
                                Signal, SigInfo.si_code, reinterpret_cast<unsigned long>(SigInfo.si_addr), (unsigned long)HostPC,
                                (unsigned long)_context->uc_mcontext.regs->link, Region, FHU::Syscalls::gettid(),
-                               (unsigned long)Thread->CurrentFrame->State.rip,
+                               (unsigned long)Thread->CurrentFrame->State.pc,
                                (unsigned long)Thread->CurrentFrame->State.DeferredSignalRefCount.Load(),
                                (unsigned long)Thread->CurrentFrame->InSyscallInfo,
                                DeliverAnyway ? "FEX_HOSTFAULTTOGUEST is set: delivering it to the guest anyway." :
@@ -1547,10 +1276,10 @@ void SignalDelegator::HandleGuestSignal(FEX::HLE::ThreadStateObject* ThreadObjec
       char buf[2048];
       int n = snprintf(buf, sizeof(buf), "[GSIG] tid=%d sig=%d si_code=%d si_addr=0x%lx guest_rip=0x%lx\n",
                        FHU::Syscalls::gettid(), Signal, SigInfo.si_code, reinterpret_cast<unsigned long>(SigInfo.si_addr),
-                       (unsigned long)Thread->CurrentFrame->State.rip);
+                       (unsigned long)Thread->CurrentFrame->State.pc);
       const auto& St = Thread->CurrentFrame->State;
-      n += snprintf(buf + n, sizeof(buf) - n, "[GSIG]  rax=%lx rcx=%lx rdx=%lx rbx=%lx rsp=%lx rbp=%lx rsi=%lx rdi=%lx\n",
-                    St.gregs[0], St.gregs[1], St.gregs[2], St.gregs[3], St.gregs[4], St.gregs[5], St.gregs[6], St.gregs[7]);
+      n += snprintf(buf + n, sizeof(buf) - n, "[GSIG]  x0=%lx x1=%lx x2=%lx x3=%lx x29=%lx x30=%lx sp=%lx\n",
+                    St.x[0], St.x[1], St.x[2], St.x[3], St.x[29], St.x[30], St.sp);
 
       // FEX_TRIPWIRE_PROBE="<reg>:<off>[,<off>...]" — dump guest memory at
       // fixed offsets from one register, e.g. "rdi:0x0,0x28,0x490". The dumped
@@ -1563,8 +1292,8 @@ void SignalDelegator::HandleGuestSignal(FEX::HLE::ThreadStateObject* ThreadObjec
       static const char* ProbeSpec = getenv("FEX_TRIPWIRE_PROBE");
       if (ProbeSpec) {
         static constexpr std::pair<const char*, int> RegNames[] = {
-          {"rax", 0}, {"rcx", 1}, {"rdx", 2}, {"rbx", 3}, {"rsp", 4}, {"rbp", 5}, {"rsi", 6}, {"rdi", 7},
-          {"r8", 8},  {"r9", 9},  {"r10", 10}, {"r11", 11}, {"r12", 12}, {"r13", 13}, {"r14", 14}, {"r15", 15},
+          {"x0", 0}, {"x1", 1}, {"x2", 2}, {"x3", 3}, {"x4", 4}, {"x5", 5}, {"x6", 6}, {"x7", 7},
+          {"x8", 8}, {"x19", 19}, {"x20", 20}, {"x21", 21}, {"x29", 29}, {"x30", 30}, {"sp", 31},
         };
         const char* Colon = strchr(ProbeSpec, ':');
         int RegIdx = -1;
@@ -1577,7 +1306,7 @@ void SignalDelegator::HandleGuestSignal(FEX::HLE::ThreadStateObject* ThreadObjec
           }
         }
         if (RegIdx >= 0) {
-          const uint64_t Base = St.gregs[RegIdx];
+          const uint64_t Base = RegIdx == 31 ? St.sp : St.x[RegIdx];
           const char* p = Colon + 1;
           for (int i = 0; i < 16 && *p; ++i) {
             char* End = nullptr;
@@ -1605,7 +1334,7 @@ void SignalDelegator::HandleGuestSignal(FEX::HLE::ThreadStateObject* ThreadObjec
       {
         uint8_t Code[32] = {};
         struct iovec Local {Code, sizeof(Code)};
-        struct iovec Remote {reinterpret_cast<void*>(St.rip), sizeof(Code)};
+        struct iovec Remote {reinterpret_cast<void*>(St.pc), sizeof(Code)};
         const ssize_t Got = process_vm_readv(::getpid(), &Local, 1, &Remote, 1, 0);
         n += snprintf(buf + n, sizeof(buf) - n, "[GSIG]  code@rip:");
         for (ssize_t i = 0; i < Got && n < static_cast<int>(sizeof(buf)) - 4; ++i) {
@@ -1638,7 +1367,7 @@ void SignalDelegator::HandleGuestSignal(FEX::HLE::ThreadStateObject* ThreadObjec
             char* Dash = nullptr;
             const uint64_t Lo = strtoull(Line, &Dash, 16);
             const uint64_t Hi = (Dash && *Dash == '-') ? strtoull(Dash + 1, nullptr, 16) : 0;
-            if (Lo <= St.rip && St.rip < Hi) {
+            if (Lo <= St.pc && St.pc < Hi) {
               n += snprintf(buf + n, sizeof(buf) - n, "[GSIG]  rip in: %.*s\n", static_cast<int>(Len > 200 ? 200 : Len), Line);
               Found = true;
             }
@@ -1648,21 +1377,6 @@ void SignalDelegator::HandleGuestSignal(FEX::HLE::ThreadStateObject* ThreadObjec
             n += snprintf(buf + n, sizeof(buf) - n, "[GSIG]  rip in: <no mapping>\n");
           }
         }
-      }
-      // 32-bit guests keep a walkable EBP chain: ebp -> {saved ebp, ret}.
-      // Reads are within our own address space; bound them to the low 4GB and
-      // require monotonically increasing frame pointers to stay fault-free.
-      uint64_t bp = St.gregs[5];
-      for (int i = 0; i < 8 && bp >= 0x1000 && bp < 0xFFFFF000ULL && (bp & 3) == 0; ++i) {
-        uint32_t SavedBP = 0;
-        uint32_t RetAddr = 0;
-        memcpy(&SavedBP, reinterpret_cast<void*>(bp), 4);
-        memcpy(&RetAddr, reinterpret_cast<void*>(bp + 4), 4);
-        n += snprintf(buf + n, sizeof(buf) - n, "[GSIG]  frame[%d] ebp=%lx ret=0x%x\n", i, bp, RetAddr);
-        if (SavedBP <= bp) {
-          break;
-        }
-        bp = SavedBP;
       }
       [[maybe_unused]] auto _ = write(2, buf, n);
     }
@@ -1754,6 +1468,24 @@ void SignalDelegator::HandleGuestSignal(FEX::HLE::ThreadStateObject* ThreadObjec
   } else if (Handler.OldAction.handler == SIG_IGN || (Handler.OldAction.handler == SIG_DFL && Handler.DefaultBehaviour == DEFAULT_IGNORE)) {
     // Do nothing
   } else if (Handler.OldAction.handler == SIG_DFL && (Handler.DefaultBehaviour == DEFAULT_COREDUMP || Handler.DefaultBehaviour == DEFAULT_TERM)) {
+    if (Signal == SIGILL && SigInfo.si_code == ILL_ILLOPC) {
+      // Until the A64 frontend translates anything, every guest instruction is
+      // raised as SIGILL/ILL_ILLOPC at its PC. Name it before the default
+      // disposition kills the process. Async-signal-safe: one fault-free read
+      // of the instruction word and one write(2).
+      // POWERARM-M0-TODO(frontend): keep or narrow once real translators exist; a genuine guest UDF should still die quietly like on arm64 Linux.
+      const uint64_t GuestPC = Thread->CurrentFrame->State.pc;
+      uint32_t Word = 0;
+      struct iovec Local {&Word, sizeof(Word)};
+      struct iovec Remote {reinterpret_cast<void*>(GuestPC), sizeof(Word)};
+      const bool HaveWord = process_vm_readv(::getpid(), &Local, 1, &Remote, 1, 0) == sizeof(Word);
+      char Line[128];
+      const int Len = HaveWord ? ::snprintf(Line, sizeof(Line), "POWERarm: unimplemented A64 instruction 0x%08x at pc 0x%llx\n", Word,
+                                            static_cast<unsigned long long>(GuestPC)) :
+                                 ::snprintf(Line, sizeof(Line), "POWERarm: unimplemented A64 instruction <unreadable> at pc 0x%llx\n",
+                                            static_cast<unsigned long long>(GuestPC));
+      [[maybe_unused]] auto Written = ::write(STDERR_FILENO, Line, Len > 0 ? static_cast<size_t>(Len) : 0);
+    }
     CTX->FlushAndCloseCodeMap();
 
 #ifndef FEX_DISABLE_TELEMETRY
@@ -2280,7 +2012,7 @@ uint64_t SignalDelegator::RegisterGuestSigAltStack(FEX::HLE::ThreadStateObject* 
   bool UsingAltStack {};
   uint64_t AltStackBase = reinterpret_cast<uint64_t>(Thread->SignalInfo.GuestAltStack.ss_sp);
   uint64_t AltStackEnd = AltStackBase + Thread->SignalInfo.GuestAltStack.ss_size;
-  uint64_t GuestSP = Thread->Thread->CurrentFrame->State.gregs[FEXCore::X86State::REG_RSP];
+  uint64_t GuestSP = Thread->Thread->CurrentFrame->State.sp;
 
   if (!(Thread->SignalInfo.GuestAltStack.ss_flags & SS_DISABLE) && GuestSP >= AltStackBase && GuestSP <= AltStackEnd) {
     UsingAltStack = true;
