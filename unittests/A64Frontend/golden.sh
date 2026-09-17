@@ -27,8 +27,12 @@ for src in *.S; do
   gcc -march=armv8.2-a+fp16+crypto+crc+dotprod -nostdlib -static $(sed -n 's|^// LDFLAGS: ||p' "$src") -o "${src%.S}" "$src"
 done
 
+# A large file-backed RW segment, for the destructive-madvise regression test.
+python3 "$here/gen_blob.py" "$out/madvfile_blob.bin" $((24 * 1024 * 1024))
+gcc -O2 -o madvfile "$here/madvfile.c" "$here/madvfile.S"
+
 # Static libc programs.
-corpus="hello printf_float strmem fpmath lse nosve"
+corpus="hello printf_float strmem fpmath lse nosve madvfile"
 for t in $corpus; do
   gcc -static -O2 -o "$t" "$here/$t.c" -lm
 done
