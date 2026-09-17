@@ -350,6 +350,15 @@ private:
   fextl::map<uint64_t, JumpTargetInfo> JumpTargets;
   FEXCore::IR::IROp_IRHeader* CurrentHeader {};
   uint64_t CurrentPC {};
+
+  // Last known value of each context-backed guest GPR (LoadGPRSlot).
+  static constexpr uint64_t GPR_CACHE_WINDOW = 8 * INSTRUCTION_SIZE;
+  struct GPRCacheEntry {
+    Ref Value {};
+    Ref Block {};
+    uint64_t PC {};
+  };
+  std::array<GPRCacheEntry, 31> GPRCache {};
   bool BlockSetPC {};
   bool ShouldDump {};
 };
