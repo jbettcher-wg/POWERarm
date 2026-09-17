@@ -102,7 +102,6 @@ private:
   }
 #endif
 
-  FEX_CONFIG_OPT(Is64BitMode, IS64BIT_MODE);
   FEX_CONFIG_OPT(PassManagerDumpIR, PASSMANAGERDUMPIR);
 };
 } // namespace FEXCore::IR

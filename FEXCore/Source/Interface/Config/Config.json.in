@@ -1179,10 +1179,6 @@
           "When running through a compatibility layer like wine, this will only be the exe name, instead of wine full path."
         ]
       },
-      "IS64BIT_MODE": {
-        "Type": "bool",
-        "Default": "false"
-      },
       "DISABLE_VIXL_INDIRECT_RUNTIME_CALLS": {
         "Type": "bool",
         "Default": "true",

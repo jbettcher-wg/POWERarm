@@ -8,7 +8,6 @@
 #include <cstdlib>
 
 #include <FEXCore/Core/CoreState.h>
-#include <FEXCore/Core/X86Enums.h>
 #include <FEXCore/Debug/InternalThreadState.h>
 #include <FEXCore/HLE/SyscallHandler.h>
 #include <FEXCore/Utils/MathUtils.h>
@@ -98,8 +97,9 @@ DEF_OP(CallbackReturn) {
   stw(TMP2, ref_off, STATE);
 
   // Adjust RSP by 8 (restore "misaligned" state from before callback)
+  // POWERARM-M0-TODO(thunks): x86 callback convention (return address pushed on the guest stack); an AArch64 callback returns through X30 and should not touch SP.
   int32_t rsp_off = static_cast<int32_t>(
-    offsetof(FEXCore::Core::CpuStateFrame, State.gregs[FEXCore::X86State::REG_RSP]));
+    offsetof(FEXCore::Core::CpuStateFrame, State.sp));
   ld(TMP2, rsp_off, STATE);
   addi(TMP2, TMP2, 8);
   std(TMP2, rsp_off, STATE);
@@ -212,7 +212,7 @@ DEF_OP(ExitFunction) {
   ResetStack();
 
   const int32_t rip_off = static_cast<int32_t>(
-    offsetof(FEXCore::Core::CpuStateFrame, State.rip));
+    offsetof(FEXCore::Core::CpuStateFrame, State.pc));
 
   // ---------------------------------------------------------------------
   // Materialise the destination RIP into a register.
@@ -229,13 +229,6 @@ DEF_OP(ExitFunction) {
   if (IsInlineConstant(Op->NewRIP, &NewRIP) ||
       IsInlineEntrypointOffset(Op->NewRIP, &NewRIP)) {
     ConstRIP = true;
-    // 32-bit guest: ensure the RIP constant is canonical 32-bit. For inline
-    // constants the value was already produced from a 32-bit source so the
-    // upper 32 should already be zero, but mask defensively for jumps from
-    // RIP-relative computations.
-    if (!CTX->Config.Is64BitMode()) {
-      NewRIP &= 0xFFFFFFFFull;
-    }
   }
 
   // Emission of the constant destination RIP is a closure because the sink
@@ -377,14 +370,7 @@ DEF_OP(ExitFunction) {
     RIPReg = TMP1;
   } else {
     GPR NewRIPReg = GetReg(Op->NewRIP);
-    if (!CTX->Config.Is64BitMode()) {
-      // 32-bit guest: mask into TMP1 rather than mutating the SSA-allocated
-      // NewRIPReg, which may still be live elsewhere.
-      rldicl(TMP1, NewRIPReg, 0, 32);
-      RIPReg = TMP1;
-    } else {
-      RIPReg = NewRIPReg;
-    }
+    RIPReg = NewRIPReg;
   }
 
   // ---------------------------------------------------------------------
@@ -539,11 +525,7 @@ DEF_OP(ExitFunction) {
     cmpd(cr(7), TMP2, TMP3);
     bc({4, 28}, &ShadowRetReprobe);     // sp >= base+SIZE -> empty -> probe
     ld(TMP3, 0, TMP2);                  // TMP3 = guest_ret_rip (top slot)
-    if (CTX->Config.Is64BitMode()) {
-      cmpd(cr(7), TMP3, RIPReg);
-    } else {
-      cmpw(cr(7), TMP3, RIPReg);        // 32-bit guest: compare low 32 only
-    }
+    cmpd(cr(7), TMP3, RIPReg);
     addi(TMP2, TMP2, 16);               // pop (unconditional, mirrors the stack discipline)
     std(TMP2, sp_off, STATE);
     bc({4, 30}, &ShadowRetReprobe);     // guest_ret_rip != target -> probe
@@ -749,13 +731,7 @@ DEF_OP(ExitFunction) {
   add(TMP2, TMP2, TMP4);         // TMP2 = &L1[hash]
 
   ld(TMP4, 8, TMP2);             // TMP4 = GuestCode (the "key"), loaded FIRST
-  if (CTX->Config.Is64BitMode()) {
-    cmpd(cr(7), TMP4, RIPReg);
-  } else {
-    // 32-bit guest: compare only the low 32 so a publisher that left junk in
-    // the upper half cannot force a spurious miss. Matches the dispatcher.
-    cmpw(cr(7), TMP4, RIPReg);
-  }
+  cmpd(cr(7), TMP4, RIPReg);
   // BO=4 (branch if false), BI=30 (CR7.EQ at PPC bit 4*7+2). i.e. bne cr7.
   bc({4, 30}, &MissLabel);
 
@@ -1193,9 +1169,7 @@ DEF_OP(Syscall) {
   static_assert(FEXCore::HLE::SyscallArguments::MAX_ARGS == 7);
 
   constexpr int kFPRSaveOff = 160;
-  const auto RAFPRVolatile = CTX->Config.Is64BitMode()
-                               ? std::span<const VR>(x64::RAFPRVolatile)
-                               : std::span<const VR>(x32::RAFPRVolatile);
+  const auto RAFPRVolatile = std::span<const VR>(a64::RAFPRVolatile);
   const int16_t FrameSize =
     static_cast<int16_t>(kFPRSaveOff + RAFPRVolatile.size() * 16);
 
@@ -1260,7 +1234,7 @@ DEF_OP(Syscall) {
   if (!GenericABI) {
     const int32_t rax_off = static_cast<int32_t>(
       offsetof(FEXCore::Core::CpuStateFrame,
-               State.gregs[FEXCore::X86State::REG_RAX]));
+               State.x[0]));
     std(r3, rax_off, STATE);
   }
 
@@ -1315,7 +1289,7 @@ DEF_OP(Syscall) {
   // (RAX/RCX/RDX/RBX/RBP) reached the guest; RSI, RDI and R8-R15 were silently
   // dropped. Linux guests are unaffected — their handlers never write gregs[]
   // except RAX, which is what the elision was designed around.
-  if (CTX->Config.Is64BitMode() && !GenericABI) {
+  if (!GenericABI) {
     const int32_t isi_off = static_cast<int32_t>(
       offsetof(FEXCore::Core::CpuStateFrame, InSyscallInfo));
     PPC64Emitter::Label SentinelIntact;
@@ -1371,7 +1345,7 @@ DEF_OP(Thunk) {
   // elidable: v0-v15 are ELFv2-volatile and the frame copy is also what
   // signal delivery reads mid-call.
   static const bool NoPartialFill = getenv("FEX_NO_THUNK_PARTIAL_FILL") != nullptr;
-  const bool PartialFill = CTX->Config.Is64BitMode() && !NoPartialFill;
+  const bool PartialFill = !NoPartialFill;
 
   SpillForABICall(TMP1);
   if (PartialFill) {

@@ -44,7 +44,6 @@ $end_info$
 #include <FEXCore/Core/CoreState.h>
 #include <FEXCore/Core/SignalDelegator.h>
 #include <FEXCore/Core/Thunks.h>
-#include <FEXCore/Core/X86Enums.h>
 #include <FEXCore/Debug/InternalThreadState.h>
 #include <FEXCore/HLE/SyscallHandler.h>
 #include <FEXCore/HLE/SourcecodeResolver.h>
@@ -263,11 +262,6 @@ static uint64_t GetCycleCounterFrequency() {
 ContextImpl::ContextImpl(const FEXCore::HostFeatures& Features)
   : HostFeatures {Features}
   , CodeCache {*this} {
-  if (!Config.Is64BitMode()) {
-    // When operating in 32-bit mode, the virtual memory we care about is only the lower 32-bits.
-    Config.VirtualMemSize = 1ULL << 32;
-  }
-
   if (Config.BlockJITNaming() || Config.GlobalJITNaming() || Config.LibraryJITNaming()) {
     // Only initialize symbols file if enabled. Ensures we don't pollute /tmp with empty files.
     Symbols.InitFile();
@@ -346,7 +340,7 @@ uint64_t ContextImpl::GetGuestBlockEntry(FEXCore::Core::InternalThreadState* Thr
 }
 
 // FEX_RIPFALLBACKTRAP — instrumentation for "how often does RestoreRIPFromHostPC
-// fail to reconstruct and fall back to Frame->State.rip, with a host PC that is
+// fail to reconstruct and fall back to Frame->State.pc, with a host PC that is
 // inside the JIT code buffer?"
 //
 // That question decides whether the JIT is allowed to stop maintaining
@@ -489,7 +483,7 @@ struct RIPFallbackInitializer {
 // same time. Setting FEX_RIPRECONLOG makes every RestoreRIPFromHostPC also
 // compute the answer the OLD way (walk the block named by
 // Frame->State.InlineJITBlockHeader when the host PC is inside it, else
-// Frame->State.rip) and emit one line per call:
+// Frame->State.pc) and emit one line per call:
 //
 //   RIPRECON hostpc=0x.. tbl=0x.. hdr=0x.. same=0|1
 //
@@ -559,13 +553,13 @@ uint64_t WalkBlockRIPTable(uint64_t BlockBegin, const CPU::CPUBackend::JITCodeHe
 uint64_t LegacyRIPFromInlineHeader(FEXCore::Core::CpuStateFrame* Frame, uint64_t HostPC) {
   const uint64_t BlockBegin = Frame->State.InlineJITBlockHeader;
   if (!BlockBegin) {
-    return Frame->State.rip;
+    return Frame->State.pc;
   }
 
   auto Header = reinterpret_cast<const CPU::CPUBackend::JITCodeHeader*>(BlockBegin);
   auto Tail = reinterpret_cast<const CPU::CPUBackend::JITCodeTail*>(BlockBegin + Header->OffsetToBlockTail);
   if (HostPC < BlockBegin || HostPC >= BlockBegin + Tail->Size || Tail->NumberOfRIPEntries == 0) {
-    return Frame->State.rip;
+    return Frame->State.pc;
   }
 
   return WalkBlockRIPTable(BlockBegin, Header, Tail, HostPC);
@@ -597,11 +591,11 @@ void NoteRIPFallback(FEXCore::Core::InternalThreadState* Thread, uint64_t HostPC
     // Raw write + abort rather than ERROR_AND_DIE_FMT: dying is the point, but
     // deadlocking inside fmt/LogMan while holding signal-machinery locks is a
     // hang, not a diagnostic.
-    RIPFallbackWriteLine(Kind, N, HostPC, BlockBegin, Thread->CurrentFrame->State.rip);
+    RIPFallbackWriteLine(Kind, N, HostPC, BlockBegin, Thread->CurrentFrame->State.pc);
     ::abort();
   }
   if (N < 64) {
-    RIPFallbackWriteLine(Kind, N, HostPC, BlockBegin, Thread->CurrentFrame->State.rip);
+    RIPFallbackWriteLine(Kind, N, HostPC, BlockBegin, Thread->CurrentFrame->State.pc);
   }
 }
 } // namespace
@@ -619,9 +613,9 @@ uint64_t ContextImpl::RestoreRIPFromHostPC(FEXCore::Core::InternalThreadState* T
   uint64_t Result;
   if (InlineHeader) {
     // If the block did not emit a per-instruction RIP table, fall through
-    // to Frame->State.rip. Without this guard the reconstruction would
+    // to Frame->State.pc. Without this guard the reconstruction would
     // return the block-entry RIP, which is coarser than the syscall-site
-    // RIP that Frame->State.rip already stores today (SeccompEmulator
+    // RIP that Frame->State.pc already stores today (SeccompEmulator
     // reads .instruction_pointer via this path). Header-only blocks —
     // e.g. blocks with no CanHaveSideEffects IR ops that would emit
     // GuestOpcode markers — hit this branch. (Ppc64le emits entries since
@@ -629,7 +623,7 @@ uint64_t ContextImpl::RestoreRIPFromHostPC(FEXCore::Core::InternalThreadState* T
     // stale, per P5.0 review.)
     if (InlineTail->NumberOfRIPEntries == 0) {
       NoteRIPFallback(Thread, HostPC, BlockBegin, 1);
-      Result = Frame->State.rip;
+      Result = Frame->State.pc;
     } else {
       // Reconstruct RIP from JIT entries for this block.
       Result = WalkBlockRIPTable(BlockBegin, InlineHeader, InlineTail, HostPC);
@@ -639,7 +633,7 @@ uint64_t ContextImpl::RestoreRIPFromHostPC(FEXCore::Core::InternalThreadState* T
     // stub allocation, or the code buffer's free tail. Fall back to what is
     // stored in the RIP currently.
     NoteRIPFallback(Thread, HostPC, BlockBegin, 0);
-    Result = Frame->State.rip;
+    Result = Frame->State.pc;
   }
 
   if (GetRIPReconLogEnabled()) {
@@ -649,184 +643,6 @@ uint64_t ContextImpl::RestoreRIPFromHostPC(FEXCore::Core::InternalThreadState* T
   }
 
   return Result;
-}
-
-// Bit position of an x86 flag inside the packed NZCV word (was OpDispatchBuilder::IndexNZCV).
-static inline constexpr unsigned IndexNZCV(unsigned BitOffset) {
-  switch (BitOffset) {
-  case X86State::RFLAG_OF_RAW_LOC: return 28;
-  case X86State::RFLAG_CF_RAW_LOC: return 29;
-  case X86State::RFLAG_ZF_RAW_LOC: return 30;
-  case X86State::RFLAG_SF_RAW_LOC: return 31;
-  default: FEX_UNREACHABLE;
-  }
-}
-
-uint32_t ContextImpl::ReconstructCompactedEFLAGS(FEXCore::Core::InternalThreadState* Thread, bool WasInJIT, const uint64_t* HostGPRs,
-                                                 uint64_t PSTATE) {
-  const auto Frame = Thread->CurrentFrame;
-  uint32_t EFLAGS {};
-
-  // Currently these flags just map 1:1 inside of the resulting value.
-  for (size_t i = 0; i < FEXCore::Core::CPUState::NUM_EFLAG_BITS; ++i) {
-    switch (i) {
-    case X86State::RFLAG_CF_RAW_LOC:
-    case X86State::RFLAG_PF_RAW_LOC:
-    case X86State::RFLAG_AF_RAW_LOC:
-    case X86State::RFLAG_TF_RAW_LOC:
-    case X86State::RFLAG_ZF_RAW_LOC:
-    case X86State::RFLAG_SF_RAW_LOC:
-    case X86State::RFLAG_OF_RAW_LOC:
-    case X86State::RFLAG_DF_RAW_LOC:
-      // Intentionally do nothing.
-      // These contain multiple bits which can corrupt other members when compacted.
-      break;
-    default: EFLAGS |= uint32_t {Frame->State.flags[i]} << i; break;
-    }
-  }
-
-  uint32_t Packed_NZCV {};
-  if (WasInJIT) {
-    // If we were in the JIT then NZCV is in the CPU's PSTATE object.
-    // Packed in to the same bit locations as RFLAG_NZCV_LOC.
-    Packed_NZCV = PSTATE;
-
-    // If we were in the JIT then PF and AF are in registers.
-    // Move them to the CPUState frame now.
-    Frame->State.pf_raw = HostGPRs[CPU::REG_PF.Idx()];
-    Frame->State.af_raw = HostGPRs[CPU::REG_AF.Idx()];
-  } else {
-    // If we were not in the JIT then the NZCV state is stored in the CPUState RFLAG_NZCV_LOC.
-    // SF/ZF/CF/OF are packed in a 32-bit value in RFLAG_NZCV_LOC.
-    memcpy(&Packed_NZCV, &Frame->State.flags[X86State::RFLAG_NZCV_LOC], sizeof(Packed_NZCV));
-  }
-
-  uint32_t OF = (Packed_NZCV >> IndexNZCV(X86State::RFLAG_OF_RAW_LOC)) & 1;
-  uint32_t CF = (Packed_NZCV >> IndexNZCV(X86State::RFLAG_CF_RAW_LOC)) & 1;
-  uint32_t ZF = (Packed_NZCV >> IndexNZCV(X86State::RFLAG_ZF_RAW_LOC)) & 1;
-  uint32_t SF = (Packed_NZCV >> IndexNZCV(X86State::RFLAG_SF_RAW_LOC)) & 1;
-
-  // CF is inverted in our representation, undo the invert here.
-  CF ^= 1;
-
-  // Pack in to EFLAGS
-  EFLAGS |= OF << X86State::RFLAG_OF_RAW_LOC;
-  EFLAGS |= CF << X86State::RFLAG_CF_RAW_LOC;
-  EFLAGS |= ZF << X86State::RFLAG_ZF_RAW_LOC;
-  EFLAGS |= SF << X86State::RFLAG_SF_RAW_LOC;
-
-  // PF calculation is deferred, calculate it now.
-  // Popcount the 8-bit flag and then extract the lower bit.
-  uint32_t PFByte = Frame->State.pf_raw & 0xff;
-  uint32_t PF = std::popcount(PFByte ^ 1) & 1;
-  EFLAGS |= PF << X86State::RFLAG_PF_RAW_LOC;
-
-  // AF calculation is deferred, calculate it now.
-  // XOR with PF byte and extract bit 4.
-  uint32_t AF = ((Frame->State.af_raw ^ PFByte) & (1 << 4)) ? 1 : 0;
-  EFLAGS |= AF << X86State::RFLAG_AF_RAW_LOC;
-
-  uint8_t TFByte = Frame->State.flags[X86State::RFLAG_TF_RAW_LOC];
-  EFLAGS |= (TFByte & 1) << X86State::RFLAG_TF_RAW_LOC;
-
-  // DF is pretransformed, undo the transform from 1/-1 back to 0/1
-  uint8_t DFByte = Frame->State.flags[X86State::RFLAG_DF_RAW_LOC];
-  if (DFByte & 0x80) {
-    EFLAGS |= 1 << X86State::RFLAG_DF_RAW_LOC;
-  }
-
-  return EFLAGS;
-}
-
-void ContextImpl::ReconstructXMMRegisters(const FEXCore::Core::InternalThreadState* Thread, __uint128_t* XMM_Low, __uint128_t* YMM_High) {
-  const size_t MaximumRegisters = Config.Is64BitMode ? FEXCore::Core::CPUState::NUM_XMMS : 8;
-
-  if (YMM_High != nullptr && HostFeatures.SupportsAVX) {
-    const bool SupportsConvergedRegisters = HostFeatures.SupportsSVE256;
-
-    if (SupportsConvergedRegisters) {
-      ///< Output wants to de-interleave
-      for (size_t i = 0; i < MaximumRegisters; ++i) {
-        memcpy(&XMM_Low[i], &Thread->CurrentFrame->State.xmm.avx.data[i][0], sizeof(__uint128_t));
-        memcpy(&YMM_High[i], &Thread->CurrentFrame->State.xmm.avx.data[i][2], sizeof(__uint128_t));
-      }
-    } else {
-      ///< Matches what FEX wants with non-converged registers
-      for (size_t i = 0; i < MaximumRegisters; ++i) {
-        memcpy(&XMM_Low[i], &Thread->CurrentFrame->State.xmm.sse.data[i][0], sizeof(__uint128_t));
-        memcpy(&YMM_High[i], &Thread->CurrentFrame->State.avx_high[i][0], sizeof(__uint128_t));
-      }
-    }
-  } else {
-    // Only support SSE, no AVX here, even if requested.
-    memcpy(XMM_Low, Thread->CurrentFrame->State.xmm.sse.data, MaximumRegisters * sizeof(__uint128_t));
-  }
-}
-
-void ContextImpl::SetXMMRegistersFromState(FEXCore::Core::InternalThreadState* Thread, const __uint128_t* XMM_Low, const __uint128_t* YMM_High) {
-  const size_t MaximumRegisters = Config.Is64BitMode ? FEXCore::Core::CPUState::NUM_XMMS : 8;
-  if (YMM_High != nullptr && HostFeatures.SupportsAVX) {
-    const bool SupportsConvergedRegisters = HostFeatures.SupportsSVE256;
-
-    if (SupportsConvergedRegisters) {
-      ///< Output wants to de-interleave
-      for (size_t i = 0; i < MaximumRegisters; ++i) {
-        memcpy(&Thread->CurrentFrame->State.xmm.avx.data[i][0], &XMM_Low[i], sizeof(__uint128_t));
-        memcpy(&Thread->CurrentFrame->State.xmm.avx.data[i][2], &YMM_High[i], sizeof(__uint128_t));
-      }
-    } else {
-      ///< Matches what FEX wants with non-converged registers
-      for (size_t i = 0; i < MaximumRegisters; ++i) {
-        memcpy(&Thread->CurrentFrame->State.xmm.sse.data[i][0], &XMM_Low[i], sizeof(__uint128_t));
-        memcpy(&Thread->CurrentFrame->State.avx_high[i][0], &YMM_High[i], sizeof(__uint128_t));
-      }
-    }
-  } else {
-    // Only support SSE, no AVX here, even if requested.
-    memcpy(Thread->CurrentFrame->State.xmm.sse.data, XMM_Low, MaximumRegisters * sizeof(__uint128_t));
-  }
-}
-
-void ContextImpl::SetFlagsFromCompactedEFLAGS(FEXCore::Core::InternalThreadState* Thread, uint32_t EFLAGS) {
-  const auto Frame = Thread->CurrentFrame;
-  for (size_t i = 0; i < FEXCore::Core::CPUState::NUM_EFLAG_BITS; ++i) {
-    switch (i) {
-    case X86State::RFLAG_OF_RAW_LOC:
-    case X86State::RFLAG_CF_RAW_LOC:
-    case X86State::RFLAG_ZF_RAW_LOC:
-    case X86State::RFLAG_SF_RAW_LOC:
-      // Intentionally do nothing.
-      break;
-    case X86State::RFLAG_AF_RAW_LOC:
-      // AF stored in bit 4 in our internal representation. It is also
-      // XORed with byte 4 of the PF byte, but we write that as zero here so
-      // we don't need any special handling for that.
-      Frame->State.af_raw = (EFLAGS & (1U << i)) ? (1 << 4) : 0;
-      break;
-    case X86State::RFLAG_PF_RAW_LOC:
-      // PF is inverted in our internal representation.
-      Frame->State.pf_raw = (EFLAGS & (1U << i)) ? 0 : 1;
-      break;
-    case X86State::RFLAG_DF_RAW_LOC:
-      // DF is encoded as 1/-1
-      Frame->State.flags[i] = (EFLAGS & (1U << i)) ? 0xff : 1;
-      break;
-    default: Frame->State.flags[i] = (EFLAGS & (1U << i)) ? 1 : 0; break;
-    }
-  }
-
-  // Calculate packed NZCV. Note CF is inverted.
-  uint32_t Packed_NZCV {};
-  Packed_NZCV |= (EFLAGS & (1U << X86State::RFLAG_OF_RAW_LOC)) ? 1U << IndexNZCV(X86State::RFLAG_OF_RAW_LOC) : 0;
-  Packed_NZCV |= (EFLAGS & (1U << X86State::RFLAG_CF_RAW_LOC)) ? 0 : 1U << IndexNZCV(X86State::RFLAG_CF_RAW_LOC);
-  Packed_NZCV |= (EFLAGS & (1U << X86State::RFLAG_ZF_RAW_LOC)) ? 1U << IndexNZCV(X86State::RFLAG_ZF_RAW_LOC) : 0;
-  Packed_NZCV |= (EFLAGS & (1U << X86State::RFLAG_SF_RAW_LOC)) ? 1U << IndexNZCV(X86State::RFLAG_SF_RAW_LOC) : 0;
-  memcpy(&Frame->State.flags[X86State::RFLAG_NZCV_LOC], &Packed_NZCV, sizeof(Packed_NZCV));
-
-  // Reserved, Read-As-1, Write-as-1
-  Frame->State.flags[X86State::RFLAG_RESERVED_LOC] = 1;
-  // Interrupt Flag. Can't be written by CPL-3 userland.
-  Frame->State.flags[X86State::RFLAG_IF_LOC] = 1;
 }
 
 bool ContextImpl::InitCore() {
@@ -947,8 +763,8 @@ ContextImpl::CreateThread(uint64_t InitialRIP, uint64_t StackPointer, const FEXC
     Thread->BaseFrameState.InterruptFaultPagePtr = static_cast<uint8_t*>(FaultPage);
   }
 
-  Thread->CurrentFrame->State.gregs[X86State::REG_RSP] = StackPointer;
-  Thread->CurrentFrame->State.rip = InitialRIP;
+  Thread->CurrentFrame->State.sp = StackPointer;
+  Thread->CurrentFrame->State.pc = InitialRIP;
 
   // Copy over the new thread state to the new object
   if (NewThreadState) {
@@ -1268,8 +1084,8 @@ ContextImpl::CompileCodeResult ContextImpl::CompileCode(FEXCore::Core::InternalT
 
   auto DebugData = fextl::make_unique<FEXCore::Core::DebugData>();
 
-  // If the trap flag is set we generate single instruction blocks that each check to generate a single step exception.
-  bool TFSet = Thread->CurrentFrame->State.flags[X86State::RFLAG_TF_RAW_LOC];
+  // POWERARM-M0-TODO(backend): the x86 trap-flag single-step check is gone; A64 EL0 has no TF equivalent (software step comes via ptrace/gdbserver).
+  const bool TFSet = false;
 
   auto CompiledCode = Thread->CPUBackend->CompileCode(GuestRIP, Length, TotalInstructions == 1, &*IRView, DebugData.get(), TFSet);
 
@@ -1744,7 +1560,6 @@ void ContextImpl::ThreadRemoveCodeEntryFromJit(FEXCore::Core::CpuStateFrame* Fra
 
 std::optional<CustomIRResult>
 ContextImpl::AddCustomIREntrypoint(uintptr_t Entrypoint, CustomIREntrypointHandler Handler, void* Creator, void* Data) {
-  LOGMAN_THROW_A_FMT(Config.Is64BitMode || !(Entrypoint >> 32), "64-bit Entrypoint in 32-bit mode {:x}", Entrypoint);
 
   std::unique_lock lk(CustomIRMutex);
 
@@ -1762,31 +1577,18 @@ ContextImpl::AddCustomIREntrypoint(uintptr_t Entrypoint, CustomIREntrypointHandl
 void ContextImpl::AddThunkTrampolineIRHandler(uintptr_t Entrypoint, uintptr_t GuestThunkEntrypoint) {
   LOGMAN_THROW_A_FMT(Entrypoint, "Tried to link null pointer address to guest function");
   LOGMAN_THROW_A_FMT(GuestThunkEntrypoint, "Tried to link address to null pointer guest function");
-  if (!Config.Is64BitMode) {
-    LOGMAN_THROW_A_FMT((Entrypoint >> 32) == 0, "Tried to link 64-bit address in 32-bit mode");
-    LOGMAN_THROW_A_FMT((GuestThunkEntrypoint >> 32) == 0, "Tried to link 64-bit address in 32-bit mode");
-  }
-
   LogMan::Msg::DFmt("Thunks: Adding guest trampoline from address {:#x} to guest function {:#x}", Entrypoint, GuestThunkEntrypoint);
 
   auto Result = AddCustomIREntrypoint(
     Entrypoint,
-    [this, GuestThunkEntrypoint](uintptr_t Entrypoint, FEXCore::IR::IREmitter* emit) {
+    [GuestThunkEntrypoint](uintptr_t Entrypoint, FEXCore::IR::IREmitter* emit) {
       auto IRHeader = emit->_IRHeader(emit->Invalid(), Entrypoint, 0, 0, 0, 0);
       auto Block = emit->CreateCodeNode(true, 0);
       IRHeader.first->Blocks = emit->WrapNode(Block);
       emit->SetCurrentCodeBlock(Block);
 
-      const auto GPRSize = this->Config.Is64BitMode ? IR::OpSize::i64Bit : IR::OpSize::i32Bit;
-
-      // Thunk entry-points don't get cached, don't need to be padded.
-      if (GPRSize == IR::OpSize::i64Bit) {
-        IR::Ref R = emit->_StoreRegister(emit->Constant(Entrypoint), GPRSize);
-        R->Reg = IR::PhysicalRegister(IR::RegClass::GPRFixed, X86State::REG_R11).Raw;
-      } else {
-        emit->_StoreContextFPR(GPRSize, emit->_VCastFromGPR(IR::OpSize::i64Bit, IR::OpSize::i64Bit, emit->Constant(Entrypoint)),
-                               offsetof(Core::CPUState, mm[0][0]));
-      }
+      // POWERARM-M0-TODO(thunks): the x86-64 trampoline passed its own address in R11; X16 (IP0) is the AAPCS64 veneer register but the guest-thunk ABI is an M5 decision.
+      emit->_StoreContextGPR(IR::OpSize::i64Bit, emit->Constant(Entrypoint), Core::CPUState::GPROffset(16));
       emit->_ExitFunction(IR::OpSize::i64Bit, emit->Constant(GuestThunkEntrypoint), IR::BranchHint::None, emit->Invalid(), emit->Invalid());
     },
     ThunkHandler, (void*)GuestThunkEntrypoint);
@@ -1820,7 +1622,6 @@ void ContextImpl::MarkMonoBackpatcherBlock(uint64_t BlockEntry) {
 }
 
 void ContextImpl::RemoveCustomIREntrypoint(FEXCore::Core::InternalThreadState* Thread, uintptr_t Entrypoint) {
-  LOGMAN_THROW_A_FMT(Config.Is64BitMode || !(Entrypoint >> 32), "64-bit Entrypoint in 32-bit mode {:x}", Entrypoint);
 
   {
     std::scoped_lock lk(CustomIRMutex);

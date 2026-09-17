@@ -23,7 +23,7 @@ namespace Core {
 } // namespace Core
 
 struct SignalDelegatorConfig {
-  using SRAIndexMapping = std::array<uint8_t, 16>;
+  using SRAIndexMapping = std::array<uint8_t, 32>;
 
   // Dispatcher information
   uint64_t DispatcherBegin;

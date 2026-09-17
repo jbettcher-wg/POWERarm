@@ -610,7 +610,6 @@ static void HandleErrata(FEXCore::HostFeatures* HostFeatures, uint64_t MIDR) {
 void FetchHostFeatures(FEX::CPUFeatures& Features, FEXCore::HostFeatures& HostFeatures, bool SupportsCacheMaintenanceOps, uint64_t CTR,
                        uint64_t MIDR) {
   FEX_CONFIG_OPT(ForceSVEWidth, FORCESVEWIDTH);
-  FEX_CONFIG_OPT(Is64BitMode, IS64BIT_MODE);
 
   HostFeatures.SupportsCacheMaintenanceOps = SupportsCacheMaintenanceOps;
 

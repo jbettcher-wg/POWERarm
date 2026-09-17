@@ -89,7 +89,7 @@ private:
     bool IsEntryPoint;
   };
 
-  FEXCore::Context::ContextImpl* CTX;
+  [[maybe_unused]] FEXCore::Context::ContextImpl* CTX;
   fextl::map<uint64_t, JumpTargetInfo> JumpTargets;
   FEXCore::IR::IROp_IRHeader* CurrentHeader {};
   bool BlockSetPC {};

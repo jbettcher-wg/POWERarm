@@ -90,7 +90,7 @@ bool IRBuilder::FinishOp(uint64_t NextPC, bool LastOp) {
 }
 
 void IRBuilder::RaiseGuestSignal(uint64_t PC, BreakDefinition Reason) {
-  _StoreContextGPR(OpSize::i64Bit, GetRelocatedPC(PC), offsetof(FEXCore::Core::CPUState, rip));
+  _StoreContextGPR(OpSize::i64Bit, GetRelocatedPC(PC), offsetof(FEXCore::Core::CPUState, pc));
   _Break(Reason);
   BlockSetPC = true;
 }

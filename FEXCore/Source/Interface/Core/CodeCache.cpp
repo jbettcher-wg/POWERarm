@@ -298,7 +298,6 @@ uint64_t ComputeCodeCacheConfigId() {
 #define HASH_STR_OPT(NAME) Hasher.Add(std::string_view {FEXCore::Config::Get_##NAME()()})
 
     // Block shape and mode.
-    HASH_OPT(IS64BIT_MODE);
     HASH_OPT(MULTIBLOCK);
     HASH_OPT(MAXINST);
     HASH_OPT(O0);
@@ -455,7 +454,6 @@ uint64_t ComputeCodeCacheConfigId() {
       // DFCE ReplacementNoWrite arm (RedundantFlagCalculationElimination.cpp):
       // presence-DISABLED, 64-bit-guest-only; rewrites value-dead flag ops to
       // their flags-only forms pre-RA, so it changes emitted block bytes.
-      // (IS64BIT_MODE itself is hashed above.)
       Hasher.Add(static_cast<uint64_t>(getenv("FEX_NO_DFCE_NOWRITE") != nullptr));
       // Linked-exit RIP sink (BranchOps.cpp): now default-ON, with
       // FEX_NOSINKEXITRIP as the kill switch. Presence-DISABLED; the switch
@@ -1786,19 +1784,6 @@ void CodeCache::Validate(const ExecutableFileSectionInfo& Section, const fextl::
 
     ValidationThread.reset(ValidationCTX->CreateThread(0, 0, nullptr));
 
-    auto Frame = ValidationThread->CurrentFrame;
-    Frame->State.segment_arrays[FEXCore::Core::CPUState::SEGMENT_ARRAY_INDEX_GDT] = &ValidationGDT[0];
-    Frame->State.segment_arrays[FEXCore::Core::CPUState::SEGMENT_ARRAY_INDEX_LDT] = &ValidationGDT[0];
-    Frame->State.cs_idx = 0;
-    Frame->State.cs_cached = 0;
-
-    if (ValidationCTX->Config.Is64BitMode()) {
-      ValidationGDT[0].L = 1; // L = Long Mode = 64-bit
-      ValidationGDT[0].D = 0; // D = Default Operand Size = Reserved
-    } else {
-      ValidationGDT[0].L = 0; // L = Long Mode = 32-bit
-      ValidationGDT[0].D = 1; // D = Default Operand Size = 32-bit
-    }
   }
 
   // Return the validation context to the state the next Validate call expects:

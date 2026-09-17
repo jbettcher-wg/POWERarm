@@ -508,13 +508,6 @@
         "DestSize": "OpSize::i32Bit"
       },
 
-      "GPR = LoadDF": {
-        "Desc": ["Loads the decimal flag from the context object in -1/1",
-                  "representation for easy consumption"
-                ],
-        "DestSize": "OpSize::i64Bit"
-      },
-
       "SSA = LoadMem RegisterClass:$Class, OpSize:#Size, GPR:$Addr, GPR:$Offset, OpSize:$Align, MemOffsetType:$OffsetType, u8:$OffsetScale": {
         "Inline": ["", "Mem"],
         "DestSize": "Size"

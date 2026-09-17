@@ -4,7 +4,6 @@
 #include "Interface/Context/Context.h"
 
 #include <FEXCore/Core/CoreState.h>
-#include <FEXCore/Core/X86Enums.h>
 
 #include <bit>
 
@@ -23,23 +22,8 @@ namespace FEXCore::CPU {
 // the AVX_128 frontend never accesses partial high halves, and anything else
 // would break bank<->memory coherence, so it is a hard error.
 static int AVXHighBankSlot(const FEXCore::Context::ContextImpl* CTX, int32_t Offset, uint32_t Size) {
-  if (!CTX->HostFeatures.SupportsAVX) {
-    return -1;
-  }
-  constexpr int32_t Base = static_cast<int32_t>(offsetof(FEXCore::Core::CpuStateFrame, State.avx_high[0][0]));
-  constexpr int32_t End  = Base + 16 * 16;
-  if (Offset < Base || Offset >= End) {
-    return -1;
-  }
-  // Unexpected shapes assert in debug builds; in release they fall back to
-  // the memory path (stale vs the bank — wrong, but bounded and loud in any
-  // assertions-enabled ctest run rather than emitting a garbage permute).
-  LOGMAN_THROW_A_FMT(Size == 16 && ((Offset - Base) & 15) == 0,
-                     "AVX-high context access must be a full aligned 16B slot: offset {} size {}", Offset, Size);
-  if (Size != 16 || ((Offset - Base) & 15) != 0) {
-    return -1;
-  }
-  return (Offset - Base) / 16;
+  // POWERARM-M0-TODO(backend): the x86 AVX-high VSX bank has no AArch64 state behind it (State.avx_high is gone); the hook stays so these lowerings keep their fastppcx86 shape.
+  return -1;
 }
 
 // GPR-granular variant: the frontend's StoreContextHelper rewrites 128-bit
@@ -49,21 +33,8 @@ static int AVXHighBankSlot(const FEXCore::Context::ContextImpl* CTX, int32_t Off
 // aligned qword access, or -1 outside the range; QwIdx gets 0 for the guest
 // LOW qword of the slot (memory offset +0) and 1 for the HIGH qword (+8).
 static int AVXHighBankQwordSlot(const FEXCore::Context::ContextImpl* CTX, int32_t Offset, uint32_t Size, unsigned* QwIdx) {
-  if (!CTX->HostFeatures.SupportsAVX) {
-    return -1;
-  }
-  constexpr int32_t Base = static_cast<int32_t>(offsetof(FEXCore::Core::CpuStateFrame, State.avx_high[0][0]));
-  constexpr int32_t End  = Base + 16 * 16;
-  if (Offset < Base || Offset >= End) {
-    return -1;
-  }
-  LOGMAN_THROW_A_FMT(Size == 8 && ((Offset - Base) & 7) == 0,
-                     "AVX-high GPR context access must be an aligned qword: offset {} size {}", Offset, Size);
-  if (Size != 8 || ((Offset - Base) & 7) != 0) {
-    return -1;  // same release-fallback contract as AVXHighBankSlot
-  }
-  *QwIdx = (static_cast<uint32_t>(Offset - Base) >> 3) & 1;
-  return (Offset - Base) / 16;
+  // POWERARM-M0-TODO(backend): the x86 AVX-high VSX bank has no AArch64 state behind it (State.avx_high is gone); the hook stays so these lowerings keep their fastppcx86 shape.
+  return -1;
 }
 
 // Move one qword between a GPR and an AVX-high bank slot. Register layout
@@ -1448,7 +1419,6 @@ DEF_OP(Push) {
   // its base, so a 0xFFFFFFFFFFFFFFFC value must become 0x00000000FFFFFFFC;
   // (2) the new RSP fed back to SRA stays canonical 32-bit, matching how
   // SpillStaticRegs/FillStaticRegs round-trip 32-bit GPRs.
-  MaybeClrUpper32(Dst);
   switch (SZ) {
   case 1: stb(Stored, 0, Dst); break;
   case 2: sth(Stored, 0, Dst); break;
@@ -1471,10 +1441,9 @@ DEF_OP(PushTwo) {
   // pushes (notably _start's `push $0; push %ecx` argv setup).
   auto Op = IROp->C<IR::IROp_PushTwo>();
   uint32_t SZ = IR::OpSizeToSize(Op->ValueSize);
-  auto RSP = StaticRegisters[FEXCore::X86State::REG_RSP];
+  auto RSP = StaticRegisters[a64::SRA_SP_SLOT];
   addi(RSP, RSP, -static_cast<int16_t>(SZ * 2));
   // 32-bit guest: mask the new RSP, same rationale as Push above.
-  MaybeClrUpper32(RSP);
   auto S1 = GetReg(Op->Value1);
   auto S2 = GetReg(Op->Value2);
   switch (SZ) {
@@ -1509,10 +1478,6 @@ DEF_OP(Pop) {
   // it's also the SRA-bound RSP and the post-increment must use the same base.
   // Use TMP3 to hold the masked load EA when in 32-bit mode.
   GPR LoadAddr = Addr;
-  if (!CTX->Config.Is64BitMode()) {
-    rldicl(TMP3, Addr, 0, 32);
-    LoadAddr = TMP3;
-  }
   switch (SZ) {
   case 1: lbzx(LoadDst, LoadAddr, r0); break;
   case 2: lhzx(LoadDst, LoadAddr, r0); break;
@@ -1521,7 +1486,6 @@ DEF_OP(Pop) {
   }
   addi(Addr, Addr, static_cast<int16_t>(SZ));
   // Re-mask the new RSP so SRA stays 32-bit-canonical.
-  MaybeClrUpper32(Addr);
   if (LoadDst != Value) mr(Value, LoadDst);
 }
 
@@ -1555,10 +1519,6 @@ DEF_OP(PopTwo) {
   uint32_t SZ = IR::OpSizeToSize(Op->Size);
   // 32-bit guest: mask the load base so EA wraps at 4 GiB.
   GPR LoadBase = Addr;
-  if (!CTX->Config.Is64BitMode()) {
-    rldicl(TMP3, Addr, 0, 32);
-    LoadBase = TMP3;
-  }
   switch (SZ) {
   case 4:
     lwz(TMP1, 0, LoadBase);            // TMP1 = [Addr+0]
@@ -1573,7 +1533,6 @@ DEF_OP(PopTwo) {
     break;
   }
   addi(Addr, Addr, static_cast<int16_t>(SZ * 2));
-  MaybeClrUpper32(Addr);
   // Writeback Value1 / Value2. If D1 happens to equal Addr (the IR can wire
   // OutValue1 to REG_RSP directly when the last popped slot IS the new RSP
   // — that's exactly the IRET case), the mr overwrites Addr's post-increment
@@ -1683,7 +1642,7 @@ DEF_OP(MemSet) {
   // Eligibility must fold in size/bitness: AlwaysFast may only suppress the
   // generic loop when the fast path was actually emitted for this op —
   // getting this wrong makes constant-forward stosw/d/q emit NO loop at all.
-  const bool FastEligible = Sz == 1 && CTX->Config.Is64BitMode() && !(ConstDir && static_cast<int8_t>(DirConst) != 1);
+  const bool FastEligible = Sz == 1 && !(ConstDir && static_cast<int8_t>(DirConst) != 1);
   const bool AlwaysFast = FastEligible && ConstDir && static_cast<int8_t>(DirConst) == 1;
   PPC64Emitter::Label generic_path, out;
   if (FastEligible) {
@@ -1862,7 +1821,6 @@ DEF_OP(MemSet) {
     cmpdi(TMP4, 0);
     bc(CC_EQ, &done);
     // 32-bit guest: wrap pointer at 4 GiB before each store iteration.
-    MaybeClrUpper32(TMP1);
     switch (Sz) {
     case 1: stb(ValIn, 0, TMP1); break;
     case 2: sth(ValIn, 0, TMP1); break;
@@ -1882,7 +1840,6 @@ DEF_OP(MemSet) {
 
   // Final pointer may sit in upper-half-dirty form for 32-bit guest; mask
   // before writing back to the SSA destination.
-  MaybeClrUpper32(TMP1);
   mr(Out, TMP1);
 }
 
@@ -1969,7 +1926,7 @@ DEF_OP(MemCpy) {
   // constant — a size/bitness-blind "fast path always taken" predicate is what
   // made constant-forward REP STOSW/D/Q emit no loop at all (acbbb3405).
   const bool ConstDir = IsInlineConstant(Op->Direction, &DirConst);
-  const bool FastEligible = Sz == 1 && CTX->Config.Is64BitMode() && !(ConstDir && static_cast<int8_t>(DirConst) != 1);
+  const bool FastEligible = Sz == 1 && !(ConstDir && static_cast<int8_t>(DirConst) != 1);
   const bool ConstForward = FastEligible && ConstDir && static_cast<int8_t>(DirConst) == 1;
   PPC64Emitter::Label generic_path, out;
   if (FastEligible) {
@@ -2266,8 +2223,6 @@ DEF_OP(MemCpy) {
     cmpdi(TMP4, 0);
     bc(CC_EQ, &done);
     // 32-bit guest: wrap pointers at 4 GiB before each iteration's load+store.
-    MaybeClrUpper32(TMP1);
-    MaybeClrUpper32(TMP2);
     switch (Sz) {
     case 1: lbz(r(0), 0, TMP2); stb(r(0), 0, TMP1); break;
     case 2: lhz(r(0), 0, TMP2); sth(r(0), 0, TMP1); break;
@@ -2282,8 +2237,6 @@ DEF_OP(MemCpy) {
   }
   Bind(&out);
 
-  MaybeClrUpper32(TMP1);
-  MaybeClrUpper32(TMP2);
   mr(OutDst, TMP1);
   mr(OutSrc, TMP2);
   // r0 was clobbered as the value scratch above; restore the JIT's r0=0
@@ -2300,14 +2253,12 @@ DEF_OP(MemCpy) {
 
 DEF_OP(CacheLineClear)  {
   GPR Addr = GetReg(IROp->C<IR::IROp_CacheLineClear>()->Addr);
-  if (!CTX->Config.Is64BitMode()) { rldicl(TMP3, Addr, 0, 32); Addr = TMP3; }
   dcbst(r0, Addr);
   sync(0);
 }
 
 DEF_OP(CacheLineClean)  {
   GPR Addr = GetReg(IROp->C<IR::IROp_CacheLineClean>()->Addr);
-  if (!CTX->Config.Is64BitMode()) { rldicl(TMP3, Addr, 0, 32); Addr = TMP3; }
   dcbt(r0, Addr);
 }
 
@@ -2315,7 +2266,6 @@ DEF_OP(CacheLineZero)   {
   // POWERARM-M0-TODO(backend): was CPUIDEmu::CACHELINE_SIZE (the x86 CLFLUSH/CLZERO line size); A64 DC ZVA zeroes DCZID_EL0-sized blocks, which is a guest-ABI decision.
   constexpr uint64_t GuestCacheLineSize = 64;
   GPR Addr = GetReg(IROp->C<IR::IROp_CacheLineZero>()->Addr);
-  if (!CTX->Config.Is64BitMode()) { rldicl(TMP3, Addr, 0, 32); Addr = TMP3; }
 
   if (CTX->HostFeatures.DCacheLineSize == GuestCacheLineSize) {
     // Fast path: dcbz zeroes exactly one host d-cache line, at an effective
@@ -2360,7 +2310,6 @@ DEF_OP(Fence) {
 DEF_OP(Prefetch) {
   auto Op = IROp->C<IR::IROp_Prefetch>();
   GPR Addr = GetReg(Op->Addr);
-  if (!CTX->Config.Is64BitMode()) { rldicl(TMP3, Addr, 0, 32); Addr = TMP3; }
   // PREFETCHW / prefetch-for-store is `dcbtst`, a DIFFERENT OPCODE (XO 246),
   // not a TH encoding of dcbt. This used to emit `dcbt RA,RB,16`, which the
   // assembler spells `dcbtt` — a non-transient LOAD touch. The line arrived
@@ -2383,7 +2332,6 @@ DEF_OP(VStoreNonTemporal) {
   auto Op   = IROp->C<IR::IROp_VStoreNonTemporal>();
   auto Src  = GetVReg(Op->Value);
   auto Addr = GetReg(Op->Addr);
-  if (!CTX->Config.Is64BitMode()) { rldicl(TMP3, Addr, 0, 32); Addr = TMP3; }
   li(TMP4, Op->Offset);
   stvxl(Src, Addr, TMP4);  // LRU hint = non-temporal
 }
@@ -2391,7 +2339,6 @@ DEF_OP(VStoreNonTemporal) {
 DEF_OP(VStoreNonTemporalPair) {
   auto Op   = IROp->C<IR::IROp_VStoreNonTemporalPair>();
   auto Addr = GetReg(Op->Addr);
-  if (!CTX->Config.Is64BitMode()) { rldicl(TMP3, Addr, 0, 32); Addr = TMP3; }
   li(TMP4, 0);
   stvxl(GetVReg(Op->ValueLow), Addr, TMP4);
   li(TMP4, 16);
@@ -2402,7 +2349,6 @@ DEF_OP(VLoadNonTemporal) {
   auto Op   = IROp->C<IR::IROp_VLoadNonTemporal>();
   auto Dst  = GetVReg(Node);
   auto Addr = GetReg(Op->Addr);
-  if (!CTX->Config.Is64BitMode()) { rldicl(TMP3, Addr, 0, 32); Addr = TMP3; }
   li(TMP4, Op->Offset);
   lvxl(Dst, Addr, TMP4);
 }
@@ -2447,26 +2393,6 @@ DEF_OP(ContextClear) {
       stbx(r0, STATE, TMP1);
     }
     Pos += 1;
-  }
-
-  // AVX-high bank: any cleared avx_high slot must ALSO be zeroed in its bank
-  // register — the memory wipe above only updates the (stale-while-in-JIT)
-  // shadow. Partial slot coverage cannot be expressed against the bank; the
-  // frontend clears whole 16-byte high halves, so assert it.
-  if (CTX->HostFeatures.SupportsAVX) {
-    constexpr int32_t Base = static_cast<int32_t>(offsetof(FEXCore::Core::CpuStateFrame, State.avx_high[0][0]));
-    for (int i = 0; i < 16; ++i) {
-      const int32_t SlotBegin = Base + i * 16;
-      const int32_t SlotEnd   = SlotBegin + 16;
-      const int32_t IsBegin   = std::max(SlotBegin, Offset);
-      const int32_t IsEnd     = std::min(SlotEnd, Offset + Length);
-      if (IsBegin >= IsEnd) {
-        continue;
-      }
-      LOGMAN_THROW_A_FMT(IsBegin == SlotBegin && IsEnd == SlotEnd,
-                         "ContextClear partially covers avx_high[{}]", i);
-      xxlxor(AVXHighBankReg(i), AVXHighBankReg(i), AVXHighBankReg(i));
-    }
   }
 }
 
@@ -2673,7 +2599,7 @@ DEF_OP(VLoadVectorGatherMasked) {
   GPR Base = r0;  // sentinel "no base"
   if (HasBase) {
     Base = GetReg(Op->AddrBase);
-    if (!CTX->Config.Is64BitMode() || !AddrSize64) {
+    if (!AddrSize64) {
       // In 32-bit guest mode, or when AddrSize is i32Bit, mask to 32 bits.
       // Use TMP4 as a stable copy.
       rldicl(TMP4, Base, 0, 32);
@@ -2725,11 +2651,6 @@ DEF_OP(VLoadVectorGatherMasked) {
     }
     if (!AddrSize64) {
       // Mask to 32 bits per AddrSize=i32Bit.
-      rldicl(TMP3, EA, 0, 32);
-      EA = TMP3;
-    } else if (!CTX->Config.Is64BitMode()) {
-      // 32-bit guest with i64Bit AddrSize from the IR shouldn't really
-      // happen, but be defensive — guest pointers are still 32-bit.
       rldicl(TMP3, EA, 0, 32);
       EA = TMP3;
     }
@@ -2794,7 +2715,7 @@ DEF_OP(VLoadVectorGatherMaskedQPS) {
   GPR Base = r0;
   if (HasBase) {
     Base = GetReg(Op->AddrBase);
-    if (!CTX->Config.Is64BitMode() || !AddrSize64) {
+    if (!AddrSize64) {
       rldicl(TMP4, Base, 0, 32);
       Base = TMP4;
     }
@@ -2824,7 +2745,7 @@ DEF_OP(VLoadVectorGatherMaskedQPS) {
       add(TMP3, Base, TMP2);
       EA = TMP3;
     }
-    if (!AddrSize64 || !CTX->Config.Is64BitMode()) {
+    if (!AddrSize64) {
       rldicl(TMP3, EA, 0, 32);
       EA = TMP3;
     }
@@ -2855,10 +2776,6 @@ DEF_OP(VBroadcastFromMem) {
   const auto Op = IROp->C<IR::IROp_VBroadcastFromMem>();
   const auto Dst = GetVReg(Node);
   GPR MemReg = GetReg(Op->Address);
-  if (!CTX->Config.Is64BitMode()) {
-    rldicl(TMP3, MemReg, 0, 32);
-    MemReg = TMP3;
-  }
   const auto ElementSize = Op->Header.ElementSize;
 
   // mtvsrd defines BE dword 0 (phys[0..7]); BE dword 1 (phys[8..15]) is

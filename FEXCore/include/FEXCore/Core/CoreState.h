@@ -1,11 +1,11 @@
 // SPDX-License-Identifier: MIT
 #pragma once
 
-#include <FEXCore/Core/X86Enums.h>
 #include <FEXCore/IR/IR.h>
 #include <FEXCore/Utils/CompilerDefs.h>
 #include <FEXCore/Utils/Telemetry.h>
 
+#include <array>
 #include <atomic>
 #include <cstddef>
 #include <cstring>
@@ -71,236 +71,136 @@ static_assert(std::is_standard_layout_v<NonAtomicRefCounter<uint64_t>>, "Needs t
 static_assert(std::is_trivially_copyable_v<NonAtomicRefCounter<uint64_t>>, "needs to be trivially copyable");
 static_assert(sizeof(NonAtomicRefCounter<uint64_t>) == sizeof(uint64_t), "Needs to be correct size");
 
+// AArch64 guest register state.
+//
+// Layout rules the ppc64le backend actually depends on (these replace the
+// arm64-host ldp/stp reach asserts the x86 layout carried):
+//
+//  * Every field the JIT touches is addressed as a D-form (lwz/stw) or DS-form
+//    (ld/std) displacement off STATE, a signed 16-bit field; DS-form also
+//    requires the displacement to be a multiple of 4. SpillStaticRegs and
+//    FillStaticRegs fall back to an indexed load when an offset does not fit,
+//    but the hot fields must not need that fallback.
+//  * The vector bank is loaded and stored with lvx/stvx at STATE + offset, and
+//    lvx/stvx silently drop the low 4 bits of the effective address, so every
+//    v[i] must sit at a 16-byte-aligned offset.
+//  * The packed NZCV word keeps the layout the backend's StoreNZCV/LoadNZCV
+//    lowerings and the CR0/XER spill/fill already use: N at bit 31, Z at 30,
+//    C at 29, V at 28, stored and loaded as one 32-bit word.
 struct alignas(64) CPUState {
-  // Allows more efficient handling of the register
-  // file in the event AVX is not supported.
-  union XMMRegs {
-    struct AVX {
-      uint64_t data[16][4];
-    };
-    struct SSE {
-      uint64_t data[16][2];
-      uint64_t pad[16][2];
-    };
-
-    AVX avx;
-    SSE sse;
-  };
-
   // Cacheline: 0
-  // LEGACY (audit P1).  Used to hold the address of the running JIT block's
-  // JITCodeHeader, stored by every EntryPoint prologue.  Block lookup now goes
+  // LEGACY (audit P1). Used to hold the address of the running JIT block's
+  // JITCodeHeader, stored by every EntryPoint prologue. Block lookup now goes
   // through the per-CodeBuffer host-PC -> block index instead
   // (Interface/Core/CPUBackend.h, CodeBuffer::FindBlockHeader), so the JIT
-  // publishes nothing here by default.  The store is still emitted under
+  // publishes nothing here by default. The store is still emitted under
   // FEX_NOBLOCKHEADER=0, and the only reader left is the FEX_RIPRECONLOG
-  // cross-check in Interface/Core/Core.cpp.  The field itself is retained
-  // rather than removed: this struct's layout is baked into emitted code
-  // offsets and into out-of-tree tooling that takes offsetof on it.
+  // cross-check in Interface/Core/Core.cpp.
   uint64_t InlineJITBlockHeader {};
   // Reference counter for FEX's per-thread deferred signals.
   // Counts the nesting depth of program sections that cause signals to be deferred.
   NonAtomicRefCounter<uint64_t> DeferredSignalRefCount;
 
-  // PF/AF raw values. Really only a byte of each matters, but this layout
-  // (32-bits and in the first 256 bytes) is necessary to use ldp/stp to
-  // spill/fill these togethers efficiently.
-  // pf_raw must be initialized to 1 so that reconstructed PF = 0 (matching x86 reset state).
-  // PF reconstruction: popcount(pf_raw ^ 1) & 1, so pf_raw=1 gives PF=0.
-  uint32_t pf_raw {1};
-  uint32_t af_raw {};
+  uint64_t pc {}; ///< Guest PC. May not be entirely accurate while the JIT is active.
 
-  uint64_t rip {}; ///< Current core's RIP. May not be entirely accurate while JIT is active
+  // Packed N/Z/C/V at bits 31..28 (PSTATE layout). See the layout rules above.
+  uint32_t nzcv {};
+  uint32_t fpcr {};
+  uint32_t fpsr {};
+  uint32_t _pad0 {};
 
-  uint64_t gregs[16] {};
   uint64_t L1Pointer {};
   uint64_t L1Mask {};
   uint64_t callret_sp {};
-  // Shadow call-ret stack bound mirrors. InternalThreadState::CallRetStackBase
-  // never changes after thread creation (allocated once, munmap'd only at
-  // thread teardown; the code-cache/buffer-rotation paths only VirtualDontNeed
-  // the CONTENTS), so both bounds are mirrored into the frame the same way
-  // L1Pointer is — one D-form ld off STATE instead of the two dependent loads
-  // Frame->Thread->CallRetStackBase (+addis) per CALL push / RET pop.
-  // Initialized alongside callret_sp in ThreadManager::CreateThread; zero for
-  // threads without a frontend-allocated call-ret stack (compile-only tools),
-  // for which every pop reads empty and every push takes the overflow-reset
-  // leg without storing.
-  //
+  // Shadow call-ret stack bound mirrors; see callret_base at the struct tail.
   // callret_end = base + CALLRET_STACK_SIZE (the empty/top bound, hot on the
-  // RET pop) lives here so it shares callret_sp's cache line; callret_base
-  // (push bound) sits at the struct tail where it consumes existing padding —
-  // see the layout note there.
+  // RET pop) shares callret_sp's cache line.
   uint64_t callret_end {};
 
-  // Cacheline: 1,2,3,4
-  // The high 128-bits of AVX registers when not being emulated by SVE256.
-  uint64_t avx_high[16][2];
+  // Cacheline: 1-4
+  // X0-X30 followed by SP, so that r[n] for n in [0, 31] is a single stride
+  // (GPROffset). Register 31 is SP here; XZR never has storage.
+  // POWERARM-M0-TODO(ir): IR.json's LoadContext/StoreContext validation used to forbid context access to all x86 GPRs (all were SRA); it must now forbid only the SRA-pinned subset (a64::StaticGPRGuestReg).
+  uint64_t x[31] {};
+  uint64_t sp {};
+
+  uint64_t tpidr_el0 {};
+  uint64_t tpidrro_el0 {};
+
+  // Exclusive monitor (LDXR/STXR). Software form; see DESIGN.md §4.3.
+  // POWERARM-M0-TODO(cpustate): layout only; whether the hardware larx/stcx. fast path needs extra per-thread state is an M4 decision.
+  uint64_t excl_addr {};
+  uint64_t excl_value {};
+  uint8_t excl_size {};
+  uint8_t excl_valid {};
+  uint8_t _pad1[6] {};
 
   // Cacheline: 5-12
-  XMMRegs xmm {};
+  // V0-V31, 128 bits each, stored as the little-endian image an stvx writes.
+  alignas(16) uint64_t v[32][2] {};
 
-  // Cacheline: 13 and onwards.
-  // Raw segment register indexes
-  uint16_t es_idx {}, cs_idx {}, ss_idx {}, ds_idx {};
-  uint16_t gs_idx {}, fs_idx {};
-  uint32_t mxcsr {};
+  // callret_end's partner: the low bound the CALL push checks against.
+  uint64_t callret_base {};
 
-  // Segment registers holding base addresses
-  uint32_t es_cached {}, cs_cached {}, ss_cached {}, ds_cached {};
-  uint64_t gs_cached {};
-  uint64_t fs_cached {};
-  uint8_t flags[48] {};
-  uint64_t mm[8][2] {};
+  static constexpr size_t GPR_REG_SIZE = sizeof(x[0]);
+  static constexpr size_t VECTOR_REG_SIZE = sizeof(v[0]);
+  static constexpr size_t NUM_XREGS = sizeof(x) / GPR_REG_SIZE;
+  static constexpr size_t NUM_VREGS = sizeof(v) / VECTOR_REG_SIZE;
+  static constexpr uint32_t SP_INDEX = 31;
 
-  // 32bit x86 state
-  struct gdt_segment {
-    uint16_t Limit0;
-    uint16_t Base0;
-    uint16_t Base1  : 8;
-    uint16_t Type   : 4;
-    uint16_t S      : 1;
-    uint16_t DPL    : 2;
-    uint16_t P      : 1;
-    uint16_t Limit1 : 4;
-    uint16_t AVL    : 1;
-    uint16_t L      : 1;
-    uint16_t D      : 1;
-    uint16_t G      : 1;
-    uint16_t Base2  : 8;
-  };
-
-  // Array of segments (Access offset matches segment selector TI bit)
-  // 0 : GDT
-  // 1 : LDT
-  // Segments are global to the process.
-  // GDT segments are only 32-objects in size.
-  //   - Kernel allocates a handful of these for various things.
-  //   - Three are reserved for user-space to setup TLS segments in
-  // LDT segments are entirely controlled by userspace.
-  //   - Kernel allocates up to 8192 ldt segments.
-  gdt_segment* segment_arrays[2] {};
-
-  static gdt_segment* GetSegmentFromIndex(CPUState& State, uint16_t Selector) {
-    auto base = State.segment_arrays[(Selector >> 2) & 1];
-    return &base[Selector >> 3];
+  // Context offset of X0-X30 (Index 0-30) or SP (Index 31).
+  static constexpr size_t GPROffset(uint32_t Index) {
+    return offsetof(CPUState, x) + Index * GPR_REG_SIZE;
+  }
+  static constexpr size_t VectorOffset(uint32_t Index) {
+    return offsetof(CPUState, v) + Index * VECTOR_REG_SIZE;
   }
 
-  static uint32_t CalculateGDTBase(gdt_segment GDT) {
-    uint32_t Base {};
-    Base |= GDT.Base2 << 24;
-    Base |= GDT.Base1 << 16;
-    Base |= GDT.Base0;
-    return Base;
-  }
+  // PSTATE.NZCV bit positions inside nzcv.
+  static constexpr uint32_t NZCV_N_BIT = 31;
+  static constexpr uint32_t NZCV_Z_BIT = 30;
+  static constexpr uint32_t NZCV_C_BIT = 29;
+  static constexpr uint32_t NZCV_V_BIT = 28;
 
-  static uint32_t CalculateGDTLimit(gdt_segment GDT) {
-    uint32_t Limit {};
-    Limit |= GDT.Limit1 << 16;
-    Limit |= GDT.Limit0;
-    return Limit;
-  }
-
-  static void SetGDTBase(gdt_segment* GDT, uint32_t Base) {
-    GDT->Base0 = Base;
-    GDT->Base1 = Base >> 16;
-    GDT->Base2 = Base >> 24;
-  }
-
-  static void SetGDTLimit(gdt_segment* GDT, uint32_t Limit) {
-    GDT->Limit0 = Limit;
-    GDT->Limit1 = Limit >> 16;
-  }
-
-  uint16_t FCW {0x37F};
-  uint8_t AbridgedFTW {};
-
-  uint8_t _pad2[5];
-  // PF/AF are statically mapped as-if they were r16/r17 (which do not exist in
-  // x86 otherwise). This allows a straightforward mapping for SRA.
-  static constexpr uint8_t PF_AS_GREG = 16;
-  static constexpr uint8_t AF_AS_GREG = 17;
-
-  static constexpr size_t FLAG_SIZE = sizeof(flags[0]);
-  static constexpr size_t GDT_SIZE = sizeof(gdt_segment);
-  static_assert(GDT_SIZE == sizeof(uint64_t), "Segments required to be 8-byte in size.");
-  static constexpr size_t GPR_REG_SIZE = sizeof(gregs[0]);
-  static constexpr size_t XMM_AVX_REG_SIZE = sizeof(xmm.avx.data[0]);
-  static constexpr size_t XMM_SSE_REG_SIZE = XMM_AVX_REG_SIZE / 2;
-  static constexpr size_t MM_REG_SIZE = sizeof(mm[0]);
-
-  // Only the first 32 bits are defined.
-  static constexpr size_t NUM_EFLAG_BITS = 32;
-  static constexpr size_t NUM_FLAGS = sizeof(flags) / FLAG_SIZE;
-  static constexpr size_t NUM_GPRS = sizeof(gregs) / GPR_REG_SIZE;
-  static constexpr size_t NUM_XMMS = sizeof(xmm) / XMM_AVX_REG_SIZE;
-  static constexpr size_t NUM_MMS = sizeof(mm) / MM_REG_SIZE;
   CPUState() {
 #ifndef NDEBUG
-    // Initialize default CPU state
-    rip = ~0ULL;
-    // Initialize xmm state with garbage to catch spurious incorrect xmm usage.
-    for (auto& xmm : xmm.avx.data) {
-      xmm[0] = 0xDEADBEEFULL;
-      xmm[1] = 0xBAD0DAD1ULL;
-      xmm[2] = 0xDEADCAFEULL;
-      xmm[3] = 0xBAD2CAD3ULL;
+    pc = ~0ULL;
+    for (auto& Reg : v) {
+      Reg[0] = 0xDEADBEEFULL;
+      Reg[1] = 0xBAD0DAD1ULL;
     }
 #endif
-
-    flags[X86State::RFLAG_RESERVED_LOC] = 1; ///< Reserved - Always 1.
-    flags[X86State::RFLAG_IF_LOC] = 1;       ///< Interrupt flag - Always 1.
-
-    // DF needs to be initialized to 0 to comply with the Linux ABI. However,
-    // we encode DF as 1/-1 within the JIT, so we have to write 0x1 here to
-    // zero DF.
-    flags[X86State::RFLAG_DF_RAW_LOC] = 0x1;
-
-    // Likewise, SF/ZF/CF/OF must be cleared. This would be simply zeroing
-    // NZCV... but we invert CF inside the JIT. So set just bit 29 (carry).
-    flags[X86State::RFLAG_NZCV_3_LOC] = (1 << (29 - 24));
-
-    // Default mxcsr value
-    // All exception masks enabled.
-    mxcsr = 0x1F80;
   }
-
-  // TODO: This should be moved to the frontend.
-  constexpr static uint32_t DEFAULT_USER_CS = 6;
-
-  // Follows encoding of the TI bit in segment selector encoding.
-  constexpr static uint32_t SEGMENT_ARRAY_INDEX_GDT = 0;
-  constexpr static uint32_t SEGMENT_ARRAY_INDEX_LDT = 1;
-  Core::CPUState::gdt_segment private_gdt[32] {};
-
-  // callret_end's partner (see the comment at callret_end): the low bound the
-  // CALL push checks against. Placed at the struct tail because the cache line
-  // holding callret_sp/callret_end (gregs[12..15], L1Pointer, L1Mask) has no
-  // free slot left, and this position consumes what was previously tail
-  // padding — sizeof(CPUState) and every other member offset are unchanged
-  // (asserted below).
-  uint64_t callret_base {};
 };
 static_assert(std::is_trivially_copyable_v<CPUState>, "Needs to be trivial");
 static_assert(std::is_standard_layout_v<CPUState>, "This needs to be standard layout");
 static_assert(alignof(CPUState) == 64, "CPUState needs to be 64-byte aligned!");
-static_assert(offsetof(CPUState, avx_high) % 64 == 0, "avx_high needs to be 64-byte aligned!");
+static_assert(offsetof(CPUState, DeferredSignalRefCount) % 8 == 0, "Needs to be 8-byte aligned");
+static_assert(offsetof(CPUState, L1Mask) == (offsetof(CPUState, L1Pointer) + 8), "These two variables are paired");
 static_assert(offsetof(CPUState, callret_end) == offsetof(CPUState, callret_sp) + 8,
               "callret_sp/callret_end must share a cache line for the RET pop's two loads");
-static_assert(offsetof(CPUState, callret_base) + 8 <= 32760,
-              "callret mirrors must stay int16-reachable for D-form ld off STATE");
-static_assert(offsetof(CPUState, xmm) % 32 == 0, "xmm needs to be 256-bit aligned!");
-static_assert(offsetof(CPUState, mm) % 16 == 0, "mm needs to be 128-bit aligned!");
-static_assert(offsetof(CPUState, gregs[15]) <= 504, "gregs maximum offset must be <= 504 for ldp/stp to work");
-static_assert(offsetof(CPUState, DeferredSignalRefCount) % 8 == 0, "Needs to be 8-byte aligned");
-static_assert(offsetof(CPUState, L1Pointer) <= 504, "This needs to be <= 504 for ldp");
-static_assert(offsetof(CPUState, L1Mask) == (offsetof(CPUState, L1Pointer) + 8), "These two variables are paired");
-static_assert(offsetof(CPUState, pf_raw) <= 252, "pf_raw must be within ldp imm offset range");
-static_assert((offsetof(CPUState, pf_raw) + 4) == offsetof(CPUState, af_raw), "pf_raw and af_raw must be sequential");
+static_assert(offsetof(CPUState, sp) == CPUState::GPROffset(CPUState::SP_INDEX), "SP must follow X30 in the GPR stride");
+// DS-form (ld/std) reach and 4-multiple for every 64-bit GPR slot and the callret/L1 mirrors.
+static_assert(CPUState::GPROffset(CPUState::SP_INDEX) + 8 <= 32764 && CPUState::GPROffset(0) % 4 == 0,
+              "GPR slots must be DS-form reachable off STATE");
+static_assert(offsetof(CPUState, callret_base) + 8 <= 32760, "callret mirrors must stay int16-reachable for D-form ld off STATE");
+static_assert(offsetof(CPUState, L1Mask) + 8 <= 32760, "L1 lookup mirrors must stay int16-reachable for D-form ld off STATE");
+// D-form (lwz/stw) reach for the packed flag and FP control words.
+static_assert(offsetof(CPUState, fpsr) + 4 <= 32767, "NZCV/FPCR/FPSR must be D-form reachable off STATE");
+// lvx/stvx drop the low 4 EA bits.
+static_assert(offsetof(CPUState, v) % 16 == 0, "v[] must be 16-byte aligned for lvx/stvx");
+static_assert(CPUState::VectorOffset(CPUState::NUM_VREGS) <= 32767, "v[] must stay within a signed 16-bit displacement");
 
-// Some CPU architectures have a penalty for alignment of ldp/stp not being 2 * <element_size>.
-static_assert(offsetof(CPUState, gregs[0]) % 16 == 0, "gregs should be 16-byte aligned");
-static_assert(offsetof(CPUState, pf_raw) % 8 == 0, "pf_raw must be 8-byte aligned.");
+// Guest registers held in the backend's static (pinned) GPR slots, in slot
+// order: slot i holds guest register StaticGPRGuestReg[i] (0-30 = Xn, 31 = SP).
+// The ppc64le host register for each slot is a64::SRA in
+// Interface/Core/ArchHelpers/PPC64Emitter.h; the choice is documented there.
+// Everything else is reached through LoadContext/StoreContext.
+inline constexpr std::array<uint8_t, 18> StaticGPRGuestReg = {
+  0, 1, 2, 3, 4, 5, 6, 7, 8, 19, 20, 21, 22, 23, 24, 29, 30, CPUState::SP_INDEX,
+};
+// Guest V registers held in the static vector slots: V0-V15.
+inline constexpr size_t NumStaticVectorRegs = 16;
 
 struct InternalThreadState;
 

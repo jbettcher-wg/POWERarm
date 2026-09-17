@@ -4,7 +4,6 @@
 #include "Interface/Context/Context.h"
 
 #include <FEXCore/Core/CoreState.h>
-#include <FEXCore/Core/X86Enums.h>
 #include <FEXCore/Utils/LogManager.h>
 
 #include <array>
@@ -28,16 +27,6 @@ void PPC64EmitterBase::LoadConstantFixed(GPR rt, uint64_t Constant) {
   LoadImm64Fixed(rt, Constant);
 }
 
-// Mask the upper 32 bits of `reg` to zero when running a 32-bit guest.
-// `rldicl reg, reg, 0, 32` is the canonical PPC 32-bit zero-extend (rotate
-// by 0, mask bits 32..63 of source — leaving the low 32 bits intact in
-// big-endian bit numbering, with the high 32 bits cleared).
-void PPC64EmitterBase::MaybeClrUpper32(GPR reg) {
-  if (!EmitterCTX->Config.Is64BitMode()) {
-    rldicl(reg, reg, 0, 32);
-  }
-}
-
 // Align to 16-byte boundary with NOPs
 void PPC64EmitterBase::Align16B() {
   while ((GetOffset() & 0xF) != 0) {
@@ -47,130 +36,47 @@ void PPC64EmitterBase::Align16B() {
 
 // Spill static (SRA) registers from host regs → CpuStateFrame
 void PPC64EmitterBase::SpillStaticRegs(GPR tmp) {
-  // SRA[i] holds the host-side register dedicated to x86 GPR i. The RA pass
-  // emits StoreRegister/LoadRegister with PhysicalRegister.Reg = X86Reg
-  // index, and DecodeSRAReg in the RA pass builds PhysicalRegister{GPRFixed,
-  // Op->Reg} — so the i-th SRA slot must hold gregs[i] (= the i-th x86 GPR).
-  // ARM64Emitter does the same: SRA[i] ↔ gregs[i].
-  // 64-bit guest: 16 GPRs spilled via std (8 bytes each).
-  // 32-bit guest:  8 GPRs spilled via stw (4 bytes — only the low 32 bits are
-  //                architecturally defined; upper 32 of gregs[] are clobbered
-  //                with 0 below to avoid feeding stale bits back through
-  //                FillStaticRegs's lwz/ld on the next entry).
-  // PF/AF are always 32-bit, handled below outside this loop.
-  const bool Is64Bit = EmitterCTX->Config.Is64BitMode();
-  const auto& SRA = Is64Bit ? std::span<const GPR>(x64::SRA)
-                            : std::span<const GPR>(x32::SRA);
-  // First N entries are x86 GPRs (16 in 64-bit, 8 in 32-bit). The remaining 2
-  // SRA slots are PF/AF (uint32_t), handled separately.
-  const size_t NumGuestGPRs = Is64Bit ? 16u : 8u;
-  for (size_t i = 0; i < NumGuestGPRs; ++i) {
-    int32_t off = static_cast<int32_t>(offsetof(FEXCore::Core::CpuStateFrame,
-                                                 State.gregs[i]));
-    if (Is64Bit) {
-      if (off >= -32768 && off <= 32764 && (off & 3) == 0) {
-        std(SRA[i], off, STATE);
-      } else {
-        LoadImm32(tmp, static_cast<uint32_t>(off));
-        stdx(SRA[i], STATE, tmp);
-      }
+  // SRA[i] holds the host-side register dedicated to static slot i. The RA pass
+  // emits StoreRegister/LoadRegister with PhysicalRegister.Reg = slot index,
+  // and slot i holds guest register FEXCore::Core::StaticGPRGuestReg[i], whose
+  // context home is CPUState::GPROffset().
+  const auto& SRA = std::span<const GPR>(a64::SRA);
+  for (size_t i = 0; i < SRA.size(); ++i) {
+    int32_t off = static_cast<int32_t>(offsetof(FEXCore::Core::CpuStateFrame, State) +
+                                       FEXCore::Core::CPUState::GPROffset(FEXCore::Core::StaticGPRGuestReg[i]));
+    if (off >= -32768 && off <= 32764 && (off & 3) == 0) {
+      std(SRA[i], off, STATE);
     } else {
-      // i686 guest: store the low 32 bits via stw, clear the high half via a
-      // 4-byte zero store at +4 so a subsequent ld would still produce a
-      // zero-extended 64-bit value.  Use std with a clrldi-trimmed source —
-      // single 8-byte store, equally fast, and avoids assuming the SRA reg
-      // already has a zero upper half.
-      rldicl(tmp, SRA[i], 0, 32);   // tmp = SRA[i] & 0xFFFFFFFF
-      if (off >= -32768 && off <= 32764 && (off & 3) == 0) {
-        std(tmp, off, STATE);
-      } else {
-        LoadImm32(TMP3, static_cast<uint32_t>(off));
-        stdx(tmp, STATE, TMP3);
-      }
-    }
-  }
-
-  // Spill PF/AF — these are uint32_t in CPUState (offsets 16, 20 with rip
-  // immediately after at 24). Using std (8-byte store) here is wrong: it
-  // overwrites adjacent fields. In particular `std REG_AF, 20` clobbers
-  // RIP[0..3] — and on the next FillStaticRegs cycle the old RIP value
-  // gets shuttled into the high 32 bits of REG_AF and *restored* over any
-  // freshly-stored RIP, causing dispatch loops on every ExitFunction.
-  int32_t pf_off = static_cast<int32_t>(offsetof(FEXCore::Core::CpuStateFrame, State.pf_raw));
-  int32_t af_off = static_cast<int32_t>(offsetof(FEXCore::Core::CpuStateFrame, State.af_raw));
-  stw(REG_PF, static_cast<int16_t>(pf_off), STATE);
-  stw(REG_AF, static_cast<int16_t>(af_off), STATE);
-
-  // Spill SRA FPRs (XMM0-XMM15 in 64-bit, XMM0-XMM7 in 32-bit) to State.xmm.sse.data
-  const auto& SRAFPR = Is64Bit ? std::span<const VR>(x64::SRAFPR)
-                               : std::span<const VR>(x32::SRAFPR);
-  for (size_t i = 0; i < SRAFPR.size(); ++i) {
-    int32_t xmm_off = static_cast<int32_t>(
-      offsetof(FEXCore::Core::CpuStateFrame, State.xmm.sse.data[i][0]));
-    LoadImm32(tmp, static_cast<uint32_t>(xmm_off));
-    stvx(SRAFPR[i], STATE, tmp);
-  }
-
-  // AVX-high bank -> State.avx_high[i]. Memory image must be byte-identical
-  // to a stvx of the same value (SpillSRA and the guest sigframe XSTATE
-  // builder read avx_high[] as ordinary LE 128-bit values): stxvx has that
-  // layout natively on ISA 3.0; pre-3.0 goes dword-swapped stxvd2x with an
-  // xxpermdi fix-up through VTMP3_VSX (op-local scratch, same idiom as
-  // StoreUnalignedV128's pre-3.0 path).
-  if (EmitterCTX->HostFeatures.SupportsAVX) {
-    for (size_t i = 0; i < SRAFPR.size(); ++i) {
-      int32_t off = static_cast<int32_t>(
-        offsetof(FEXCore::Core::CpuStateFrame, State.avx_high[i][0]));
       LoadImm32(tmp, static_cast<uint32_t>(off));
-      if (EmitterCTX->HostFeatures.SupportsISA30) {
-        stxvx(AVXHighBankReg(i), STATE, tmp);
-      } else {
-        xxpermdi(VTMP3_VSX, AVXHighBankReg(i), AVXHighBankReg(i), 2);
-        stxvd2x(VTMP3_VSX, STATE, tmp);
-      }
+      stdx(SRA[i], STATE, tmp);
     }
+  }
+
+  // Spill SRA FPRs (V0-V15) to State.v
+  const auto& SRAFPR = std::span<const VR>(a64::SRAFPR);
+  for (size_t i = 0; i < SRAFPR.size(); ++i) {
+    int32_t v_off = static_cast<int32_t>(
+      offsetof(FEXCore::Core::CpuStateFrame, State.v[i][0]));
+    LoadImm32(tmp, static_cast<uint32_t>(v_off));
+    stvx(SRAFPR[i], STATE, tmp);
   }
 
   // Save NZCV across the dispatcher / C++ slow paths. Pack CR0 + XER into the
   // ARM-style 32-bit NZCV layout (N=LSB31, Z=30, C=29, V=28) and store at
-  // flags[RFLAG_NZCV_LOC..NZCV_3_LOC]. Mirrors DEF_OP(LoadNZCV) bit shuffles.
+  // State.nzcv. Mirrors DEF_OP(LoadNZCV) bit shuffles.
   // ARM64 doesn't need this because PSTATE.NZCV is a hardware register that
   // survives across the dispatcher's C++ calls; PPC's CR0 + XER do not.
   //
-  // Every ppc64le caller passes tmp = TMP1 (the {TMP1, TMP4} choice this
-  // comment used to describe is the ARM64 emitter's; those files are not
-  // compiled here). tmp aliases scratch we used in the SRA loop above, so we
-  // need two non-aliased scratches (TMP2/TMP3) for the
-  // CR/XER pack — but TMP2 (=r4) is also load-bearing for the FABI int-arg
-  // contract: the dispatcher's per-FABI stubs (FABI_F80_I16_I16/I32_PTR)
-  // expect TMP2 to still hold the int argument set by the JIT's Op_Unhandled
-  // dispatch when SpillForABICall returns.
-  //
-  // Save TMP2 through FPR f0 via mtfprd/mffprd. Why f0:
+  // Every ppc64le caller passes tmp = TMP1. tmp aliases scratch we used in the
+  // SRA loop above, so we need two non-aliased scratches (TMP2/TMP3) for the
+  // CR/XER pack. TMP2 (=r4) is saved through FPR f0 via mtfprd/mffprd:
   //   * ELFv2 nominally reserves a 288B red zone below r1, but a
   //     previous `std TMP2, -8(r1)` save faulted whenever r1 sat within
-  //     8 bytes of a stack-mapping boundary (Steam bash subshells with
-  //     tight clone()-allocated stacks SEGV'd here at si_addr = r1-8,
-  //     one byte past the [stack] mapping -- the caller's mapping was
-  //     smaller than the ABI red zone.)
+  //     8 bytes of a stack-mapping boundary.
   //   * f0 is volatile (caller-saved) per ELFv2 FP register conventions, and
-  //     not in any FEX SRA/RA pool — it is used only as an op-local scratch
-  //     by a few VectorOps emitters (lfd/fdiv/fsqrt sequences) and is
-  //     guaranteed dead between IR ops.
-  //   * Unlike VTMP1 / VR{0..15}, f0 carries no FABI-stub cross-call state.
-  //     FABI bridges pass FP args in f1..f13 and read vector args from
-  //     VTMP1/VTMP2 -- f0 is never read by any stub.
+  //     not in any SRA/RA pool — it is used only as an op-local scratch
+  //     by a few VectorOps emitters and is guaranteed dead between IR ops.
   //   * mtfprd/mffprd are POWER8 ISA 2.07 instructions; available on host.
-  //
-  // Earlier abandoned approaches:
-  //   - mtvsrd VTMP1, TMP2: VTMP1 is the FABI vector source 1 and is
-  //     read AFTER SpillForABICall in stubs like FABI_F32_I16_F80_PTR
-  //     (`vmr VR{2}, VTMP1` runs post-spill). Broke 535 ASM tests.
-  //   - mtvsrd VR{0}, TMP2: VR{0} would have been free in isolation but
-  //     the broader regression suggests the FPR loop's `stvx VR{0}` had
-  //     not yet committed by the time later code re-read v0 -- whatever the
-  //     mechanism, breaks 1949 ASM tests. f0 sidesteps this entirely by
-  //     using a non-VSR-aliased FPR slot.
   mtfprd(FPR{0}, TMP2);                         // save TMP2 in f0 (no memory)
   // mfocrf 0x80 (single-field, uncracked): the rlwinm extracts below read
   // only CR0.LT (PPC bit 0) and CR0.EQ (PPC bit 2), both inside the defined
@@ -185,60 +91,31 @@ void PPC64EmitterBase::SpillStaticRegs(GPR tmp) {
   rlwinm(TMP2, TMP2, 30, 3, 3);                 // TMP2 = V (XER.OV@LSB30 → LSB28)
   or_(TMP3, TMP3, TMP2);
   int32_t nzcv_off = static_cast<int32_t>(
-    offsetof(FEXCore::Core::CpuStateFrame, State.flags[FEXCore::X86State::RFLAG_NZCV_LOC]));
+    offsetof(FEXCore::Core::CpuStateFrame, State.nzcv));
   stw(TMP3, static_cast<int16_t>(nzcv_off), STATE);
   mffprd(TMP2, FPR{0});                         // restore TMP2 from f0
 }
 
 // Fill static registers from CpuStateFrame → host regs
 void PPC64EmitterBase::FillStaticRegs(FillMode Mode) {
-  // SRA[i] ↔ gregs[i]; see SpillStaticRegs comment.
-  // 64-bit guest: 16 GPRs filled via ld (8 bytes each).
-  // 32-bit guest:  8 GPRs filled via lwz (4 bytes, zero-extending) so the
-  //                upper 32 bits of each host SRA register are forced to zero
-  //                on every block entry.  This is the foundation of the
-  //                "ignore upper 32 bits" invariant for i686 ALU/MEM ops.
-  const bool Is64Bit = EmitterCTX->Config.Is64BitMode();
-  const auto& SRA = Is64Bit ? std::span<const GPR>(x64::SRA)
-                            : std::span<const GPR>(x32::SRA);
-  const size_t NumGuestGPRs = Is64Bit ? 16u : 8u;
-
-  // A 32-bit guest may never elide a GPR fill. The `lwz` above is not just a
-  // value transfer: it is what re-establishes "upper 32 bits are zero" for
-  // ALU/MEM ops. A host register that merely survived a call untouched keeps
-  // whatever garbage the JIT left in its upper half (SpillStaticRegs even
-  // masks on the way out precisely because it cannot assume otherwise), so
-  // "callee-saved, therefore still correct" does not hold in i686 mode.
-  LOGMAN_THROW_A_FMT(Mode == FillMode::All || Is64Bit,
-                     "Partial SRA fill requested for a 32-bit guest; the lwz "
-                     "zero-extension invariant forbids it");
+  // SRA[i] ↔ guest register StaticGPRGuestReg[i]; see SpillStaticRegs.
+  const auto& SRA = std::span<const GPR>(a64::SRA);
 
   const bool WantVolatile    = Mode != FillMode::NonVolatileGPRsOnly;
   const bool WantNonVolatile = Mode != FillMode::SkipNonVolatileGPRs;
 
-  for (size_t i = 0; i < NumGuestGPRs; ++i) {
+  for (size_t i = 0; i < SRA.size(); ++i) {
     const bool NonVolatile = SRA[i].idx >= RegVolatility::kFirstNonVolatileGPR;
     if (NonVolatile ? !WantNonVolatile : !WantVolatile) {
       continue;
     }
-    int32_t off = static_cast<int32_t>(offsetof(FEXCore::Core::CpuStateFrame,
-                                                 State.gregs[i]));
-    if (Is64Bit) {
-      if (off >= -32768 && off <= 32764 && (off & 3) == 0) {
-        ld(SRA[i], off, STATE);
-      } else {
-        LoadImm32(TMP1, static_cast<uint32_t>(off));
-        ldx(SRA[i], STATE, TMP1);
-      }
+    int32_t off = static_cast<int32_t>(offsetof(FEXCore::Core::CpuStateFrame, State) +
+                                       FEXCore::Core::CPUState::GPROffset(FEXCore::Core::StaticGPRGuestReg[i]));
+    if (off >= -32768 && off <= 32764 && (off & 3) == 0) {
+      ld(SRA[i], off, STATE);
     } else {
-      // i686 guest: lwz zero-extends to 64.  CpuStateFrame.gregs is uint64_t
-      // little-endian, so the low 4 bytes hold the architectural value.
-      if (off >= -32768 && off <= 32764) {
-        lwz(SRA[i], static_cast<int16_t>(off), STATE);
-      } else {
-        LoadImm32(TMP1, static_cast<uint32_t>(off));
-        lwzx(SRA[i], STATE, TMP1);
-      }
+      LoadImm32(TMP1, static_cast<uint32_t>(off));
+      ldx(SRA[i], STATE, TMP1);
     }
   }
 
@@ -248,45 +125,20 @@ void PPC64EmitterBase::FillStaticRegs(FillMode Mode) {
     return;
   }
 
-  // Symmetric to SpillStaticRegs — use lwz so we don't load adjacent fields.
-  int32_t pf_off = static_cast<int32_t>(offsetof(FEXCore::Core::CpuStateFrame, State.pf_raw));
-  int32_t af_off = static_cast<int32_t>(offsetof(FEXCore::Core::CpuStateFrame, State.af_raw));
-  lwz(REG_PF, static_cast<int16_t>(pf_off), STATE);
-  lwz(REG_AF, static_cast<int16_t>(af_off), STATE);
-
-  // Fill SRA FPRs (XMM0-XMM15 in 64-bit, XMM0-XMM7 in 32-bit)
-  const auto& SRAFPR = Is64Bit ? std::span<const VR>(x64::SRAFPR)
-                               : std::span<const VR>(x32::SRAFPR);
+  // Fill SRA FPRs (V0-V15)
+  const auto& SRAFPR = std::span<const VR>(a64::SRAFPR);
   for (size_t i = 0; i < SRAFPR.size(); ++i) {
-    int32_t xmm_off = static_cast<int32_t>(
-      offsetof(FEXCore::Core::CpuStateFrame, State.xmm.sse.data[i][0]));
-    LoadImm32(TMP1, static_cast<uint32_t>(xmm_off));
+    int32_t v_off = static_cast<int32_t>(
+      offsetof(FEXCore::Core::CpuStateFrame, State.v[i][0]));
+    LoadImm32(TMP1, static_cast<uint32_t>(v_off));
     lvx(SRAFPR[i], STATE, TMP1);
   }
 
-  // State.avx_high[i] -> AVX-high bank. Mirror of the spill above; runs on
-  // every dispatcher entry, which is what makes context memory writes by
-  // non-JIT code (guest signal handlers via sigreturn, gdbserver, thread
-  // bring-up) reach the registers.
-  if (EmitterCTX->HostFeatures.SupportsAVX) {
-    for (size_t i = 0; i < SRAFPR.size(); ++i) {
-      int32_t off = static_cast<int32_t>(
-        offsetof(FEXCore::Core::CpuStateFrame, State.avx_high[i][0]));
-      LoadImm32(TMP1, static_cast<uint32_t>(off));
-      if (EmitterCTX->HostFeatures.SupportsISA30) {
-        lxvx(AVXHighBankReg(i), STATE, TMP1);
-      } else {
-        lxvd2x(VTMP3_VSX, STATE, TMP1);
-        xxpermdi(AVXHighBankReg(i), VTMP3_VSX, VTMP3_VSX, 2);
-      }
-    }
-  }
-
   // Restore NZCV across the dispatcher / C++ slow paths. Inverse of the
-  // SpillStaticRegs save: load packed NZCV from flags[RFLAG_NZCV_LOC..NZCV_3_LOC]
+  // SpillStaticRegs save: load packed NZCV from State.nzcv
   // and unpack into CR0.LT/EQ + XER.CA/OV. Mirrors DEF_OP(StoreNZCV).
   int32_t nzcv_off = static_cast<int32_t>(
-    offsetof(FEXCore::Core::CpuStateFrame, State.flags[FEXCore::X86State::RFLAG_NZCV_LOC]));
+    offsetof(FEXCore::Core::CpuStateFrame, State.nzcv));
   lwz(TMP2, static_cast<int16_t>(nzcv_off), STATE);
   // Build CR0 input in TMP1: CR0.LT @ LSB31 ← packed N @ LSB31 (no shift),
   // CR0.EQ @ LSB29 ← packed Z @ LSB30 (rotl 31).
@@ -295,11 +147,9 @@ void PPC64EmitterBase::FillStaticRegs(FillMode Mode) {
   or_(TMP1, TMP1, TMP3);
   mtocrf(0x80, TMP1);                         // CR0 ← bits 31..28 of TMP1 (single-field form)
   // XER: both bits fully written, so generate them arithmetically (addic for
-  // CA, sldi-62 + addo for OV — PPC64Emitter.h helper block). This runs on
-  // EVERY dispatcher->JIT entry, and the old mfspr + mask/or + mtspr paid a
-  // serializing XER write each time. The from-bit helpers read no zero
-  // register, which matters here: r0 is NOT the JIT zero in this routine
-  // (see the r0 NOTE below).
+  // CA, sldi-62 + addo for OV — PPC64Emitter.h helper block). The from-bit
+  // helpers read no zero register, which matters here: r0 is NOT the JIT zero
+  // in this routine (see the r0 NOTE below).
   rlwinm(TMP1, TMP2, 3, 31, 31);              // C (LSB29 = PPC 2) → 0/1 at LSB 0
   SetCAFromBit(TMP1, TMP3);
   rlwinm(TMP1, TMP2, 4, 31, 31);              // V (LSB28 = PPC 3) → 0/1 at LSB 0
@@ -433,11 +283,10 @@ void PPC64EmitterBase::PopCalleeSavedRegisters() {
 // exercise multiple FLDCW + FABI-helper sequences in one block.
 // Spill GPRs at [r1+32..] and FPRs at the next 16-byte boundary above.
 size_t PPC64EmitterBase::PushDynamicRegs(GPR tmp) {
-  const bool Is64Bit = EmitterCTX->Config.Is64BitMode();
-  const auto RAFPR = Is64Bit ? std::span<const VR>(x64::RAFPR) : std::span<const VR>(x32::RAFPR);
+  const auto RAFPR = std::span<const VR>(a64::RAFPR);
 
-  const size_t FPRStart = Is64Bit ? x64::kDynFPRStart  : x32::kDynFPRStart;
-  const size_t SaveSize = Is64Bit ? x64::kDynRegSaveSize : x32::kDynRegSaveSize;
+  const size_t FPRStart = a64::kDynFPRStart;
+  const size_t SaveSize = a64::kDynRegSaveSize;
 
   // stdu writes the back-chain at [new_r1+0] = old r1, so traceback walkers
   // can step past this frame.  SaveSize fits the signed-16-bit displacement.
@@ -474,11 +323,10 @@ size_t PPC64EmitterBase::PushDynamicRegs(GPR tmp) {
 }
 
 void PPC64EmitterBase::PopDynamicRegs() {
-  const bool Is64Bit = EmitterCTX->Config.Is64BitMode();
-  const auto RAFPR = Is64Bit ? std::span<const VR>(x64::RAFPR) : std::span<const VR>(x32::RAFPR);
+  const auto RAFPR = std::span<const VR>(a64::RAFPR);
 
-  const size_t FPRStart = Is64Bit ? x64::kDynFPRStart  : x32::kDynFPRStart;
-  const size_t SaveSize = Is64Bit ? x64::kDynRegSaveSize : x32::kDynRegSaveSize;
+  const size_t FPRStart = a64::kDynFPRStart;
+  const size_t SaveSize = a64::kDynRegSaveSize;
 
   // Mirror of PushDynamicRegs: only the ELFv2-volatile subset was saved, so
   // only that subset is reloaded. Everything else was preserved by the callee.
@@ -505,8 +353,7 @@ void PPC64EmitterBase::PopDynamicRegs() {
 // packed by SAVED register (k counts set mask bits, not pool indices) so the
 // save/restore loops must stay in lockstep — both iterate the same mask.
 void PPC64EmitterBase::SaveDynVRsToFrame(int32_t BaseOffset) {
-  const bool Is64Bit = EmitterCTX->Config.Is64BitMode();
-  const auto RAFPR = Is64Bit ? std::span<const VR>(x64::RAFPR) : std::span<const VR>(x32::RAFPR);
+  const auto RAFPR = std::span<const VR>(a64::RAFPR);
 
   int32_t off = BaseOffset;
   for (size_t i = 0; i < RAFPR.size(); ++i) {
@@ -520,8 +367,7 @@ void PPC64EmitterBase::SaveDynVRsToFrame(int32_t BaseOffset) {
 }
 
 void PPC64EmitterBase::RestoreDynVRsFromFrame(int32_t BaseOffset) {
-  const bool Is64Bit = EmitterCTX->Config.Is64BitMode();
-  const auto RAFPR = Is64Bit ? std::span<const VR>(x64::RAFPR) : std::span<const VR>(x32::RAFPR);
+  const auto RAFPR = std::span<const VR>(a64::RAFPR);
 
   int32_t off = BaseOffset;
   for (size_t i = 0; i < RAFPR.size(); ++i) {

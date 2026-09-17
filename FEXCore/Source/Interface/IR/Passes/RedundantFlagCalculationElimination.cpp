@@ -11,7 +11,6 @@ $end_info$
 #include "Interface/IR/Passes.h"
 
 #include <FEXCore/Config/Config.h>
-#include <FEXCore/Core/X86Enums.h>
 #include <FEXCore/IR/IR.h>
 #include <FEXCore/Utils/CompilerDefs.h>
 #include <FEXCore/Utils/MathUtils.h>
@@ -166,7 +165,6 @@ public:
 
 private:
   FEX_CONFIG_OPT(DisableDFCEStoreElim, DISABLEDFCESTOREELIM);
-  FEX_CONFIG_OPT(Is64BitMode, IS64BIT_MODE);
 
 public:
   // Stateless, and shared with CompareBranchFusion via IROpWritesNZCV below.
@@ -444,20 +442,20 @@ FlagInfo DeadFlagCalculationEliminination::Classify(IROp_Header* IROp) {
     auto Op = IROp->CW<IR::IROp_InvalidateFlags>();
     unsigned Flags = 0;
 
-    // TODO: Make this translation less silly
-    if (Op->Flags & (1u << X86State::RFLAG_SF_RAW_LOC)) {
+    // POWERARM-M0-TODO(ir): InvalidateFlags now takes PSTATE NZCV bit positions (was x86 RFLAG_*_RAW_LOC); the A64 frontend must emit it that way.
+    if (Op->Flags & (1u << FEXCore::Core::CPUState::NZCV_N_BIT)) {
       Flags |= FLAG_N;
     }
 
-    if (Op->Flags & (1u << X86State::RFLAG_ZF_RAW_LOC)) {
+    if (Op->Flags & (1u << FEXCore::Core::CPUState::NZCV_Z_BIT)) {
       Flags |= FLAG_Z;
     }
 
-    if (Op->Flags & (1u << X86State::RFLAG_CF_RAW_LOC)) {
+    if (Op->Flags & (1u << FEXCore::Core::CPUState::NZCV_C_BIT)) {
       Flags |= FLAG_C;
     }
 
-    if (Op->Flags & (1u << X86State::RFLAG_OF_RAW_LOC)) {
+    if (Op->Flags & (1u << FEXCore::Core::CPUState::NZCV_V_BIT)) {
       Flags |= FLAG_V;
     }
 
@@ -707,7 +705,7 @@ bool DeadFlagCalculationEliminination::ProcessBlock(IREmitter* IREmit, IRListVie
           } else if (Info.Replacement()) {
             IROp->Op = Info.Replacement();
           }
-        } else if (Info.ReplacementNoWrite() && CodeNode->GetUses() == 0 && Is64BitMode() && !NoWriteArmDisabled) {
+        } else if (Info.ReplacementNoWrite() && CodeNode->GetUses() == 0 && !NoWriteArmDisabled) {
           // ReplacementNoWrite: the value is SSA-dead but some written flag is
           // still live, so demote to the flags-only form (SubWithFlags ->
           // SubNZCV, AddWithFlags -> AddNZCV, AndWithFlags -> TestNZ,

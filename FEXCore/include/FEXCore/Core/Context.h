@@ -36,11 +36,6 @@ struct SHA256Sum;
 
 namespace FEXCore::Context {
 
-enum OperatingMode {
-  MODE_32BIT,
-  MODE_64BIT,
-};
-
 using CodeRangeInvalidationFn = std::function<void(uint64_t start, uint64_t Length)>;
 
 using CustomIREntrypointHandler = std::function<void(uintptr_t Entrypoint, IR::IREmitter*)>;
@@ -105,28 +100,6 @@ public:
   ///< State reconstruction helpers
   ///< Reconstructs the guest RIP from the passed in thread context and related Host PC.
   FEX_DEFAULT_VISIBILITY virtual uint64_t RestoreRIPFromHostPC(FEXCore::Core::InternalThreadState* Thread, uint64_t HostPC) = 0;
-  /**
-   * @brief Reconstructs a compacted EFLAGS from FEX's internal EFLAG representation.
-   *
-   * @param Thread The thread getting the state reconstructed
-   * @param WasInJIT If the code was in the JIT at the time.
-   * @param HostGPRs The host Arm64 GPRs at the point of state inside the JIT.
-   * @param PSTATE The Arm64 PState value.
-   *
-   * If WasInJIT is false then HostGPRs and PSTATE is ignored, with the assumption that the FEX JIT has already stored all state in to the
-   * ThreadState object.
-   *
-   * @return x86 EFLAGS reconstructed
-   */
-  FEX_DEFAULT_VISIBILITY virtual uint32_t
-  ReconstructCompactedEFLAGS(FEXCore::Core::InternalThreadState* Thread, bool WasInJIT, const uint64_t* HostGPRs, uint64_t PSTATE) = 0;
-  ///< Sets FEX's internal EFLAGS representation to the passed in compacted form.
-  FEX_DEFAULT_VISIBILITY virtual void SetFlagsFromCompactedEFLAGS(FEXCore::Core::InternalThreadState* Thread, uint32_t EFLAGS) = 0;
-
-  FEX_DEFAULT_VISIBILITY virtual void
-  ReconstructXMMRegisters(const FEXCore::Core::InternalThreadState* Thread, __uint128_t* XMM_Low, __uint128_t* YMM_High) = 0;
-  FEX_DEFAULT_VISIBILITY virtual void
-  SetXMMRegistersFromState(FEXCore::Core::InternalThreadState* Thread, const __uint128_t* XMM_Low, const __uint128_t* YMM_High) = 0;
 
   /**
    * @brief Create a new thread object that doesn't inherit any state.

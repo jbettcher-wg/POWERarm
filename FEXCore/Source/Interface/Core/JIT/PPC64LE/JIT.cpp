@@ -20,7 +20,6 @@ $end_info$
 
 #include <FEXCore/Core/Thunks.h>
 
-#include <FEXCore/Core/X86Enums.h>
 #include <FEXCore/Debug/InternalThreadState.h>
 #include <FEXCore/Utils/Allocator.h>
 #include <FEXCore/Utils/ArchHelpers/PPC64CacheFlush.h>
@@ -1343,10 +1342,11 @@ static void DiagnoseSuspectGuestRIP(uint64_t GuestRIP, uint64_t HostLR,
   // Direct write to stderr — LogMan may not flush before abort().
   {
     char buf[1024];
-    uint64_t RSP = Frame->State.gregs[FEXCore::X86State::REG_RSP];
-    uint64_t RDI = Frame->State.gregs[FEXCore::X86State::REG_RDI];
-    uint64_t RSI = Frame->State.gregs[FEXCore::X86State::REG_RSI];
-    uint64_t RAX = Frame->State.gregs[FEXCore::X86State::REG_RAX];
+    // POWERARM-M0-TODO(backend): diagnostic still labels the values with x86 names; they are SP, X0, X1 and X8 of the A64 guest.
+    uint64_t RSP = Frame->State.sp;
+    uint64_t RDI = Frame->State.x[0];
+    uint64_t RSI = Frame->State.x[1];
+    uint64_t RAX = Frame->State.x[8];
     uint64_t TCR = Frame->Pointers.ThunkCallbackRet;
     int n = snprintf(buf, sizeof(buf),
                      "[FEX] suspect GuestRIP=0x%lx DispatcherRetAddr=0x%lx (const, not the JIT block)\n",
@@ -1709,7 +1709,7 @@ uint64_t PPC64JITCore::ExitFunctionLinkWithRecord(FEXCore::Core::CpuStateFrame* 
   // non-canonical) is left to the plain linker's suspect-RIP handling and
   // never cached.
   const bool Indirect = Record->GuestRIP == 0;
-  const uint64_t GuestRIP = Indirect ? Frame->State.rip : Record->GuestRIP;
+  const uint64_t GuestRIP = Indirect ? Frame->State.pc : Record->GuestRIP;
   // Give up on an inline-cache site: its patch word stops sending every
   // execution here and takes the plain probe path instead (record.
   // LinkedEntryOffset carries PROBE for an indirect record). Never
@@ -1723,7 +1723,7 @@ uint64_t PPC64JITCore::ExitFunctionLinkWithRecord(FEXCore::Core::CpuStateFrame* 
     PPC64PatchInstructionIf(A, Record->OrigCallerWord, PPC64EncodeBranch(static_cast<int64_t>(Probe) - static_cast<int64_t>(A)));
   };
   if (Indirect) {
-    const int PtrShift = CTX->Config.Is64BitMode() ? 47 : 32;
+    const int PtrShift = 48; // AArch64 user VA
     if (GuestRIP < 0x1000 || (GuestRIP >> PtrShift) != 0) {
       GiveUpInlineCache();
       return ExitFunctionLink(Frame, GuestRIP);
@@ -1886,17 +1886,15 @@ uint64_t PPC64JITCore::ExitFunctionLink(FEXCore::Core::CpuStateFrame* Frame, uin
   // pointer canonical range (top 32 bits zero, not top 17). ExitFunctionLink
   // is a static member so CTX is not directly accessible; walk through Frame->
   // Thread->CTX, matching the pattern at :1880 below.
-  auto ExitCTX = static_cast<Context::ContextImpl*>(Frame->Thread->CTX);
-  const bool Is64Bit = ExitCTX->Config.Is64BitMode();
-  const int  PtrShift = Is64Bit ? 47 : 32;
-  const int  SlotStride = Is64Bit ? 8 : 4;
+  constexpr int PtrShift = 48; // AArch64 user VA
+  constexpr int SlotStride = 8;
 
   // Suspect-RIP filter:
   //   1. Near-NULL (within first page) — can't be valid PIE-loaded x86 code
   //   2. All-CC pattern (0xCCCCCCCCCCCCCCCC) — typical "uninitialized" value
   //   3. Outside the guest's canonical range — top (64-PtrShift) bits zero.
   //      64-bit: top 17 bits (>>47); 32-bit: top 32 bits (>>32).
-  auto LooksSuspect = [GuestRIP, PtrShift]() {
+  auto LooksSuspect = [GuestRIP]() {
     if (GuestRIP < 0x1000) return true;                  // near-NULL
     if (GuestRIP == 0xCCCCCCCCCCCCCCCCULL) return true;  // all-CC
     if ((GuestRIP >> PtrShift) != 0) return true;        // beyond user canonical
@@ -1922,7 +1920,8 @@ uint64_t PPC64JITCore::ExitFunctionLink(FEXCore::Core::CpuStateFrame* Frame, uin
     static const bool no_bypass = (getenv("FEX_EXITLINK_NOBYPASS") != nullptr);
     if (!no_bypass) {
       uint64_t TCR = Frame->Pointers.ThunkCallbackRet;
-      uint64_t RSP = Frame->State.gregs[FEXCore::X86State::REG_RSP];
+      // POWERARM-M0-TODO(thunks): x86 callback-sentinel walk over the guest stack; an AArch64 callback returns through X30.
+      uint64_t RSP = Frame->State.sp;
       if (TCR && RSP >= 0x1000 && (RSP >> PtrShift) == 0) {
         // Walk up to 128 bytes above current RSP looking for
         // ThunkCallbackRet. Bounded to avoid runaway reads. Slot count
@@ -1934,18 +1933,16 @@ uint64_t PPC64JITCore::ExitFunctionLink(FEXCore::Core::CpuStateFrame* Frame, uin
           // Guard the read with a heuristic: only deref if slot_addr looks
           // like a valid guest VA (within the same canonical range as RSP).
           if ((slot_addr >> PtrShift) != 0) break;
-          uint64_t slot_val = Is64Bit
-              ? *reinterpret_cast<volatile uint64_t*>(slot_addr)
-              : *reinterpret_cast<volatile uint32_t*>(slot_addr);
+          uint64_t slot_val = *reinterpret_cast<volatile uint64_t*>(slot_addr);
           // TCR is stored as full uint64_t but on i386 only its low 32 bits
           // are actually placed on the guest stack -- so mask before compare.
-          const uint64_t TCR_cmp = Is64Bit ? TCR : (TCR & 0xFFFFFFFFULL);
+          const uint64_t TCR_cmp = TCR;
           if (slot_val == TCR_cmp) {
             // Found callback sentinel. Adjust RSP to just past the sentinel
             // (it will be popped by CallbackReturn IR) and redirect to TCR.
             // slot_addr below the sentinel is the "stack frame" the failed
             // callback built -- discard it by walking RSP up to the sentinel.
-            Frame->State.gregs[FEXCore::X86State::REG_RSP] = slot_addr;
+            Frame->State.sp = slot_addr;
             char buf[256];
             int n = snprintf(buf, sizeof(buf),
                              "[FEX] suspect GuestRIP=0x%lx in callback flow — bypassing via ThunkCallbackRet=0x%lx (adjusted RSP from 0x%lx to 0x%lx)\n",
@@ -2026,20 +2023,11 @@ PPC64JITCore::PPC64JITCore(FEXCore::Context::ContextImpl* ctx,
     PPC64EmitterBase(ctx),
     CTX(ctx) {
   // Set up static register tables
-  auto Is64Bit = CTX->Config.Is64BitMode();
-  if (Is64Bit) {
-    StaticRegisters  = x64::SRA;
-    GeneralRegisters = x64::RA;
-    StaticFPRegisters  = x64::SRAFPR;
-    GeneralFPRegisters = x64::RAFPR;
-    PairRegisters = x64::RAPairs;
-  } else {
-    StaticRegisters  = x32::SRA;
-    GeneralRegisters = x32::RA;
-    StaticFPRegisters  = x32::SRAFPR;
-    GeneralFPRegisters = x32::RAFPR;
-    PairRegisters = x32::RAPairs;
-  }
+  StaticRegisters  = a64::SRA;
+  GeneralRegisters = a64::RA;
+  StaticFPRegisters  = a64::SRAFPR;
+  GeneralFPRegisters = a64::RAFPR;
+  PairRegisters = a64::RAPairs;
 
   CurrentCodeBuffer = CodeBuffers.GetLatest();
   ThreadState->LookupCache->Shared = CurrentCodeBuffer->LookupCache.get();
@@ -2840,19 +2828,8 @@ void PPC64JITCore::EmitEntryPoint(PPC64Emitter::Label& HeaderLabel, bool CheckTF
   // unreachability analysis above.
   FillStaticRegs();
 
-  if (CheckTF) {
-    // Load EFLAGS and check TF (trap flag, bit 8)
-    int32_t eflags_off = static_cast<int32_t>(
-      offsetof(FEXCore::Core::CpuStateFrame, State.flags[FEXCore::X86State::RFLAG_TF_RAW_LOC]));
-    lbz(TMP1, static_cast<int16_t>(eflags_off), STATE);
-    // CR7, not CR0. CR0 holds the guest's packed NZCV N/Z bits that
-    // FillStaticRegs just wrote immediately above, and bare cmpdi defaults to
-    // CR0 (CodeEmitter/PPC64LE/Emitter.h:506). Same CR7 discipline as
-    // PPC64Dispatcher.cpp:321-333 and BranchOps.cpp:141-145,249-253.
-    cmpdi(cr(7), TMP1, 0);
-    // If TF is set, branch to the interpreter
-    // For now just skip — full TF handling added later
-  }
+  // POWERARM-M0-TODO(backend): the x86 TF (trap flag) check lived here; CheckTF is always false for the A64 guest.
+  (void)CheckTF;
 }
 
 void PPC64JITCore::EmitSuspendInterruptCheck() {
@@ -5406,6 +5383,7 @@ CPUBackend::CompiledCode PPC64JITCore::CompileCode(
            std::find(TraceRVATargets.begin(), TraceRVATargets.end(), GuestEntryRVA) != TraceRVATargets.end())) {
         if (auto* Ring = GuestTraceRingPtr()) {
           const auto [DerefBase, DerefLen] = GuestTraceDeref();
+          // POWERARM-M0-TODO(backend): FEX_GUESTTRACE hardcodes x86 SRA meanings (index 1 = RCX deref base, index 4 = RSP return-address slot); under the a64 map those are X1 and X4. The compiler cannot see this coupling.
           // SRA index follows the X86State enum: RAX=0, RCX=1, RDX=2, RBX=3.
           // (The order comment on x64::SRA in ArchHelpers/PPC64Emitter.h had
           // RCX/RDX swapped -- proven live 2026-09-02: index 2 dereferenced as

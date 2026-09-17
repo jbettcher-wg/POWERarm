@@ -182,7 +182,6 @@ static void LoadDefaultSettings() {
   LoadedConfig->Erase(FEXCore::Config::ConfigOption::CONFIG_INTERPRETER_INSTALLED);
   LoadedConfig->Erase(FEXCore::Config::ConfigOption::CONFIG_APP_FILENAME);
   LoadedConfig->Erase(FEXCore::Config::ConfigOption::CONFIG_APP_CONFIG_NAME);
-  LoadedConfig->Erase(FEXCore::Config::ConfigOption::CONFIG_IS64BIT_MODE);
 }
 
 static void ConfigInit(fextl::string ConfigFilename) {
@@ -390,7 +389,6 @@ static bool OpenFile(fextl::string Filename) {
   LoadedConfig->Erase(FEXCore::Config::ConfigOption::CONFIG_INTERPRETER_INSTALLED);
   LoadedConfig->Erase(FEXCore::Config::ConfigOption::CONFIG_APP_FILENAME);
   LoadedConfig->Erase(FEXCore::Config::ConfigOption::CONFIG_APP_CONFIG_NAME);
-  LoadedConfig->Erase(FEXCore::Config::ConfigOption::CONFIG_IS64BIT_MODE);
 
   return true;
 }

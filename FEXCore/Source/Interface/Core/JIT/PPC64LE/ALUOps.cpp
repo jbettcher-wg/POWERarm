@@ -3503,7 +3503,7 @@ DEF_OP(RDRAND) {
     return;
   }
 
-  const int kABISpill = CTX->Config.Is64BitMode() ? static_cast<int>(x64::kDynRegSaveSize) : static_cast<int>(x32::kDynRegSaveSize);
+  const int kABISpill = static_cast<int>(a64::kDynRegSaveSize);
   // Mini-frame layout (32 bytes):
   //   [r1+ 0] back chain
   //   [r1+ 8] TOC save
@@ -3691,7 +3691,7 @@ DEF_OP(PrintMsg) {
 // lock-holder is parked in the kernel).
 DEF_OP(Yield) {
   constexpr uint32_t PAUSE_YIELD_LIMIT = 1000;
-  const int kABISpill = CTX->Config.Is64BitMode() ? static_cast<int>(x64::kDynRegSaveSize) : static_cast<int>(x32::kDynRegSaveSize);
+  const int kABISpill = static_cast<int>(a64::kDynRegSaveSize);
   const int16_t pc_off = static_cast<int16_t>(offsetof(FEXCore::Core::CpuStateFrame, PauseCount));
 
   Label skip_full_yield{};
@@ -3773,7 +3773,7 @@ DEF_OP(WFET)                 { /* nop */ }
 // =========================================================================
 DEF_OP(MonoBackpatcherWrite) {
   auto Op = IROp->C<IR::IROp_MonoBackpatcherWrite>();
-  const int kABISpill = CTX->Config.Is64BitMode() ? static_cast<int>(x64::kDynRegSaveSize) : static_cast<int>(x32::kDynRegSaveSize);
+  const int kABISpill = static_cast<int>(a64::kDynRegSaveSize);
 
   // Mini-frame layout (64 bytes):
   //   [r1+ 0]  back chain
@@ -4036,24 +4036,6 @@ DEF_OP(CarryInvert) {
   // is a scratch with no live value at any CarryInvert site.
   subfe(TMP1, r0, r0);
   addic(TMP1, TMP1, 1);
-}
-
-DEF_OP(LoadDF) {
-  // Load direction flag from CpuStateFrame. DF is stored as a SIGNED sentinel
-  // (-1 = backward / DF=1, +1 = forward / DF=0) by FLAGControlOp's StoreDF.
-  // The IR consumers expect a sign-extended 64-bit value:
-  //   * GetRFLAG(RFLAG_DF_RAW_LOC) → `Lshr(LoadDF(), 63)` extracts the sign bit.
-  //   * OffsetByDir → `AddShift(X, LoadDF(), LSL, log2(Size))` walks the pointer
-  //     by ±Size, requiring DF=-1 to actually be the 64-bit -1.
-  // `lbz` zero-extends, which makes the sign-bit Lshr return 0 and the pointer
-  // walk forward regardless of STD — a silent bug across block boundaries
-  // (e.g. `STD; <block-end>; REP LODSD` under FEX_MAXINST=1). Use lbz+extsb
-  // to load and sign-extend.
-  auto Dst = GetReg(Node);
-  int32_t df_off = static_cast<int32_t>(
-    offsetof(FEXCore::Core::CpuStateFrame, State.flags[FEXCore::X86State::RFLAG_DF_RAW_LOC]));
-  lbz(Dst, static_cast<int16_t>(df_off), STATE);
-  extsb(Dst, Dst);
 }
 
 // =========================================================================

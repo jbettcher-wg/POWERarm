@@ -147,9 +147,7 @@ static_assert(SplitLockSlotExpectedSave + 8 == SplitLockMiniFrameSize - 8,
 void PPC64JITCore::EmitSplitLockHelperCall(FEXCore::ArchHelpers::PPC64::SplitLockOp Op,
                                           PPC64Emitter::GPR Addr, PPC64Emitter::GPR Val,
                                           PPC64Emitter::GPR Dst, IR::OpSize Sz) {
-  const int SpillSize = CTX->Config.Is64BitMode()
-    ? static_cast<int>(x64::kDynRegSaveSize)
-    : static_cast<int>(x32::kDynRegSaveSize);
+  const int SpillSize = static_cast<int>(a64::kDynRegSaveSize);
   const auto PostSpill = [&](int off) { return off + SpillSize; };
 
   stdu(r1, -SplitLockMiniFrameSize, r1);
@@ -185,9 +183,7 @@ void PPC64JITCore::EmitSplitLockHelperCall(FEXCore::ArchHelpers::PPC64::SplitLoc
 void PPC64JITCore::EmitSplitLockCASCall(PPC64Emitter::GPR Addr, PPC64Emitter::GPR Expected,
                                        PPC64Emitter::GPR Desired, PPC64Emitter::GPR Dst,
                                        IR::OpSize Sz) {
-  const int SpillSize = CTX->Config.Is64BitMode()
-    ? static_cast<int>(x64::kDynRegSaveSize)
-    : static_cast<int>(x32::kDynRegSaveSize);
+  const int SpillSize = static_cast<int>(a64::kDynRegSaveSize);
   const auto PostSpill = [&](int off) { return off + SpillSize; };
 
   stdu(r1, -SplitLockMiniFrameSize, r1);

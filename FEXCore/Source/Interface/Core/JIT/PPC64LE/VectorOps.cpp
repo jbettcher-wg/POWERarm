@@ -4800,7 +4800,7 @@ DEF_OP(Vector_FToF) {
     // Conv 0x0204: src f32 (i32) → dst f16 (i16) — VCVTPS2PH (low half = 4 halves,
     //                                              upper half zeroed).
     const bool SrcIsF16 = (Conv == 0x0402);
-    const int CryptoSpillSaveSize = CTX->Config.Is64BitMode() ? static_cast<int>(x64::kDynRegSaveSize) : static_cast<int>(x32::kDynRegSaveSize);
+    const int CryptoSpillSaveSize = static_cast<int>(a64::kDynRegSaveSize);
     const auto PostSpill = [&](int Off) { return Off + CryptoSpillSaveSize; };
     stdu(r1, -CryptoMiniFrameSize, r1);
     mflr(r(0)); std(r(0), 16, r1);
@@ -4843,7 +4843,7 @@ DEF_OP(VFCVTL2) {
   }
   if (Op->Header.ElementSize == IR::OpSize::i32Bit) {
     // f16→f32 from the upper half of Src — software path via FABI helper.
-    const int CryptoSpillSaveSize = CTX->Config.Is64BitMode() ? static_cast<int>(x64::kDynRegSaveSize) : static_cast<int>(x32::kDynRegSaveSize);
+    const int CryptoSpillSaveSize = static_cast<int>(a64::kDynRegSaveSize);
     const auto PostSpill = [&](int Off) { return Off + CryptoSpillSaveSize; };
     stdu(r1, -CryptoMiniFrameSize, r1);
     mflr(r(0)); std(r(0), 16, r1);
@@ -4889,7 +4889,7 @@ DEF_OP(VFCVTN2) {
   if (Op->Header.ElementSize == IR::OpSize::i16Bit) {
     // f32→f16 narrow: write 4 f16 from VU into upper half of dst,
     // preserve VL's low half (which already holds 4 f16 from prior Vector_FToF).
-    const int CryptoSpillSaveSize = CTX->Config.Is64BitMode() ? static_cast<int>(x64::kDynRegSaveSize) : static_cast<int>(x32::kDynRegSaveSize);
+    const int CryptoSpillSaveSize = static_cast<int>(a64::kDynRegSaveSize);
     const auto PostSpill = [&](int Off) { return Off + CryptoSpillSaveSize; };
     stdu(r1, -CryptoMiniFrameSize, r1);
     mflr(r(0)); std(r(0), 16, r1);

@@ -270,12 +270,11 @@ void PPC64Dispatcher::EmitDispatcher() {
     smt_medium_priority();
 
     // Load current RIP from Frame->State.rip
-    int32_t rip_off = static_cast<int32_t>(offsetof(CpuStateFrame, State.rip));
+    int32_t rip_off = static_cast<int32_t>(offsetof(CpuStateFrame, State.pc));
     ld(TMP1, rip_off, STATE);  // TMP1 = guest RIP
     // 32-bit guest: mask RIP to 32 bits so the L1 hash and the GuestCode
     // compare both use a canonical 32-bit value. ARM64 dispatcher does the
     // analogous `and_(VirtualMemorySize-1)` (Dispatcher.cpp:188-191).
-    MaybeClrUpper32(TMP1);
 
 #if defined(ASSERTIONS_ENABLED) && ASSERTIONS_ENABLED
     // DEBUG: log RIP to globals so gdb post-mortem can see the dispatch trail.
@@ -375,11 +374,7 @@ void PPC64Dispatcher::EmitDispatcher() {
     // etc.), cmpd would falsely miss and take the slow path.  cmpw is
     // explicitly only-low-32 — it matches what x86 32-bit branch targets
     // logically are.
-    if (CTX->Config.Is64BitMode()) {
-      cmpd(cr(7), TMP4, TMP1);
-    } else {
-      cmpw(cr(7), TMP4, TMP1);
-    }
+    cmpd(cr(7), TMP4, TMP1);
 
     // If mismatch, take slow path through ExitFunctionLinker.
     // BO=12 (branch if true), BI=30 (CR7.EQ at PPC bit 4*7+2 = 30).
@@ -515,11 +510,10 @@ void PPC64Dispatcher::EmitDispatcher() {
     // TMP1=r3, TMP2=r4 — must NOT use TMP1/TMP2 to load the function ptr since they
     // hold r3/r4 (the arguments). Load into r12 per ELFv2 indirect-call convention.
     mr(r3, STATE);
-    int32_t rip_off = static_cast<int32_t>(offsetof(CpuStateFrame, State.rip));
+    int32_t rip_off = static_cast<int32_t>(offsetof(CpuStateFrame, State.pc));
     ld(r4, rip_off, STATE);
     // 32-bit guest: pass a canonical 32-bit RIP to ExitFunctionLink so the
     // C++ side hashes / lookups match what the JIT block was compiled at.
-    MaybeClrUpper32(r4);
 
     // Load function pointer into r12 (ELFv2 requires r12 == callee address for indirect calls)
     int32_t link_off = static_cast<int32_t>(
@@ -659,9 +653,8 @@ void PPC64Dispatcher::EmitDispatcher() {
     // ELFv2 calling convention: r3 = this (CTX), r4 = Frame, r5 = RIP.
     LoadConstant(r3, reinterpret_cast<uint64_t>(CTX));
     mr(r4, STATE);
-    int32_t rip_off = static_cast<int32_t>(offsetof(CpuStateFrame, State.rip));
+    int32_t rip_off = static_cast<int32_t>(offsetof(CpuStateFrame, State.pc));
     ld(r5, rip_off, STATE);
-    MaybeClrUpper32(r5);  // 32-bit guest: canonical 32-bit RIP
 
     // MemberFunctionToPointerCast handles the data-vs-text-vs-thunk wrapping
     // that PPC64LE needs for non-static member function pointers.
@@ -797,9 +790,7 @@ void PPC64Dispatcher::EmitDispatcher() {
   // the wrong address. (No TOC save/restore around the call, unlike
   // ExitFunctionLinker: nothing between the bctrl and the trap reads r2,
   // and RestoreContext reinstates all 48 gp_regs, r2 included.)
-  static_assert(x64::kDynLinkArea == x32::kDynLinkArea,
-                "Pause frame assumes both guest bitnesses use the same ELFv2 linkage reservation");
-  constexpr int16_t PAUSE_FRAME_SIZE = static_cast<int16_t>(x64::kDynLinkArea);  // 96
+  constexpr int16_t PAUSE_FRAME_SIZE = static_cast<int16_t>(a64::kDynLinkArea);  // 96
   static_assert(PAUSE_FRAME_SIZE >= 96 && (PAUSE_FRAME_SIZE % 16) == 0,
                 "ELFv2 caller frame must cover linkage+param save area and stay 16-byte aligned");
 
@@ -957,8 +948,7 @@ void PPC64Dispatcher::EmitDispatcher() {
   // Restore RIP from the stash and persist into State.rip. The original
   // 32-bit clamp is preserved for 32-bit guests.
   {
-    int32_t rip_off = static_cast<int32_t>(offsetof(CpuStateFrame, State.rip));
-    MaybeClrUpper32(r(7));
+    int32_t rip_off = static_cast<int32_t>(offsetof(CpuStateFrame, State.pc));
     std(r(7), rip_off, STATE);
   }
 
@@ -1013,29 +1003,16 @@ void PPC64Dispatcher::EmitDispatcher() {
   // accumulates. But it goes live the moment anything reaches CallbackPtr
   // outside that wrapper.
   {
-    const bool Is64Bit = CTX->Config.Is64BitMode();
-    const int16_t PushBytes = Is64Bit ? -16 : -12;
+    // POWERARM-M0-TODO(thunks): x86-64 callback convention (push ThunkCallbackRet as the return address); an AArch64 callback should load X30 instead.
+    const int16_t PushBytes = -16;
     int32_t ret_off = static_cast<int32_t>(
       offsetof(CpuStateFrame, Pointers.ThunkCallbackRet));
     int32_t rsp_off = static_cast<int32_t>(
-      offsetof(CpuStateFrame, State.gregs[FEXCore::X86State::REG_RSP]));
-    ld(TMP1, ret_off, STATE);     // TMP1 = ThunkCallbackRet (guest x86 VA)
-    ld(TMP2, rsp_off, STATE);     // TMP2 = guest RSP
-    // 32-bit guest: mask the upper 32 bits of RSP defensively. State.gregs is
-    // 64-bit storage, and while SpillStaticRegs masks on the way out, host C++
-    // code paths (RestoreFrame_ia32, CallCallback, etc.) can write gregs as
-    // 64-bit values whose upper bits leak host pointers. Without this mask,
-    // "addi -N; store TMP1, 0(TMP2)" stores ThunkCallbackRet to a host stack
-    // address — observed in Steam-with-Vulkan-thunk as NoExec crashes when
-    // the guest later derefs the corrupted RSP.
-    MaybeClrUpper32(TMP2);
-    addi(TMP2, TMP2, PushBytes);  // RSP -= 16 (x86-64) / 12 (i386)
-    MaybeClrUpper32(TMP2);        // re-mask after addi in case borrow extended high bits
-    if (Is64Bit) {
-      std(TMP1, 0, TMP2);         // [RSP+0] = ThunkCallbackRet (8B x86-64)
-    } else {
-      stw(TMP1, 0, TMP2);         // [RSP+0] = ThunkCallbackRet (4B i386)
-    }
+      offsetof(CpuStateFrame, State.sp));
+    ld(TMP1, ret_off, STATE);     // TMP1 = ThunkCallbackRet (guest VA)
+    ld(TMP2, rsp_off, STATE);     // TMP2 = guest SP
+    addi(TMP2, TMP2, PushBytes);  // SP -= 16
+    std(TMP1, 0, TMP2);           // [SP+0] = ThunkCallbackRet
     std(TMP2, rsp_off, STATE);    // write back new RSP to state
   }
 
@@ -1066,13 +1043,10 @@ void PPC64Dispatcher::EmitDispatcher() {
 }
 
 FEXCore::SignalDelegatorConfig PPC64Dispatcher::MakeSignalDelegatorConfig() const {
-  const bool Is64Bit = CTX->Config.Is64BitMode();
-  const std::span<const GPR> SRA    = Is64Bit ? std::span<const GPR>(x64::SRA)    : std::span<const GPR>(x32::SRA);
-  const std::span<const VR>  SRAFPR = Is64Bit ? std::span<const VR>(x64::SRAFPR) : std::span<const VR>(x32::SRAFPR);
+  const std::span<const GPR> SRA    = std::span<const GPR>(a64::SRA);
+  const std::span<const VR>  SRAFPR = std::span<const VR>(a64::SRAFPR);
 
-  // PF and AF are the final two entries in the SRA GPR table — exclude them
-  // from the count (they're not x86 architectural registers).
-  const auto GPRCount = static_cast<uint16_t>(SRA.size() - 2);
+  const auto GPRCount = static_cast<uint16_t>(SRA.size());
   const auto FPRCount = static_cast<uint16_t>(SRAFPR.size());
 
   SignalDelegatorConfig::SRAIndexMapping GPRMapping {};
@@ -1109,8 +1083,7 @@ FEXCore::SignalDelegatorConfig PPC64Dispatcher::MakeSignalDelegatorConfig() cons
     .SRAGPRMapping = GPRMapping,
     .SRAFPRMapping = FPRMapping,
 
-    // AVX-high bank: one entry per SRA XMM when AVX is advertised. FPRCount
-    // already reflects guest bitness (16 x64 / 8 x32).
+    // AVX-high bank: one entry per SRA vector when AVX is advertised (never, for the A64 guest).
     .SRAAVXHighBankFirst = static_cast<uint16_t>(AVXHIGH_BANK_FIRST),
     .SRAAVXHighBankCount = static_cast<uint16_t>(CTX->HostFeatures.SupportsAVX ? FPRCount : 0),
   };

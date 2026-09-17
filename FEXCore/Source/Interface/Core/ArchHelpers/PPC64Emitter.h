@@ -30,10 +30,6 @@ using namespace PPC64Emitter::VRegs;
 // Pointer to CpuStateFrame (equivalent of ARM64 x28)
 constexpr auto STATE     = r27;
 
-// Pinned to allow fast emulation of x86 PF/AF flags
-constexpr auto REG_PF    = r28;
-constexpr auto REG_AF    = r29;
-
 // Scratch / temporaries (ABI argument registers — fine in JIT code)
 constexpr auto TMP1 = r3;
 constexpr auto TMP2 = r4;
@@ -276,19 +272,41 @@ namespace RegVolatility {
 }
 
 // -------------------------------------------------------------------------
-// Register allocation tables (x86-64 mode)
+// Register allocation tables (AArch64 guest)
 // -------------------------------------------------------------------------
-namespace x64 {
-  // Static register allocation: 16 x86 GPRs + PF + AF = 18 host GPRs
-  // Index follows the X86State enum:  RAX, RCX, RDX, RBX, RSP, RBP, RSI, RDI,
-  //                                   R8,  R9,  R10, R11, R12, R13, R14, R15, PF, AF
-  // (An earlier revision of this comment had RCX/RDX swapped -- disproven
-  //  live via FEX_GUESTTRACE 2026-09-02: index 2 is guest RDX in r9.)
+//
+// Static (pinned) guest registers.
+//
+// Host GPRs available for guest state: r0 (literal zero in RA position), r1
+// (stack), r2 (TOC), r13 (thread pointer), r3-r6 (TMP1-TMP4) and r27 (STATE)
+// are taken, which leaves 23. The dynamic pool RA keeps the five ELFv2
+// callee-saved registers it had under the x86 guest (it must stay callee-saved,
+// see the asserts below, and the allocator's pair logic was tuned for five), so
+// 18 remain for pinned guest registers -- the same host set the x86-64 map used
+// (r7-r12, r14-r23, and r28/r29, which the removed PF/AF pins freed).
+//
+// Guest choice for M0 (DESIGN.md §4.1, to be revisited with the register-use
+// census over the arm64 rootfs): X0-X8 (arguments, indirect result), X19-X24
+// and X29 (callee-saved, frame pointer), X30 (LR) and SP. X9-X18 and X25-X28
+// live in the context and are reached with LoadContext/StoreContext.
+//
+// Guest arguments/results X0-X5 sit in ELFv2-volatile r7-r12 (they are the
+// registers a guest call or syscall clobbers anyway). Everything else is in
+// ELFv2 callee-saved registers, so the sentinel-guarded partial refill after a
+// host call skips them.
+namespace a64 {
+  // SRA slot i holds guest register FEXCore::Core::StaticGPRGuestReg[i]
+  // (CoreState.h; 0-30 = Xn, 31 = SP).
   constexpr std::array<GPR, 18> SRA = {
-    r7,  r8,  r9,  r10, r11, r12, r14, r15,
-    r16, r17, r18, r19, r20, r21, r22, r23,
-    REG_PF, REG_AF,
+    r7,  r8,  r9,  r10, r11, r12,           // X0-X5
+    r14, r15, r16,                          // X6-X8
+    r17, r18, r19, r20, r21, r22,           // X19-X24
+    r23,                                    // X29
+    r28,                                    // X30
+    r29,                                    // SP
   };
+  // SRA slot of the guest stack pointer.
+  constexpr uint32_t SRA_SP_SLOT = 17;
 
   // Dynamic (non-static) GPR allocation pool
   constexpr std::array<GPR, 5> RA = {
@@ -297,7 +315,16 @@ namespace x64 {
 
   constexpr unsigned RAPairs = 2;
 
-  // SRA FPR: 16 x86 XMM registers mapped to VMX v0-v15
+  // Static vector registers: guest V0-V15 in VMX v0-v15.
+  //
+  // Not all 32: DESIGN.md §4.1 proposed V0-V31 -> vs32-vs63, which is the
+  // whole VMX half. The backend cannot express that. Its dynamic vector pool
+  // (RAFPR) and VTMP1/VTMP2 are VR-typed and must stay VMX-addressable, since
+  // most vector lowerings are VMX-form (vperm, vsel, vcmp*, lvx/stvx) and have
+  // no encoding for vs0-vs31; only VSX-form ops (VSXR) can reach the FPR half.
+  // So the VMX half is split as the x86-64 map split it: 16 pinned, 14
+  // dynamic, 2 temporaries. V16-V31 live in the context.
+  // POWERARM-M0-TODO(backend): pinning more than 16 guest V registers needs the dynamic vector pool moved to vs0-vs31 with VSX-form lowerings, or a VSX-aware allocator class.
   constexpr std::array<VR, 16> SRAFPR = {
     VR{0},  VR{1},  VR{2},  VR{3},
     VR{4},  VR{5},  VR{6},  VR{7},
@@ -324,91 +351,31 @@ namespace x64 {
   };
 
   // There is deliberately NO RAVolatile. RA is r24, r25, r26, r30, r31 — all
-  // >= r14, hence all callee-saved — so the volatile GPR subset is empty in
-  // this mode (and in x32). Asserted below rather than declared as an empty
-  // array that every callsite would have to iterate zero times.
+  // >= r14, hence all callee-saved — so the volatile GPR subset is empty.
   static_assert(RegVolatility::AllGPRsNonVolatile(RA),
-                "x64 RA contains an ELFv2-volatile GPR. It would be destroyed across any "
+                "a64 RA contains an ELFv2-volatile GPR. It would be destroyed across any "
                 "host call that saves only static registers (DEF_OP(Syscall)). Move it "
                 "back above r14, or add an RAVolatile array plus save/restore loops.");
   static_assert(RegVolatility::UnlistedVRsAreNonVolatile(RAFPR, RAFPRVolatile),
-                "x64 RAFPR contains an ELFv2-volatile vector register that RAFPRVolatile "
+                "a64 RAFPR contains an ELFv2-volatile vector register that RAFPRVolatile "
                 "does not list. DEF_OP(Syscall) would not save it.");
   static_assert(RegVolatility::VolatileListIsExact(RAFPR, RAFPRVolatile),
-                "x64 RAFPRVolatile has drifted from RAFPR. It must be exactly the RAFPR "
+                "a64 RAFPRVolatile has drifted from RAFPR. It must be exactly the RAFPR "
                 "entries with index < 20, in pool order.");
 
-  // PushDynamicRegs/PopDynamicRegs spill-frame layout (ELFv2, x64 guest).
+  // PushDynamicRegs/PopDynamicRegs spill-frame layout (ELFv2).
   //
   // ELFv2 requires the CALLER to reserve 32 bytes of linkage area + 64 bytes
   // of parameter save area = 96 bytes at the BOTTOM of any frame from which
   // it issues a bctrl. A gcc-emitted callee writes its saved LR at
   // [caller_r1+16] unconditionally, and any callee that spills its incoming
   // argument registers writes [caller_r1+32 .. caller_r1+96) without a frame
-  // of its own -- verified against gcc 14.2 output.
-  //
-  // Was 32 bytes. That put the FIRST dynamic FPR slot at [r1+80], which is
-  // parameter slots 6 and 7 (the r9/r10 homes). A callee that spilled its
-  // incoming args issued `std r9,80(r1); std r10,88(r1)`, and PopDynamicRegs'
-  // `lvx v16, [r1+80]` then loaded {r9_value, r10_value} into RAFPR[0] --
-  // a live guest vector SSA value. The next StoreMem of it wrote 16 bytes
-  // (two adjacent qwords, 16-byte aligned) of the wrong pointer values into
-  // guest memory, third qword intact. That is the +0/+8 clobbered / +16
-  // intact fingerprint observed in the std::thread bring-up SIGSEGV.
+  // of its own.
   static constexpr size_t kDynLinkArea  = 96;
   static constexpr size_t kDynGPRStart  = kDynLinkArea;                               // 96
   static constexpr size_t kDynFPRStart  = (kDynGPRStart + RA.size() * 8 + 15u) & ~15u; // 144
   static constexpr size_t kDynRegSaveSize =
       (kDynFPRStart + RAFPR.size() * 16 + 15u) & ~15u;                                // 368
-}
-
-// -------------------------------------------------------------------------
-// x86-32 mode uses fewer GPRs
-// -------------------------------------------------------------------------
-namespace x32 {
-  constexpr std::array<GPR, 10> SRA = {
-    r7, r8, r9, r10, r11, r12, r14, r15, REG_PF, REG_AF,
-  };
-  constexpr std::array<GPR, 13> RA = {
-    r16, r17, r18, r19, r20, r21, r22, r23, r24, r25, r26, r30, r31,
-  };
-  constexpr unsigned RAPairs = 6;
-  constexpr std::array<VR, 8> SRAFPR = {
-    VR{0}, VR{1}, VR{2}, VR{3}, VR{4}, VR{5}, VR{6}, VR{7},
-  };
-  constexpr std::array<VR, 22> RAFPR = {
-    VR{8},  VR{9},  VR{10}, VR{11}, VR{12}, VR{13}, VR{14}, VR{15},
-    VR{16}, VR{17}, VR{18}, VR{19}, VR{20}, VR{21}, VR{22}, VR{23},
-    VR{24}, VR{25}, VR{26}, VR{27}, VR{28}, VR{29},
-  };
-
-  // As x64::RAFPRVolatile — the ELFv2-volatile subset of the pool. x32's pool
-  // starts at v8, so twelve of its twenty-two entries are volatile, and
-  // RAFPR[0] = v8 is the first vector value the allocator hands out.
-  constexpr std::array<VR, 12> RAFPRVolatile = {
-    VR{8},  VR{9},  VR{10}, VR{11}, VR{12}, VR{13}, VR{14}, VR{15},
-    VR{16}, VR{17}, VR{18}, VR{19},
-  };
-
-  // No RAVolatile here either — x32 RA is r16-r26, r30, r31, all callee-saved.
-  static_assert(RegVolatility::AllGPRsNonVolatile(RA),
-                "x32 RA contains an ELFv2-volatile GPR. It would be destroyed across any "
-                "host call that saves only static registers (DEF_OP(Syscall)). Move it "
-                "back above r14, or add an RAVolatile array plus save/restore loops.");
-  static_assert(RegVolatility::UnlistedVRsAreNonVolatile(RAFPR, RAFPRVolatile),
-                "x32 RAFPR contains an ELFv2-volatile vector register that RAFPRVolatile "
-                "does not list. DEF_OP(Syscall) would not save it.");
-  static_assert(RegVolatility::VolatileListIsExact(RAFPR, RAFPRVolatile),
-                "x32 RAFPRVolatile has drifted from RAFPR. It must be exactly the RAFPR "
-                "entries with index < 20, in pool order.");
-
-  // ELFv2 96-byte reservation as x64 above. Same reasoning; the x32 numbers
-  // work out to 208 for kDynFPRStart and 560 for kDynRegSaveSize.
-  static constexpr size_t kDynLinkArea  = 96;
-  static constexpr size_t kDynGPRStart  = kDynLinkArea;
-  static constexpr size_t kDynFPRStart  = (kDynGPRStart + RA.size() * 8 + 15u) & ~15u; // 208
-  static constexpr size_t kDynRegSaveSize =
-      (kDynFPRStart + RAFPR.size() * 16 + 15u) & ~15u;                                // 560
 }
 
 // Caller-saved GPR mask: r3-r12 (bits 3..12 set)
@@ -711,13 +678,6 @@ public:
   // TMP GPR at all, but callers must keep assuming the superset.
   void LoadFPRSized(VR dst, GPR ea, uint32_t size);
   void StoreFPRSized(VR src, GPR ea, uint32_t size);
-
-  // 32-bit guest support helpers.
-  // MaybeClrUpper32: emit `rldicl reg, reg, 0, 32` (zero the high 32 bits of
-  // `reg`) when the guest is 32-bit, and a nop otherwise.  Used for RIP and
-  // for memory effective-address masking — the host computes 64-bit results
-  // but i686 guests must wrap pointer arithmetic at the 32-bit boundary.
-  void MaybeClrUpper32(GPR reg);
 
 protected:
   FEXCore::Context::ContextImpl* EmitterCTX {};

@@ -114,7 +114,6 @@ public:
   ContextImpl& CTX;
   fextl::unique_ptr<ContextImpl> ValidationCTX;
   fextl::unique_ptr<Core::InternalThreadState> ValidationThread;
-  FEXCore::Core::CPUState::gdt_segment ValidationGDT[32] {};
   bool IsGeneratingCache = false;
 
   FEX_CONFIG_OPT(EnableCodeCaching, ENABLECODECACHINGWIP);
@@ -230,11 +229,6 @@ public:
   uint64_t GetGuestBlockEntry(FEXCore::Core::InternalThreadState* Thread, uint64_t HostPC) override;
 
   uint64_t RestoreRIPFromHostPC(FEXCore::Core::InternalThreadState* Thread, uint64_t HostPC) override;
-  uint32_t ReconstructCompactedEFLAGS(FEXCore::Core::InternalThreadState* Thread, bool WasInJIT, const uint64_t* HostGPRs, uint64_t PSTATE) override;
-  void SetFlagsFromCompactedEFLAGS(FEXCore::Core::InternalThreadState* Thread, uint32_t EFLAGS) override;
-
-  void ReconstructXMMRegisters(const FEXCore::Core::InternalThreadState* Thread, __uint128_t* XMM_Low, __uint128_t* YMM_High) override;
-  void SetXMMRegistersFromState(FEXCore::Core::InternalThreadState* Thread, const __uint128_t* XMM_Low, const __uint128_t* YMM_High) override;
 
   /**
    * @brief Used to create FEX thread objects in preparation for creating a true OS thread. Does set a TID or PID.
@@ -379,7 +373,6 @@ public:
     FEX_CONFIG_OPT(Multiblock, MULTIBLOCK);
     FEX_CONFIG_OPT(SingleStepConfig, SINGLESTEP);
     FEX_CONFIG_OPT(GdbServer, GDBSERVER);
-    FEX_CONFIG_OPT(Is64BitMode, IS64BIT_MODE);
     FEX_CONFIG_OPT(TSOEnabled, TSOENABLED);
     FEX_CONFIG_OPT(LockOnlyTSO, LOCKONLYTSO);
     FEX_CONFIG_OPT(NonTSORBP, NONTSORBP);
