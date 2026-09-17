@@ -208,24 +208,31 @@ bool IRBuilder::STP_LDP_gen(uint32_t Word) {
   const int64_t Offset = FEXCore::A64::SignExtend(Bits(Word, 21, 15), 7) * ElementSize;
   const bool PostIndex = !PreOrOffset;
 
+  // Both elements are addressed as a base plus a displacement on the memory op:
+  // Rn for the offset and post-index forms, the written-back Rn+offset for
+  // pre-index.
   Ref Base = LoadXSP(Rn);
-  Ref Offsetted = _Add(OpSize::i64Bit, Base, Constant(Offset));
-  Ref Address = PostIndex ? Base : Offsetted;
-  Ref Address2 = _Add(OpSize::i64Bit, Address, Constant(ElementSize));
+  Ref Offsetted = WriteBack ? _Add(OpSize::i64Bit, Base, Constant(Offset)) : Base;
+  const bool PreIndex = WriteBack && !PostIndex;
+  Ref Address = PreIndex ? Offsetted : Base;
+  const int64_t Disp1 = (WriteBack || Offset == 0) ? 0 : Offset;
+  const int64_t Disp2 = Disp1 + ElementSize;
+  Ref Offset1 = Disp1 ? _InlineConstant(Disp1) : Invalid();
+  Ref Offset2 = _InlineConstant(Disp2);
 
   if (!IsLoad) {
     Ref Value1 = LoadX(Rt);
     Ref Value2 = LoadX(Rt2);
-    _StoreMem(RegClass::GPR, MemSize, Value1, Address, Invalid(), OpSize::i8Bit, MemOffsetType::SXTX, 1);
-    _StoreMem(RegClass::GPR, MemSize, Value2, Address2, Invalid(), OpSize::i8Bit, MemOffsetType::SXTX, 1);
+    _StoreMem(RegClass::GPR, MemSize, Value1, Address, Offset1, OpSize::i8Bit, MemOffsetType::SXTX, 1);
+    _StoreMem(RegClass::GPR, MemSize, Value2, Address, Offset2, OpSize::i8Bit, MemOffsetType::SXTX, 1);
     if (WriteBack) {
       StoreXSP(Rn, Offsetted);
     }
     return true;
   }
 
-  Ref Value1 = _LoadMem(RegClass::GPR, MemSize, Address, Invalid(), OpSize::i8Bit, MemOffsetType::SXTX, 1);
-  Ref Value2 = _LoadMem(RegClass::GPR, MemSize, Address2, Invalid(), OpSize::i8Bit, MemOffsetType::SXTX, 1);
+  Ref Value1 = _LoadMem(RegClass::GPR, MemSize, Address, Offset1, OpSize::i8Bit, MemOffsetType::SXTX, 1);
+  Ref Value2 = _LoadMem(RegClass::GPR, MemSize, Address, Offset2, OpSize::i8Bit, MemOffsetType::SXTX, 1);
   if (SignExtend) {
     Value1 = _Sbfe(OpSize::i64Bit, 32, 0, Value1);
     Value2 = _Sbfe(OpSize::i64Bit, 32, 0, Value2);
