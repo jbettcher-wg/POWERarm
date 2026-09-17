@@ -121,7 +121,7 @@ public:
   bool UnallocatedEncoding(uint32_t Word);
   // Loads and stores.
   bool LDR_lit_gen(uint32_t Word); bool LDRSW_lit(uint32_t Word); bool PRFM_lit(uint32_t Word);
-  bool STP_LDP_gen(uint32_t Word);
+  bool STP_LDP_gen(uint32_t Word); bool STNP_LDNP_gen(uint32_t Word);
   bool LoadStoreImm9(uint32_t Word); bool STRx_LDRx_imm_2(uint32_t Word); bool STLURx_LDAPURx(uint32_t Word);
   bool PRFM_imm(uint32_t Word);
   bool LoadStoreRegOffset(uint32_t Word);
@@ -140,7 +140,7 @@ public:
   bool SMADDL(uint32_t Word); bool SMSUBL(uint32_t Word); bool UMADDL(uint32_t Word); bool UMSUBL(uint32_t Word);
   bool SMULH(uint32_t Word); bool UMULH(uint32_t Word);
   // SIMD&FP register loads and stores.
-  bool LDR_lit_fpsimd(uint32_t Word); bool STP_LDP_fpsimd(uint32_t Word);
+  bool LDR_lit_fpsimd(uint32_t Word); bool STP_LDP_fpsimd(uint32_t Word); bool STNP_LDNP_fpsimd(uint32_t Word);
   bool STUR_LDUR_fpsimd(uint32_t Word); bool STR_LDR_imm_fpsimd_1(uint32_t Word); bool STR_LDR_imm_fpsimd_2(uint32_t Word);
   bool STR_LDR_reg_fpsimd(uint32_t Word);
   bool LDx_STx_mult(uint32_t Word); bool SIMDSingleStructure(uint32_t Word);

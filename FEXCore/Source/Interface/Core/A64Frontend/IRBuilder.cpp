@@ -64,7 +64,7 @@ const IRBuilder::HandlerEntry IRBuilder::HandlerTable[] = {
   {"UnallocatedEncoding", &IRBuilder::UnallocatedEncoding},
   // Loads and stores.
   {"LDR_lit_gen", &IRBuilder::LDR_lit_gen}, {"LDRSW_lit", &IRBuilder::LDRSW_lit}, {"PRFM_lit", &IRBuilder::PRFM_lit},
-  {"STP_LDP_gen", &IRBuilder::STP_LDP_gen},
+  {"STP_LDP_gen", &IRBuilder::STP_LDP_gen}, {"STNP_LDNP_gen", &IRBuilder::STNP_LDNP_gen},
   {"STURx_LDURx", &IRBuilder::LoadStoreImm9}, {"STRx_LDRx_imm_1", &IRBuilder::LoadStoreImm9},
   {"STRx_LDRx_imm_2", &IRBuilder::STRx_LDRx_imm_2},
   {"STLURx_LDAPURx", &IRBuilder::STLURx_LDAPURx},
@@ -105,7 +105,7 @@ const IRBuilder::HandlerEntry IRBuilder::HandlerTable[] = {
   {"UMADDL", &IRBuilder::UMADDL}, {"UMSUBL", &IRBuilder::UMSUBL},
   {"SMULH", &IRBuilder::SMULH}, {"UMULH", &IRBuilder::UMULH},
   // SIMD&FP register loads and stores.
-  {"LDR_lit_fpsimd", &IRBuilder::LDR_lit_fpsimd}, {"STP_LDP_fpsimd", &IRBuilder::STP_LDP_fpsimd},
+  {"LDR_lit_fpsimd", &IRBuilder::LDR_lit_fpsimd}, {"STP_LDP_fpsimd", &IRBuilder::STP_LDP_fpsimd}, {"STNP_LDNP_fpsimd", &IRBuilder::STNP_LDNP_fpsimd},
   {"STUR_fpsimd", &IRBuilder::STUR_LDUR_fpsimd}, {"LDUR_fpsimd", &IRBuilder::STUR_LDUR_fpsimd},
   {"STR_imm_fpsimd_1", &IRBuilder::STR_LDR_imm_fpsimd_1}, {"LDR_imm_fpsimd_1", &IRBuilder::STR_LDR_imm_fpsimd_1},
   {"STR_imm_fpsimd_2", &IRBuilder::STR_LDR_imm_fpsimd_2}, {"LDR_imm_fpsimd_2", &IRBuilder::STR_LDR_imm_fpsimd_2},

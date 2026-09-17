@@ -196,6 +196,11 @@ bool IRBuilder::LoadStoreRegOffset(uint32_t Word) {
 // Pairs
 // ---------------------------------------------------------------------------
 
+bool IRBuilder::STNP_LDNP_gen(uint32_t Word) {
+  // Index bits 00: the signed-offset pair without writeback (see STNP_LDNP_fpsimd).
+  return STP_LDP_gen(Word | (1U << 24));
+}
+
 bool IRBuilder::STP_LDP_gen(uint32_t Word) {
   const uint32_t Opc = Bits(Word, 31, 30);
   const bool PreOrOffset = Bit(Word, 24);

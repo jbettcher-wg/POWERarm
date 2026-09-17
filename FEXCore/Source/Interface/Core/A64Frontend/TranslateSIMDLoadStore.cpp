@@ -111,6 +111,12 @@ bool IRBuilder::STR_LDR_reg_fpsimd(uint32_t Word) {
   return true;
 }
 
+bool IRBuilder::STNP_LDNP_fpsimd(uint32_t Word) {
+  // Index bits 00: the pair at Rn + offset without writeback, i.e. the
+  // signed-offset form (the Pi 5 executes it that way).
+  return STP_LDP_fpsimd(Word | (1U << 24));
+}
+
 bool IRBuilder::STP_LDP_fpsimd(uint32_t Word) {
   const uint32_t Opc = Bits(Word, 31, 30);
   const bool PreOrOffset = Bit(Word, 24);

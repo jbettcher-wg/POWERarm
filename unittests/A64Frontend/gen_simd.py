@@ -1506,6 +1506,27 @@ def gen_simd_crypto(p):
                  "b 8f", '7: .ascii "12345678"', ".balign 4", "8:"], {})
 
 
+def gen_loadstore_nopair(p):
+    """STNP/LDNP (pair index bits 00): general and SIMD&FP registers, as .inst words."""
+    p.emit("        adrp    x19, buf")
+    p.emit("        add     x19, x19, :lo12:buf")
+    p.emit("        add     x19, x19, #128")
+    for _ in range(240):
+        simd = p.rng.random() < 0.6
+        load = p.rng.random() < 0.5
+        opc = p.rng.choice([0, 1, 2]) if simd else p.rng.choice([0, 2])
+        size = (4 << opc) if simd else (4 if opc == 0 else 8)
+        imm7 = p.rng.randrange(-128 // size, (128 // size) - 1)
+        base = p.rng.choice([19, 25])
+        t, t2 = p.rng.sample([0, 1, 5, 9, 17, 22, 28, 30], 2)
+        word = (opc << 30) | (0b101 << 27) | ((1 if simd else 0) << 26) | ((1 if load else 0) << 22) \
+            | ((imm7 & 0x7F) << 15) | (t2 << 10) | (base << 5) | t
+        pre = [f"mov x{base}, x19"] if base != 19 else []
+        v = {r: p.vec() for r in (t, t2)} if simd else {}
+        x = {} if simd else {t: p.rng.getrandbits(64), t2: p.rng.getrandbits(64)}
+        p.vcase(pre + [f".inst 0x{word:08x}"], v, x, dumpbuf=not load)
+
+
 GROUPS = {
     "simd_loadstore": gen_simd_loadstore,
     "simd_copy": gen_simd_copy,
@@ -1526,6 +1547,7 @@ GROUPS = {
     "simd_float": gen_simd_float,
     "simd_sat": gen_simd_sat,
     "simd_crypto": gen_simd_crypto,
+    "loadstore_nopair": gen_loadstore_nopair,
 }
 
 
