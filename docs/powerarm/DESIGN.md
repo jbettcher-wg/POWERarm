@@ -291,8 +291,8 @@ machine.
 
 | Tier | HWCAP features | Why |
 |---|---|---|
-| 1 (M2–M4) | `fp`, `asimd`, `cpuid`, `atomics` (LSE), `crc32`, `aes`, `pmull`, `sha1`, `sha2` | Covers distro baselines. LSE keeps glibc and libstdc++ off the LL/SC path |
-| 2 (after M4) | `asimdhp`, `fphp`, `asimdrdm`, `jscvt`, `fcma`, `lrcpc`, `dcpop`, `asimddp` (dotprod) | Fast paths in JS engines, codecs and ML runtimes. Dotprod is added once it's implemented |
+| 1 (M2–M4) | `fp`, `asimd`, `fphp`, `asimdhp`, `cpuid`, `atomics` (LSE), `crc32`, `aes`, `pmull`, `sha1`, `sha2` | Covers distro baselines. LSE keeps glibc and libstdc++ off the LL/SC path. Half precision was moved into tier 1 on 2026-09-16 (owner decision, not a release): the A76 reference has it, it's part of what the presented core is, and POWER9 has `xscvhpdp`/`xscvdphp` |
+| 2 (after M4) | `asimdrdm`, `jscvt`, `fcma`, `lrcpc`, `dcpop`, `asimddp` (dotprod) | Fast paths in JS engines, codecs and ML runtimes. Dotprod is added once it's implemented |
 | Never, initially | SVE/SVE2/SME, MTE, PAC and BTI enforcement, `sha3`/`sha512`, `i8mm`, `bf16` | Software falls back. PAC and BTI instructions are NOPs |
 
 - **SHA1/SHA256** map one-to-one onto existing IR ops. `VSha1*` and `VSha256H/H2/U0/U1` are
