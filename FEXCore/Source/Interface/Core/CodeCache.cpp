@@ -24,17 +24,32 @@
 
 #include <cstdlib>
 #include <cstring>
+// XXH3_state_t on the stack (per-block hashing on the load path).
+#define XXH_STATIC_LINKING_ONLY
 #include <xxhash.h>
 
 // ComputeCodeMapId streams the mapped file to derive a content-based cache
 // identity. close() was already used unguarded in this file, so POSIX is
 // assumed here rather than newly introduced.
+#include <FEXCore/Core/HostFeatures.h>
+#include <FEXCore/Utils/AllocatorHooks.h>
+#include <Interface/Core/ArchHelpers/PPC64Emitter.h>
+
+#include <algorithm>
 #include <array>
 #include <cerrno>
+#include <elf.h>
+#include <fcntl.h>
+#include <filesystem>
 #include <fstream>
+#include <functional>
 #include <limits>
+#include <link.h>
 #include <optional>
+#include <sys/file.h>
+#include <sys/mman.h>
 #include <sys/stat.h>
+#include <sys/uio.h>
 #include <time.h>
 #include <unistd.h>
 
@@ -270,6 +285,58 @@ uint64_t SanitizeId(uint64_t Id) {
 }
 } // namespace
 
+namespace {
+  // Detected host features, registered by the context before the id is first
+  // computed. See SetCodeCacheHostFeatures.
+  std::atomic<const HostFeatures*> CodeCacheHostFeatures {nullptr};
+
+  // NT_GNU_BUILD_ID of the running POWERarm executable. FEXCore is linked into
+  // it statically, so this changes with any change to the code generator, even
+  // one that leaves GIT_HASH alone (an uncommitted tree).
+  fextl::vector<uint8_t> ExecutableBuildId() {
+    fextl::vector<uint8_t> Id;
+    dl_iterate_phdr(
+      [](dl_phdr_info* Info, size_t, void* Data) -> int {
+        auto* Out = static_cast<fextl::vector<uint8_t>*>(Data);
+        for (ElfW(Half) i = 0; i < Info->dlpi_phnum; ++i) {
+          const auto& Phdr = Info->dlpi_phdr[i];
+          if (Phdr.p_type != PT_NOTE) {
+            continue;
+          }
+          const auto* Note = reinterpret_cast<const uint8_t*>(Info->dlpi_addr + Phdr.p_vaddr);
+          size_t Left = Phdr.p_memsz;
+          while (Left >= sizeof(ElfW(Nhdr))) {
+            const auto* N = reinterpret_cast<const ElfW(Nhdr)*>(Note);
+            const size_t NameSize = AlignUp(N->n_namesz, 4);
+            const size_t DescSize = AlignUp(N->n_descsz, 4);
+            const size_t Total = sizeof(ElfW(Nhdr)) + NameSize + DescSize;
+            if (Total > Left) {
+              break;
+            }
+            if (N->n_type == NT_GNU_BUILD_ID && N->n_namesz == 4 && ::memcmp(Note + sizeof(ElfW(Nhdr)), "GNU", 4) == 0) {
+              const auto* Desc = Note + sizeof(ElfW(Nhdr)) + NameSize;
+              Out->assign(Desc, Desc + N->n_descsz);
+              return 1;
+            }
+            Note += Total;
+            Left -= Total;
+          }
+        }
+        // The first object is the executable; stop either way.
+        return 1;
+      },
+      &Id);
+    return Id;
+  }
+} // namespace
+
+void SetCodeCacheHostFeatures(const HostFeatures& Features) {
+  static HostFeatures Copy;
+  const HostFeatures* Expected = nullptr;
+  Copy = Features;
+  CodeCacheHostFeatures.compare_exchange_strong(Expected, &Copy);
+}
+
 uint64_t ComputeCodeCacheConfigId() {
   // Computed once: config is loaded before any mapping is tracked and does not
   // change afterwards, and every cache filename in the process must agree.
@@ -289,6 +356,40 @@ uint64_t ComputeCodeCacheConfigId() {
     //    hashing it into the *filename* means caches from different builds
     //    coexist instead of one rejecting and deleting the other's file.
     XXH3_64bits_update(State, GIT_HASH.data(), GIT_HASH.size());
+    {
+      const auto BuildId = ExecutableBuildId();
+      Hasher.Add(std::string_view {reinterpret_cast<const char*>(BuildId.data()), BuildId.size()});
+    }
+
+    // Detected host features. SupportsISA30 alone selects between instruction
+    // sequences in dozens of lowerings, and FEX_HOSTFEATURES=disableisa30 flips
+    // it on the same machine; DCacheLineSize is baked into dcbz loops. Hashed
+    // field by field (the struct has padding); the size assert makes a new
+    // field fail to build until it is added here.
+    const auto* Features = CodeCacheHostFeatures.load(std::memory_order_acquire);
+    if (!Features) {
+      XXH3_freeState(State);
+      return InvalidFileId;
+    }
+    static_assert(sizeof(HostFeatures) == 72, "HostFeatures changed: hash the new field below");
+    {
+      const auto& F = *Features;
+      for (uint64_t V : {uint64_t {F.DCacheLineSize}, uint64_t {F.ICacheLineSize}}) {
+        Hasher.Add(V);
+      }
+      for (bool B : {F.SupportsCacheMaintenanceOps, F.SupportsAES, F.SupportsCRC, F.SupportsCLZERO, F.SupportsAtomics, F.SupportsRCPC,
+                     F.SupportsTSOImm9, F.SupportsTSODisp16, F.SupportsRAND, F.SupportsAVX, F.SupportsAVX2, F.SupportsSVE128, F.SupportsSVE256,
+                     F.SupportsSHA, F.SupportsPMULL_128Bit, F.SupportsCSSC, F.SupportsFCMA, F.SupportsFlagM, F.SupportsFlagM2, F.SupportsFCmpX86,
+                     F.SupportsRPRES, F.SupportsPreserveAllABI, F.SupportsAES256, F.SupportsSVEBitPerm, F.SupportsCPUIndexInTPIDRRO,
+                     F.SupportsFRINTTS, F.SupportsECV, F.SupportsWFXT, F.Supports3DNow, F.SupportsSSE4a, F.SupportsMOPS, F.SupportsISA30,
+                     F.SupportsVCmpFlagBranch, F.SupportsFlagTransparentSelect, F.SupportsAFP, F.SupportsFloatExceptions, F.IsInstCountCI}) {
+        Hasher.Add(uint64_t {B});
+      }
+      Hasher.Add(uint64_t {F.CPUMIDRs.size()});
+      for (uint32_t MIDR : F.CPUMIDRs) {
+        Hasher.Add(uint64_t {MIDR});
+      }
+    }
 
     // 2. Every option that changes emitted host code. When adding a codegen
     //    option, add it here: an option missing from this list means a cache
@@ -565,28 +666,11 @@ uint64_t ComputeCodeCacheConfigId() {
     // cache generator (section-bounded decode, relocations retained).
     HASH_STR_OPT(CODECACHESCOPE);
 
-    // NOT hashed: BlockLinking. JIT.cpp force-disables block linking whenever
-    // EnableCodeCachingWIP is set (see the block comment there — link thunks
-    // hold absolute host addresses with no relocation records), so the knob
-    // provably cannot change the bytes of a cache-mode compile. Do not "fix"
-    // this by enabling linking under caching.
+    // Block linking changes the exit shape (link thunks and records), even
+    // though cached blocks are always stored unlinked.
+    HASH_OPT(BLOCKLINKING);
 
-    // NOT hashed, and this one IS a gap — flagged deliberately, scoped
-    // separately, do not bolt a fix on here. Everything above is requested
-    // config or an env switch. NOT ONE detected host capability is hashed, and
-    // several of them decide which instructions get emitted:
-    //   * HostFeatures::SupportsISA30 (Source/Common/HostFeatures.cpp:746, from
-    //     HWCAP2 & PPC_FEATURE2_ARCH_3_00_) gates lxvx / stxvx / lxsibzx /
-    //     lxsihzx / mcrxrx. A POWER9-generated cache loaded on POWER8 is a
-    //     SIGILL on the first lxvx, not a slowdown.
-    //   * HostFeatures::DCacheLineSize (:729/:796) is baked into the dcbz block
-    //     shift, so a cache from a host with a different line size zeroes the
-    //     wrong span.
-    // The effective-HWTSO hash above is one instance of this class that had a
-    // live consequence, which is why it was fixed on its own. Closing the rest
-    // needs a decision on how host capability is canonicalised (the detected
-    // set, or the subset the emitters actually branch on) and belongs in its own
-    // change.
+    // Detected host capabilities are hashed above, next to the build identity.
 #undef HASH_OPT
 #undef HASH_STR_OPT
 
@@ -602,58 +686,438 @@ uint64_t ComputeCodeCacheConfigId() {
 
 namespace FEXCore::Context {
 
+// =============================================================================
+// On-disk format, version 4.
+//
+// A cache for one guest file is a set of SEGMENTS: `<Base>`, `<Base>.1`, ...,
+// `<Base>.<MaxSegments-1>`, where Base is `<cache dir>/cache/<name>-<FileId>-<ConfigId>`.
+// Every segment is self-contained:
+//
+//   SegmentHeader | SegmentBlock[NumBlocks] (sorted by GuestOffset) | pad
+//   | CPU::Relocation[NumRelocs] | pad | code
+//
+// Each SegmentBlock describes one block exactly as the JIT laid it out
+// (JITCodeHeader .. JITCodeTail + RIP entries), stored UNLINKED and with every
+// relocation applied for storage (guest RIPs as offsets from the file's load
+// base, host symbols zeroed). Relocation offsets are relative to the block.
+//
+// Loading is lazy and per block: a dispatcher miss that would compile GuestRIP
+// first looks the block up here (TryLoadBlock). A block is installed only if
+//   - its EntryHash (entry fields + code + relocations) verifies, which catches
+//     torn or corrupt files without fsync;
+//   - the guest bytes it was decoded from, [GuestRIP, GuestRIP + GuestLength),
+//     are executable in this process and hash to GuestHash. This is what makes
+//     the cache sound no matter how the file identity was derived: a rebuilt or
+//     replaced binary, a guest that patched its own code before the block was
+//     first reached, or a different file that happens to share an identity all
+//     fail this check and compile instead;
+//   - its relocations apply cleanly.
+// Everything else a translation depends on (FEX build, codegen options, host
+// ISA features, page size) is in ConfigId, and so in the file name.
+//
+// Writing appends: a process writes only blocks it compiled that no existing
+// segment holds, as a new segment created with link(2) (never replaces a
+// file). When all MaxSegments names are taken the writer compacts them into
+// `<Base>` under an exclusive flock; appenders hold the lock shared. A reader
+// needs no lock: it opens `<Base>`, `<Base>.1`, ... until the first missing
+// name, and every file it maps stays valid even if a compaction unlinks it.
+// =============================================================================
 namespace {
-// ::write is allowed to write fewer bytes than requested and to fail with
-// EINTR. The original code ignored both, which turns a full disk or a signal
-// into a silently truncated cache file.
-bool WriteAll(int FD, const void* Data, size_t Size) {
-  const auto* Ptr = reinterpret_cast<const uint8_t*>(Data);
-  while (Size) {
-    const ssize_t Written = ::write(FD, Ptr, Size);
-    if (Written < 0) {
-      if (errno == EINTR) {
-        continue;
+  // ::write is allowed to write fewer bytes than requested and to fail with EINTR.
+  bool WriteAll(int FD, const void* Data, size_t Size) {
+    const auto* Ptr = reinterpret_cast<const uint8_t*>(Data);
+    while (Size) {
+      const ssize_t Written = ::write(FD, Ptr, Size);
+      if (Written < 0) {
+        if (errno == EINTR) {
+          continue;
+        }
+        return false;
       }
-      return false;
+      if (Written == 0) {
+        return false;
+      }
+      Ptr += Written;
+      Size -= static_cast<size_t>(Written);
     }
-    if (Written == 0) {
-      return false;
-    }
-    Ptr += Written;
-    Size -= static_cast<size_t>(Written);
+    return true;
   }
-  return true;
-}
 
-uint64_t MonotonicSeconds() {
-  struct timespec TS {};
-  if (::clock_gettime(CLOCK_MONOTONIC, &TS) != 0) {
-    return 0;
+  uint64_t MonotonicMilliseconds() {
+    struct timespec TS {};
+    if (::clock_gettime(CLOCK_MONOTONIC_COARSE, &TS) != 0) {
+      return 0;
+    }
+    return static_cast<uint64_t>(TS.tv_sec) * 1000 + static_cast<uint64_t>(TS.tv_nsec) / 1000000;
   }
-  return static_cast<uint64_t>(TS.tv_sec);
-}
+
+  uint64_t MonotonicNS() {
+    struct timespec TS {};
+    ::clock_gettime(CLOCK_MONOTONIC, &TS);
+    return static_cast<uint64_t>(TS.tv_sec) * 1000000000ULL + static_cast<uint64_t>(TS.tv_nsec);
+  }
+
+  // Adds the scope's wall time to a counter.
+  struct ScopedNS {
+    std::atomic<uint64_t>& Counter;
+    uint64_t Start = MonotonicNS();
+    ~ScopedNS() {
+      Counter.fetch_add(MonotonicNS() - Start, std::memory_order_relaxed);
+    }
+  };
+
+  uint64_t MonotonicSeconds() {
+    struct timespec TS {};
+    if (::clock_gettime(CLOCK_MONOTONIC, &TS) != 0) {
+      return 0;
+    }
+    return static_cast<uint64_t>(TS.tv_sec);
+  }
+
+  constexpr std::array<char, 4> SegmentMagic = {'P', 'A', 'C', 'C'};
+  constexpr uint32_t SegmentVersion = 4;
+  constexpr size_t MaxSegments = 8;
+  // A runtime writer skips files with fewer new blocks than this. Stops a
+  // process that compiled a handful of rare-path blocks from spending a
+  // segment (and, eventually, a compaction) on them.
+  constexpr size_t MinNewBlocksPerSegment = 8;
+  constexpr uint64_t BlockAlignment = 16;
+
+  struct SegmentHeader {
+    std::array<char, 4> Magic;
+    uint32_t Version;
+    uint64_t ConfigId;
+    uint64_t FileId;
+    std::array<uint8_t, 20> BuildHash;
+    uint32_t NumBlocks;
+    uint32_t NumRelocs;
+    uint32_t Pad;
+    // /proc/sys/kernel/random/boot_id of the writer. Within that boot the file
+    // is exactly what was written (it was complete before link(2) or rename(2)
+    // published it), so entry hashes only need checking in another boot, where
+    // a crash may have left it torn.
+    std::array<uint8_t, 16> BootId;
+    uint64_t IndexOffset;
+    uint64_t RelocOffset;
+    uint64_t CodeOffset;
+    uint64_t CodeSize;
+    uint64_t HeaderHash; // XXH3 of every byte above
+  };
+  static_assert(sizeof(SegmentHeader) == 112 && offsetof(SegmentHeader, HeaderHash) == 104, "cache segment header layout");
+
+  // This boot's id, all zero if unreadable (which never matches a writer's, so
+  // every entry is then checked).
+  const std::array<uint8_t, 16>& CurrentBootId() {
+    static const std::array<uint8_t, 16> Id = [] {
+      std::array<uint8_t, 16> Out {};
+      int FD = ::open("/proc/sys/kernel/random/boot_id", O_RDONLY | O_CLOEXEC);
+      if (FD == -1) {
+        return Out;
+      }
+      char Buf[64] {};
+      const ssize_t N = ::read(FD, Buf, sizeof(Buf) - 1);
+      ::close(FD);
+      size_t Nibbles = 0;
+      for (ssize_t i = 0; i < N && Nibbles < 32; ++i) {
+        const char Ch = Buf[i];
+        int V = (Ch >= '0' && Ch <= '9') ? Ch - '0' : (Ch >= 'a' && Ch <= 'f') ? Ch - 'a' + 10 : -1;
+        if (V < 0) {
+          continue;
+        }
+        Out[Nibbles / 2] |= static_cast<uint8_t>(V << ((Nibbles % 2) ? 0 : 4));
+        ++Nibbles;
+      }
+      if (Nibbles != 32) {
+        Out = {};
+      }
+      return Out;
+    }();
+    return Id;
+  }
+
+  // POWERARM_CODECACHEVERIFY=1: check every entry hash even for this boot's files.
+  bool ForceVerify() {
+    static const bool Force = [] {
+      const char* Env = getenv("FEX_CODECACHEVERIFY");
+      return Env && *Env == '1';
+    }();
+    return Force;
+  }
+
+  struct SegmentBlock {
+    uint64_t GuestOffset; // entry PC - file load base
+    uint64_t GuestHash;   // XXH3 of the guest bytes [entry, entry + GuestLength)
+    uint64_t CodeOffset;  // in the code section
+    uint32_t GuestLength;
+    uint32_t CodeSize;    // JITCodeTail::Size
+    uint32_t EntryOffset; // entry point - JITCodeHeader
+    uint32_t RelocBegin;
+    uint32_t RelocCount;
+    uint32_t Pad;
+    uint64_t EntryHash;   // XXH3 of the fields above, the code and the relocations
+  };
+  static_assert(sizeof(SegmentBlock) == 56 && offsetof(SegmentBlock, EntryHash) == 48, "cache segment block layout");
+
+  constexpr size_t RelocSize = sizeof(CPU::Relocation);
+  static_assert(RelocSize == 48, "Breaking change in code cache data layout");
+
+  fextl::string SegmentPath(const fextl::string& Base, size_t Index) {
+    return Index == 0 ? Base : fextl::fmt::format("{}.{}", Base, Index);
+  }
+
+  uint64_t HashHeader(const SegmentHeader& H) {
+    return XXH3_64bits(&H, offsetof(SegmentHeader, HeaderHash));
+  }
+
+  uint64_t HashBlock(const SegmentBlock& B, const std::byte* Code, const CPU::Relocation* Relocs) {
+    XXH3_state_t State;
+    XXH3_64bits_reset(&State);
+    XXH3_64bits_update(&State, &B, offsetof(SegmentBlock, EntryHash));
+    XXH3_64bits_update(&State, Code, B.CodeSize);
+    XXH3_64bits_update(&State, Relocs, static_cast<size_t>(B.RelocCount) * RelocSize);
+    return XXH3_64bits_digest(&State);
+  }
+
+  // Bytes of the code a relocation rewrites.
+  uint64_t RelocWidth(CPU::RelocationTypes Type) {
+    switch (Type) {
+    case CPU::RelocationTypes::RELOC_NAMED_SYMBOL_LITERAL:
+    case CPU::RelocationTypes::RELOC_GUEST_RIP_LITERAL:
+    case CPU::RelocationTypes::RELOC_LINK_RECORD: return sizeof(uint64_t);
+    default: return PPC64Emitter::Emitter::LoadConstantFixedBytes;
+    }
+  }
+
+  // Guest-memory read that cannot fault.
+  bool ReadGuest(uint64_t Address, std::byte* Out, size_t Size) {
+    const struct iovec Local {.iov_base = Out, .iov_len = Size};
+    const struct iovec Remote {.iov_base = reinterpret_cast<void*>(Address), .iov_len = Size};
+    return ::process_vm_readv(::getpid(), &Local, 1, &Remote, 1, 0) == static_cast<ssize_t>(Size);
+  }
+
+  // Everything one segment holds, before it is written.
+  struct SegmentBuilder {
+    fextl::vector<SegmentBlock> Blocks;
+    fextl::vector<CPU::Relocation> Relocs;
+    fextl::vector<std::byte> Code;
+  };
+
+  // Small buffered writer: segments are written in one pass.
+  struct BufferedWriter {
+    int FD;
+    fextl::vector<std::byte> Buffer;
+    uint64_t Written = 0;
+    bool Ok = true;
+
+    explicit BufferedWriter(int FD_)
+      : FD {FD_} {
+      Buffer.reserve(1 << 20);
+    }
+    void Put(const void* Data, size_t Size) {
+      Written += Size;
+      if (!Ok) {
+        return;
+      }
+      if (Buffer.size() + Size > Buffer.capacity()) {
+        Flush();
+        if (Size >= Buffer.capacity()) {
+          Ok = WriteAll(FD, Data, Size);
+          return;
+        }
+      }
+      const auto* Bytes = reinterpret_cast<const std::byte*>(Data);
+      Buffer.insert(Buffer.end(), Bytes, Bytes + Size);
+    }
+    void PadTo(uint64_t Alignment) {
+      static constexpr std::array<std::byte, 64> Zero {};
+      while (Written % Alignment) {
+        Put(Zero.data(), std::min<uint64_t>(Alignment - Written % Alignment, Zero.size()));
+      }
+    }
+    bool Flush() {
+      if (Ok && !Buffer.empty()) {
+        Ok = WriteAll(FD, Buffer.data(), Buffer.size());
+      }
+      Buffer.clear();
+      return Ok;
+    }
+  };
+
+  // Layout shared by the writer and the compactor: returns the header for a
+  // segment with the given counts.
+  SegmentHeader MakeHeader(uint64_t ConfigId, uint64_t FileId, uint32_t NumBlocks, uint32_t NumRelocs, uint64_t CodeSize) {
+    SegmentHeader H {};
+    H.Magic = SegmentMagic;
+    H.Version = SegmentVersion;
+    H.ConfigId = ConfigId;
+    H.FileId = FileId;
+    std::ranges::copy(GIT_HASH, H.BuildHash.begin());
+    H.BootId = CurrentBootId();
+    H.NumBlocks = NumBlocks;
+    H.NumRelocs = NumRelocs;
+    H.IndexOffset = sizeof(SegmentHeader);
+    H.RelocOffset = AlignUp(H.IndexOffset + uint64_t {NumBlocks} * sizeof(SegmentBlock), 8);
+    H.CodeOffset = AlignUp(H.RelocOffset + uint64_t {NumRelocs} * RelocSize, BlockAlignment);
+    H.CodeSize = CodeSize;
+    H.HeaderHash = HashHeader(H);
+    return H;
+  }
+
+  bool WriteSegment(int FD, const SegmentBuilder& B, uint64_t ConfigId, uint64_t FileId) {
+    if (B.Blocks.size() > std::numeric_limits<uint32_t>::max() || B.Relocs.size() > std::numeric_limits<uint32_t>::max()) {
+      return false;
+    }
+    const auto H = MakeHeader(ConfigId, FileId, B.Blocks.size(), B.Relocs.size(), B.Code.size());
+    BufferedWriter Out {FD};
+    Out.Put(&H, sizeof(H));
+    Out.Put(B.Blocks.data(), B.Blocks.size() * sizeof(SegmentBlock));
+    Out.PadTo(8);
+    Out.Put(B.Relocs.data(), B.Relocs.size() * RelocSize);
+    Out.PadTo(BlockAlignment);
+    Out.Put(B.Code.data(), B.Code.size());
+    return Out.Flush() && Out.Written == H.CodeOffset + H.CodeSize;
+  }
+
+  // Writes to a unique temp name next to Base. Returns the temp path, or empty.
+  fextl::string WriteTempSegment(const fextl::string& Base, const std::function<bool(int)>& Writer) {
+    static std::atomic<uint64_t> Counter {0};
+    auto Temp = fextl::fmt::format("{}.tmp.{}.{}", Base, ::getpid(), Counter.fetch_add(1));
+    int FD = ::open(Temp.c_str(), O_CREAT | O_EXCL | O_WRONLY | O_CLOEXEC, 0644);
+    if (FD == -1) {
+      return {};
+    }
+    const bool Ok = Writer(FD);
+    ::close(FD);
+    if (!Ok) {
+      ::unlink(Temp.c_str());
+      return {};
+    }
+    return Temp;
+  }
 } // namespace
+
+struct CodeCache::CacheSegment {
+  void* Map {};
+  size_t MapSize {};
+  const SegmentHeader* Header {};
+  const SegmentBlock* Blocks {};
+  const CPU::Relocation* Relocs {};
+  const std::byte* Code {};
+  // Entry hashes need checking (written in another boot, or forced).
+  bool CheckHashes = true;
+
+  CacheSegment() = default;
+  CacheSegment(const CacheSegment&) = delete;
+  CacheSegment& operator=(const CacheSegment&) = delete;
+  ~CacheSegment() {
+    if (Map) {
+      FEXCore::Allocator::munmap(Map, MapSize);
+    }
+  }
+
+  const SegmentBlock* Find(uint64_t GuestOffset) const {
+    const auto* End = Blocks + Header->NumBlocks;
+    const auto* It = std::lower_bound(Blocks, End, GuestOffset, [](const SegmentBlock& B, uint64_t Off) { return B.GuestOffset < Off; });
+    return (It != End && It->GuestOffset == GuestOffset) ? It : nullptr;
+  }
+
+  // Structural bounds plus the integrity hash. Relocation extents are checked
+  // again by ApplyCodeRelocations when they are used.
+  bool Validate(const SegmentBlock& B) const {
+    if (B.CodeOffset > Header->CodeSize || B.CodeSize > Header->CodeSize - B.CodeOffset || B.CodeSize % BlockAlignment != 0 ||
+        B.CodeSize < sizeof(CPU::CPUBackend::JITCodeHeader) + sizeof(CPU::CPUBackend::JITCodeTail) || B.EntryOffset >= B.CodeSize) {
+      return false;
+    }
+    if (B.RelocBegin > Header->NumRelocs || B.RelocCount > Header->NumRelocs - B.RelocBegin) {
+      return false;
+    }
+    return !CheckHashes || HashBlock(B, Code + B.CodeOffset, Relocs + B.RelocBegin) == B.EntryHash;
+  }
+
+  static fextl::unique_ptr<CacheSegment> Open(const fextl::string& Path, uint64_t ConfigId, uint64_t FileId) {
+    int FD = ::open(Path.c_str(), O_RDONLY | O_CLOEXEC);
+    if (FD == -1) {
+      return nullptr;
+    }
+    struct stat St {};
+    if (::fstat(FD, &St) != 0 || St.st_size < static_cast<off_t>(sizeof(SegmentHeader))) {
+      ::close(FD);
+      return nullptr;
+    }
+    const size_t Size = static_cast<size_t>(St.st_size);
+    void* Map = FEXCore::Allocator::mmap(nullptr, Size, PROT_READ, MAP_PRIVATE, FD, 0);
+    ::close(FD);
+    if (Map == MAP_FAILED || Map == nullptr) {
+      return nullptr;
+    }
+    auto Seg = fextl::make_unique<CacheSegment>();
+    Seg->Map = Map;
+    Seg->MapSize = Size;
+    const auto* H = reinterpret_cast<const SegmentHeader*>(Map);
+    // Every count and offset below comes from a file this process does not
+    // control; bound each against the mapping before it is used.
+    if (H->Magic != SegmentMagic || H->Version != SegmentVersion || H->ConfigId != ConfigId || H->FileId != FileId ||
+        !std::ranges::equal(H->BuildHash, GIT_HASH) || H->HeaderHash != HashHeader(*H) || H->IndexOffset != sizeof(SegmentHeader) ||
+        H->NumBlocks > (Size - H->IndexOffset) / sizeof(SegmentBlock) || H->RelocOffset % 8 != 0 || H->RelocOffset > Size ||
+        H->NumRelocs > (Size - H->RelocOffset) / RelocSize || H->CodeOffset % BlockAlignment != 0 || H->CodeOffset > Size ||
+        H->CodeSize > Size - H->CodeOffset) {
+      LogMan::Msg::IFmt("Code cache: ignoring invalid or foreign segment {}", Path);
+      return nullptr;
+    }
+    Seg->Header = H;
+    Seg->Blocks = reinterpret_cast<const SegmentBlock*>(static_cast<const std::byte*>(Map) + H->IndexOffset);
+    Seg->Relocs = reinterpret_cast<const CPU::Relocation*>(static_cast<const std::byte*>(Map) + H->RelocOffset);
+    Seg->Code = static_cast<const std::byte*>(Map) + H->CodeOffset;
+    const auto& Boot = CurrentBootId();
+    Seg->CheckHashes = ForceVerify() || H->BootId != Boot || Boot == std::array<uint8_t, 16> {};
+    return Seg;
+  }
+};
+
+struct CodeCache::FileCache {
+  fextl::string BasePath;
+  // Append-only. Appended under CodeCache::RegistryMutex (unique); read without
+  // a lock: a slot is filled before NumSegments counts it.
+  std::array<fextl::unique_ptr<CacheSegment>, MaxSegments> Segments;
+  std::atomic<size_t> NumSegments {0};
+
+  std::span<const fextl::unique_ptr<CacheSegment>> Loaded() const {
+    return {Segments.data(), NumSegments.load(std::memory_order_acquire)};
+  }
+  std::atomic<uint64_t> LastProbeMS {0};
+
+  bool Contains(uint64_t GuestOffset) const {
+    for (const auto& Seg : Loaded()) {
+      if (Seg->Find(GuestOffset)) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  // Opens segments this process has not seen yet, stopping at the first gap.
+  void ProbeNewSegments(uint64_t ConfigId, uint64_t FileId) {
+    while (NumSegments.load(std::memory_order_relaxed) < MaxSegments) {
+      const size_t Index = NumSegments.load(std::memory_order_relaxed);
+      auto Seg = CacheSegment::Open(SegmentPath(BasePath, Index), ConfigId, FileId);
+      if (!Seg) {
+        break;
+      }
+      Segments[Index] = std::move(Seg);
+      NumSegments.store(Index + 1, std::memory_order_release);
+    }
+  }
+};
 
 CodeCache::CodeCache(ContextImpl& CTX_)
   : CTX(CTX_) {
-  // B5: two properties of EnableCodeCacheValidation that no amount of code can
-  // fix, and that both cost time to rediscover from a confusing result.
-  //
-  // Once per process, not once per section: LoadData runs per executable
-  // section, and a validation context constructs a second CodeCache of its own.
-  if (EnableCodeCacheValidation) {
-    static std::once_flag WarnOnce;
-    std::call_once(WarnOnce, []() {
-      LogMan::Msg::EFmt("EnableCodeCacheValidation is set. Two things it does NOT mean:");
-      LogMan::Msg::EFmt("  1. A pass does not say the cached code matches what a production run emits. The reference compile decodes with "
-                        "the same section bounds and guest relocations the cache was generated with, so it compares cache-mode bytes "
-                        "against cache-mode bytes. It catches JIT-config drift and missing POWERarm relocations, not differences between "
-                        "cached and uncached codegen.");
-      LogMan::Msg::EFmt("  2. It is not observation-only. This flag also puts the main thread's own decoding on the section-bounded, "
-                        "relocation-aware path (Frontend.cpp), so it changes the code under test. A bug that reproduces only with it on, "
-                        "or only with it off, is the flag doing its job, not a paradox.");
-    });
-  }
+  // Loading installs blocks through the same registration a compile uses, but
+  // not the per-block metadata these SMC modes attach at compile time (semantic
+  // patch sites, cheap-tier state, store emulation), so they and the cache are
+  // mutually exclusive.
+  LoadEnabled = EnableCodeCaching() && !FEXCore::Config::Get_SMCSEMANTICPATCH() && !FEXCore::Config::Get_SMCLAZYINVAL() &&
+                !FEXCore::Config::Get_SMCCHEAPTIER() && !FEXCore::Config::Get_SMCSTOREEMULATION() &&
+                !FEXCore::Config::Get_SMCSTOREBACKPATCH();
 }
 CodeCache::~CodeCache() = default;
 
@@ -662,140 +1126,35 @@ uint64_t CodeCache::ComputeCodeMapId(std::string_view Filename, int FD) {
     return InvalidFileId;
   }
 
-  // Identity is derived from the file's CONTENT, never from its path.
-  //
-  // Keying on the path was a silent stale-code bug once the cache is enabled:
-  // rebuild a binary, or let a game updater replace it, and the new file at the
-  // same path loads the OLD file's cached translations — executing host code
-  // compiled from guest bytes that no longer exist, persisted across restarts.
-  // It also failed in the other direction, giving one binary two unrelated
-  // caches when installed at two paths, which is what the original TODO here
-  // asked to avoid ("independent of the installation location").
-  //
-  // The Windows path already keys on image identity rather than the name
-  // (Source/Windows/Common/ImageTracker.cpp folds in TimeDateStamp and
-  // SizeOfImage); this brings the Linux path to the same standard.
-  //
-  // Cost is one streamed hash per mapped executable file, once, at mmap time.
-  // pread() throughout: FD is the descriptor the caller is mapping from, so its
-  // file offset must not move.
-  auto FallbackId = [&]() -> uint64_t {
-    // Degrade to path+size+mtime rather than bare path. Strictly stronger than
-    // the old behaviour, and any disagreement with the content hash costs a
-    // cache miss (safe) rather than a stale hit (not).
-    XXH3_state_t* S = XXH3_createState();
-    if (!S) {
-      return XXH3_64bits(Filename.data(), Filename.size());
-    }
-    XXH3_64bits_reset(S);
-    XXH3_64bits_update(S, Filename.data(), Filename.size());
-    struct stat St;
-    if (FD >= 0 && ::fstat(FD, &St) == 0) {
-      const uint64_t Size = static_cast<uint64_t>(St.st_size);
-      const uint64_t MTime = static_cast<uint64_t>(St.st_mtime);
-      XXH3_64bits_update(S, &Size, sizeof(Size));
-      XXH3_64bits_update(S, &MTime, sizeof(MTime));
-    }
-    const uint64_t R = XXH3_64bits_digest(S);
-    XXH3_freeState(S);
-    return R;
-  };
-
-  struct stat Stat;
-  if (FD < 0 || ::fstat(FD, &Stat) != 0 || !S_ISREG(Stat.st_mode)) {
-    return FallbackId();
+  // Identity from metadata, not content. This used to stream-hash the whole
+  // file on every executable mmap, in every process, whether or not caching
+  // was enabled: 2 % of `gcc -c empty.c` (cc1 alone is tens of MB). Soundness
+  // does not rest on this id (see the format comment above: every cached block
+  // is checked against the guest bytes it was translated from), so a cheap id
+  // that changes whenever the file is replaced or rewritten is enough.
+  XXH3_state_t State;
+  XXH3_64bits_reset(&State);
+  struct stat St {};
+  if (FD >= 0 && ::fstat(FD, &St) == 0) {
+    const uint64_t Fields[] = {
+      static_cast<uint64_t>(St.st_dev),        static_cast<uint64_t>(St.st_ino),         static_cast<uint64_t>(St.st_size),
+      static_cast<uint64_t>(St.st_mtim.tv_sec), static_cast<uint64_t>(St.st_mtim.tv_nsec), static_cast<uint64_t>(St.st_ctim.tv_sec),
+      static_cast<uint64_t>(St.st_ctim.tv_nsec),
+    };
+    XXH3_64bits_update(&State, Fields, sizeof(Fields));
+  } else {
+    XXH3_64bits_update(&State, Filename.data(), Filename.size());
   }
-
-  XXH3_state_t* State = XXH3_createState();
-  if (!State) {
-    return FallbackId();
-  }
-  XXH3_64bits_reset(State);
-
-  // Fold the length in first so a truncated file can never hash equal to the
-  // longer original that shares its prefix.
-  const uint64_t FileSize = static_cast<uint64_t>(Stat.st_size);
-  XXH3_64bits_update(State, &FileSize, sizeof(FileSize));
-
-  std::array<uint8_t, 64 * 1024> Buffer;
-  off_t Offset = 0;
-  while (Offset < Stat.st_size) {
-    const ssize_t BytesRead = ::pread(FD, Buffer.data(), Buffer.size(), Offset);
-    if (BytesRead > 0) {
-      XXH3_64bits_update(State, Buffer.data(), static_cast<size_t>(BytesRead));
-      Offset += BytesRead;
-      continue;
-    }
-    if (BytesRead < 0 && errno == EINTR) {
-      continue;
-    }
-    // Short read or hard error: the content hash would be over a partial file
-    // and is not trustworthy as an identity. Degrade rather than guess.
-    XXH3_freeState(State);
-    return FallbackId();
-  }
-
-  const uint64_t Result = XXH3_64bits_digest(State);
-  XXH3_freeState(State);
-  return Result;
-}
-
-struct CodeCacheHeader {
-  std::array<char, 4> Magic = ExpectedMagic;
-  // Bump on any on-disk layout change so stale caches are rejected rather
-  // than misread. Bumped from 1 -> 2 by S3 (BlockBegin added to each
-  // BlockList entry between HostCode and NumGuestPages). Bumped 2 -> 3 when
-  // SaveData stopped serializing the whole code buffer and started packing
-  // only the host blocks belonging to the file being written: the field layout
-  // is unchanged, but every HostCode/BlockBegin/relocation offset in a v3 file
-  // is relative to the *packed image*, not to the generating process's code
-  // buffer, so reading a v2 file as v3 would index the wrong bytes.
-  uint32_t FormatVersion = 3;
-  uint8_t FEXVersion[20] = {};
-  uint32_t NumBlocks;
-  uint32_t NumCodePages;
-  uint32_t CodeBufferSize;
-  uint32_t NumRelocations;
-  uint32_t padding;
-  // Guest base address the code buffer was relocated to before being written.
-  // SaveData applies relocations against this value, so LoadData's own
-  // relocation pass is only correct if it matches what LoadData assumes, which
-  // is 0. The only producer (FEXOfflineCompiler) passes 0, but nothing enforced
-  // it: a non-zero value would have been written, ignored on load, and produced
-  // code relocated against the wrong base. T8: LoadData now rejects anything
-  // else. See the check there for why the field is kept rather than deleted.
-  uint64_t SerializedBaseAddress;
-  // TODO: Consider including information from LookupCache.BlockLinks
-
-  static constexpr std::array<char, 4> ExpectedMagic = {'F', 'X', 'C', 'C'};
-};
-
-template<typename T>
-concept OrderedContainer = requires { typename T::key_compare; };
-
-void CodeCache::AbsorbRelocations(Core::InternalThreadState& Thread) {
-  // Pass 0 as the base: the sink stores absolute guest RIPs and each SaveData
-  // rebases its own copy. TakeRelocations subtracts the base in place and is
-  // therefore not idempotent, which is fine exactly once but wrong for a process
-  // that saves repeatedly and for more than one file.
-  auto New = Thread.CPUBackend->TakeRelocations(0);
-  if (New.empty()) {
-    return;
-  }
-
-  std::lock_guard lk {RelocationSinkMutex};
-  RelocationSink.insert(RelocationSink.end(), New.begin(), New.end());
-}
-
-void CodeCache::ResetRelocations() {
-  std::lock_guard lk {RelocationSinkMutex};
-  RelocationSink.clear();
+  return SanitizeId(XXH3_64bits_digest(&State));
 }
 
 bool CodeCache::WantsSave(bool IgnoreInterval) {
   // Two independent triggers so neither a burst of compilation nor a long quiet
   // stretch can leave an unbounded amount of work unsaved.
-  constexpr uint64_t BlocksPerSave = 2000;
+  // Exit and execve save everything anyway; these only bound what a process
+  // killed by a signal loses. Each save is a segment, and segments cost a
+  // compaction every MaxSegments, so keep them coarse.
+  constexpr uint64_t BlocksPerSave = 50000;
   constexpr uint64_t SecondsPerSave = 60;
 
   if (!IsGeneratingCache) {
@@ -803,7 +1162,6 @@ bool CodeCache::WantsSave(bool IgnoreInterval) {
   }
   const uint64_t Blocks = BlocksSinceSave.load(std::memory_order_relaxed);
   if (Blocks == 0) {
-    // Nothing new: never rewrite an identical file.
     return false;
   }
   if (IgnoreInterval || Blocks >= BlocksPerSave) {
@@ -813,8 +1171,6 @@ bool CodeCache::WantsSave(bool IgnoreInterval) {
   const uint64_t Now = MonotonicSeconds();
   uint64_t Last = LastSaveTimeSeconds.load(std::memory_order_relaxed);
   if (Last == 0) {
-    // First poll of the process: start the clock rather than treating "never
-    // saved" as "infinitely overdue".
     LastSaveTimeSeconds.compare_exchange_strong(Last, Now, std::memory_order_relaxed);
     return false;
   }
@@ -826,1349 +1182,739 @@ void CodeCache::NotifyCachesSaved() {
   LastSaveTimeSeconds.store(MonotonicSeconds(), std::memory_order_relaxed);
 }
 
-bool CodeCache::SaveData(Core::InternalThreadState&, int fd, const ExecutableFileSectionInfo& SourceBinary, uint64_t SerializedBaseAddress,
-                         std::span<const GuestAddressRange> GuestRanges) {
-  auto InSelectedRanges = [&](uint64_t GuestAddress) {
-    if (GuestRanges.empty()) {
-      return true;
+void CodeCache::ResetAfterFork() {
+  // Runs in the child with a single thread. Every lock here is only ever taken
+  // under CodeInvalidationMutex (shared), which fork holds exclusively, so none
+  // can be held by a thread that did not survive the fork.
+  BlocksSinceSave.store(0, std::memory_order_relaxed);
+  {
+    std::lock_guard lk {RelocationSinkMutex};
+    CompiledBlocks.clear();
+    RelocationSink.clear();
+  }
+}
+
+void CodeCache::DumpStats() {
+  auto L = [](const std::atomic<uint64_t>& A) {
+    return A.load(std::memory_order_relaxed);
+  };
+  const auto Line = fextl::fmt::format("POWERarm code cache [{}]: loaded {} not-in-index {} no-file {} bad-entry {} guest-mismatch {} not-exec {} "
+                                       "reloc-failed {} saved {} blocks in {} segments, {} compactions; save-ms {} lookup-ms {}\n",
+                                       ::getpid(), L(Stats.Loaded), L(Stats.NotInIndex), L(Stats.NoFile), L(Stats.BadEntry),
+                                       L(Stats.GuestMismatch), L(Stats.NotExecutable), L(Stats.RelocFailed), L(Stats.SavedBlocks),
+                                       L(Stats.SavedSegments), L(Stats.Compactions), L(Stats.SaveNS) / 1000000, L(Stats.LoadNS) / 1000000);
+  (void)::write(STDERR_FILENO, Line.data(), Line.size());
+}
+
+void CodeCache::AbsorbRelocations(Core::InternalThreadState& Thread, uint64_t GuestRIP) {
+  // Base 0: the sink keeps absolute guest RIPs and each save rebases its own
+  // copy. TakeRelocations rebases in place and is not idempotent.
+  auto New = Thread.CPUBackend->TakeRelocations(0);
+  std::lock_guard lk {RelocationSinkMutex};
+  const uint64_t Begin = RelocationSink.size();
+  RelocationSink.insert(RelocationSink.end(), New.begin(), New.end());
+  CompiledBlocks.push_back({GuestRIP, Begin, RelocationSink.size()});
+}
+
+void CodeCache::ResetRelocations() {
+  std::lock_guard lk {RelocationSinkMutex};
+  RelocationSink.clear();
+  CompiledBlocks.clear();
+}
+
+CodeCache::FileCache* CodeCache::GetFileCache(const ExecutableFileInfo& FileInfo) {
+  // FileCaches are never freed, so a per-thread memo of the last one needs no
+  // lock. Consecutive misses are almost always in the same file.
+  thread_local const CodeCache* MemoCache = nullptr;
+  thread_local uint64_t MemoFileId = 0;
+  thread_local FileCache* MemoFile = nullptr;
+  if (MemoCache == this && MemoFileId == FileInfo.FileId && MemoFile) {
+    return MemoFile;
+  }
+  auto Remember = [&](FileCache* File) {
+    MemoCache = this;
+    MemoFileId = FileInfo.FileId;
+    MemoFile = File;
+    return File;
+  };
+  {
+    std::shared_lock lk {RegistryMutex};
+    auto It = Registry.find(FileInfo.FileId);
+    if (It != Registry.end()) {
+      return Remember(It->second.get());
     }
-    for (const auto& [Begin, End] : GuestRanges) {
-      if (GuestAddress >= Begin && GuestAddress < End) {
-        return true;
+  }
+  // First sight of this file in this process: resolve its scope and path once.
+  // An out-of-scope file is remembered with an empty BasePath.
+  auto BasePath = CTX.SyscallHandler->CodeCacheBasePath(FileInfo);
+  std::unique_lock lk {RegistryMutex};
+  auto& Slot = Registry[FileInfo.FileId];
+  if (!Slot) {
+    Slot = fextl::make_unique<FileCache>();
+    Slot->BasePath = std::move(BasePath);
+    if (!Slot->BasePath.empty()) {
+      Slot->ProbeNewSegments(ComputeCodeCacheConfigId(), FileInfo.FileId);
+    }
+  }
+  return Remember(Slot.get());
+}
+
+std::optional<CodeCache::LoadedBlock> CodeCache::TryLoadBlock(Core::InternalThreadState* Thread, uint64_t GuestRIP) {
+  auto* SyscallHandler = CTX.SyscallHandler;
+  if (!LoadEnabled || !SyscallHandler || !Thread) {
+    return std::nullopt;
+  }
+  const auto Section = SyscallHandler->LookupExecutableFileSection(Thread, GuestRIP);
+  if (!Section || GuestRIP < Section->FileStartVA) {
+    return std::nullopt;
+  }
+  auto* File = GetFileCache(Section->FileInfo);
+  if (File->BasePath.empty()) {
+    return std::nullopt;
+  }
+  ScopedNS Timer {Stats.LoadNS};
+
+
+  const uint64_t GuestOffset = GuestRIP - Section->FileStartVA;
+  const CacheSegment* Seg = nullptr;
+  const SegmentBlock* Block = nullptr;
+  bool Found = false;
+  auto Lookup = [&]() {
+    for (const auto& Candidate : File->Loaded()) {
+      if (auto* Entry = Candidate->Find(GuestOffset)) {
+        Found = true;
+        if (Candidate->Validate(*Entry)) {
+          Seg = Candidate.get();
+          Block = Entry;
+          return;
+        }
       }
     }
-    return false;
   };
+  Lookup();
+  if (!Block && !Found && File->NumSegments.load(std::memory_order_relaxed) < MaxSegments) {
+    // Another process (often a sibling from the same parent, which inherited
+    // this registry) may have written the block since this file was probed.
+    // Looking for a new segment costs one failed open(2); rate-limit it.
+    const uint64_t Now = MonotonicMilliseconds();
+    if (Now - File->LastProbeMS.load(std::memory_order_relaxed) >= 100) {
+      std::unique_lock lk {RegistryMutex};
+      File->LastProbeMS.store(Now, std::memory_order_relaxed);
+      const size_t Before = File->NumSegments.load(std::memory_order_relaxed);
+      File->ProbeNewSegments(ComputeCodeCacheConfigId(), Section->FileInfo.FileId);
+      if (File->NumSegments.load(std::memory_order_relaxed) != Before) {
+        Lookup();
+      }
+    }
+  }
+  if (!Block) {
+    (Found ? Stats.BadEntry : File->NumSegments.load(std::memory_order_relaxed) == 0 ? Stats.NoFile : Stats.NotInIndex).fetch_add(1, std::memory_order_relaxed);
+    return std::nullopt;
+  }
 
-  // Snapshot the code buffer and the block table under the same locks, taken in
-  // the same order, that LoadData uses. Without this a save issued from one
-  // guest thread races every other thread's compiler.
+  // The guest bytes. A64 instructions are 4 bytes, and the decoder bounds a
+  // block to MaxInst of them.
+  const uint64_t Length = Block->GuestLength;
+  if (Length == 0 || Length % 4 != 0 || Length > uint64_t {FEXCore::A64::DEFAULT_MAX_INSTRUCTIONS} * 4 ||
+      GuestRIP + Length < GuestRIP) {
+    return std::nullopt;
+  }
+  for (uint64_t Address = GuestRIP; Address < GuestRIP + Length;) {
+    // Executable in this process now, exactly as the decoder requires.
+    const auto Range = SyscallHandler->QueryGuestExecutableRange(Thread, Address);
+    if (Range.Size == 0 || Address < Range.Base || Address - Range.Base >= Range.Size) {
+      Stats.NotExecutable.fetch_add(1, std::memory_order_relaxed);
+      return std::nullopt;
+    }
+    Address = Range.Base + Range.Size;
+  }
+  for (uint64_t Page = GuestRIP & FEXCore::Utils::FEX_GUEST_PAGE_MASK; Page < GuestRIP + Length; Page += FEXCore::Utils::FEX_GUEST_PAGE_SIZE) {
+    // A demoted mixed code/data granule needs per-instruction guards that a
+    // cached block does not carry.
+    if (SyscallHandler->GuestCodePageValidateOnly(Page)) {
+      Stats.NotExecutable.fetch_add(1, std::memory_order_relaxed);
+      return std::nullopt;
+    }
+  }
+  // Arm SMC write protection on the block's pages BEFORE hashing the guest
+  // bytes. The caller holds CodeInvalidationMutex shared, so a write that lands
+  // after this point faults and waits for the invalidation until the block is
+  // registered; a write that landed before it is seen by the hash. Hashing
+  // first would leave a window in which a write the hash never saw is not
+  // tracked either. (This is registration CompileBlock does after compiling;
+  // for a block that then fails to load it only costs a spurious SMC fault.)
+  {
+    const fextl::set<uint64_t> EntryPoints {GuestRIP};
+    for (uint64_t Page = GuestRIP & FEXCore::Utils::FEX_GUEST_PAGE_MASK; Page < GuestRIP + Length; Page += FEXCore::Utils::FEX_GUEST_PAGE_SIZE) {
+      if (Thread->LookupCache->AddBlockExecutableRange(Thread, EntryPoints, Page, FEXCore::Utils::FEX_GUEST_PAGE_SIZE, GuestRIP, Length)) {
+        SyscallHandler->MarkGuestExecutableRange(Thread, Page, FEXCore::Utils::FEX_GUEST_PAGE_SIZE);
+      }
+    }
+  }
+  if (XXH3_64bits(reinterpret_cast<const void*>(GuestRIP), Length) != Block->GuestHash) {
+    Stats.GuestMismatch.fetch_add(1, std::memory_order_relaxed);
+    return std::nullopt;
+  }
+
+  auto Lock = std::unique_lock {CTX.CodeBufferWriteMutex};
+  if (auto Prev = Thread->CPUBackend->CheckCodeBufferUpdate()) {
+    Allocator::VirtualDontNeed(Thread->CallRetStackBase, FEXCore::Core::InternalThreadState::CALLRET_STACK_SIZE);
+    auto lk = Thread->LookupCache->AcquireWriteLock();
+    Thread->LookupCache->ChangeGuestToHostMapping(*Prev, *CTX.GetLatest()->LookupCache, lk);
+  }
+  auto CodeBuffer = CTX.GetLatest();
+  const uint64_t Offset = AlignUp(CTX.LatestOffset, BlockAlignment);
+  if (Offset > CodeBuffer->UsableSize() || Block->CodeSize > CodeBuffer->UsableSize() - Offset) {
+    // Leave rotation to the compiler.
+    return std::nullopt;
+  }
+
+  auto Dest = std::as_writable_bytes(std::span {CodeBuffer->Ptr, CodeBuffer->UsableSize()}).subspan(Offset, Block->CodeSize);
+  ::memcpy(Dest.data(), Seg->Code + Block->CodeOffset, Block->CodeSize);
+  const std::span<const CPU::Relocation> Relocs {Seg->Relocs + Block->RelocBegin, Block->RelocCount};
+  if (!ApplyCodeRelocations(Section->FileStartVA, Dest, Relocs, false)) {
+    Stats.RelocFailed.fetch_add(1, std::memory_order_relaxed);
+    // Nothing references these bytes; LatestOffset is unchanged, so the next
+    // compile overwrites them.
+    return std::nullopt;
+  }
+
+  // The block must describe itself as a compile of GuestRIP would.
+  const auto* Header = reinterpret_cast<const CPU::CPUBackend::JITCodeHeader*>(Dest.data());
+  if (Header->OffsetToBlockTail > Block->CodeSize - sizeof(CPU::CPUBackend::JITCodeTail)) {
+    return std::nullopt;
+  }
+  const auto* Tail = reinterpret_cast<const CPU::CPUBackend::JITCodeTail*>(Dest.data() + Header->OffsetToBlockTail);
+  if (Tail->RIP != GuestRIP || Tail->GuestSize != Length || Tail->Size != Block->CodeSize) {
+    Stats.RelocFailed.fetch_add(1, std::memory_order_relaxed);
+    return std::nullopt;
+  }
+
+  FEXCore::ArchHelpers::PPC64::FlushICacheRange(Dest.data(), Dest.size_bytes());
+  CTX.LatestOffset = Offset + Block->CodeSize;
+  // Host-PC -> block index, so signals inside the block resolve like a compile's.
+  CodeBuffer->AppendBlock(static_cast<uint32_t>(Offset));
+
+  Stats.Loaded.fetch_add(1, std::memory_order_relaxed);
+  auto* Begin = reinterpret_cast<uint8_t*>(Dest.data());
+  return LoadedBlock {
+    .BlockBegin = Begin,
+    .HostCode = Begin + Block->EntryOffset,
+    .Size = Block->CodeSize,
+    .StartAddr = GuestRIP,
+    .Length = Length,
+  };
+}
+
+// Reads guest code pages through process_vm_readv, one page at a time with a
+// one-page memo: blocks are serialized in address order, so this is about one
+// syscall per code page instead of one per block.
+namespace {
+  struct GuestPageReader {
+    uint64_t CachedPage = ~0ULL;
+    bool CachedValid = false;
+    std::array<std::byte, 4096> Page;
+
+    bool Read(uint64_t Address, std::byte* Out, size_t Size) {
+      while (Size) {
+        const uint64_t PageBase = Address & ~uint64_t {4095};
+        if (PageBase != CachedPage) {
+          CachedPage = PageBase;
+          CachedValid = ReadGuest(PageBase, Page.data(), Page.size());
+        }
+        if (!CachedValid) {
+          return false;
+        }
+        const size_t Off = Address - PageBase;
+        const size_t Chunk = std::min<size_t>(Size, Page.size() - Off);
+        ::memcpy(Out, Page.data() + Off, Chunk);
+        Out += Chunk;
+        Address += Chunk;
+        Size -= Chunk;
+      }
+      return true;
+    }
+  };
+} // namespace
+
+// Serializes the live blocks at the given guest entries (sorted, unique) of one
+// file. RelocsFor returns the relocations recorded for a block, as
+// buffer-relative offsets and absolute guest RIPs; they must all lie inside the
+// block's extent or the block is skipped. Blocks already on disk are skipped.
+static void CollectLiveBlocks(CodeCache& Cache, ContextImpl& CTX, const ExecutableFileSectionInfo& Section,
+                              std::span<const uint64_t> Candidates, const std::function<bool(uint64_t)>& AlreadyCached,
+                              const std::function<std::span<const CPU::Relocation>(uint64_t Guest)>& RelocsFor, SegmentBuilder& Out) {
   auto CodeBufferLock = std::unique_lock {CTX.CodeBufferWriteMutex};
   auto CodeBuffer = CTX.GetLatest();
   auto& LookupCache = *CodeBuffer->LookupCache;
   auto ReadLock = LookupCache.AcquireReadLock();
-
   const uint64_t BufferBase = reinterpret_cast<uintptr_t>(CodeBuffer->Ptr);
-  const size_t CodeSize = CTX.LatestOffset;
-  if (CodeSize == 0) {
-    return false;
-  }
+  const uint64_t Used = CTX.LatestOffset;
 
-  // Collect the block table first: an empty selection means there is nothing
-  // worth writing, and LoadData rejects NumBlocks == 0 anyway.
-  //
-  // Cache contents must be deterministic, so copy the unordered block list and then sort by key.
-  static_assert(!OrderedContainer<decltype(LookupCache.BlockList)>, "Already deterministic; drop temporary container");
-  fextl::vector<std::pair<uint64_t, const GuestToHostMap::BlockEntry*>> BlockList;
-  BlockList.reserve(LookupCache.BlockList.size());
-  for (auto& [Guest, BlockEntry] : LookupCache.BlockList) {
-    static_assert(sizeof(Guest) == 8, "Breaking change in code cache data layout");
-    if (!InSelectedRanges(Guest)) {
+  GuestPageReader Reader;
+  fextl::vector<std::byte> GuestBytes;
+  for (uint64_t Guest : Candidates) {
+    if (Guest < Section.FileStartVA) {
       continue;
     }
-    BlockList.emplace_back(Guest, &BlockEntry);
-  }
-  if (BlockList.empty()) {
-    return false;
-  }
-  std::ranges::sort(BlockList);
-
-  // Same filter for the guest code page table.
-  static_assert(OrderedContainer<decltype(LookupCache.CodePages)>, "Non-deterministic data source");
-  fextl::vector<const std::pair<const uint64_t, fextl::vector<uint64_t>>*> CodePages;
-  for (const auto& Entry : LookupCache.CodePages) {
-    if (!InSelectedRanges(Entry.first << 12)) {
+    const uint64_t GuestOffset = Guest - Section.FileStartVA;
+    if (AlreadyCached(GuestOffset)) {
       continue;
     }
-    CodePages.push_back(&Entry);
-  }
-
-  // ---------------------------------------------------------------------
-  // Pack the host code belonging to *this file* (format v3).
-  //
-  // This used to serialize the entire live code buffer and let the loader
-  // filter the block table afterwards. Two consequences, both fatal:
-  //
-  //  - Size. Every library's cache file carried every other library's code,
-  //    so a Ziggurat run wrote ~30 files of ~134 MB each (4.7 GB) whose
-  //    contents were almost entirely duplicates.
-  //  - Load. header.CodeBufferSize was the whole generating buffer, so the
-  //    second cache loaded into a process could not fit beside the first:
-  //    LoadData grew the code buffer, hit MAX_CODE_SIZE, and took the
-  //    "Refusing to spin re-allocating it" ERROR_AND_DIE. That is the SIGTRAP
-  //    at ~0.2s into a cache-loading run.
-  //
-  // Instead, walk the selected blocks, take each one's exact host extent from
-  // its JITCodeTail ([BlockBegin, BlockBegin + Tail->Size), which the JIT
-  // already 16-byte aligns and sizes to include the tail and its RIP entries),
-  // merge those extents, and emit only them. Every offset written below —
-  // HostCode, BlockBegin and each relocation site — is then relative to that
-  // packed image rather than to the generating code buffer.
-  //
-  // Correctness rests on cached host blocks being position-independent apart
-  // from their recorded relocations, which is already required for the cache
-  // to work at all and is why block linking is force-disabled while caching.
-  struct PackRegion {
-    uint64_t Begin;    // offset in the live code buffer
-    uint64_t End;      // exclusive
-    uint64_t NewBegin; // offset in the packed image
-  };
-  constexpr uint64_t kBlockAlignment = 16;
-  constexpr uint64_t HeaderSize = sizeof(CPU::CPUBackend::JITCodeHeader);
-  constexpr uint64_t TailSize = sizeof(CPU::CPUBackend::JITCodeTail);
-
-  // Host extent of one block, or nullopt when the block does not describe
-  // itself consistently. Reading the live buffer is safe here: the code buffer
-  // write lock is held, so no compiler is moving these bytes.
-  auto BlockExtent = [&](uint64_t BlockBeginAbs) -> std::optional<std::pair<uint64_t, uint64_t>> {
-    if (BlockBeginAbs < BufferBase) {
-      return std::nullopt;
+    auto It = LookupCache.BlockList.find(Guest);
+    if (It == LookupCache.BlockList.end()) {
+      // Invalidated since it was compiled.
+      continue;
     }
-    const uint64_t Begin = BlockBeginAbs - BufferBase;
-    if (Begin >= CodeSize || CodeSize - Begin < HeaderSize) {
-      return std::nullopt;
+    const auto& Entry = It->second;
+    if (Entry.BlockBegin < BufferBase || Entry.BlockBegin - BufferBase >= Used) {
+      continue;
     }
-    const auto* BlockHeader = reinterpret_cast<const CPU::CPUBackend::JITCodeHeader*>(BufferBase + Begin);
-    const uint64_t TailOffset = Begin + BlockHeader->OffsetToBlockTail;
-    if (TailOffset < Begin || CodeSize < TailSize || TailOffset > CodeSize - TailSize) {
-      return std::nullopt;
+    const uint64_t Begin = Entry.BlockBegin - BufferBase;
+    if (Used - Begin < sizeof(CPU::CPUBackend::JITCodeHeader) + sizeof(CPU::CPUBackend::JITCodeTail)) {
+      continue;
     }
-    const auto* Tail = reinterpret_cast<const CPU::CPUBackend::JITCodeTail*>(BufferBase + TailOffset);
+    const auto* Header = reinterpret_cast<const CPU::CPUBackend::JITCodeHeader*>(BufferBase + Begin);
+    if (Header->OffsetToBlockTail > Used - Begin - sizeof(CPU::CPUBackend::JITCodeTail)) {
+      continue;
+    }
+    const auto* Tail = reinterpret_cast<const CPU::CPUBackend::JITCodeTail*>(BufferBase + Begin + Header->OffsetToBlockTail);
     const uint64_t Size = Tail->Size;
-    if (Size < HeaderSize || Size > CodeSize - Begin) {
-      return std::nullopt;
+    const uint64_t Length = Tail->GuestSize;
+    if (Tail->RIP != Guest || Size > Used - Begin || Size % BlockAlignment != 0 || Header->OffsetToBlockTail + sizeof(*Tail) > Size ||
+        Entry.HostCode < Entry.BlockBegin || Entry.HostCode - Entry.BlockBegin >= Size || Length == 0 || Length % 4 != 0 ||
+        Length > uint64_t {FEXCore::A64::DEFAULT_MAX_INSTRUCTIONS} * 4 || Size > std::numeric_limits<uint32_t>::max()) {
+      continue;
     }
-    // Tail (and its trailing RIP entries) must be inside the extent, otherwise
-    // the packed copy would drop bytes the loader's own validation reads.
-    if (TailOffset + TailSize > Begin + Size) {
-      return std::nullopt;
-    }
-    return std::pair {Begin, Begin + Size};
-  };
 
-  // Offsets of every named-thunk move in the buffer, sorted.
-  //
-  // A block containing one is not cacheable. The relocation materializes the
-  // *host* address of a thunk, which ApplyCodeRelocations resolves through
-  // ThunkHandler::LookupThunk when the cache is loaded — and a cache is loaded
-  // the moment its library is mapped, which for the thunk libraries themselves
-  // is long before the guest side has registered anything. LookupThunk then
-  // returns nullptr, the site is patched with 0, and the first execution of
-  // that block calls address 0. (Observed as a SIGSEGV at pc=0 with the
-  // preceding `lis/ori/sldi/oris/ori` window all zeroes.) Compiling the block
-  // instead costs one compile and is always correct, because at compile time
-  // the guest is by definition already running the thunked call.
-  fextl::vector<uint64_t> ThunkRelocOffsets;
+    // Every relocation must be inside this block. A block holding a thunk
+    // relocation is not cacheable: the thunk may not be registered yet when a
+    // later process loads it.
+    const auto Relocs = RelocsFor(Guest);
+    bool Cacheable = true;
+    for (const auto& R : Relocs) {
+      if (R.Header.Type == CPU::RelocationTypes::RELOC_NAMED_THUNK_MOVE || R.Header.Offset < Begin ||
+          R.Header.Offset + RelocWidth(R.Header.Type) > Begin + Size) {
+        Cacheable = false;
+        break;
+      }
+    }
+    if (!Cacheable) {
+      continue;
+    }
+
+    GuestBytes.resize(Length);
+    if (!Reader.Read(Guest, GuestBytes.data(), Length)) {
+      continue;
+    }
+
+    SegmentBlock B {};
+    B.GuestOffset = GuestOffset;
+    B.GuestHash = XXH3_64bits(GuestBytes.data(), Length);
+    B.GuestLength = static_cast<uint32_t>(Length);
+    B.CodeSize = static_cast<uint32_t>(Size);
+    B.EntryOffset = static_cast<uint32_t>(Entry.HostCode - Entry.BlockBegin);
+    B.RelocBegin = static_cast<uint32_t>(Out.Relocs.size());
+    for (auto Copy : Relocs) {
+      Copy.Header.Offset -= Begin;
+      if (Copy.Header.Type == CPU::RelocationTypes::RELOC_GUEST_RIP_LITERAL || Copy.Header.Type == CPU::RelocationTypes::RELOC_GUEST_RIP_MOVE) {
+        Copy.GuestRIP.GuestRIP -= Section.FileStartVA;
+      }
+      Out.Relocs.push_back(Copy);
+    }
+    B.RelocCount = static_cast<uint32_t>(Out.Relocs.size() - B.RelocBegin);
+
+    // Code, then return the copy to its storage form: unlinked, host symbols
+    // zeroed, guest RIPs relative to the file base, no live futex state.
+    const size_t CodeStart = AlignUp(Out.Code.size(), BlockAlignment);
+    Out.Code.resize(CodeStart);
+    const auto* Src = reinterpret_cast<const std::byte*>(BufferBase + Begin);
+    Out.Code.insert(Out.Code.end(), Src, Src + Size);
+    B.CodeOffset = CodeStart;
+    std::span<std::byte> Copy {Out.Code.data() + CodeStart, Size};
+    const std::span<const CPU::Relocation> BlockRelocs {Out.Relocs.data() + B.RelocBegin, B.RelocCount};
+    if (!Cache.ApplyCodeRelocations(0, Copy, BlockRelocs, true)) {
+      Out.Code.resize(CodeStart);
+      Out.Relocs.resize(B.RelocBegin);
+      continue;
+    }
+    const uint32_t ZeroFutex = 0;
+    ::memcpy(Copy.data() + Header->OffsetToBlockTail + offsetof(CPU::CPUBackend::JITCodeTail, SpinLockFutex), &ZeroFutex, sizeof(ZeroFutex));
+
+    B.EntryHash = HashBlock(B, Copy.data(), Out.Relocs.data() + B.RelocBegin);
+    Out.Blocks.push_back(B);
+  }
+}
+
+bool CodeCache::SaveData(Core::InternalThreadState&, int FD, const ExecutableFileSectionInfo& Section, uint64_t SerializedBaseAddress,
+                         std::span<const GuestAddressRange> GuestRanges) {
+  if (SerializedBaseAddress != 0) {
+    return false;
+  }
+  // Every live block in the ranges, with the whole sink sorted by offset.
+  fextl::vector<CPU::Relocation> Sink;
   {
     std::lock_guard lk {RelocationSinkMutex};
-    for (const auto& Reloc : RelocationSink) {
-      if (Reloc.Header.Type == FEXCore::CPU::RelocationTypes::RELOC_NAMED_THUNK_MOVE) {
-        ThunkRelocOffsets.push_back(Reloc.Header.Offset);
-      }
-    }
+    Sink = RelocationSink;
   }
-  std::ranges::sort(ThunkRelocOffsets);
-  auto ContainsThunkReloc = [&](uint64_t Begin, uint64_t End) {
-    auto It = std::ranges::lower_bound(ThunkRelocOffsets, Begin);
-    return It != ThunkRelocOffsets.end() && *It < End;
-  };
+  std::ranges::sort(Sink, {}, [](const CPU::Relocation& R) { return R.Header.Offset; });
 
-  fextl::vector<PackRegion> Regions;
-  fextl::vector<uint64_t> UncacheableBlockBegins;
-  for (auto [Guest, Host] : BlockList) {
-    auto Extent = BlockExtent(Host->BlockBegin);
-    if (!Extent) {
-      continue;
-    }
-    if (ContainsThunkReloc(Extent->first, Extent->second)) {
-      UncacheableBlockBegins.push_back(Extent->first);
-      continue;
-    }
-    Regions.push_back({.Begin = Extent->first, .End = Extent->second, .NewBegin = 0});
-  }
-  std::ranges::sort(UncacheableBlockBegins);
-  if (Regions.empty()) {
-    return false;
-  }
-  std::ranges::sort(Regions, {}, &PackRegion::Begin);
+  fextl::vector<uint64_t> Candidates;
+  fextl::unordered_map<uint64_t, std::pair<uint64_t, uint64_t>> Extents;
   {
-    // Merge overlapping/duplicate extents. Distinct entry points of one
-    // multiblock compile share a BlockBegin, so duplicates are the common case.
-    fextl::vector<PackRegion> Merged;
-    for (const auto& R : Regions) {
-      if (!Merged.empty() && R.Begin <= Merged.back().End) {
-        Merged.back().End = std::max(Merged.back().End, R.End);
-      } else {
-        Merged.push_back(R);
+    auto CodeBufferLock = std::unique_lock {CTX.CodeBufferWriteMutex};
+    auto CodeBuffer = CTX.GetLatest();
+    auto ReadLock = CodeBuffer->LookupCache->AcquireReadLock();
+    const uint64_t BufferBase = reinterpret_cast<uintptr_t>(CodeBuffer->Ptr);
+    for (const auto& [Guest, Entry] : CodeBuffer->LookupCache->BlockList) {
+      bool InRange = GuestRanges.empty();
+      for (const auto& [Begin, End] : GuestRanges) {
+        InRange |= Guest >= Begin && Guest < End;
       }
-    }
-    Regions = std::move(Merged);
-  }
-
-  // Build the packed image, assigning each region its offset within it. Region
-  // starts stay 16-byte aligned because the loader always places the image at a
-  // page-aligned offset, and the JIT requires 16-byte aligned blocks.
-  fextl::vector<std::byte> CodeCopy;
-  {
-    uint64_t Total = 0;
-    for (const auto& R : Regions) {
-      Total = AlignUp(Total, kBlockAlignment) + (R.End - R.Begin);
-    }
-    CodeCopy.reserve(Total);
-  }
-  for (auto& R : Regions) {
-    CodeCopy.resize(AlignUp(CodeCopy.size(), kBlockAlignment));
-    R.NewBegin = CodeCopy.size();
-    const auto* Src = reinterpret_cast<const std::byte*>(BufferBase + R.Begin);
-    CodeCopy.insert(CodeCopy.end(), Src, Src + (R.End - R.Begin));
-  }
-  if (CodeCopy.empty() || CodeCopy.size() > std::numeric_limits<uint32_t>::max()) {
-    return false;
-  }
-
-  // Live code buffer offset -> packed image offset. nullopt when the offset is
-  // not part of any emitted region, which is the signal to drop whatever
-  // referenced it rather than to write a dangling offset.
-  auto Remap = [&](uint64_t Offset) -> std::optional<uint64_t> {
-    auto It = std::ranges::upper_bound(Regions, Offset, std::less {}, &PackRegion::Begin);
-    if (It == Regions.begin()) {
-      return std::nullopt;
-    }
-    --It;
-    if (Offset >= It->End) {
-      return std::nullopt;
-    }
-    return It->NewBegin + (Offset - It->Begin);
-  };
-
-  // Rewrite the block table into packed-image coordinates. A block whose
-  // BlockBegin or HostCode did not survive packing is dropped; it is better to
-  // ship one fewer cached block than an offset that indexes the wrong bytes.
-  struct PackedBlock {
-    uint64_t Guest;
-    uint64_t HostCode;
-    uint64_t BlockBegin;
-    const fextl::vector<uint64_t>* CodePages;
-  };
-  fextl::vector<PackedBlock> PackedBlocks;
-  PackedBlocks.reserve(BlockList.size());
-  for (auto [Guest, Host] : BlockList) {
-    if (Host->BlockBegin < BufferBase || Host->HostCode < BufferBase) {
-      continue;
-    }
-    if (std::ranges::binary_search(UncacheableBlockBegins, Host->BlockBegin - BufferBase)) {
-      // Thunk-carrying block, see above. Remap would reject it anyway (its
-      // extent was never emitted); rejecting it by name keeps that an explicit
-      // decision rather than a consequence of region adjacency.
-      continue;
-    }
-    auto NewBlockBegin = Remap(Host->BlockBegin - BufferBase);
-    auto NewHostCode = Remap(Host->HostCode - BufferBase);
-    if (!NewBlockBegin || !NewHostCode) {
-      continue;
-    }
-    PackedBlocks.push_back({
-      .Guest = Guest,
-      .HostCode = *NewHostCode,
-      .BlockBegin = *NewBlockBegin,
-      .CodePages = &Host->CodePages,
-    });
-  }
-  if (PackedBlocks.empty()) {
-    return false;
-  }
-
-  // Copy (never take) the context-wide relocation sink, keep only the sites
-  // that landed inside the packed regions, and rebase those against the file
-  // being written.
-  //
-  // The filter is load-bearing in both directions: it drops relocations
-  // belonging to other files (which used to be written out and then applied
-  // with *this* file's base) and it guarantees every surviving Header.Offset
-  // addresses bytes this file actually ships.
-  fextl::vector<FEXCore::CPU::Relocation> Relocations;
-  {
-    // Width of the patch window each relocation type rewrites; the whole window
-    // has to be inside one region or the patch would run off the end of the
-    // copied block. Mirrors the widths ApplyCodeRelocations writes.
-    auto RelocWidth = [](FEXCore::CPU::RelocationTypes Type) -> uint64_t {
-      switch (Type) {
-      case FEXCore::CPU::RelocationTypes::RELOC_NAMED_SYMBOL_LITERAL:
-      case FEXCore::CPU::RelocationTypes::RELOC_GUEST_RIP_LITERAL: return sizeof(uint64_t);
-      default:
-#ifdef ARCHITECTURE_ppc64le
-        return PPC64Emitter::Emitter::LoadConstantFixedBytes;
-#else
-        // Arm64Emitter::LoadConstant with DOPAD emits a fixed 4-instruction move.
-        return 4 * sizeof(uint32_t);
-#endif
-      }
-    };
-
-    std::lock_guard lk {RelocationSinkMutex};
-    Relocations.reserve(RelocationSink.size());
-    uint64_t DroppedByType[4] {};
-    for (const auto& Reloc : RelocationSink) {
-      const uint64_t Width = RelocWidth(Reloc.Header.Type);
-      auto NewOffset = Remap(Reloc.Header.Offset);
-      auto NewLast = Remap(Reloc.Header.Offset + Width - 1);
-      if (!NewOffset || !NewLast || *NewLast - *NewOffset != Width - 1) {
-        ++DroppedByType[std::min<uint32_t>(ToUnderlying(Reloc.Header.Type), 3)];
+      if (!InRange || Entry.BlockBegin < BufferBase) {
         continue;
       }
-      auto Copy = Reloc;
-      Copy.Header.Offset = *NewOffset;
-      switch (Copy.Header.Type) {
-      case FEXCore::CPU::RelocationTypes::RELOC_GUEST_RIP_MOVE:
-      case FEXCore::CPU::RelocationTypes::RELOC_GUEST_RIP_LITERAL: Copy.GuestRIP.GuestRIP -= SourceBinary.FileStartVA; break;
-      default: break;
-      }
-      Relocations.push_back(Copy);
+      const uint64_t Begin = Entry.BlockBegin - BufferBase;
+      const auto* Header = reinterpret_cast<const CPU::CPUBackend::JITCodeHeader*>(Entry.BlockBegin);
+      const auto* Tail = reinterpret_cast<const CPU::CPUBackend::JITCodeTail*>(Entry.BlockBegin + Header->OffsetToBlockTail);
+      Candidates.push_back(Guest);
+      Extents[Guest] = {Begin, Begin + Tail->Size};
     }
-    LogMan::Msg::DFmt("Cache save {}: {} blocks ({} skipped for thunks), {} regions, {:#x} bytes; {} of {} relocs kept "
-                      "(dropped symlit={} thunk={} riplit={} ripmove={})",
-                      SourceBinary.FileInfo.Filename, PackedBlocks.size(), UncacheableBlockBegins.size(), Regions.size(), CodeCopy.size(),
-                      Relocations.size(), RelocationSink.size(), DroppedByType[0], DroppedByType[1], DroppedByType[2], DroppedByType[3]);
   }
+  std::ranges::sort(Candidates);
 
-  // Write file header
-  CodeCacheHeader header {};
-  static_assert(GIT_HASH.size() == sizeof(header.FEXVersion));
-  std::ranges::copy(GIT_HASH, header.FEXVersion);
-  header.NumBlocks = PackedBlocks.size();
-  header.NumCodePages = CodePages.size();
-  header.CodeBufferSize = CodeCopy.size();
-  header.NumRelocations = Relocations.size();
-  header.SerializedBaseAddress = SerializedBaseAddress;
-  if (!WriteAll(fd, &header, sizeof(header))) {
+  SegmentBuilder Builder;
+  CollectLiveBlocks(
+    *this, CTX, Section, Candidates, [](uint64_t) { return false; },
+    [&](uint64_t Guest) -> std::span<const CPU::Relocation> {
+      const auto [Begin, End] = Extents[Guest];
+      auto First = std::ranges::lower_bound(Sink, Begin, {}, [](const CPU::Relocation& R) { return R.Header.Offset; });
+      auto Last = std::ranges::lower_bound(First, Sink.end(), End, {}, [](const CPU::Relocation& R) { return R.Header.Offset; });
+      return {Sink.data() + (First - Sink.begin()), static_cast<size_t>(Last - First)};
+    },
+    Builder);
+  if (Builder.Blocks.empty()) {
+    return false;
+  }
+  return WriteSegment(FD, Builder, ComputeCodeCacheConfigId(), Section.FileInfo.FileId);
+}
+
+static bool CompactSegments(const fextl::string& Base, const fextl::string& Extra, uint64_t ConfigId, uint64_t FileId) {
+  fextl::vector<fextl::unique_ptr<CodeCache::CacheSegment>> Inputs;
+  size_t NumNamed = 0;
+  for (; NumNamed < MaxSegments; ++NumNamed) {
+    auto Seg = CodeCache::CacheSegment::Open(SegmentPath(Base, NumNamed), ConfigId, FileId);
+    if (!Seg) {
+      break;
+    }
+    Inputs.push_back(std::move(Seg));
+  }
+  if (!Extra.empty()) {
+    if (auto Seg = CodeCache::CacheSegment::Open(Extra, ConfigId, FileId)) {
+      Inputs.push_back(std::move(Seg));
+    }
+  }
+  if (Inputs.empty()) {
     return false;
   }
 
-  // Dump guest<->host block mappings
-  for (const auto& Block : PackedBlocks) {
-    static_assert(sizeof((*Block.CodePages)[0]) == 8, "Breaking change in code cache data layout");
-
-    uint64_t Guest = Block.Guest - SourceBinary.FileStartVA;
-    uint64_t HostCode = Block.HostCode;
-    // S3: write BlockBegin (packed-image relative in v3) alongside HostCode.
-    uint64_t BlockBegin = Block.BlockBegin;
-    uint64_t NumCodePages = Block.CodePages->size();
-    if (!WriteAll(fd, &Guest, sizeof(Guest)) || !WriteAll(fd, &HostCode, sizeof(HostCode)) ||
-        !WriteAll(fd, &BlockBegin, sizeof(BlockBegin)) || !WriteAll(fd, &NumCodePages, sizeof(NumCodePages))) {
-      return false;
-    }
-    LOGMAN_THROW_A_FMT(std::ranges::is_sorted(*Block.CodePages), "Code pages aren't sorted");
-    for (auto CodePage : *Block.CodePages) {
-      CodePage -= SourceBinary.FileStartVA;
-      if (!WriteAll(fd, &CodePage, sizeof(CodePage))) {
-        return false;
-      }
-    }
-  }
-
-  // Dump relocations
-  static_assert(sizeof(Relocations[0]) == 48, "Breaking change in code cache data layout");
-  if (!Relocations.empty() && !WriteAll(fd, Relocations.data(), Relocations.size() * sizeof(Relocations[0]))) {
-    return false;
-  }
-
-  // Pad to the next 4K boundary in the file before the code buffer. Historical:
-  // the pad exists so the code buffer COULD be mmap'ed straight out of the file,
-  // but LoadData memcpy's it into the live code buffer instead, so this is only
-  // a cursor alignment that the loader mirrors. GUEST (a fixed 4096)
-  // deliberately: it is an ON-DISK FORMAT quantity and must not vary with the
-  // host page size. It needs no widening for a 64K host for the same reason;
-  // the host page size is part of the cache identity hash instead (see
-  // CodeCacheConfigId above), which keeps the two kernels' caches apart.
-  char Zero[64] {};
-  auto Off = lseek(fd, 0, SEEK_CUR);
-  if (Off < 0) {
-    return false;
-  }
-  while (Off != AlignUp(Off, Utils::FEX_GUEST_PAGE_SIZE)) {
-    auto BytesToWrite = std::min(AlignUp(Off, Utils::FEX_GUEST_PAGE_SIZE) - Off, sizeof(Zero));
-    if (!WriteAll(fd, Zero, BytesToWrite)) {
-      return false;
-    }
-    Off += BytesToWrite;
-  }
-
-  // Dump the host code (relocated for position-independent serialization)
-  std::span<std::byte> CodeBufferData {CodeCopy};
-  if (!ApplyCodeRelocations(SerializedBaseAddress, CodeBufferData, Relocations, true)) {
-    LogMan::Msg::EFmt("Refusing to write code cache for {}: failed to apply storage relocations", SourceBinary.FileInfo.Filename);
-    return false;
-  }
-  if (!WriteAll(fd, CodeBufferData.data(), CodeBufferData.size())) {
-    return false;
-  }
-
-  // Dump code pages
-  for (const auto* Entry : CodePages) {
-    const auto& [PageIndex, Entrypoints] = *Entry;
-    uint64_t PageAddr = (PageIndex << 12) - SourceBinary.FileStartVA;
-    uint64_t NumEntrypoints = Entrypoints.size();
-    if (!WriteAll(fd, &PageAddr, sizeof(PageAddr)) || !WriteAll(fd, &NumEntrypoints, sizeof(NumEntrypoints))) {
-      return false;
-    }
-    for (uint64_t Entrypoint : Entrypoints) {
-      Entrypoint -= SourceBinary.FileStartVA;
-      if (!WriteAll(fd, &Entrypoint, sizeof(Entrypoint))) {
-        return false;
+  // Select one valid entry per guest offset, earliest segment first.
+  struct Pick {
+    const CodeCache::CacheSegment* Seg;
+    const SegmentBlock* Block;
+  };
+  fextl::vector<Pick> Picks;
+  for (const auto& Seg : Inputs) {
+    for (uint32_t i = 0; i < Seg->Header->NumBlocks; ++i) {
+      if (Seg->Validate(Seg->Blocks[i])) {
+        Picks.push_back({Seg.get(), &Seg->Blocks[i]});
       }
     }
   }
+  std::ranges::stable_sort(Picks, {}, [](const Pick& P) { return P.Block->GuestOffset; });
+  auto [First, Last] = std::ranges::unique(Picks, {}, [](const Pick& P) { return P.Block->GuestOffset; });
+  Picks.erase(First, Last);
 
+  uint64_t NumRelocs = 0;
+  uint64_t CodeSize = 0;
+  fextl::vector<SegmentBlock> Index;
+  Index.reserve(Picks.size());
+  for (const auto& P : Picks) {
+    SegmentBlock B = *P.Block;
+    B.RelocBegin = static_cast<uint32_t>(NumRelocs);
+    B.CodeOffset = CodeSize;
+    NumRelocs += B.RelocCount;
+    CodeSize = AlignUp(CodeSize + B.CodeSize, BlockAlignment);
+    B.EntryHash = HashBlock(B, P.Seg->Code + P.Block->CodeOffset, P.Seg->Relocs + P.Block->RelocBegin);
+    Index.push_back(B);
+  }
+  if (Index.size() > std::numeric_limits<uint32_t>::max() || NumRelocs > std::numeric_limits<uint32_t>::max()) {
+    return false;
+  }
+
+  auto Temp = WriteTempSegment(Base, [&](int FD) {
+    const auto H = MakeHeader(ConfigId, FileId, Index.size(), NumRelocs, CodeSize);
+    BufferedWriter Out {FD};
+    Out.Put(&H, sizeof(H));
+    Out.Put(Index.data(), Index.size() * sizeof(SegmentBlock));
+    Out.PadTo(8);
+    for (const auto& P : Picks) {
+      Out.Put(P.Seg->Relocs + P.Block->RelocBegin, uint64_t {P.Block->RelocCount} * RelocSize);
+    }
+    Out.PadTo(BlockAlignment);
+    const uint64_t CodeStart = Out.Written;
+    for (const auto& P : Picks) {
+      Out.Put(P.Seg->Code + P.Block->CodeOffset, P.Block->CodeSize);
+      Out.PadTo(BlockAlignment);
+    }
+    return Out.Flush() && Out.Written == CodeStart + CodeSize && CodeStart == H.CodeOffset;
+  });
+  if (Temp.empty()) {
+    return false;
+  }
+  if (::rename(Temp.c_str(), Base.c_str()) != 0) {
+    ::unlink(Temp.c_str());
+    return false;
+  }
+  for (size_t i = NumNamed; i-- > 1;) {
+    ::unlink(SegmentPath(Base, i).c_str());
+  }
+  LogMan::Msg::IFmt("Code cache: compacted {} segments into {} ({} blocks)", Inputs.size(), Base, Index.size());
   return true;
 }
 
-bool CodeCache::LoadData(Core::InternalThreadState* Thread, std::byte* MappedCacheFile, size_t MappedCacheFileSize,
-                         const ExecutableFileSectionInfo& BinarySection) {
-  if (!EnableCodeCaching) {
-    return true;
+size_t CodeCache::SaveNewBlocks(Core::InternalThreadState&, std::span<const CodeCacheSaveTarget> Targets) {
+  if (!IsGeneratingCache || Targets.empty()) {
+    return 0;
   }
+  ScopedNS Timer {Stats.SaveNS};
+  const uint64_t ConfigId = ComputeCodeCacheConfigId();
 
-  namespace ranges = std::ranges;
-
-  // F2: every offset and count consumed below comes straight out of a file FEX
-  // does not control, and several of them turn into executable jump targets or
-  // allocation sizes. MappedCacheFileSize is the length of the mapping the
-  // caller handed us, and it is the only thing that bounds the reads; without
-  // it a header that overstates its own contents walks off the end of the
-  // mapping.
-  const std::byte* const FileBegin = MappedCacheFile;
-  const uint64_t FileSize = MappedCacheFileSize;
-
-  // Bytes between the read cursor and the end of the mapping. Every read below
-  // is checked against this before it happens, so the cursor always stays
-  // within [FileBegin, FileBegin + FileSize] and this subtraction never wraps.
-  auto Remaining = [&]() -> uint64_t {
-    return FileSize - static_cast<uint64_t>(MappedCacheFile - FileBegin);
-  };
-
-  // Counts are file-controlled uint64_t/uint32_t values, so every bound below is
-  // written as `Count > Remaining() / ElementSize` or `Bytes > Remaining()`,
-  // never `Offset + Size > Limit`: a bounds check that itself wraps is worse
-  // than none.
-  auto RejectTruncated = [&](std::string_view What, uint64_t Needed) {
-    LogMan::Msg::EFmt("Rejecting code cache for {}: {} needs {:#x} bytes but only {:#x} of the {:#x} byte file are left",
-                      BinarySection.FileInfo.Filename, What, Needed, Remaining(), FileSize);
-    return false;
-  };
-
-  // Read file header. Bound it before a single field is touched.
-  if (FileSize < sizeof(CodeCacheHeader)) {
-    LogMan::Msg::EFmt("Rejecting code cache for {}: file is {:#x} bytes, too small to hold the {:#x} byte header",
-                      BinarySection.FileInfo.Filename, FileSize, sizeof(CodeCacheHeader));
-    return false;
-  }
-  CodeCacheHeader header {};
-  ::memcpy(&header, MappedCacheFile, sizeof(header));
-  MappedCacheFile += sizeof(header);
-
-  LogMan::Msg::IFmt("Cache load: {:5} blocks; base={:#14x}; off={:#9x}-{:#09x}; {:016x} {}", header.NumBlocks, BinarySection.FileStartVA,
-                    BinarySection.BeginVA - BinarySection.FileStartVA, BinarySection.EndVA - BinarySection.FileStartVA,
-                    BinarySection.FileInfo.FileId, BinarySection.FileInfo.Filename);
-
-  if (!ranges::equal(header.Magic, header.ExpectedMagic)) {
-    LogMan::Msg::EFmt("Invalid cache file header");
-    return false;
-  }
-
-  if (header.FormatVersion != CodeCacheHeader {}.FormatVersion) {
-    LogMan::Msg::IFmt("Cache format version {} does not match expected {}, skipping", header.FormatVersion,
-                      CodeCacheHeader {}.FormatVersion);
-    return false;
-  }
-
-  if (!ranges::equal(header.FEXVersion, GIT_HASH)) {
-    LogMan::Msg::IFmt("Cache generated from old POWERarm version {:02x}, current is {:02x}; skipping", fmt::join(header.FEXVersion, ""),
-                      fmt::join(GIT_HASH, ""));
-    return false;
-  }
-
-  // T8: SerializedBaseAddress was written by SaveData and never read here.
-  // LoadData's relocation pass rebases the code buffer from 0 to the current
-  // BinarySection.FileStartVA, so it is only correct if the data on disk really
-  // was serialized against base 0. That happens to hold — the only producer
-  // passes 0 — but nothing checked it, so a producer that ever passed a real
-  // base would have silently produced code relocated against the wrong one.
-  //
-  // Kept rather than deleted: removing it is an on-disk layout change and would
-  // cost a FormatVersion bump (invalidating every existing cache) to delete a
-  // field that will be needed the moment relocations stop being re-emitted on
-  // both sides. Validating it costs one compare and makes the current
-  // "always 0" assumption explicit instead of implicit.
-  if (header.SerializedBaseAddress != 0) {
-    LogMan::Msg::EFmt("Cache for {} was serialized against base {:#x}, but only base 0 is supported; skipping",
-                      BinarySection.FileInfo.Filename, header.SerializedBaseAddress);
-    return false;
-  }
-
-  if (header.NumBlocks == 0) {
-    // Valid caches are never empty
-    LogMan::Msg::IFmt("Code cache empty, aborting");
-    return false;
-  }
-
-  // Each block entry occupies at least four 8-byte fields in the file and each
-  // code page entry at least two, so the counts can be bounded against the file
-  // before either is used as an allocation size. The block table, the code page
-  // table and the relocation array are disjoint regions that all follow the
-  // header, so bounding each against the whole remainder is conservative but
-  // sound. Without this, a 32-bit count out of a corrupt header turns into a
-  // multi-gigabyte resize before a single element has been read.
-  constexpr uint64_t MinBlockEntrySize = 4 * sizeof(uint64_t);
-  constexpr uint64_t MinCodePageEntrySize = 2 * sizeof(uint64_t);
-  if (header.NumBlocks > Remaining() / MinBlockEntrySize) {
-    return RejectTruncated("the block table", header.NumBlocks * MinBlockEntrySize);
-  }
-  if (header.NumCodePages > Remaining() / MinCodePageEntrySize) {
-    return RejectTruncated("the code page table", header.NumCodePages * MinCodePageEntrySize);
-  }
-  if (header.NumRelocations > Remaining() / sizeof(FEXCore::CPU::Relocation)) {
-    return RejectTruncated("the relocation array", header.NumRelocations * sizeof(FEXCore::CPU::Relocation));
-  }
-
-  // Read guest<->host block mappings
-  using BlockListEntry = decltype(GuestToHostMap::BlockList)::value_type;
-  fextl::vector<BlockListEntry> BlockList(header.NumBlocks);
+  // Snapshot what has been compiled so far. Records appended while this pass
+  // runs belong to the next one.
+  fextl::vector<CompiledRecord> Records;
+  fextl::vector<CPU::Relocation> Sink;
   {
-    for (auto& BlockPtr : BlockList) {
-      // Fixed part of one entry: guest address, HostCode, BlockBegin, NumGuestPages.
-      if (Remaining() < MinBlockEntrySize) {
-        return RejectTruncated("a block table entry", MinBlockEntrySize);
-      }
-
-      ::memcpy(&BlockPtr.first, MappedCacheFile, sizeof(BlockPtr.first));
-      MappedCacheFile += sizeof(BlockPtr.first);
-      ::memcpy(&BlockPtr.second.HostCode, MappedCacheFile, sizeof(BlockPtr.second.HostCode));
-      MappedCacheFile += sizeof(BlockPtr.second.HostCode);
-      // S3: BlockBegin follows HostCode in format v2. Still buffer-relative
-      // at this point; converted to an absolute pointer alongside HostCode
-      // in the register-blocks-to-LookupCache loop below.
-      ::memcpy(&BlockPtr.second.BlockBegin, MappedCacheFile, sizeof(BlockPtr.second.BlockBegin));
-      MappedCacheFile += sizeof(BlockPtr.second.BlockBegin);
-      uint64_t NumGuestPages;
-      ::memcpy(&NumGuestPages, MappedCacheFile, sizeof(NumGuestPages));
-      MappedCacheFile += sizeof(NumGuestPages);
-
-      // F2: none of the three values above has been validated, and all three are
-      // about to be trusted — HostCode and BlockBegin become absolute host
-      // pointers that the LookupCache hands to the dispatcher as jump targets,
-      // and NumGuestPages drives the resize plus memcpy immediately below.
-      //
-      // Comparisons are written as `X >= Limit` / `X > Limit - sizeof(...)`
-      // rather than `X + sizeof(...) > Limit`: these are file-controlled
-      // uint64_t values, so a bounds check that itself wraps is worse than none.
-      //
-      // NumGuestPages is bounded twice, and the two bounds are independent.
-      // header.NumCodePages is the count of distinct guest code pages in the
-      // whole cache and is therefore an upper bound on any one block's page list
-      // (a block's pages are always registered into that same global set at
-      // compile time) — an internal-consistency check that catches a header
-      // which is self-contradictory but not truncated. Remaining() is the real
-      // file-length bound and is what stops the memcpy below reading past the
-      // end of the mapping.
-      if (BlockPtr.second.HostCode >= header.CodeBufferSize || BlockPtr.second.BlockBegin >= header.CodeBufferSize) {
-        LogMan::Msg::EFmt("Rejecting code cache for {}: block {:#x} has HostCode {:#x} / BlockBegin {:#x} outside the {:#x} byte code buffer",
-                          BinarySection.FileInfo.Filename, BlockPtr.first, BlockPtr.second.HostCode, BlockPtr.second.BlockBegin,
-                          header.CodeBufferSize);
-        return false;
-      }
-
-      if (NumGuestPages > header.NumCodePages) {
-        LogMan::Msg::EFmt("Rejecting code cache for {}: block {:#x} claims {} guest code pages, more than the {} the whole cache holds",
-                          BinarySection.FileInfo.Filename, BlockPtr.first, NumGuestPages, header.NumCodePages);
-        return false;
-      }
-
-      using CodePageEntry = decltype(BlockPtr.second.CodePages)::value_type;
-      if (NumGuestPages > Remaining() / sizeof(CodePageEntry)) {
-        return RejectTruncated("a block's guest code page list", NumGuestPages * sizeof(CodePageEntry));
-      }
-
-      BlockPtr.second.CodePages.resize(NumGuestPages);
-      ::memcpy(BlockPtr.second.CodePages.data(), MappedCacheFile, std::span {BlockPtr.second.CodePages}.size_bytes());
-      MappedCacheFile += std::span {BlockPtr.second.CodePages}.size_bytes();
+    std::lock_guard lk {RelocationSinkMutex};
+    Records = CompiledBlocks;
+    if (Records.empty()) {
+      return 0;
     }
-
-    // Constrain BlockList to the given ExecutableFileSectionInfo.
-    //
-    // The lower_bound/upper_bound pair below only selects the right subset if
-    // the table is sorted by guest address. SaveData sorts it, so a cache this
-    // build wrote always is — but this used to be LOGMAN_THROW_A_FMT, which
-    // compiles to `(void)(pred)` in Release, so in a release build the ordering
-    // was simply assumed of a file nothing had validated. An unsorted table is
-    // not memory-unsafe (both bounds stay inside the vector), it silently loads
-    // an arbitrary wrong subset of blocks, which is the harder failure to
-    // notice. Same class as every other unvalidated field here: reject it.
-    if (!ranges::is_sorted(BlockList, std::less {}, &BlockListEntry::first)) {
-      LogMan::Msg::EFmt("Rejecting code cache for {}: block table is not sorted by guest address", BinarySection.FileInfo.Filename);
-      return false;
-    }
-    auto begin = ranges::lower_bound(BlockList, BinarySection.BeginVA - BinarySection.FileStartVA, std::less {}, &BlockListEntry::first);
-    auto end =
-      ranges::upper_bound(begin, BlockList.end(), BinarySection.EndVA - BinarySection.FileStartVA - 1, std::less {}, &BlockListEntry::first);
-    if (begin == end) {
-      // Not an error since there is just no data to load
-      LogMan::Msg::IFmt("No blocks cached in this range, aborting");
-      return true;
-    }
-    BlockList.erase(end, BlockList.end());
-    BlockList.erase(BlockList.begin(), begin);
+    Sink.assign(RelocationSink.begin(), RelocationSink.begin() + Records.back().RelocEnd);
   }
-
-  // Read relocations. The up-front bound above was taken against the whole
-  // post-header remainder; re-check against what the block table actually left.
-  if (header.NumRelocations > Remaining() / sizeof(FEXCore::CPU::Relocation)) {
-    return RejectTruncated("the relocation array", header.NumRelocations * sizeof(FEXCore::CPU::Relocation));
-  }
-  fextl::vector<FEXCore::CPU::Relocation> Relocations(header.NumRelocations, FEXCore::CPU::Relocation::Default());
-  ::memcpy(Relocations.data(), MappedCacheFile, Relocations.size() * sizeof(Relocations[0]));
-  MappedCacheFile += Relocations.size() * sizeof(Relocations[0]);
-
-  // Pad to the next 4K boundary in the file, which is where the CodeBuffer data starts.
-  // SaveData pads the file offset, and the caller maps the file from offset 0 at a
-  // host-page-aligned address (a multiple of 4K on every host), so aligning the
-  // cursor is the same thing as aligning the file offset. The padding itself has to be inside the file: a cache
-  // truncated in the middle of that pad would otherwise put the cursor past the
-  // end of the mapping before the code buffer read even gets a chance to check.
-  // GUEST: must match the on-disk pad written by SaveData above, which is a fixed 4096.
-  const uint64_t PageAlignPadding =
-    AlignUp(reinterpret_cast<uintptr_t>(MappedCacheFile), Utils::FEX_GUEST_PAGE_SIZE) - reinterpret_cast<uintptr_t>(MappedCacheFile);
-  if (PageAlignPadding > Remaining()) {
-    return RejectTruncated("the page alignment padding before the code buffer", PageAlignPadding);
-  }
-  MappedCacheFile += PageAlignPadding;
-
-  // The code buffer is memcpy'd out of the file wholesale further below, after
-  // the destination has been sized. Bound it here, before anything is allocated
-  // or any context state is touched, so a rejection at this point is free.
-  if (header.CodeBufferSize > Remaining()) {
-    return RejectTruncated("the code buffer", header.CodeBufferSize);
-  }
-
-  // Prepare CodeBuffer: Page aligned and big enough to hold all cached data
-  auto Lock = std::unique_lock {CTX.CodeBufferWriteMutex};
-  if (Thread) {
-    if (auto Prev = Thread->CPUBackend->CheckCodeBufferUpdate()) {
-      Allocator::VirtualDontNeed(Thread->CallRetStackBase, FEXCore::Core::InternalThreadState::CALLRET_STACK_SIZE);
-      auto lk = Thread->LookupCache->AcquireWriteLock();
-      Thread->LookupCache->ChangeGuestToHostMapping(*Prev, *CTX.GetLatest()->LookupCache, lk);
+  // Latest record per guest entry: a block recompiled after an invalidation is
+  // live at its newest translation, whose relocations are the newest record's.
+  std::ranges::stable_sort(Records, {}, &CompiledRecord::GuestRIP);
+  fextl::vector<CompiledRecord> Latest;
+  for (size_t i = 0; i < Records.size(); ++i) {
+    if (i + 1 == Records.size() || Records[i + 1].GuestRIP != Records[i].GuestRIP) {
+      Latest.push_back(Records[i]);
     }
   }
 
-  auto CodeBuffer = CTX.GetLatest();
-  // HOST: the code buffer comes from VirtualAlloc, so its base is host-page aligned.
-  LOGMAN_THROW_A_FMT(reinterpret_cast<uintptr_t>(CodeBuffer->Ptr) % FEXCore::HostPage::Size() == 0,
-                     "Expected CodeBuffer base to be host-page-aligned");
-  // GUEST (fixed 4096): keeps the destination congruent with the 4K on-disk pad above.
-  // Only congruence, not a host-page requirement: the bytes are memcpy'd below.
-  const auto Delta = AlignUp(CTX.LatestOffset, Utils::FEX_GUEST_PAGE_SIZE) - CTX.LatestOffset;
-  CTX.LatestOffset += Delta;
-
-  while (CTX.LatestOffset + header.CodeBufferSize > CodeBuffer->UsableSize()) {
-    if (!Thread) {
-      ERROR_AND_DIE_FMT("Cannot extend codebuffer without thread!");
+  size_t SegmentsWritten = 0;
+  for (const auto& Target : Targets) {
+    const auto& Section = Target.Section;
+    const auto& Base = Target.BasePath;
+    const uint64_t FileId = Section.FileInfo.FileId;
+    if (Base.empty()) {
+      continue;
     }
 
-    const size_t PrevUsableSize = CodeBuffer->UsableSize();
-    CTX.ClearCodeCache(Thread);
-    CodeBuffer = CTX.GetLatest();
-    LogMan::Msg::IFmt("Increased code buffer size to {} MiB for cache load", CodeBuffer->AllocatedSize / 1024 / 1024);
-
-    // F1: StartLargerCodeBuffer grows geometrically but saturates at
-    // MAX_CODE_SIZE, so once the buffer stops growing this condition can never
-    // become false: the loop would spin forever, mapping and unmapping a
-    // 128 MiB region on every iteration. header.CodeBufferSize is read straight
-    // out of the file and is not otherwise validated, so a corrupt or hostile
-    // header reaches this. A cache this build generated cannot (the generator
-    // is itself bounded by the same UsableSize), so this is hardening, not a
-    // live hang. Same shape as the PPC64 JIT's rotation guard in
-    // JIT/PPC64LE/JIT.cpp.
-    if (CodeBuffer->UsableSize() <= PrevUsableSize) {
-      ERROR_AND_DIE_FMT("Code cache for {} declares a {} byte code buffer, but the maximum code buffer only has {} usable bytes. "
-                        "Refusing to spin re-allocating it.",
-                        BinarySection.FileInfo.Filename, header.CodeBufferSize, CodeBuffer->UsableSize());
-    }
-  }
-
-  // Read CodeBuffer data from file. Make sure the destination is page-aligned.
-  // TODO: Only load the data needed for the selected section
-  auto CodeBufferRange =
-    std::as_writable_bytes(std::span {CodeBuffer->Ptr, CodeBuffer->UsableSize()}).subspan(CTX.LatestOffset, header.CodeBufferSize);
-  ::memcpy(CodeBufferRange.data(), MappedCacheFile, header.CodeBufferSize);
-  MappedCacheFile += header.CodeBufferSize;
-  CTX.LatestOffset += header.CodeBufferSize;
-
-  // Walk the trailing code page table without consuming it, purely to bound it
-  // against the file. The loop that actually reads it runs with the LookupCache
-  // write lock held and after blocks have already been registered, so bailing
-  // out of it halfway would leave the lookup cache holding part of a cache file
-  // we just rejected. Checking it here means that loop can only ever be entered
-  // when every read it is about to make is known to be in bounds.
-  {
-    const std::byte* Cursor = MappedCacheFile;
-    for (uint32_t i = 0; i < header.NumCodePages; ++i) {
-      const uint64_t Left = FileSize - static_cast<uint64_t>(Cursor - FileBegin);
-      if (Left < MinCodePageEntrySize) {
-        LogMan::Msg::EFmt("Rejecting code cache for {}: code page entry {} of {} runs past the end of the {:#x} byte file",
-                          BinarySection.FileInfo.Filename, i, header.NumCodePages, FileSize);
-        CTX.LatestOffset -= header.CodeBufferSize;
-        return false;
-      }
-
-      // FEX_SMCGRANULEMIXED (64K hosts): cached blocks carry no per-instruction
-      // validation guards and the load's MarkGuestExecutableRange would not
-      // arm a demoted granule, so a section touching one cannot be loaded
-      // soundly. Rare by construction (the granule must have been demoted
-      // while this image was mapped but before its cache loaded); the cost is
-      // a recompile of the section, which then guards where it must.
-      uint64_t CodePage;
-      ::memcpy(&CodePage, Cursor, sizeof(CodePage));
-      if (CTX.SyscallHandler && CTX.SyscallHandler->GuestCodePageValidateOnly(CodePage + BinarySection.FileStartVA)) {
-        LogMan::Msg::IFmt("Rejecting code cache for {}: guest page {:#x} lies in a demoted mixed code/data granule (POWERARM_SMCGRANULEMIXED) "
-                          "and cached blocks carry no validation guards",
-                          BinarySection.FileInfo.Filename, CodePage + BinarySection.FileStartVA);
-        CTX.LatestOffset -= header.CodeBufferSize;
-        return false;
-      }
-
-      uint64_t NumEntrypoints;
-      ::memcpy(&NumEntrypoints, Cursor + sizeof(uint64_t), sizeof(NumEntrypoints));
-      Cursor += MinCodePageEntrySize;
-
-      if (NumEntrypoints > (FileSize - static_cast<uint64_t>(Cursor - FileBegin)) / sizeof(uint64_t)) {
-        LogMan::Msg::EFmt("Rejecting code cache for {}: code page entry {} of {} claims {} entrypoints, more than the {:#x} byte file holds",
-                          BinarySection.FileInfo.Filename, i, header.NumCodePages, NumEntrypoints, FileSize);
-        CTX.LatestOffset -= header.CodeBufferSize;
-        return false;
-      }
-      Cursor += NumEntrypoints * sizeof(uint64_t);
-    }
-  }
-
-  // Apply FEX relocations. B2 (S3-REVISED): must check the return value with a
-  // real branch, not LOGMAN_THROW_A_FMT — the latter expands to `(void)(pred)`
-  // in Release, so a mid-loop failure (e.g. a thunk symbol Lookup returns ~0ULL
-  // at ApplyCodeRelocations :671) would silently skip every later relocation and
-  // fall through to the block-registration loop below, which then marks a
-  // partially-patched buffer executable. SaveData at :315-318 handles the same
-  // call correctly; mirror its shape.
-  if (!ApplyCodeRelocations(BinarySection.FileStartVA, CodeBufferRange, Relocations, false)) {
-    LogMan::Msg::EFmt("Failed to apply code cache relocations for {} — rejecting cache", BinarySection.FileInfo.Filename);
-    // B1: give the bytes back. CTX.LatestOffset was advanced by
-    // header.CodeBufferSize just above, and nothing consumes the region we are
-    // now abandoning, so leaving the offset advanced permanently burns that much
-    // of the code buffer on every rejected cache.
-    CTX.LatestOffset -= header.CodeBufferSize;
-    return false;
-  }
-
-  // Publish the freshly written instructions to the fetch stream. The bytes
-  // above arrived through a memcpy plus in-place relocation patching, i.e. as
-  // *data* stores, and the region is about to be branched into. POWER8 has
-  // split, non-coherent I/D caches, so without a dcbst/sync/icbi/isync pass the
-  // dispatcher can fetch whatever the I-cache last held for those lines — the
-  // exact hazard the JIT's own Finalise (JIT/PPC64LE/JIT.cpp) flushes for after
-  // every compile. ARM64 needs the equivalent maintenance for the same reason.
-  // (Was __builtin___clear_cache, which emits no cache maintenance at all on
-  // ppc64le — see FEXCore/Utils/ArchHelpers/PPC64CacheFlush.h.)
-  FEXCore::ArchHelpers::PPC64::FlushICacheRange(CodeBufferRange.data(), CodeBufferRange.size_bytes());
-
-  // B1: structural check of the guest -> host block mapping, before anything is
-  // registered as an executable entry point. Deliberately NOT gated on
-  // EnableCodeCacheValidation: this is a correctness gate on data that is about
-  // to be jumped into, not a debugging aid, so it runs on every load.
-  //
-  // For each entry, walk BlockBegin -> JITCodeHeader::OffsetToBlockTail ->
-  // JITCodeTail and require that the guest address the entry claims lies inside
-  // the guest range the tail records, and that the entry's host code lies inside
-  // the host block the tail sizes.
-  //
-  // This is a RANGE test, not an equality test: one BlockBegin and one tail
-  // serve every entry point of a multiblock compile, while Tail->RIP names only
-  // the primary entry.
-  //
-  // Portability: ARM64 has emitted the tail-RIP relocation since this cache
-  // format existed, so the check is immediately valid there. The ppc64le
-  // relocation work was catch-up, not a portability gate — this is not a
-  // ppc64le-specific check.
-  {
-    const uint64_t BufSize = CodeBufferRange.size_bytes();
-    constexpr uint64_t HeaderSize = sizeof(CPU::CPUBackend::JITCodeHeader);
-    constexpr uint64_t TailSize = sizeof(CPU::CPUBackend::JITCodeTail);
-    bool Rejected = false;
-
-    // Every bounds test below is written as `X > Limit - sizeof(...)` rather
-    // than `X + sizeof(...) > Limit`. These are file-controlled uint64_t values
-    // and this check is precisely the mitigation for that, so it must not itself
-    // be wrappable.
-    for (const auto& [Guest, Host] : BlockList) {
-      if (BufSize < HeaderSize || Host.BlockBegin > BufSize - HeaderSize) {
-        LogMan::Msg::EFmt("Rejecting code cache for {}: block {:#x} has out-of-range BlockBegin {:#x} (code buffer is {:#x} bytes)",
-                          BinarySection.FileInfo.Filename, Guest, Host.BlockBegin, BufSize);
-        Rejected = true;
-        break;
-      }
-
-      const auto* Header = reinterpret_cast<const CPU::CPUBackend::JITCodeHeader*>(CodeBufferRange.data() + Host.BlockBegin);
-      // BlockBegin is bounded by BufSize (<= 4 GiB, CodeBufferSize is uint32_t)
-      // and OffsetToBlockTail is uint32_t, so this sum cannot wrap.
-      const uint64_t TailOffset = Host.BlockBegin + Header->OffsetToBlockTail;
-      if (BufSize < TailSize || TailOffset > BufSize - TailSize) {
-        LogMan::Msg::EFmt("Rejecting code cache for {}: block {:#x} at {:#x} has out-of-range tail offset {:#x} (code buffer is {:#x} bytes)",
-                          BinarySection.FileInfo.Filename, Guest, Host.BlockBegin, TailOffset, BufSize);
-        Rejected = true;
-        break;
-      }
-
-      const auto* Tail = reinterpret_cast<const CPU::CPUBackend::JITCodeTail*>(CodeBufferRange.data() + TailOffset);
-
-      // MANDATORY skip, not a rejection. A block whose *entry* instruction fails
-      // to decode gets InstSize = 0, hence DecodedMax == DecodedMin, hence
-      // GuestSize == 0. It survives block erasure because it is the entry block,
-      // and it is still cacheable because the cacheability filter only looks for
-      // bad relocations. Its own guest address can never satisfy
-      // `RIP <= addr < RIP + 0`, so range-checking it would reject the entire
-      // file — on the main load path, on ARM64 as well. It is reachable in
-      // practice because the offline compiler re-maps the ELF statically, so an
-      // address that decoded at runtime can fail to decode offline.
-      if (Tail->GuestSize == 0) {
-        continue;
-      }
-
-      const uint64_t GuestAbs = Guest + BinarySection.FileStartVA;
-      if (GuestAbs < Tail->RIP || GuestAbs - Tail->RIP >= Tail->GuestSize) {
-        LogMan::Msg::EFmt("Rejecting code cache for {}: block entry {:#x} is outside the guest range [{:#x}, {:#x}) recorded by the block it "
-                          "maps to",
-                          BinarySection.FileInfo.Filename, GuestAbs, Tail->RIP, Tail->RIP + Tail->GuestSize);
-        Rejected = true;
-        break;
-      }
-
-      if (Host.HostCode < Host.BlockBegin || Host.HostCode - Host.BlockBegin >= Tail->Size) {
-        LogMan::Msg::EFmt("Rejecting code cache for {}: block entry {:#x} has host code {:#x} outside its block [{:#x}, {:#x})",
-                          BinarySection.FileInfo.Filename, GuestAbs, Host.HostCode, Host.BlockBegin, Host.BlockBegin + Tail->Size);
-        Rejected = true;
-        break;
-      }
-    }
-
-    if (Rejected) {
-      // See the rewind above: the file has already been memcpy'd into the code
-      // buffer and CTX.LatestOffset advanced past it. Nothing else will use that
-      // region, so hand it back rather than leaking it on every rejection.
-      CTX.LatestOffset -= header.CodeBufferSize;
-      return false;
-    }
-  }
-
-  // Audit P1: register the loaded blocks in the code buffer's host-PC -> block
-  // index. Blocks that arrive this way never pass through CompileCode, so
-  // nothing called CodeBuffer::AppendBlock for them, and without this a signal
-  // taken inside cache-loaded code would resolve to no block at all (a stale
-  // Frame->State.rip in the reconstructed frame).
-  //
-  // The packed image is a contiguous chain of header/tail-delimited blocks:
-  // SaveData concatenates merged block extents 16-byte aligned (kBlockAlignment)
-  // and every block's Tail->Size is already a multiple of 16, so the alignment
-  // padding between regions is always zero-width and the walk never hits a gap.
-  //
-  // Placed here, after the last rejection point: an index entry for a region
-  // that is then handed back would be a stale offset that the next compile
-  // reuses, and AppendBlock's monotonicity check would abort on it.
-  //
-  // The image sits at the (page-aligned) offset the memcpy targeted, which is
-  // above every block already indexed, so this appends rather than resets.
-  // Called with CTX.CodeBufferWriteMutex held (taken at the top of this
-  // function), which is AppendBlock's single-writer requirement.
-  CodeBuffer->RebuildBlockIndexByWalk(header.CodeBufferSize,
-                                      static_cast<size_t>(reinterpret_cast<uintptr_t>(CodeBufferRange.data()) -
-                                                          reinterpret_cast<uintptr_t>(CodeBuffer->Ptr)));
-
-  {
-    auto& LookupCache = *CodeBuffer->LookupCache;
-    auto WriteLock = LookupCache.AcquireWriteLock();
-
-    // Register blocks to LookupCache
-    for (auto& [Guest, Host] : BlockList) {
-      for (auto& CodePage : Host.CodePages) {
-        CodePage += BinarySection.FileStartVA;
-      }
-      auto HostCode = reinterpret_cast<void*>(Host.HostCode + reinterpret_cast<uintptr_t>(CodeBufferRange.data()));
-      // Convert BlockBegin to absolute alongside HostCode (S3).
-      auto BlockBeginAbs = Host.BlockBegin + reinterpret_cast<uintptr_t>(CodeBufferRange.data());
-      LookupCache.AddBlockMapping(Guest + BinarySection.FileStartVA, BlockBeginAbs, std::move(Host.CodePages), HostCode, WriteLock);
-    }
-
-    // Register loaded code ranges
-    fextl::vector<uint64_t> Entrypoints;
-    for (uint32_t i = 0; i < header.NumCodePages; ++i) {
-      uint64_t CodePage;
-      memcpy(&CodePage, MappedCacheFile, sizeof(CodePage));
-      CodePage += BinarySection.FileStartVA;
-      MappedCacheFile += sizeof(CodePage);
-
-      uint64_t NumEntrypoints;
-      memcpy(&NumEntrypoints, MappedCacheFile, sizeof(NumEntrypoints));
-      MappedCacheFile += sizeof(NumEntrypoints);
-
-      Entrypoints.resize(NumEntrypoints);
-      memcpy(Entrypoints.data(), MappedCacheFile, NumEntrypoints * sizeof(Entrypoints[0]));
-      MappedCacheFile += NumEntrypoints * sizeof(Entrypoints[0]);
-      for (auto& Entrypoint : Entrypoints) {
-        Entrypoint += BinarySection.FileStartVA;
-      }
-
-      // SMC Idea 3: no decoded guest extent survives serialization, so the
-      // default (0, 0) extent is passed and the granule bitmap marks the whole
-      // page as code. Conservative in the safe direction -- cache-loaded pages
-      // simply never take the store-emulation fast path, exactly as they do
-      // today.
-      if (LookupCache.AddBlockExecutableRange(Entrypoints, CodePage, FEXCore::Utils::FEX_GUEST_PAGE_SIZE, WriteLock)) {
-        CTX.SyscallHandler->MarkGuestExecutableRange(Thread, CodePage, FEXCore::Utils::FEX_GUEST_PAGE_SIZE);
-      }
-    }
-  }
-
-  if (EnableCodeCacheValidation) {
-    // S3.6: hand Validate BlockBegin (buffer-relative) alongside the entry
-    // offset, so its subspan lands at the start of the JITCodeHeader on every
-    // arch. On ppc64le the entry point is ~200-270 bytes past BlockBegin
-    // (FillStaticRegs + EmitEntryPoint sits between them), so the old
-    // `HostBlocks.begin() - sizeof(JITCodeHeader)` arithmetic landed
-    // mid-prologue and the byte-compare failed at offset 0x0 comparing
-    // unrelated instructions. BlockBegin identifies the header directly.
-    //
-    // The whole mapping (not just the two key sets it used to get) is passed so
-    // Validate can check the block table itself, not only the code it indexes.
-    fextl::map<uint64_t, CachedBlockLocation> CachedBlocks;
-    for (auto& [Guest, Host] : BlockList) {
-      CachedBlocks.emplace(Guest + BinarySection.FileStartVA, CachedBlockLocation {.BlockBegin = Host.BlockBegin, .HostCode = Host.HostCode});
-    }
-
-    Validate(BinarySection, CachedBlocks, CodeBufferRange);
-  }
-
-  return true;
-}
-
-void CodeCache::Validate(const ExecutableFileSectionInfo& Section, const fextl::map<uint64_t, CachedBlockLocation>& CachedBlocks,
-                         std::span<std::byte> CachedCode) {
-  LOGMAN_THROW_A_FMT(!CachedBlocks.empty(), "Tried to validate without any host blocks");
-
-  // Derived views of the block table, in the shapes the code below wants.
-  fextl::set<uint64_t> GuestBlocks;
-  fextl::set<uint64_t> BlockBegins;
-  for (const auto& [Guest, Location] : CachedBlocks) {
-    GuestBlocks.insert(Guest);
-    BlockBegins.insert(Location.BlockBegin);
-  }
-  // Skip any cached data before the first block begin. BlockBegin points at
-  // the JITCodeHeader on every arch (S3.6), so no per-arch arithmetic is
-  // needed here — this used to be
-  // `subspan(*HostBlocks.begin() - sizeof(JITCodeHeader))` which relied on
-  // the ARM64 invariant that the entry point sits 4 bytes past BlockBegin.
-  CachedCode = CachedCode.subspan(*BlockBegins.begin());
-
-  if (!ValidationCTX) {
-    ValidationCTX.reset(static_cast<ContextImpl*>(FEXCore::Context::Context::CreateNewContext(CTX.HostFeatures).release()));
-    ValidationCTX->SetSignalDelegator(CTX.SignalDelegation);
-    ValidationCTX->SetSyscallHandler(CTX.SyscallHandler);
-    ValidationCTX->SetThunkHandler(CTX.ThunkHandler);
-    if (!ValidationCTX->InitCore()) {
-      ERROR_AND_DIE_FMT("Failed to create cache load validation context");
-    }
-
-    ValidationThread.reset(ValidationCTX->CreateThread(0, 0, nullptr));
-
-  }
-
-  // Return the validation context to the state the next Validate call expects:
-  // no reference blocks in the lookup cache and a write offset of 0. The
-  // reference span below is always taken from offset 0, so leaving a non-zero
-  // LatestOffset behind would make the next run compare bytes it never wrote.
-  // Used by every path that abandons a validation run, and by the success path.
-  auto ResetValidationState = [this]() {
-    ValidationThread->LookupCache->ClearCache(ValidationThread->LookupCache->AcquireWriteLock());
-    ValidationCTX->LatestOffset = 0;
-  };
-
-  // B3: both backends can rotate the code buffer in the middle of the compile
-  // loop below — ppc64le pre-reserves at least 1 MiB of headroom per block
-  // (JIT/PPC64LE/JIT.cpp), ARM64 does an exact-fit check before copying its
-  // staged block into the shared buffer (JIT/JIT.cpp). This is not a ppc64le
-  // peculiarity. Reserve the JIT's own headroom floor on top of the cached code
-  // so the last block does not trip the rotation path; that only makes rotation
-  // unlikely, and the post-loop check is what makes it safe.
-  constexpr size_t JITBlockHeadroom = 1u << 20;
-
-  auto NewCodeBuffer = ValidationCTX->GetLatest();
-  while (CachedCode.size_bytes() + JITBlockHeadroom > NewCodeBuffer->UsableSize()) {
-    const size_t PrevUsableSize = NewCodeBuffer->UsableSize();
-    ValidationCTX->ClearCodeCache(ValidationThread.get());
-    NewCodeBuffer = ValidationCTX->GetLatest();
-    LogMan::Msg::IFmt("Increased cache validation code buffer size to {} MiB", NewCodeBuffer->AllocatedSize / 1024 / 1024);
-
-    // F1: see the matching guard on the load path. Validation is optional, so
-    // skip it rather than killing the process.
-    if (NewCodeBuffer->UsableSize() <= PrevUsableSize) {
-      LogMan::Msg::EFmt("Cache validation skipped for {}: {} bytes of cached code do not fit the maximum validation code buffer ({} usable "
-                        "bytes)",
-                        Section.FileInfo.Filename, CachedCode.size_bytes(), NewCodeBuffer->UsableSize());
-      // Leave the validation context in the state the next call expects, like
-      // every other abandonment path does.
-      ResetValidationState();
-      return;
-    }
-  }
-
-  while (!GuestBlocks.empty()) {
-    auto [CompiledBlocks, _, _2, _3, _4, _5, _6] = ValidationCTX->CompileCode(ValidationThread.get(), *GuestBlocks.begin(), 0 /* TODO: Set MaxInst? */);
-    for (auto& Entry : CompiledBlocks.EntryPoints) {
-      GuestBlocks.erase(Entry.first);
-    }
-  }
-
-  // B3: if the buffer rotated during the compile, the reference bytes for every
-  // block compiled before the rotation are in a buffer that has been abandoned,
-  // and nothing in the new buffer can stand in for them. Report inconclusive
-  // rather than comparing the cache against whatever the surviving fragment
-  // happens to be. The pre-loop span capture this replaces silently compared
-  // post-rotation bytes against pre-rotation cached code.
-  if (ValidationCTX->GetLatest().get() != NewCodeBuffer.get()) {
-    LogMan::Msg::EFmt("Cache validation INCONCLUSIVE for {}: the validation code buffer rotated during the reference compile, so the "
-                      "reference bytes for the blocks compiled before the rotation are unrecoverable",
-                      Section.FileInfo.Filename);
-    ResetValidationState();
-    return;
-  }
-
-  // C1: check the guest -> host BLOCK MAPPING TABLE, not just the code it points
-  // into. Until now Validate compared bytes only, so a cache whose code was
-  // byte-perfect but whose table pointed the wrong guest address at it passed,
-  // and the mismatch was only ever discovered by executing it. LoadData's own
-  // structural check (B1) bounds the table against the code buffer and the
-  // block tails; this is the stronger statement, against a freshly compiled
-  // reference.
-  //
-  // Compared here, before the byte compare, because a mapping divergence
-  // explains a byte divergence and the reverse message reads like a codegen bug.
-  //
-  // NOTE on runtime-generated caches (CodeCacheScope != off): the reference
-  // compile walks the cached blocks in ascending guest order, which is the order
-  // FEXOfflineCompiler emitted them in but NOT the order a running guest hits
-  // them. Validation therefore only makes sense against an offline-generated
-  // cache; against a runtime-generated one the layout legitimately differs and
-  // both this check and the byte compare below will report it.
-  {
-    auto& RefMap = *ValidationThread->LookupCache->Shared;
-    const uint64_t RefBufferBase = reinterpret_cast<uintptr_t>(NewCodeBuffer->Ptr);
-    const uint64_t CachedOrigin = *BlockBegins.begin();
-
-    // The reference compile lays its blocks out from offset 0 of a fresh buffer;
-    // the cached blocks start at CachedOrigin within the loaded region (which is
-    // exactly where CachedCode was subspanned to). Normalise both to their own
-    // first block so the two layouts are comparable.
-    uint64_t RefOrigin = ~0ULL;
-    for (const auto& [Guest, Entry] : RefMap.BlockList) {
-      RefOrigin = std::min(RefOrigin, Entry.BlockBegin - RefBufferBase);
-    }
-
-    bool LayoutDiverged = false;
-    for (const auto& [Guest, Location] : CachedBlocks) {
-      auto RefIt = RefMap.BlockList.find(Guest);
-      if (RefIt == RefMap.BlockList.end()) {
-        // The compile loop above runs until every cached guest address has been
-        // compiled, so an absent entry means the reference compile produced no
-        // mapping for an address the cache claims to hold code for.
-        ERROR_AND_DIE_FMT("Cache validation failed for {}: cached block table claims guest {:#x}, which the reference compile never mapped",
-                          Section.FileInfo.Filename, Guest);
-      }
-
-      // Entry offset within its own block. Layout-order independent, so this is
-      // a statement about the table alone.
-      const uint64_t CachedEntryOffset = Location.HostCode - Location.BlockBegin;
-      const uint64_t RefEntryOffset = RefIt->second.HostCode - RefIt->second.BlockBegin;
-      if (CachedEntryOffset != RefEntryOffset) {
-        ERROR_AND_DIE_FMT("Cache validation failed for {}: guest block {:#x} enters its host block at {:#x}, but a fresh compile of the same "
-                          "block enters at {:#x}",
-                          Section.FileInfo.Filename, Guest, CachedEntryOffset, RefEntryOffset);
-      }
-
-      // Position of the block within the buffer. Order-dependent, and the byte
-      // compare below already assumes the two layouts agree — so report it here
-      // (where it is diagnosable) and let the byte compare be the thing that
-      // fails.
-      const uint64_t CachedRel = Location.BlockBegin - CachedOrigin;
-      const uint64_t RefRel = (RefIt->second.BlockBegin - RefBufferBase) - RefOrigin;
-      if (CachedRel != RefRel && !LayoutDiverged) {
-        LayoutDiverged = true;
-        LogMan::Msg::EFmt("Cache validation for {}: block layout diverges at guest {:#x} — cached at buffer offset {:#x}, reference at {:#x}. "
-                          "The byte comparison below is comparing unrelated blocks from this point on.",
-                          Section.FileInfo.Filename, Guest, CachedRel, RefRel);
-      }
-    }
-  }
-
-  // Size the reference span to what the reference compile actually emitted, not
-  // to the size of the cache. B3: this capture has to happen after the compile
-  // loop, because NewCodeBuffer is only known to still be the live buffer once
-  // the rotation check above has passed.
-  std::span<std::byte> CodeBufferRangeRef =
-    std::as_writable_bytes(std::span {NewCodeBuffer->Ptr, NewCodeBuffer->Ptr + NewCodeBuffer->UsableSize()}).subspan(0, ValidationCTX->LatestOffset);
-
-  // Patch FEX-internal function addresses with values from the main Context to ensure the code blocks are comparable
-  auto NewRelocations = ValidationThread->CPUBackend->TakeRelocations(Section.FileStartVA);
-  NewRelocations.erase(std::remove_if(NewRelocations.begin(), NewRelocations.end(),
-                                      [](const CPU::Relocation& Reloc) {
-                                        return Reloc.Header.Type != CPU::RelocationTypes::RELOC_NAMED_SYMBOL_LITERAL &&
-                                               Reloc.Header.Type != CPU::RelocationTypes::RELOC_NAMED_THUNK_MOVE;
-                                      }),
-                       NewRelocations.end());
-  // F3: do not discard this result. ApplyCodeRelocations bails out mid-loop
-  // when a thunk symbol lookup returns ~0ULL, which leaves the reference buffer
-  // patched up to that relocation and unpatched after it. Comparing that against
-  // the cache reports a byte mismatch at whatever offset the first unpatched
-  // relocation happens to sit at, which reads exactly like a codegen bug and
-  // sends the reader hunting one that does not exist. Mirror the load path's
-  // handling of the same call: log and return, validation inconclusive. Not
-  // ERROR_AND_DIE — a missing thunk says nothing about whether the cached code
-  // is correct.
-  if (!ApplyCodeRelocations(Section.FileStartVA, CodeBufferRangeRef, NewRelocations, false)) {
-    LogMan::Msg::EFmt("Cache validation INCONCLUSIVE for {}: failed to apply relocations to the reference compile", Section.FileInfo.Filename);
-    ResetValidationState();
-    return;
-  }
-
-  // ApplyCodeRelocations re-emits real host instruction words in place
-  // (LoadConstantFixed), and CodeBufferRangeRef spans the validation context's
-  // live PROT_EXEC code buffer. Today nothing branches into it — this path
-  // compiles a reference copy only so the bytes can be compared — so this flush
-  // is defensive rather than load-bearing, and it is on a debug-gated
-  // (EnableCodeCacheValidation) path where its cost is irrelevant.
-  //
-  // It is here so the rule holds without exception: every in-place rewrite of
-  // host instructions in this tree publishes the range it rewrote. The
-  // exception is what the reader has to notice, and the two sibling call sites
-  // of ApplyCodeRelocations both flush. An unexplained asymmetry here is how
-  // the next person concludes the flush is optional.
-  FEXCore::ArchHelpers::PPC64::FlushICacheRange(CodeBufferRangeRef.data(), CodeBufferRangeRef.size_bytes());
-
-  const size_t RefSize = CodeBufferRangeRef.size_bytes();
-  const size_t CachedSize = CachedCode.size_bytes();
-  const size_t CommonSize = std::min(RefSize, CachedSize);
-
-  // B2: report what was actually compared on every run, not only on failure.
-  // Without this the check can only ever speak by failing, and a passing run is
-  // indistinguishable from one that compared almost nothing.
-  LogMan::Msg::IFmt("\tCache validation for {}: reference compile emitted {:#x} bytes, cache holds {:#x} bytes, comparing {:#x}",
-                    Section.FileInfo.Filename, RefSize, CachedSize, CommonSize);
-
-  // B2: compare the common prefix first, so a genuine content divergence is
-  // still reported at its first differing byte rather than being hidden behind
-  // the length report below. The previous code truncated the reference span to
-  // the cached length and then declared success, so a cache holding more bytes
-  // than the reference compiles had the excess never examined at all.
-  auto RefCommon = CodeBufferRangeRef.first(CommonSize);
-  auto [Mismatch, _] = std::mismatch(RefCommon.begin(), RefCommon.end(), CachedCode.begin());
-  if (Mismatch != RefCommon.end()) {
-    // Align down to instruction size, then clamp so the 4-byte context windows
-    // reported below stay inside both spans. CommonSize derives from a
-    // file-supplied size and is not guaranteed to be 4-aligned, so
-    // `subspan(Idx, 4)` on an aligned-down Idx can run off the end.
-    const size_t ContextSize = std::min<size_t>(4, CommonSize);
-    auto Idx = AlignDown(std::distance(RefCommon.begin(), Mismatch), 4);
-    Idx = std::min<uint64_t>(Idx, CommonSize - ContextSize);
-
-    // S3.6: find the owning block by its BlockBegin (the greatest BlockBegin
-    // <= Idx-in-buffer). The prior form combined `HostBlocks.lower_bound` with
-    // an AArch64 ADR-immediate decode to hop from entry-point back to header;
-    // now that BlockBegin points directly at the header on every arch, the
-    // decode is gone.
-    auto BlockIt = std::prev(BlockBegins.lower_bound(*BlockBegins.begin() + Idx + 1));
-    std::optional<uint64_t> GuestBlockAddr;
-    std::optional<uint64_t> GuestBlockAddrRef;
-    if (BlockIt != BlockBegins.end()) {
-      for (int i : {0, 1}) {
-        std::span Buffer = (i == 0 ? CachedCode : CodeBufferRangeRef);
-
-        auto header = reinterpret_cast<CPU::CPUBackend::JITCodeHeader*>(&Buffer[*BlockIt - *BlockBegins.begin()]);
-        auto tail = reinterpret_cast<CPU::CPUBackend::JITCodeTail*>(reinterpret_cast<uintptr_t>(header) + header->OffsetToBlockTail);
-        (i == 0 ? GuestBlockAddr : GuestBlockAddrRef) = tail->RIP - Section.FileStartVA;
-        LogMan::Msg::EFmt("Recorded rip {}: {:#x} (offset {:#x})", i, tail->RIP, tail->RIP - Section.FileStartVA);
-
-        if (i == 1) {
-          if (tail->RIP >= Section.BeginVA && tail->RIP < Section.EndVA) {
-            auto [IRView, TotalInstructions, TotalInstructionsLength, StartAddr, Length, _, _2, _3] =
-              ValidationCTX->GenerateIR(ValidationThread.get(), tail->RIP, false, FEXCore::Config::Get_MAXINST());
-            fextl::stringstream ss;
-            FEXCore::IR::Dump(&ss, &*IRView);
-            LogMan::Msg::EFmt("IR:\n{}", ss.str());
-          } else {
-            LogMan::Msg::EFmt("Can't dump IR for out-of-range RIP {:#x}", tail->RIP);
-          }
+    fextl::vector<uint64_t> Candidates;
+    fextl::unordered_map<uint64_t, const CompiledRecord*> ByGuest;
+    for (const auto& Record : Latest) {
+      for (const auto& [RangeBegin, RangeEnd] : Target.GuestRanges) {
+        if (Record.GuestRIP >= RangeBegin && Record.GuestRIP < RangeEnd && Record.GuestRIP >= Section.FileStartVA) {
+          Candidates.push_back(Record.GuestRIP);
+          ByGuest[Record.GuestRIP] = &Record;
+          break;
         }
       }
     }
-
-    fextl::string GuestBlockInfo = "UNKNOWN";
-    if (GuestBlockAddr) {
-      GuestBlockInfo = fextl::fmt::format("{:#x}", GuestBlockAddr.value());
+    if (Candidates.size() < MinNewBlocksPerSegment) {
+      continue;
     }
-    if (GuestBlockAddr != GuestBlockAddrRef) {
-      GuestBlockInfo += " (MISMATCH)";
+
+    // What is on disk now, including segments other processes wrote since this
+    // process first looked.
+    auto* File = GetFileCache(Section.FileInfo);
+    if (File->BasePath != Base) {
+      continue;
     }
-    ERROR_AND_DIE_FMT("Cache validation failed at offset {:#x}: {:02x} <-> {:02x} (at {} <-> {}, guest block {})", Idx,
-                      fmt::join(CachedCode.subspan(Idx, ContextSize), ""), fmt::join(CodeBufferRangeRef.subspan(Idx, ContextSize), ""),
-                      fmt::ptr(CachedCode.data()), fmt::ptr(CodeBufferRangeRef.data()), GuestBlockInfo);
+    SegmentBuilder Builder;
+    {
+      std::unique_lock lk {RegistryMutex};
+      File->ProbeNewSegments(ConfigId, FileId);
+      CollectLiveBlocks(
+        *this, CTX, Section, Candidates, [File](uint64_t Off) { return File->Contains(Off); },
+        [&](uint64_t Guest) -> std::span<const CPU::Relocation> {
+          const auto* Record = ByGuest[Guest];
+          return {Sink.data() + Record->RelocBegin, static_cast<size_t>(Record->RelocEnd - Record->RelocBegin)};
+        },
+        Builder);
+    }
+    if (Builder.Blocks.size() < MinNewBlocksPerSegment) {
+      continue;
+    }
+
+    std::error_code EC;
+    std::filesystem::create_directories(std::filesystem::path(std::string_view {Base}).parent_path(), EC);
+    auto Temp = WriteTempSegment(Base, [&](int FD) { return WriteSegment(FD, Builder, ConfigId, FileId); });
+    if (Temp.empty()) {
+      LogMan::Msg::EFmt("Code cache: cannot write a segment for {}", Base);
+      continue;
+    }
+
+    const auto LockPath = Base + ".lock";
+    int LockFD = ::open(LockPath.c_str(), O_RDWR | O_CREAT | O_CLOEXEC, 0644);
+    bool Written = false;
+    if (LockFD != -1) {
+      if (::flock(LockFD, LOCK_SH) == 0) {
+        for (size_t i = 0; i < MaxSegments && !Written; ++i) {
+          if (::link(Temp.c_str(), SegmentPath(Base, i).c_str()) == 0) {
+            Written = true;
+          } else if (errno != EEXIST) {
+            break;
+          }
+        }
+        ::flock(LockFD, LOCK_UN);
+      }
+      if (!Written && ::flock(LockFD, LOCK_EX | LOCK_NB) == 0) {
+        // Every segment name is taken: fold them, and this segment, into one.
+        Written = CompactSegments(Base, Temp, ConfigId, FileId);
+        Stats.Compactions.fetch_add(Written ? 1 : 0, std::memory_order_relaxed);
+        ::flock(LockFD, LOCK_UN);
+      }
+      ::close(LockFD);
+    }
+    ::unlink(Temp.c_str());
+
+    if (Written) {
+      ++SegmentsWritten;
+      Stats.SavedBlocks.fetch_add(Builder.Blocks.size(), std::memory_order_relaxed);
+      Stats.SavedSegments.fetch_add(1, std::memory_order_relaxed);
+      LogMan::Msg::IFmt("Code cache: wrote {} blocks for {}", Builder.Blocks.size(), Section.FileInfo.Filename);
+    }
   }
 
-  if (RefSize > CachedSize) {
-    // C2: length equality, in the direction where a difference can only be a
-    // defect. The reference compile of exactly the cached blocks emitted MORE
-    // bytes than the cache holds, so the cache is short of code it needs: the
-    // prefix matched only because the divergence lies past the end of the file.
-    // Nothing legitimate produces this — the benign asymmetry documented below
-    // is the cache being longer, never shorter. Fatal, like a byte mismatch.
-    ERROR_AND_DIE_FMT("Cache validation failed for {}: the reference compile emitted {:#x} bytes for the cached blocks, but the cache only "
-                      "holds {:#x}. The {:#x} byte common prefix matched, so the divergence is past the end of the cached code.",
-                      Section.FileInfo.Filename, RefSize, CachedSize, CommonSize);
+  // Everything in the snapshot has had its chance: written, already on disk,
+  // not cacheable, below the per-file minimum, or outside every target. Drop
+  // it, and the relocations only it referenced.
+  {
+    std::lock_guard lk {RelocationSinkMutex};
+    const size_t N = Records.size();
+    const uint64_t SinkPrefix = Sink.size();
+    if (CompiledBlocks.size() >= N && RelocationSink.size() >= SinkPrefix) {
+      CompiledBlocks.erase(CompiledBlocks.begin(), CompiledBlocks.begin() + N);
+      RelocationSink.erase(RelocationSink.begin(), RelocationSink.begin() + SinkPrefix);
+      for (auto& Record : CompiledBlocks) {
+        Record.RelocBegin -= SinkPrefix;
+        Record.RelocEnd -= SinkPrefix;
+      }
+    }
   }
-
-  if (RefSize != CachedSize) {
-    // B2: the common prefix matches but the two are not the same length, so
-    // some bytes on one side were never examined. Deliberately NOT fatal: a
-    // file with more than one block-bearing executable VMA legitimately makes
-    // the reference compile a strict prefix of the cached buffer. LoadData
-    // filters BlockList down to the section being loaded but memcpy's the whole
-    // code buffer (see the "TODO: Only load the data needed for the selected
-    // section" there), so the cache carries every section's code while the
-    // reference only compiles this section's blocks. That case passes today and
-    // killing the process on it would be a regression.
-    LogMan::Msg::EFmt("Cache validation INCONCLUSIVE for {}: the common {:#x} byte prefix matches, but the reference compile emitted {:#x} "
-                      "bytes against {:#x} cached bytes, leaving {:#x} bytes unexamined{}",
-                      Section.FileInfo.Filename, CommonSize, RefSize, CachedSize, std::max(RefSize, CachedSize) - CommonSize,
-                      RefSize < CachedSize ? " (expected when the cache covers more than one executable section of this file)" : "");
-    ResetValidationState();
-    return;
-  }
-
-  // Reset Context state for next validation
-  ResetValidationState();
-
-  LogMan::Msg::IFmt("\tSuccessfully validated cache ({:#x} bytes)", CachedSize);
+  return SegmentsWritten;
 }
 
-bool CodeCache::ApplyCodeRelocations(uint64_t GuestEntry, std::span<std::byte> Code,
-                                     std::span<const FEXCore::CPU::Relocation> EntryRelocations, bool ForStorage) {
-#ifndef ARCHITECTURE_ppc64le
-  CPU::Arm64Emitter Emitter(&CTX, Code.data(), Code.size_bytes());
-  for (size_t j = 0; j < EntryRelocations.size(); ++j) {
-    const FEXCore::CPU::Relocation& Reloc = EntryRelocations[j];
-    Emitter.SetCursorOffset(Reloc.Header.Offset);
+bool CodeCache::ApplyCodeRelocations(uint64_t GuestEntry, std::span<std::byte> Code, std::span<const CPU::Relocation> EntryRelocations,
+                                     bool ForStorage) {
+  // Link records are handled around the other relocations, because a link
+  // thunk's caller word can be the first word of a guest RIP window (a
+  // link-first constant exit): the unlinked word is whatever the RIP
+  // relocation leaves there, not the word emitted in the generating process.
+  //   1. storage only: undo links (caller and thunk words, HostCode);
+  //   2. every other relocation;
+  //   3. store the resulting unlinked words in the record (the delinker
+  //      restores from them), and on install check the record is unlinked.
+  auto* Base = reinterpret_cast<uint8_t*>(Code.data());
+  const int64_t Size = static_cast<int64_t>(Code.size());
+  constexpr int64_t RecordOrigWordsOffset = 24; // PPC64BlockLinkRecord::OrigCallerWord, then OrigThunkWord
+  auto LinkSites = [&](const CPU::Relocation& Reloc, int64_t& Record, int64_t& Caller, int64_t& Thunk) {
+    Record = static_cast<int64_t>(Reloc.Header.Offset);
+    Caller = Record + Reloc.LinkRecord.CallerDelta;
+    Thunk = Record + Reloc.LinkRecord.ThunkDelta;
+    return Record >= 0 && Record <= Size - RecordOrigWordsOffset - 8 && Caller >= 0 && Caller <= Size - 4 && Thunk >= 0 && Thunk <= Size - 4;
+  };
 
-    switch (Reloc.Header.Type) {
-    case FEXCore::CPU::RelocationTypes::RELOC_NAMED_SYMBOL_LITERAL: {
-      // Generate a literal so we can place it
-      uint64_t Pointer = ForStorage ? 0 : GetNamedSymbolLiteral(CTX, Reloc.NamedSymbolLiteral.Symbol);
-      Emitter.dc64(Pointer);
-      break;
+  for (const auto& Reloc : EntryRelocations) {
+    if (Reloc.Header.Type != CPU::RelocationTypes::RELOC_LINK_RECORD) {
+      continue;
     }
-    case FEXCore::CPU::RelocationTypes::RELOC_NAMED_THUNK_MOVE: {
-      uint64_t Pointer = ForStorage ? 0 : reinterpret_cast<uint64_t>(CTX.ThunkHandler->LookupThunk(Reloc.NamedThunkMove.Symbol));
-      // See the ppc64le arm of this switch: an unregistered thunk resolves to
-      // nullptr and would be patched in as a call to address 0.
-      if (!ForStorage && (Pointer == 0 || Pointer == ~0ULL)) {
-        LogMan::Msg::EFmt("Code cache relocation references unresolvable thunk; rejecting cache");
-        return false;
-      }
-      // TODO: Pointers are required to fit within 48-bit VA space.
-      // But forcing 6-byte broke relocations.
-      Emitter.LoadConstant(ARMEmitter::Size::i64Bit, ARMEmitter::Register(Reloc.NamedThunkMove.RegisterIndex), Pointer,
-                           CPU::Arm64Emitter::PadType::DOPAD);
-      break;
+    int64_t Record, Caller, Thunk;
+    if (!LinkSites(Reloc, Record, Caller, Thunk)) {
+      return false;
     }
-    case FEXCore::CPU::RelocationTypes::RELOC_GUEST_RIP_LITERAL: {
-      Emitter.dc64(GuestEntry + Reloc.GuestRIP.GuestRIP);
-      break;
-    }
-    case FEXCore::CPU::RelocationTypes::RELOC_GUEST_RIP_MOVE: {
-      uint64_t Pointer = Reloc.GuestRIP.GuestRIP + GuestEntry;
-      // TODO: Pointers are required to fit within 48-bit VA space.
-      // But forcing 6-byte broke relocations.
-      Emitter.LoadConstant(ARMEmitter::Size::i64Bit, ARMEmitter::Register(Reloc.GuestRIP.RegisterIndex), Pointer, CPU::Arm64Emitter::PadType::DOPAD);
-      break;
-    }
-
-    default: ERROR_AND_DIE_FMT("Unknown relocation type {}", ToUnderlying(Reloc.Header.Type));
+    if (ForStorage) {
+      const uint64_t Zero = 0;
+      memcpy(Base + Caller, &Reloc.LinkRecord.OrigCallerWord, 4);
+      memcpy(Base + Thunk, &Reloc.LinkRecord.OrigThunkWord, 4);
+      memcpy(Base + Record, &Zero, sizeof(Zero));
     }
   }
 
-  return true;
-#else
-  // PPC64LE relocation patching
-  for (size_t j = 0; j < EntryRelocations.size(); ++j) {
-    const FEXCore::CPU::Relocation& Reloc = EntryRelocations[j];
+  for (const auto& Reloc : EntryRelocations) {
+    const uint64_t Width = RelocWidth(Reloc.Header.Type);
+    if (Reloc.Header.Offset > Code.size() || Width > Code.size() - Reloc.Header.Offset) {
+      LogMan::Msg::EFmt("Code cache relocation at {:#x} overruns its {:#x} byte block", Reloc.Header.Offset, Code.size());
+      return false;
+    }
     auto* Ptr = reinterpret_cast<uint8_t*>(Code.data()) + Reloc.Header.Offset;
     const size_t Remaining = Code.size() - Reloc.Header.Offset;
 
     switch (Reloc.Header.Type) {
-    case FEXCore::CPU::RelocationTypes::RELOC_NAMED_SYMBOL_LITERAL: {
-      uint64_t Pointer = ForStorage ? 0 : GetNamedSymbolLiteral(CTX, Reloc.NamedSymbolLiteral.Symbol);
+    case CPU::RelocationTypes::RELOC_NAMED_SYMBOL_LITERAL: {
+      uint64_t Pointer = ForStorage ? 0 : CPU::GetNamedSymbolLiteral(CTX, Reloc.NamedSymbolLiteral.Symbol);
       memcpy(Ptr, &Pointer, sizeof(Pointer));
       break;
     }
-    case FEXCore::CPU::RelocationTypes::RELOC_NAMED_THUNK_MOVE: {
+    case CPU::RelocationTypes::RELOC_NAMED_THUNK_MOVE: {
+      // Never stored (see CollectLiveBlocks). Fail closed on an unresolved thunk:
+      // patching in a null target would call address 0.
       uint64_t Pointer = ForStorage ? 0 : reinterpret_cast<uint64_t>(CTX.ThunkHandler->LookupThunk(Reloc.NamedThunkMove.Symbol));
-      // Fail closed on an unresolved thunk. LookupThunk returns nullptr for a
-      // thunk that is not registered yet, which is the normal state when a
-      // cache is loaded at mmap time, and patching that in produces a block
-      // that calls address 0 the first time it runs. SaveData refuses to cache
-      // blocks carrying this relocation for exactly that reason, so reaching
-      // here means the file predates that rule or came from elsewhere; reject
-      // it rather than arm the crash. ~0ULL is the pre-existing "known bad"
-      // sentinel and is kept.
       if (!ForStorage && (Pointer == 0 || Pointer == ~0ULL)) {
-        LogMan::Msg::EFmt("Code cache relocation references unresolvable thunk; rejecting cache");
-        return false;
-      }
-      // S3.7-C1: hard bounds check + fixed-width patch. The emitter's own
-      // width assert is in LOGMAN_THROW which is (void)pred in Release, so
-      // an under-sized Remaining would silently overrun. This is executable
-      // code being patched — Reloc.Header.Offset comes from a file at load
-      // time and from JIT emission at validation time.
-      if (Reloc.Header.Offset + PPC64Emitter::Emitter::LoadConstantFixedBytes > Code.size()) {
-        LogMan::Msg::EFmt("NamedThunkMove reloc @{:#x} would overrun buffer size {:#x}", Reloc.Header.Offset, Code.size());
         return false;
       }
       FEXCore::CPU::PPC64EmitterBase PatchEmitter(&CTX, Ptr, Remaining);
       PatchEmitter.LoadConstantFixed(PPC64Emitter::r(Reloc.NamedThunkMove.RegisterIndex), Pointer);
       break;
     }
-    case FEXCore::CPU::RelocationTypes::RELOC_GUEST_RIP_LITERAL: {
+    case CPU::RelocationTypes::RELOC_GUEST_RIP_LITERAL: {
       uint64_t Val = GuestEntry + Reloc.GuestRIP.GuestRIP;
       memcpy(Ptr, &Val, sizeof(Val));
       break;
     }
-    case FEXCore::CPU::RelocationTypes::RELOC_GUEST_RIP_MOVE: {
+    case CPU::RelocationTypes::RELOC_GUEST_RIP_MOVE: {
       uint64_t Pointer = Reloc.GuestRIP.GuestRIP + GuestEntry;
-      // S3.7-C1: same bounds guard as above.
-      if (Reloc.Header.Offset + PPC64Emitter::Emitter::LoadConstantFixedBytes > Code.size()) {
-        LogMan::Msg::EFmt("GuestRIP MOVE reloc @{:#x} would overrun buffer size {:#x}", Reloc.Header.Offset, Code.size());
-        return false;
-      }
       FEXCore::CPU::PPC64EmitterBase PatchEmitter(&CTX, Ptr, Remaining);
       PatchEmitter.LoadConstantFixed(PPC64Emitter::r(Reloc.GuestRIP.RegisterIndex), Pointer);
       break;
     }
-    default: ERROR_AND_DIE_FMT("Unknown relocation type {}", ToUnderlying(Reloc.Header.Type));
+    case CPU::RelocationTypes::RELOC_LINK_RECORD: break;
+    default: LogMan::Msg::EFmt("Unknown code cache relocation type {}", ToUnderlying(Reloc.Header.Type)); return false;
     }
   }
+
+  for (const auto& Reloc : EntryRelocations) {
+    if (Reloc.Header.Type != CPU::RelocationTypes::RELOC_LINK_RECORD) {
+      continue;
+    }
+    int64_t Record, Caller, Thunk;
+    if (!LinkSites(Reloc, Record, Caller, Thunk)) {
+      return false;
+    }
+    uint32_t CallerWord, ThunkWord;
+    uint64_t HostCode;
+    memcpy(&CallerWord, Base + Caller, 4);
+    memcpy(&ThunkWord, Base + Thunk, 4);
+    memcpy(&HostCode, Base + Record, sizeof(HostCode));
+    if (!ForStorage && (HostCode != 0 || ThunkWord != Reloc.LinkRecord.OrigThunkWord)) {
+      return false;
+    }
+    memcpy(Base + Record + RecordOrigWordsOffset, &CallerWord, 4);
+    memcpy(Base + Record + RecordOrigWordsOffset + 4, &ThunkWord, 4);
+  }
   return true;
-#endif
 }
 
 } // namespace FEXCore::Context

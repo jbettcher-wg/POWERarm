@@ -594,6 +594,8 @@ uint64_t ExecveHandler(FEXCore::Core::CpuStateFrame* Frame, const char* pathname
   }
 
   if (IsBinfmtCompatible || IsOtherELF || IsForeignShebang) {
+    // Last safe point of this image: keep what it compiled.
+    SyscallHandler->CodeCacheImageExit(Frame->Thread);
     FEX::HLE::VForkChildSync();
     Result = ::syscall(SYS_execveat, Args.dirfd, Filename.c_str(), argv, EnvpPtr, Args.flags);
     CloseSeccompFD();
@@ -668,6 +670,7 @@ uint64_t ExecveHandler(FEXCore::Core::CpuStateFrame* Frame, const char* pathname
     EnvpPtr = const_cast<char* const*>(EnvpArgs.data());
   }
 
+  SyscallHandler->CodeCacheImageExit(Frame->Thread);
   FEX::HLE::VForkChildSync();
   Result = ::syscall(SYS_execveat, Args.dirfd, "/proc/self/exe", const_cast<char* const*>(ExecveArgs.data()), EnvpPtr, Args.flags);
   CloseSeccompFD();

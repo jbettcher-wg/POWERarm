@@ -112,102 +112,109 @@ public:
   ~CodeCache();
 
   ContextImpl& CTX;
-  fextl::unique_ptr<ContextImpl> ValidationCTX;
-  fextl::unique_ptr<Core::InternalThreadState> ValidationThread;
   bool IsGeneratingCache = false;
 
   FEX_CONFIG_OPT(EnableCodeCaching, ENABLECODECACHINGWIP);
-  FEX_CONFIG_OPT(EnableCodeCacheValidation, ENABLECODECACHEVALIDATION);
 
   uint64_t ComputeCodeMapId(std::string_view Filename, int FD) override;
   bool SaveData(Core::InternalThreadState&, int TargetFD, const ExecutableFileSectionInfo&, uint64_t SerializedBaseAddress,
                 std::span<const GuestAddressRange> GuestRanges = {}) override;
-  bool LoadData(Core::InternalThreadState*, std::byte* MappedCacheFile, size_t MappedCacheFileSize, const ExecutableFileSectionInfo&) override;
-
-  // Buffer-relative offsets of one cached block, as stored on disk.
-  struct CachedBlockLocation {
-    uint64_t BlockBegin; ///< Offset of the JITCodeHeader
-    uint64_t HostCode;   ///< Offset of this entry point inside the block
-  };
-
-  /**
-   * Performs expensive extra validation on the loaded code cache data.
-   *
-   * This kicks off an in-process recompile of all cached blocks and compares
-   * them with the cached data. Differences will be reported as fatal errors,
-   * which can uncover bugs like for example:
-   * - mismatches of the JIT configuration used during cache generation
-   * - hidden position dependencies due to missing FEX relocations
-   * - incorrect instruction padding
-   * - a guest->host block table that does not describe the code it ships with
-   *
-   * CachedBlocks maps absolute guest entry addresses to their buffer-relative
-   * locations, i.e. it is the block-mapping table exactly as the loader read it.
-   */
-  void Validate(const ExecutableFileSectionInfo&, const fextl::map<uint64_t, CachedBlockLocation>& CachedBlocks, std::span<std::byte> CachedCode);
+  size_t SaveNewBlocks(Core::InternalThreadState&, std::span<const CodeCacheSaveTarget> Targets) override;
 
   void InitiateCacheGeneration() override {
     IsGeneratingCache = true;
   }
 
+  // A block installed from an on-disk cache, laid out exactly like a fresh
+  // compile of GuestRIP.
+  struct LoadedBlock {
+    uint8_t* BlockBegin;
+    uint8_t* HostCode;
+    size_t Size;
+    // Guest span the block was decoded from ([StartAddr, StartAddr + Length)).
+    uint64_t StartAddr;
+    uint64_t Length;
+  };
+
+  /**
+   * Looks GuestRIP up in the on-disk cache of the file it lies in and, if a
+   * block is present, still matches the guest's instruction bytes, and passes
+   * its integrity hash, copies it into the code buffer and relocates it.
+   * The caller registers it exactly as it would a compiled block.
+   *
+   * Must be called with CodeInvalidationMutex held shared (CompileBlock).
+   */
+  std::optional<LoadedBlock> TryLoadBlock(Core::InternalThreadState* Thread, uint64_t GuestRIP);
+
+  // True when TryLoadBlock can ever succeed in this process.
+  bool CanLoad() const {
+    return LoadEnabled;
+  }
+
   /**
    * Moves the relocations the given thread's backend has accumulated into the
-   * context-wide sink.
+   * context-wide sink, and records GuestRIP as compiled by this process.
    *
-   * Relocations are recorded per *thread* backend, but they describe offsets
-   * into the single shared code buffer. A process that writes caches at runtime
-   * saves from whichever thread reaches a safe point first, so leaving them in
-   * the compiling thread would silently drop every relocation belonging to a
-   * block another thread compiled — producing a cache that loads, relocates
-   * nothing, and branches to addresses from the generating process.
-   *
-   * GuestRIP relocations are absorbed with their *absolute* guest RIP (rebase
-   * against the file base happens per save), which also makes repeated saves
-   * idempotent — unlike CPUBackend::TakeRelocations, which is destructive and
-   * rebases in place.
-   *
-   * Called from ContextImpl::CompileBlock with the compile already finished.
+   * Relocations are recorded per thread backend but describe offsets into the
+   * shared code buffer, and a save runs on whichever thread reaches a safe point.
+   * GuestRIP relocations are kept absolute; each save rebases its own copy.
    */
-  void AbsorbRelocations(Core::InternalThreadState& Thread);
+  void AbsorbRelocations(Core::InternalThreadState& Thread, uint64_t GuestRIP);
 
-  // Drops the sink. Must be called whenever the code buffer rotates: every
-  // offset in it refers to a buffer that no longer exists.
+  // Drops the sink and the compiled-block list. Must be called whenever the
+  // code buffer rotates: every offset in them refers to a buffer that is gone.
   void ResetRelocations();
 
   bool WantsSave(bool IgnoreInterval) override;
   void NotifyCachesSaved() override;
+  void ResetAfterFork() override;
+  void DumpStats() override;
 
-  // Number of blocks compiled since the last save pass; also drives
-  // WantsSave.
+  // Counters for DumpStats. Relaxed atomics: diagnostic only.
+  struct {
+    std::atomic<uint64_t> Loaded, NotInIndex, NoFile, BadEntry, GuestMismatch, NotExecutable, RelocFailed, SavedBlocks, SavedSegments,
+      Compactions, SaveNS, LoadNS;
+  } Stats {};
+
+  // Number of blocks compiled since the last save pass; also drives WantsSave.
   std::atomic<uint64_t> BlocksSinceSave {0};
 
   /**
-   * Applies a set of FEX relocations to the given code section.
+   * Applies a set of relocations to the given code.
    *
-   * FEX relocations describe runtime-dependencies of FEX-generated code.
-   * When loading a code cache, they are used to move cached code to the
-   * dynamically chosen base address of the guest binary.
-   *
-   * Conversely, relocations are applied in reverse when writing code caches
-   * to ensure consistency across generation runs.
-   *
-   * Note that FEX relocations are unrelated to ELF/PE relocations.
-   *
-   * @param GuestDelta Guest address offset to apply to RIP-relative data
-   * @param ForStorage True for serializing data (producing deterministic output); false for de-serializing it (resolving dynamic symbols)
-   *
-   * @return Returns true on success
+   * @param GuestEntry Guest base added to RIP-relative data
+   * @param ForStorage True when serializing (deterministic output, links undone);
+   *                   false when installing (dynamic symbols resolved)
    */
   [[nodiscard]]
-  bool ApplyCodeRelocations(uint64_t GuestDelta, std::span<std::byte> Code, std::span<const CPU::Relocation> Relocations, bool ForStorage);
+  bool ApplyCodeRelocations(uint64_t GuestEntry, std::span<std::byte> Code, std::span<const CPU::Relocation> Relocations, bool ForStorage);
+
+  struct CacheSegment;
+  struct FileCache;
 
 private:
-  // Context-wide relocation sink. See AbsorbRelocations. GuestRIP entries hold
-  // absolute guest addresses; Header.Offset is relative to the code buffer base.
-  std::mutex RelocationSinkMutex;
-  fextl::vector<CPU::Relocation> RelocationSink;
+  FileCache* GetFileCache(const ExecutableFileInfo& FileInfo);
 
-  // Monotonic timestamp (CLOCK_MONOTONIC seconds) of the last save pass.
+  bool LoadEnabled = false;
+
+  std::mutex RelocationSinkMutex;
+  // GuestRIP entries hold absolute guest addresses; Header.Offset is relative to
+  // the code buffer base.
+  fextl::vector<CPU::Relocation> RelocationSink;
+  // Every block this process compiled (not loaded) since the buffer was
+  // created, the process forked, or the last save pass, with the range of
+  // RelocationSink its compile appended.
+  struct CompiledRecord {
+    uint64_t GuestRIP;
+    uint64_t RelocBegin;
+    uint64_t RelocEnd;
+  };
+  fextl::vector<CompiledRecord> CompiledBlocks;
+
+
+  std::shared_mutex RegistryMutex;
+  fextl::map<uint64_t, fextl::unique_ptr<FileCache>> Registry;
+
   std::atomic<uint64_t> LastSaveTimeSeconds {0};
 };
 
@@ -219,6 +226,7 @@ public:
   void ExecuteThread(FEXCore::Core::InternalThreadState* Thread) override;
 
   bool CheckIfBlockIsCacheable(FEXCore::Core::InternalThreadState&, uint64_t GuestRIP, uint64_t MaxInst) override;
+  uintptr_t RegisterCachedBlock(FEXCore::Core::InternalThreadState* Thread, uint64_t GuestRIP, const CodeCache::LoadedBlock& Block);
   void CompileRIP(FEXCore::Core::InternalThreadState* Thread, uint64_t GuestRIP) override;
   void CompileRIPCount(FEXCore::Core::InternalThreadState* Thread, uint64_t GuestRIP, uint64_t MaxInst) override;
 
