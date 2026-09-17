@@ -1,0 +1,34 @@
+fmul	d0, d8, d11
+fcvtzs	d1, d0
+fcvtzs	x8, d0
+scvtf	d1, d1
+fadd	d2, d1, d12
+fcmp	d0, d1
+fcsel	d0, d2, d1, mi	// mi = first
+fcvt	s1, d8
+fcvt	d1, s1
+fmov	d2, x20
+fmul	d2, d8, d2
+fcvtzs	w9, d2
+add	x10, x0, x25
+add	x10, x10, x19
+add	x8, x10, x8
+add	x25, x8, w9, sxtw
+fcvtzs	d2, d9
+scvtf	d2, d2
+fcvtzu	d3, d10
+ucvtf	d3, d3
+add	x23, x23, x26
+fmov	d4, x27
+fmadd	d2, d2, d4, d3
+fadd	d1, d2, d1
+fsub	d0, d1, d0
+and	w8, w25, #0xffff
+ucvtf	d1, w8
+fmul	d1, d1, d13
+fmadd	d1, d8, d14, d1
+str	d1, [x28, x21]
+fadd	d15, d15, d0
+add	x21, x21, #0x8
+cmp	x21, #0x10, lsl #12
+b.ne	400924 <main+0x1c4>  // b.any

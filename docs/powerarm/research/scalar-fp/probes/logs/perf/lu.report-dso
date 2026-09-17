@@ -1,0 +1,11 @@
+    95.63%  [JIT] tid 4127450  
+     3.70%  POWERarm           
+     0.26%  ld64.so.2          
+     0.10%  [vdso]             
+     0.09%  libfmt.so.12.2.0   
+     0.09%  libstdc++.so.6.0.35
+     0.08%  libc.so.6          
+     0.03%  [unknown]          
+     0.03%  libxxhash.so.0.8.3 
+
+

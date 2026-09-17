@@ -1,0 +1,175 @@
+
+hostcode/cmpsel_0xbc8.bin:     file format binary
+
+
+Disassembly of section .data:
+
+0000000000000000 <.data>:
+   0:	c0 02 00 00 	.long 0x2c0
+   4:	a8 03 7b e8 	ld      r3,936(r27)
+   8:	00 00 03 98 	stb     r0,0(r3)
+   c:	a8 00 1b eb 	ld      r24,168(r27)
+  10:	ff ff 18 3b 	addi    r24,r24,-1
+  14:	b0 00 1b fb 	std     r24,176(r27)
+  18:	b0 00 1b eb 	ld      r24,176(r27)
+  1c:	20 00 18 7b 	clrldi  r24,r24,32
+  20:	24 1f 18 7b 	sldi    r24,r24,3
+  24:	14 c2 12 7f 	add     r24,r18,r24
+  28:	99 04 58 7c 	lxsdx   vs34,r24,r0
+  2c:	57 12 42 f0 	xxswapd vs34,vs34
+  30:	57 12 c2 f3 	xxswapd vs62,vs34
+  34:	57 0a e1 f3 	xxswapd vs63,vs33
+  38:	1e f9 1e f0 	xscmpudp cr0,vs62,vs63
+  3c:	26 00 78 7c 	mfocrf  r3,128
+  40:	fe 0f 65 54 	srwi    r5,r3,31
+  44:	01 00 a5 68 	xori    r5,r5,1
+  48:	ff ff 85 30 	addic   r4,r5,-1
+  4c:	fe 27 65 54 	rlwinm  r5,r3,4,31,31
+  50:	46 f0 a4 78 	sldi    r4,r5,62
+  54:	14 26 84 7c 	addo    r4,r4,r4
+  58:	80 04 80 7c 	mcrxrx  cr1
+  5c:	82 21 80 4d 	crxor   4*cr3+lt,lt,4*cr1+lt
+  60:	42 10 ac 4d 	crnor   4*cr3+gt,4*cr3+lt,eq
+  64:	08 00 8d 41 	bgt     cr3,0x6c
+  68:	08 00 00 48 	b       0x70
+  6c:	3c 00 00 48 	b       0xa8
+  70:	84 02 00 48 	b       0x2f4
+  74:	b0 0b 63 60 	ori     r3,r3,2992
+  78:	10 00 7b f8 	std     r3,16(r27)
+  7c:	28 00 9b e8 	ld      r4,40(r27)
+  80:	28 22 66 78 	rldic   r6,r3,4,40
+  84:	14 32 84 7c 	add     r4,r4,r6
+  88:	08 00 c4 e8 	ld      r6,8(r4)
+  8c:	00 18 a6 7f 	cmpd    cr7,r6,r3
+  90:	14 00 9e 40 	bne     cr7,0xa4
+  94:	78 32 c5 7c 	xor     r5,r6,r6
+  98:	2a 28 a4 7c 	ldx     r5,r4,r5
+  9c:	a6 03 a9 7c 	mtctr   r5
+  a0:	20 04 80 4e 	bctr
+  a4:	50 00 00 48 	b       0xf4
+  a8:	40 00 60 3c 	lis     r3,64
+  ac:	d8 0b 63 60 	ori     r3,r3,3032
+  b0:	10 00 7b f8 	std     r3,16(r27)
+  b4:	28 00 9b e8 	ld      r4,40(r27)
+  b8:	28 22 66 78 	rldic   r6,r3,4,40
+  bc:	14 32 84 7c 	add     r4,r4,r6
+  c0:	08 00 c4 e8 	ld      r6,8(r4)
+  c4:	00 18 a6 7f 	cmpd    cr7,r6,r3
+  c8:	14 00 9e 40 	bne     cr7,0xdc
+  cc:	78 32 c5 7c 	xor     r5,r6,r6
+  d0:	2a 28 a4 7c 	ldx     r5,r4,r5
+  d4:	a6 03 a9 7c 	mtctr   r5
+  d8:	20 04 80 4e 	bctr
+  dc:	80 00 00 48 	b       0x15c
+  e0:	14 00 00 48 	b       0xf4
+  e4:	a6 02 68 7c 	mflr    r3
+  e8:	2c 00 83 e8 	ld      r4,44(r3)
+  ec:	a6 03 89 7c 	mtctr   r4
+  f0:	20 04 80 4e 	bctr
+  f4:	05 00 9f 42 	bcl     20,4*cr7+so,0xf8
+  f8:	a6 02 88 7c 	mflr    r4
+  fc:	18 00 84 38 	addi    r4,r4,24
+ 100:	b0 00 00 48 	b       0x1b0
+ 104:	00 00 00 60 	nop
+ 108:	00 00 00 60 	nop
+ 10c:	00 00 00 60 	nop
+	...
+ 118:	b0 0b 40 00 	.long 0x400bb0
+ 11c:	00 00 00 00 	.long 0x0
+ 120:	60 ff ff ff 	.long 0xffffff60
+ 124:	ff ff ff ff 	fnmadd. f31,f31,f31,f31
+ 128:	40 00 60 3c 	lis     r3,64
+ 12c:	14 00 00 48 	b       0x140
+ 130:	b0 04 f2 f7 	.long 0xf7f204b0
+ 134:	ff 7f 00 00 	.long 0x7fff
+	...
+ 148:	14 00 00 48 	b       0x15c
+ 14c:	a6 02 68 7c 	mflr    r3
+ 150:	2c 00 83 e8 	ld      r4,44(r3)
+ 154:	a6 03 89 7c 	mtctr   r4
+ 158:	20 04 80 4e 	bctr
+ 15c:	05 00 9f 42 	bcl     20,4*cr7+so,0x160
+ 160:	a6 02 88 7c 	mflr    r4
+ 164:	18 00 84 38 	addi    r4,r4,24
+ 168:	48 00 00 48 	b       0x1b0
+ 16c:	00 00 00 60 	nop
+ 170:	00 00 00 60 	nop
+ 174:	00 00 00 60 	nop
+	...
+ 180:	d8 0b 40 00 	.long 0x400bd8
+ 184:	00 00 00 00 	.long 0x0
+ 188:	30 ff ff ff 	.long 0xffffff30
+ 18c:	ff ff ff ff 	fnmadd. f31,f31,f31,f31
+ 190:	40 00 60 3c 	lis     r3,64
+ 194:	14 00 00 48 	b       0x1a8
+ 198:	b0 04 f2 f7 	.long 0xf7f204b0
+ 19c:	ff 7f 00 00 	.long 0x7fff
+	...
+ 1b0:	48 00 fb f8 	std     r7,72(r27)
+ 1b4:	50 00 1b f9 	std     r8,80(r27)
+ 1b8:	58 00 3b f9 	std     r9,88(r27)
+ 1bc:	60 00 5b f9 	std     r10,96(r27)
+ 1c0:	68 00 7b f9 	std     r11,104(r27)
+ 1c4:	70 00 9b f9 	std     r12,112(r27)
+ 1c8:	78 00 db f9 	std     r14,120(r27)
+ 1cc:	80 00 fb f9 	std     r15,128(r27)
+ 1d0:	88 00 1b fa 	std     r16,136(r27)
+ 1d4:	e0 00 3b fa 	std     r17,224(r27)
+ 1d8:	e8 00 5b fa 	std     r18,232(r27)
+ 1dc:	f0 00 7b fa 	std     r19,240(r27)
+ 1e0:	f8 00 9b fa 	std     r20,248(r27)
+ 1e4:	00 01 bb fa 	std     r21,256(r27)
+ 1e8:	08 01 db fa 	std     r22,264(r27)
+ 1ec:	30 01 fb fa 	std     r23,304(r27)
+ 1f0:	38 01 9b fb 	std     r28,312(r27)
+ 1f4:	40 01 bb fb 	std     r29,320(r27)
+ 1f8:	70 01 60 38 	li      r3,368
+ 1fc:	ce 19 1b 7c 	stvx    v0,r27,r3
+ 200:	80 01 60 38 	li      r3,384
+ 204:	ce 19 3b 7c 	stvx    v1,r27,r3
+ 208:	90 01 60 38 	li      r3,400
+ 20c:	ce 19 5b 7c 	stvx    v2,r27,r3
+ 210:	a0 01 60 38 	li      r3,416
+ 214:	ce 19 7b 7c 	stvx    v3,r27,r3
+ 218:	b0 01 60 38 	li      r3,432
+ 21c:	ce 19 9b 7c 	stvx    v4,r27,r3
+ 220:	c0 01 60 38 	li      r3,448
+ 224:	ce 19 bb 7c 	stvx    v5,r27,r3
+ 228:	d0 01 60 38 	li      r3,464
+ 22c:	ce 19 db 7c 	stvx    v6,r27,r3
+ 230:	e0 01 60 38 	li      r3,480
+ 234:	ce 19 fb 7c 	stvx    v7,r27,r3
+ 238:	f0 01 60 38 	li      r3,496
+ 23c:	ce 19 1b 7d 	stvx    v8,r27,r3
+ 240:	00 02 60 38 	li      r3,512
+ 244:	ce 19 3b 7d 	stvx    v9,r27,r3
+ 248:	10 02 60 38 	li      r3,528
+ 24c:	ce 19 5b 7d 	stvx    v10,r27,r3
+ 250:	20 02 60 38 	li      r3,544
+ 254:	ce 19 7b 7d 	stvx    v11,r27,r3
+ 258:	30 02 60 38 	li      r3,560
+ 25c:	ce 19 9b 7d 	stvx    v12,r27,r3
+ 260:	40 02 60 38 	li      r3,576
+ 264:	ce 19 bb 7d 	stvx    v13,r27,r3
+ 268:	50 02 60 38 	li      r3,592
+ 26c:	ce 19 db 7d 	stvx    v14,r27,r3
+ 270:	60 02 60 38 	li      r3,608
+ 274:	ce 19 fb 7d 	stvx    v15,r27,r3
+ 278:	66 01 04 7c 	mtfprd  f0,r4
+ 27c:	26 00 98 7c 	mfocrf  r4,128
+ 280:	00 00 85 54 	clrrwi  r5,r4,31
+ 284:	42 08 84 54 	rlwinm  r4,r4,1,1,1
+ 288:	78 23 a5 7c 	or      r5,r5,r4
+ 28c:	a6 02 81 7c 	mfxer   r4
+ 290:	84 00 83 54 	rlwinm  r3,r4,0,2,2
+ 294:	78 1b a5 7c 	or      r5,r5,r3
+ 298:	c6 f0 84 54 	rlwinm  r4,r4,30,3,3
+ 29c:	78 23 a5 7c 	or      r5,r5,r4
+ 2a0:	18 00 bb 90 	stw     r5,24(r27)
+ 2a4:	66 00 04 7c 	mffprd  r4,f0
+ 2a8:	20 00 64 e8 	ld      r3,32(r4)
+ 2ac:	a6 03 69 7c 	mtctr   r3
+ 2b0:	20 04 80 4e 	bctr
+ 2b4:	00 00 00 60 	nop
+ 2b8:	00 00 00 60 	nop
+ 2bc:	00 00 00 60 	nop

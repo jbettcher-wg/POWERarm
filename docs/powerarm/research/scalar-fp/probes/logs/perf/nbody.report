@@ -1,0 +1,6 @@
+    52.86%  [JIT] tid 4126668    [.] /home/jbettcher/tmp/sfp/nbody+0xbe0 (0x80004547cf50)
+    36.87%  [JIT] tid 4126668    [.] /home/jbettcher/tmp/sfp/nbody+0xbc8 (0x80004547bcb0)
+     8.76%  [JIT] tid 4126668    [.] /home/jbettcher/tmp/sfp/nbody+0xb00 (0x80004547e580)
+     0.79%  [JIT] tid 4126668    [.] /home/jbettcher/tmp/sfp/nbody+0xbac (0x80004547e2c0)
+
+

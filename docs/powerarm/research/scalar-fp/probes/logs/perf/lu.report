@@ -1,0 +1,13 @@
+    77.18%  [JIT] tid 4127450    [.] /home/jbettcher/tmp/sfp/lu+0xd00 (0x80004547d6f0)
+     5.71%  [JIT] tid 4127450    [.] /home/jbettcher/tmp/sfp/lu+0xcec (0x80004547cfa0)
+     3.92%  [JIT] tid 4127450    [.] /home/jbettcher/tmp/sfp/lu+0xa00 (0x800045479150)
+     1.99%  [JIT] tid 4127450    [.] /home/jbettcher/tmp/sfp/lu+0xc80 (0x80004547dfa0)
+     1.83%  [JIT] tid 4127450    [.] /home/jbettcher/tmp/sfp/lu+0xcc0 (0x80004547c5a0)
+     1.62%  [JIT] tid 4127450    [.] /home/jbettcher/tmp/sfp/lu+0xe08 (0x8000454811d0)
+     1.13%  [JIT] tid 4127450    [.] /home/jbettcher/tmp/sfp/lu+0xca4 (0x80004547c1f0)
+     0.86%  [JIT] tid 4127450    [.] /home/jbettcher/tmp/sfp/lu+0xcc4 (0x80004547c9a0)
+     0.77%  POWERarm             [.] FEXCore::CPU::PPC64JITCore::CompileCode(unsigned long, unsigned long, bool, FEXCore::IR::IRListView const*, FEXCore::Core::DebugData*, bool)
+     0.77%  POWERarm             [.] FEXCore::A64::(anonymous namespace)::BuildTable() [clone .llvm.4614511505888916236]
+     0.70%  [JIT] tid 4127450    [.] /home/jbettcher/tmp/sfp/lu+0xb60 (0x80004547b5c0)
+
+

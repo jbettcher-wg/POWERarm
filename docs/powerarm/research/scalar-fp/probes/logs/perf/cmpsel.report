@@ -1,0 +1,7 @@
+    70.44%  [JIT] tid 4128298    [.] /home/jbettcher/tmp/sfp/cmpsel+0xac0 (0x80004547b1f0)
+    19.43%  [JIT] tid 4128298    [.] /home/jbettcher/tmp/sfp/cmpsel+0xbc8 (0x80004547d700)
+     7.63%  [JIT] tid 4128298    [.] /home/jbettcher/tmp/sfp/cmpsel+0xbd8 (0x80004547cf60)
+     0.73%  [JIT] tid 4128298    [.] /home/jbettcher/tmp/sfp/cmpsel+0xbc0 (0x80004547cc40)
+     0.60%  [JIT] tid 4128298    [.] /home/jbettcher/tmp/sfp/cmpsel+0xb6c (0x80004547c710)
+
+

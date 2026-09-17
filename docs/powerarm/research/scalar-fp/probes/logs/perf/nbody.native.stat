@@ -1,0 +1,36 @@
+# started on Wed Sep 16 21:24:55 2026
+
+1720810058,,cycles:u,227900490,49.00,,
+2131496769,,instructions:u,342801660,74.00,,
+120028046,,branches:u,343351512,75.00,,
+678,,branch-misses:u,113859438,24.00,,
+# started on Wed Sep 16 21:24:56 2026
+
+1175587022,,pm_cmplu_stall:u,342306606,74.00,,
+69287146,,pm_cmplu_stall_st_fwd:u,228753594,50.00,,
+42628,,pm_cmplu_stall_lhs:u,343280450,75.00,,
+7725,,pm_flush:u,228427640,49.00,,
+# started on Wed Sep 16 21:24:56 2026
+
+805439581,,pm_cmplu_stall_exec_unit:u,114525216,25.00,,
+806122208,,pm_cmplu_stall_dp:u,229415454,50.00,,
+0,,pm_cmplu_stall_vdp:u,343380870,75.00,,
+10222,,pm_cmplu_stall_fxu:u,342732168,74.00,,
+# started on Wed Sep 16 21:24:57 2026
+
+471777499,,pm_cmplu_stall_dplong:u,342285420,74.00,,
+0,,pm_cmplu_stall_vdplong:u,114930952,25.00,,
+0,,pm_cmplu_stall_mtfpscr:u,228877412,50.00,,
+1252,,pm_flush_mpred:u,342796218,74.00,,
+# started on Wed Sep 16 21:24:57 2026
+
+2249,,pm_br_mpred_cmpl:u,228313494,49.00,,
+855,,pm_cmplu_stall_bru:u,114801808,25.00,,
+368641680,,pm_cmplu_stall_lsu:u,228676044,50.00,,
+4514,,pm_cmplu_stall_dcache_miss:u,113785964,24.00,,
+# started on Wed Sep 16 21:24:57 2026
+
+1091,,pm_cmplu_stall_ntc_flush:u,456411612,100.00,,
+68270,,pm_cmplu_stall_flush_any_thread:u,456411612,100.00,,
+63860871,,pm_vsu_fsqrt_fdiv:u,456411612,100.00,,
+1496969627,,pm_cmplu_stall_other_cmpl:u,456411612,100.00,,

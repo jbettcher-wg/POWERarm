@@ -1,0 +1,7 @@
+    76.41%  [JIT] tid 4127869   [.] /home/jbettcher/tmp/sfp/cvtmix+0x94c (0x800045479350)
+    17.67%  [JIT] tid 4127869   [.] /home/jbettcher/tmp/sfp/cvtmix+0x924 (0x800045479cc0)
+     0.76%  POWERarm            [.] FEXCore::A64::(anonymous namespace)::BuildTable() [clone .llvm.4614511505888916236]
+     0.60%  [JIT] tid 4127869   [.] /home/jbettcher/tmp/sfp/cvtmix+0xb60 (0x8000454791c0)
+     0.57%  POWERarm            [.] FEXCore::CPU::PPC64JITCore::CompileCode(unsigned long, unsigned long, bool, FEXCore::IR::IRListView const*, FEXCore::Core::DebugData*, bool)
+
+

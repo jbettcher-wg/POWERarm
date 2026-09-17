@@ -1,0 +1,10 @@
+ldr	d8, [x28, x21]
+fmov	d0, x22
+fcvtzs	x19, d8, #6
+fmul	d9, d8, d0
+fneg	d0, d8
+fcmp	d8, #0.0
+fcsel	d10, d0, d8, mi	// mi = first
+fcvtzu	x26, d10
+fmov	d0, d8
+bl	400b60 <__lround>

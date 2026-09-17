@@ -1,0 +1,8 @@
+ldr	s1, [x20, x10]
+ldr	s3, [x27, x10]
+fmul	s2, s3, s3
+fmadd	s2, s1, s1, s2
+fsqrt	s4, s2
+fmov	s2, #1.000000000000000000e+00
+fcmp	s4, s10
+b.le	4009e0 <main+0x280>
