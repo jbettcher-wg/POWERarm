@@ -1,0 +1,12 @@
+alpha:x:1000:100:Alpha user:/home/alpha:/bin/sh
+bravo:x:1001:101:Bravo user:/home/bravo:/bin/sh
+charlie:x:1002:102:Charlie user:/home/charlie:/bin/sh
+delta:x:1003:100:Delta user:/home/delta:/bin/sh
+echo:x:1004:101:Echo user:/home/echo:/bin/sh
+foxtrot:x:1005:102:Foxtrot user:/home/foxtrot:/bin/sh
+golf:x:1006:100:Golf user:/home/golf:/bin/sh
+hotel:x:1007:101:Hotel user:/home/hotel:/bin/sh
+india:x:1008:102:India user:/home/india:/bin/sh
+juliet:x:1009:100:Juliet user:/home/juliet:/bin/sh
+kilo:x:1010:101:Kilo user:/home/kilo:/bin/sh
+lima:x:1011:102:Lima user:/home/lima:/bin/sh

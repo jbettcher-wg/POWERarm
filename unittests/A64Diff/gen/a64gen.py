@@ -1,0 +1,1115 @@
+#!/usr/bin/env python3
+# SPDX-License-Identifier: MIT
+"""A64 instruction-level differential test generator.
+
+Subcommands:
+  gen       write one assembly program per test plus manifest.pre.tsv
+  finalize  read the linked ELFs, resolve the initial state, encodings and
+            disassembly, and write manifest.tsv
+
+Every program loads a seeded initial state (X0-X30, SP, NZCV and a 4096-byte
+data page), runs one instruction or a short sequence, and writes one fixed-size
+binary record to fd 1 before calling exit(0).  The record layout is defined in
+../tool/a64diff.h and must match the REC_* constants below.
+
+Output is a pure function of (--seed, --scale, this file).
+"""
+
+import argparse
+import os
+import random
+import struct
+import subprocess
+import sys
+
+FORMAT_VERSION = 1
+
+# Record layout (little-endian).  Keep in sync with tool/a64diff.h.
+REC_X = 16            # x[0..30]
+REC_SP = 264
+REC_PCMARK = 272
+REC_NZCV = 280
+REC_SIGNO = 296
+REC_SIGCODE = 304
+REC_SIGADDR = 312
+REC_PAGE = 848
+REC_SIZE = 4944
+PAGE_SIZE = 4096
+
+# Initial-state block layout: x0..x30, sp, nzcv.
+INIT_SP = 248
+INIT_NZCV = 256
+
+MASK64 = (1 << 64) - 1
+MASK32 = (1 << 32) - 1
+
+EDGE = [
+    0, 1, 2, 3, 0x1f, 0x20, 0x21, 0x3f, 0x40, 0x41, 0x7f, 0x80, 0xff, 0x100,
+    0x7fff, 0x8000, 0xffff, 0x10000,
+    0x7fffffff, 0x80000000, 0x80000001, 0xfffffffe, 0xffffffff,
+    0x100000000, 0x100000001, 0x17fffffff,
+    0x7fffffffffffffff, 0x8000000000000000, 0x8000000000000001,
+    0xfffffffffffffffe, 0xffffffffffffffff,
+    0xffffffff80000000, 0xffffffff7fffffff, 0xffffffffffffffe0,
+    0xffffffffffffffc1, 0xffffffffffffffc0,
+    0x5555555555555555, 0xaaaaaaaaaaaaaaaa, 0x00ff00ff00ff00ff,
+]
+SHIFT_EDGE = [0, 1, 2, 31, 32, 33, 63, 64, 65, 127, 128, 255, 0xffffffff,
+              0x100000000, 0x100000001, 0x8000000000000000, 0xffffffffffffffff]
+
+COND_NAMES = ["eq", "ne", "cs", "cc", "mi", "pl", "vs", "vc",
+              "hi", "ls", "ge", "lt", "gt", "le", "al", "nv"]
+
+# Classes whose failures do not fail a run by default (see README).
+OPTIONAL_CLASSES = {"signals", "sysreg-id", "tbi"}
+
+
+def cond_holds(cond, nzcv):
+    n, z, c, v = (nzcv >> 31) & 1, (nzcv >> 30) & 1, (nzcv >> 29) & 1, (nzcv >> 28) & 1
+    base = cond >> 1
+    r = [z == 1, c == 1, n == 1, v == 1, c == 1 and z == 0, n == v,
+         n == v and z == 0, True][base]
+    if (cond & 1) and cond != 15:
+        r = not r
+    return r
+
+
+class Rng(random.Random):
+    def val(self):
+        r = self.random()
+        if r < 0.40:
+            return self.choice(EDGE)
+        if r < 0.55:
+            return (self.getrandbits(32) << 32) | (self.choice(EDGE) & MASK32)
+        if r < 0.65:
+            return (self.randrange(-64, 64)) & MASK64
+        return self.getrandbits(64)
+
+    def shiftval(self):
+        if self.random() < 0.6:
+            return self.choice(SHIFT_EDGE)
+        return self.getrandbits(64) if self.random() < 0.5 else self.randrange(0, 256)
+
+    def gpr(self, exclude=()):
+        """A register 0..30 not in exclude."""
+        while True:
+            r = self.randrange(31)
+            if r not in exclude:
+                return r
+
+    def imm_edge(self, bits, extra=()):
+        top = (1 << bits) - 1
+        c = [0, 1, top, top - 1, 1 << (bits - 1), (1 << (bits - 1)) - 1] + list(extra)
+        if self.random() < 0.5:
+            return self.choice(c) & top
+        return self.getrandbits(bits)
+
+    def simm(self, bits):
+        lo, hi = -(1 << (bits - 1)), (1 << (bits - 1)) - 1
+        if self.random() < 0.5:
+            return self.choice([lo, lo + 1, -1, 0, 1, hi])
+        return self.randrange(lo, hi + 1)
+
+
+class Test:
+    def __init__(self, cls, sub, rng):
+        self.cls = cls
+        self.sub = sub
+        self.rng = rng
+        # Register values: int, or ("page", off) / ("sym", name, off) expressions.
+        self.x = [rng.val() if rng.random() < 0.3 else rng.getrandbits(64) for _ in range(31)]
+        r = rng.random()
+        if r < 0.5:
+            self.sp = rng.getrandbits(64)
+        elif r < 0.8:
+            self.sp = rng.choice(EDGE)
+        else:
+            self.sp = ("page", 16 * rng.randrange(0, 256))
+        self.nzcv = rng.randrange(16) << 28
+        self.page = rng.randbytes(PAGE_SIZE)
+        self.seq = []          # assembly lines at test_insn
+        self.pre = []          # lines before _start (backward pads)
+        self.post = []         # lines after the fall-through pad
+        self.signals = False
+        self.expect = "state"
+
+    def inst(self, word):
+        self.seq.append(".inst 0x%08x" % (word & MASK32))
+        return self
+
+    def memsp(self, base_off):
+        self.sp = ("page", base_off)
+
+
+def expr(v):
+    if isinstance(v, int):
+        return "0x%016x" % (v & MASK64)
+    if v[0] == "page":
+        return "page + (%d)" % v[1]
+    if v[0] == "sym":
+        return "%s + (%d)" % (v[1], v[2])
+    raise ValueError(v)
+
+
+# ---------------------------------------------------------------- templates
+
+PRELUDE = """\
+// Generated by a64gen.py: class {cls}, test {tid}. Do not edit.
+    .equ REC_SIZE, {rec_size}
+    .text
+    .p2align 2
+{pre}
+    .global _start
+_start:
+{siginstall}
+    adrp x30, init_state
+    add x30, x30, :lo12:init_state
+    ldr x0, [x30, #{init_sp}]
+    mov sp, x0
+    ldr x0, [x30, #{init_nzcv}]
+    msr nzcv, x0
+{loadpairs}
+    ldr x30, [x30, #240]
+    .global test_insn
+test_insn:
+{seq}
+    .global test_end
+test_end:
+{pad0}
+{post}
+dump_common:
+    str x1, [x0, #{rec_pcmark}]
+{savepairs}
+    str x30, [x0, #{rec_x30}]
+    mrs x1, tpidr_el0
+    str x1, [x0, #{rec_x0}]
+    mov x1, sp
+    str x1, [x0, #{rec_sp}]
+    mrs x1, nzcv
+    str x1, [x0, #{rec_nzcv}]
+emit_record:
+    mov x0, #1
+    adrp x1, rec
+    add x1, x1, :lo12:rec
+    mov x2, #REC_SIZE
+    mov x8, #64
+    svc #0
+    mov x0, #0
+    mov x8, #93
+    svc #0
+    .inst 0x00000000
+{handler}
+    .data
+    .p2align 3
+init_state:
+{init}
+    .p2align 12
+    .skip {pad_before_rec}
+    .global rec
+rec:
+    .ascii "A64D"
+    .short {version}
+    .short 1
+    .int 0
+    .int REC_SIZE
+    .skip {rec_body}
+    .global page
+page:
+{page}
+    .bss
+    .p2align 12
+altstack:
+    .skip 65536
+"""
+
+HANDLER = """\
+sig_handler:
+    // x0 = signo, x1 = siginfo, x2 = ucontext.  Never returns.
+    adrp x9, rec
+    add x9, x9, :lo12:rec
+    mov w10, #2
+    strh w10, [x9, #6]
+    str x0, [x9, #%d]
+    ldrsw x10, [x1, #8]
+    str x10, [x9, #%d]
+    ldr x10, [x1, #16]
+    str x10, [x9, #%d]
+    add x11, x2, #176          // uc_mcontext
+    mov x12, #0
+1:  add x13, x11, x12, lsl #3
+    ldr x14, [x13, #8]         // regs[i]
+    add x13, x9, x12, lsl #3
+    str x14, [x13, #%d]
+    add x12, x12, #1
+    cmp x12, #31
+    b.ne 1b
+    ldr x14, [x11, #256]
+    str x14, [x9, #%d]
+    ldr x14, [x11, #264]
+    str x14, [x9, #%d]
+    ldr x14, [x11, #272]
+    and x14, x14, #0xf0000000
+    str x14, [x9, #%d]
+    b emit_record
+sigaction:
+    .quad sig_handler
+    .quad 0x08000004           // SA_ONSTACK | SA_SIGINFO
+    .quad 0
+    .quad 0
+sigstack:
+    .quad altstack
+    .quad 0
+    .quad 65536
+""" % (REC_SIGNO, REC_SIGCODE, REC_SIGADDR, REC_X, REC_SP, REC_PCMARK, REC_NZCV)
+
+
+def siginstall():
+    out = ["    adrp x0, sigstack", "    add x0, x0, :lo12:sigstack",
+           "    mov x1, #0", "    mov x8, #132", "    svc #0"]
+    for sig in (4, 5, 7, 8, 11):
+        out += ["    mov x0, #%d" % sig, "    adrp x1, sigaction",
+                "    add x1, x1, :lo12:sigaction", "    mov x2, #0",
+                "    mov x3, #8", "    mov x8, #134", "    svc #0"]
+    return "\n".join(out)
+
+
+def pad(k):
+    return ("pad_%d:\n    msr tpidr_el0, x0\n    adrp x0, rec\n    add x0, x0, :lo12:rec\n"
+            "    str x1, [x0, #%d]\n    mov x1, #%d\n    b dump_common" % (k, REC_X + 8, k))
+
+
+def render(t, tid):
+    load = []
+    for i in range(0, 30, 2):
+        load.append("    ldp x%d, x%d, [x30, #%d]" % (i, i + 1, 8 * i))
+    save = []
+    for i in range(2, 30, 2):
+        save.append("    stp x%d, x%d, [x0, #%d]" % (i, i + 1, REC_X + 8 * i))
+    init = ["    .quad %s" % expr(v) for v in t.x]
+    init.append("    .quad %s" % expr(t.sp))
+    init.append("    .quad 0x%016x" % t.nzcv)
+    words = struct.unpack("<512Q", t.page)
+    page = ["    .quad " + ", ".join("0x%016x" % w for w in words[i:i + 8]) for i in range(0, 512, 8)]
+    return PRELUDE.format(
+        cls=t.cls, tid=tid, rec_size=REC_SIZE, pre="\n".join(t.pre),
+        siginstall=siginstall() if t.signals else "",
+        init_sp=INIT_SP, init_nzcv=INIT_NZCV, loadpairs="\n".join(load),
+        seq="\n".join("    " + s for s in t.seq), pad0=pad(0), post="\n".join(t.post),
+        rec_pcmark=REC_PCMARK, savepairs="\n".join(save), rec_x30=REC_X + 240,
+        rec_x0=REC_X, rec_sp=REC_SP, rec_nzcv=REC_NZCV,
+        handler=HANDLER if t.signals else "",
+        init="\n".join(init), pad_before_rec=PAGE_SIZE - REC_PAGE, version=FORMAT_VERSION,
+        rec_body=REC_PAGE - 16, page="\n".join(page))
+
+
+# ---------------------------------------------------------------- encoders
+
+def reg_combos(rng, rd31, rn31, same=True):
+    """Yield (rd, rn) register-class combinations: 31, a GPR, and rd == rn."""
+    out = []
+    for rdc in (["31"] if rd31 else []) + ["gpr"]:
+        for rnc in (["31"] if rn31 else []) + ["gpr"] + (["same"] if same else []):
+            if rnc == "same" and rdc == "31":
+                continue
+            rd = 31 if rdc == "31" else rng.gpr()
+            if rnc == "31":
+                rn = 31
+            elif rnc == "same":
+                rn = rd
+            else:
+                rn = rng.gpr((rd,))
+            out.append((rd, rn))
+    return out
+
+
+def gen_identity(rng, scale):
+    tests = []
+    for i in range(8 * scale):
+        t = Test("identity", "roundtrip", rng)
+        if i % 2 == 0:
+            t.x = [rng.choice(EDGE) for _ in range(31)]
+            t.nzcv = (i // 2 % 16) << 28
+        tests.append(t)
+    return tests
+
+
+def gen_dp_imm(rng, scale):
+    tests = []
+    for sf in (0, 1):
+        for op in (0, 1):
+            for s in (0, 1):
+                for sh in (0, 1):
+                    for rd, rn in reg_combos(rng, True, True):
+                        for _ in range(scale):
+                            t = Test("dp-imm", "addsub-imm", rng)
+                            imm = rng.imm_edge(12)
+                            t.x[rn % 31] = rng.val()
+                            t.inst((sf << 31) | (op << 30) | (s << 29) | (0b100010 << 23) |
+                                   (sh << 22) | (imm << 10) | (rn << 5) | rd)
+                            tests.append(t)
+    masks = {0: [], 1: []}
+    for n in (0, 1):
+        for immr in range(64):
+            for imms in range(64):
+                v = (n << 6) | (~imms & 0x3f)
+                if v == 0:
+                    continue
+                ln = v.bit_length() - 1
+                if ln < 1:
+                    continue
+                levels = (1 << ln) - 1
+                if (imms & levels) == levels:
+                    continue
+                for sf in (0, 1):
+                    if sf == 0 and (n == 1 or ln > 5):
+                        continue
+                    masks[sf].append((n, immr, imms, ln))
+    for sf in (0, 1):
+        canon = [m for m in masks[sf] if m[1] < (1 << m[3])]
+        noncanon = [m for m in masks[sf] if m[1] >= (1 << m[3])]
+        for opc in range(4):
+            for rd, rn in reg_combos(rng, True, True):
+                for k in range(scale + 1):
+                    t = Test("dp-imm", "logic-imm", rng)
+                    pool = noncanon if (k == scale and noncanon) else canon
+                    n, immr, imms, _ = rng.choice(pool)
+                    t.x[rn % 31] = rng.val()
+                    t.inst((sf << 31) | (opc << 29) | (0b100100 << 23) | (n << 22) |
+                           (immr << 16) | (imms << 10) | (rn << 5) | rd)
+                    tests.append(t)
+    for sf in (0, 1):
+        for opc in (0, 2, 3):
+            for hw in range(4 if sf else 2):
+                for rd in (31, None):
+                    for _ in range(scale):
+                        t = Test("dp-imm", "movewide", rng)
+                        r = rng.gpr() if rd is None else 31
+                        imm = rng.imm_edge(16)
+                        t.inst((sf << 31) | (opc << 29) | (0b100101 << 23) | (hw << 21) |
+                               (imm << 5) | r)
+                        tests.append(t)
+    for op in (0, 1):
+        for rd in (31, None):
+            for _ in range(3 * scale):
+                t = Test("dp-imm", "adr", rng)
+                imm = rng.simm(21) & ((1 << 21) - 1)
+                r = rng.gpr() if rd is None else 31
+                t.inst((op << 31) | ((imm & 3) << 29) | (0b10000 << 24) | ((imm >> 2) << 5) | r)
+                tests.append(t)
+    return tests
+
+
+def gen_bitfield(rng, scale):
+    tests = []
+    for sf in (0, 1):
+        width = 64 if sf else 32
+        for opc in (0, 1, 2):
+            for rel in ("ge", "lt", "zero", "max"):
+                for same in (False, True):
+                    for _ in range(scale):
+                        t = Test("bitfield", "bitfield", rng)
+                        if rel == "zero":
+                            immr, imms = 0, rng.randrange(width)
+                        elif rel == "max":
+                            immr, imms = rng.randrange(width), width - 1
+                        else:
+                            a, b = sorted(rng.sample(range(width), 2))
+                            immr, imms = (a, b) if rel == "ge" else (b, a)
+                        rd = rng.gpr()
+                        rn = rd if same else rng.randrange(32)
+                        rn = rn if rn != 31 or rng.random() < 0.3 else rng.gpr()
+                        t.x[rn % 31] = rng.val()
+                        t.inst((sf << 31) | (opc << 29) | (0b100110 << 23) | (sf << 22) |
+                               (immr << 16) | (imms << 10) | (rn << 5) | rd)
+                        tests.append(t)
+        for imms_c in ("zero", "one", "max", "rand"):
+            for same in (False, True):
+                for _ in range(scale):
+                    t = Test("bitfield", "extr", rng)
+                    imms = {"zero": 0, "one": 1, "max": width - 1,
+                            "rand": rng.randrange(width)}[imms_c]
+                    rd, rn = rng.gpr(), rng.gpr()
+                    rm = rn if same else rng.randrange(32)
+                    t.x[rn] = rng.val()
+                    t.x[rm % 31] = rng.val()
+                    t.inst((sf << 31) | (0b00100111 << 23) | (sf << 22) | (rm << 16) |
+                           (imms << 10) | (rn << 5) | rd)
+                    tests.append(t)
+    return tests
+
+
+def gen_dp_reg(rng, scale):
+    tests = []
+    for sf in (0, 1):
+        width = 64 if sf else 32
+        for opc in range(4):
+            for n in (0, 1):
+                for shift in range(4):
+                    for _ in range(scale):
+                        t = Test("dp-reg", "logic-shifted", rng)
+                        amt = rng.choice([0, 1, width - 1, rng.randrange(width)])
+                        rd, rn, rm = rng.randrange(32), rng.randrange(32), rng.randrange(32)
+                        t.x[rn % 31], t.x[rm % 31] = rng.val(), rng.val()
+                        t.inst((sf << 31) | (opc << 29) | (0b01010 << 24) | (shift << 22) |
+                               (n << 21) | (rm << 16) | (amt << 10) | (rn << 5) | rd)
+                        tests.append(t)
+        for op in (0, 1):
+            for s in (0, 1):
+                for shift in range(3):
+                    for _ in range(scale):
+                        t = Test("dp-reg", "addsub-shifted", rng)
+                        amt = rng.choice([0, 1, width - 1, rng.randrange(width)])
+                        rd, rn, rm = rng.randrange(32), rng.randrange(32), rng.randrange(32)
+                        t.x[rn % 31], t.x[rm % 31] = rng.val(), rng.val()
+                        t.inst((sf << 31) | (op << 30) | (s << 29) | (0b01011 << 24) |
+                               (shift << 22) | (rm << 16) | (amt << 10) | (rn << 5) | rd)
+                        tests.append(t)
+                for option in range(8):
+                    for imm3 in (0, rng.randrange(1, 4), 4):
+                        t = Test("dp-reg", "addsub-ext", rng)
+                        rd = rng.choice([31, rng.gpr()])
+                        rn = rng.choice([31, rng.gpr()])
+                        rm = rng.randrange(32)
+                        t.x[rn % 31], t.x[rm % 31] = rng.val(), rng.val()
+                        t.inst((sf << 31) | (op << 30) | (s << 29) | (0b01011 << 24) |
+                               (1 << 21) | (rm << 16) | (option << 13) | (imm3 << 10) |
+                               (rn << 5) | rd)
+                        tests.append(t)
+                for _ in range(2 * scale):
+                    t = Test("dp-reg", "adc-sbc", rng)
+                    rd, rn, rm = rng.randrange(32), rng.randrange(32), rng.randrange(32)
+                    t.x[rn % 31], t.x[rm % 31] = rng.val(), rng.val()
+                    t.inst((sf << 31) | (op << 30) | (s << 29) | (0b11010000 << 21) |
+                           (rm << 16) | (rn << 5) | rd)
+                    tests.append(t)
+        for opcode in range(6):
+            if opcode == 3 and sf == 0:
+                continue
+            for _ in range(3 * scale):
+                t = Test("dp-reg", "one-src", rng)
+                rd, rn = rng.randrange(32), rng.randrange(32)
+                t.x[rn % 31] = rng.val()
+                t.inst((sf << 31) | (1 << 30) | (0b11010110 << 21) | (opcode << 10) |
+                       (rn << 5) | rd)
+                tests.append(t)
+        for opcode in (8, 9, 10, 11):
+            for _ in range(3 * scale):
+                t = Test("dp-reg", "shift-var", rng)
+                rd, rn, rm = rng.randrange(32), rng.randrange(32), rng.gpr()
+                t.x[rn % 31] = rng.val()
+                t.x[rm] = rng.shiftval()
+                t.inst((sf << 31) | (0b11010110 << 21) | (rm << 16) | (opcode << 10) |
+                       (rn << 5) | rd)
+                tests.append(t)
+    return tests
+
+
+def gen_condsel(rng, scale):
+    tests = []
+    for sf in (0, 1):
+        for op in (0, 1):
+            for op2 in (0, 1):
+                for cond in range(16):
+                    for want in (True, False):
+                        cands = [f << 28 for f in range(16) if cond_holds(cond, f << 28) == want]
+                        if not cands:
+                            continue
+                        t = Test("condsel", "csel", rng)
+                        t.nzcv = rng.choice(cands)
+                        rd, rn, rm = rng.randrange(32), rng.randrange(32), rng.randrange(32)
+                        if rng.random() < 0.15:
+                            rm = rn
+                        t.x[rn % 31], t.x[rm % 31] = rng.val(), rng.val()
+                        t.inst((sf << 31) | (op << 30) | (0b11010100 << 21) | (rm << 16) |
+                               (cond << 12) | (op2 << 10) | (rn << 5) | rd)
+                        tests.append(t)
+    return tests
+
+
+def gen_condcmp(rng, scale):
+    tests = []
+    for sf in (0, 1):
+        for op in (0, 1):
+            for imm in (0, 1):
+                for cond in range(16):
+                    for want in (True, False):
+                        cands = [f << 28 for f in range(16) if cond_holds(cond, f << 28) == want]
+                        if not cands:
+                            continue
+                        t = Test("condcmp", "ccmp", rng)
+                        t.nzcv = rng.choice(cands)
+                        rn = rng.randrange(32)
+                        rm = rng.randrange(32) if not imm else rng.imm_edge(5)
+                        t.x[rn % 31] = rng.val()
+                        if not imm:
+                            t.x[rm % 31] = rng.choice([t.x[rn % 31], rng.val()])
+                        nzcv = rng.randrange(16)
+                        t.inst((sf << 31) | (op << 30) | (1 << 29) | (0b11010010 << 21) |
+                               (rm << 16) | (cond << 12) | (imm << 11) | (rn << 5) | nzcv)
+                        tests.append(t)
+    return tests
+
+
+def gen_muldiv(rng, scale):
+    tests = []
+    for sf in (0, 1):
+        for o0 in (0, 1):
+            for _ in range(4 * scale):
+                t = Test("muldiv", "madd-msub", rng)
+                rd, rn, rm, ra = (rng.randrange(32) for _ in range(4))
+                for r in (rn, rm, ra):
+                    t.x[r % 31] = rng.val()
+                t.inst((sf << 31) | (0b11011 << 24) | (rm << 16) | (o0 << 15) | (ra << 10) |
+                       (rn << 5) | rd)
+                tests.append(t)
+        for opcode in (2, 3):
+            for kind in ("zero", "minneg", "rand", "edge"):
+                for _ in range(2 * scale):
+                    t = Test("muldiv", "div", rng)
+                    rd, rn, rm = rng.randrange(32), rng.gpr(), rng.gpr()
+                    if kind == "zero":
+                        t.x[rn], t.x[rm] = rng.val(), rng.choice([0, 0x100000000 if not sf else 0])
+                    elif kind == "minneg":
+                        t.x[rn] = 0x8000000000000000 if sf else (rng.getrandbits(32) << 32) | 0x80000000
+                        t.x[rm] = MASK64 if sf else (rng.getrandbits(32) << 32) | MASK32
+                    elif kind == "edge":
+                        t.x[rn], t.x[rm] = rng.choice(EDGE), rng.choice(EDGE)
+                    else:
+                        t.x[rn], t.x[rm] = rng.val(), rng.val()
+                    t.inst((sf << 31) | (0b11010110 << 21) | (rm << 16) | (opcode << 10) |
+                           (rn << 5) | rd)
+                    tests.append(t)
+    for u in (0, 1):
+        for o0 in (0, 1):
+            for _ in range(4 * scale):
+                t = Test("muldiv", "long-mul", rng)
+                rd, rn, rm, ra = (rng.randrange(32) for _ in range(4))
+                for r in (rn, rm, ra):
+                    t.x[r % 31] = rng.val()
+                t.inst((1 << 31) | (0b11011 << 24) | (u << 23) | (0b01 << 21) | (rm << 16) |
+                       (o0 << 15) | (ra << 10) | (rn << 5) | rd)
+                tests.append(t)
+        for _ in range(6 * scale):
+            t = Test("muldiv", "mulh", rng)
+            rd, rn, rm = rng.randrange(32), rng.randrange(32), rng.randrange(32)
+            t.x[rn % 31], t.x[rm % 31] = rng.val(), rng.val()
+            t.inst((1 << 31) | (0b11011 << 24) | (u << 23) | (0b10 << 21) | (rm << 16) |
+                   (0b11111 << 10) | (rn << 5) | rd)
+            tests.append(t)
+    return tests
+
+
+# (size, opc, bytes, name, is_load)
+LS_OPS = [(0, 0, 1, "strb", False), (0, 1, 1, "ldrb", True), (0, 2, 1, "ldrsb-x", True),
+          (0, 3, 1, "ldrsb-w", True), (1, 0, 2, "strh", False), (1, 1, 2, "ldrh", True),
+          (1, 2, 2, "ldrsh-x", True), (1, 3, 2, "ldrsh-w", True), (2, 0, 4, "str-w", False),
+          (2, 1, 4, "ldr-w", True), (2, 2, 4, "ldrsw", True), (3, 0, 8, "str-x", False),
+          (3, 1, 8, "ldr-x", True)]
+
+
+def place(rng, t, rn, ea_minus_base, nbytes, fixed_base=None):
+    """Point register rn (31 = SP) so that base + ea_minus_base lands in the page.
+
+    Returns False if no placement exists (the caller then retries)."""
+    lo, hi = 0, PAGE_SIZE - nbytes
+    if rn == 31:
+        cands = [o for o in range(lo, hi + 1) if (o - ea_minus_base) % 16 == 0]
+        if not cands:
+            return False
+        ea = rng.choice([cands[0], cands[-1], rng.choice(cands)])
+        t.memsp(ea - ea_minus_base)
+    else:
+        ea = rng.choice([lo, hi, rng.randrange(lo, hi + 1)])
+        t.x[rn] = ("page", ea - ea_minus_base)
+    return True
+
+
+def gen_loadstore(rng, scale):
+    tests = []
+    for size, opc, nb, name, load in LS_OPS:
+        for rnc in ("sp", "gpr"):
+            for rtc in ("zr", "gpr", "same"):
+                if rtc == "same" and rnc == "sp":
+                    continue
+                for immc in range(2 * scale):
+                    t = Test("loadstore", "uimm-" + name, rng)
+                    rn = 31 if rnc == "sp" else rng.gpr()
+                    rt = {"zr": 31, "gpr": rng.gpr((rn,)), "same": rn}[rtc]
+                    imm = [0, 1, 4095, rng.getrandbits(12)][immc % 4]
+                    if not place(rng, t, rn, imm * nb, nb):
+                        continue
+                    if not load and rt != 31 and rt != rn:
+                        t.x[rt] = rng.val()
+                    t.inst((size << 30) | (0b111001 << 24) | (opc << 22) | (imm << 10) |
+                           (rn << 5) | rt)
+                    tests.append(t)
+        for idx, mode in ((0, "unscaled"), (1, "post"), (3, "pre")):
+            for rnc in ("sp", "gpr"):
+                for rtc in ("zr", "gpr", "same"):
+                    if rtc == "same" and (rnc == "sp" or idx != 0):
+                        continue
+                    for k in range(2 * scale):
+                        t = Test("loadstore", mode + "-" + name, rng)
+                        rn = 31 if rnc == "sp" else rng.gpr()
+                        rt = {"zr": 31, "gpr": rng.gpr((rn,)), "same": rn}[rtc]
+                        imm = [-256, 255, -1, 0, 1, rng.randrange(-256, 256)][k % 6]
+                        if not place(rng, t, rn, 0 if idx == 1 else imm, nb):
+                            continue
+                        if not load and rt != 31 and rt != rn:
+                            t.x[rt] = rng.val()
+                        t.inst((size << 30) | (0b111000 << 24) | (opc << 22) |
+                               ((imm & 0x1ff) << 12) | (idx << 10) | (rn << 5) | rt)
+                        tests.append(t)
+        for option in (2, 3, 6, 7):
+            for s in (0, 1):
+                for rmc in ("zr", "gpr"):
+                    for _ in range(scale):
+                        t = Test("loadstore", "reg-" + name, rng)
+                        rn = rng.choice([31, rng.gpr()])
+                        rt = rng.choice([31, rng.gpr((rn,)), rng.gpr((rn,))])
+                        if rmc == "zr":
+                            rm = 31
+                            if rn == 31:
+                                t.memsp(16 * rng.randrange(0, 255))
+                            else:
+                                t.x[rn] = ("page", rng.randrange(0, PAGE_SIZE - nb + 1))
+                        else:
+                            rm = rng.gpr((rn, rt))
+                            if not reg_offset(rng, t, rn, rm, option, size if s else 0, nb):
+                                continue
+                        if not load and rt != 31:
+                            t.x[rt] = rng.val()
+                        t.inst((size << 30) | (0b111000 << 24) | (opc << 22) | (1 << 21) |
+                               (rm << 16) | (option << 13) | (s << 12) | (0b10 << 10) |
+                               (rn << 5) | rt)
+                        tests.append(t)
+    for mn, nb in (("ldr w", 4), ("ldr x", 8), ("ldrsw x", 4)):
+        for _ in range(4 * scale):
+            t = Test("loadstore", "literal-" + mn.replace(" ", ""), rng)
+            rt = rng.gpr()
+            off = rng.choice([0, PAGE_SIZE - nb, 4 * rng.randrange(0, (PAGE_SIZE - nb) // 4)])
+            t.seq.append("%s%d, page + %d" % (mn, rt, off))
+            tests.append(t)
+    return tests
+
+
+def reg_offset(rng, t, rn, rm, option, shift, nb):
+    """Choose base (rn) and index (rm) values for a register-offset access in the page."""
+    for _ in range(50):
+        ea = rng.randrange(0, PAGE_SIZE - nb + 1)
+        if rn == 31:
+            base = 16 * rng.randrange(-64, 256)
+        else:
+            base = ea - rng.choice([rng.randrange(-4096, 4096), rng.randrange(-1 << 34, 1 << 34)])
+        d = ea - base
+        d -= d % (1 << shift)
+        if not 0 <= base + d <= PAGE_SIZE - nb:
+            continue
+        q = d >> shift
+        if option == 2:            # UXTW: upper half of Wm is ignored, fill it with junk
+            if not 0 <= q < 1 << 32:
+                continue
+            val = (rng.getrandbits(32) << 32) | q
+        elif option == 6:          # SXTW
+            if not -(1 << 31) <= q < 1 << 31:
+                continue
+            val = (rng.getrandbits(32) << 32) | (q & MASK32)
+        else:                      # LSL / SXTX
+            val = q & MASK64
+        t.x[rm] = val
+        if rn == 31:
+            t.memsp(base)
+        else:
+            t.x[rn] = ("page", base)
+        return True
+    return False
+
+
+PAIR_OPS = [(0, 0, 4, "stp-w"), (0, 1, 4, "ldp-w"), (1, 1, 4, "ldpsw"), (2, 0, 8, "stp-x"),
+            (2, 1, 8, "ldp-x")]
+
+
+def gen_pairs(rng, scale):
+    tests = []
+    for opc, l, sc, name in PAIR_OPS:
+        for mode, mname in ((1, "post"), (2, "offset"), (3, "pre")):
+            for rnc in ("sp", "gpr"):
+                for k in range(3 * scale):
+                    t = Test("pairs", mname + "-" + name, rng)
+                    rn = 31 if rnc == "sp" else rng.gpr()
+                    wback = mode != 2
+                    excl = (rn,) if (wback or l == 0) and rn != 31 else ()
+                    rt = rng.choice([31, rng.gpr(excl)]) if k % 3 == 0 else rng.gpr(excl)
+                    if l == 1:
+                        rt2 = rng.gpr(excl + (rt,))
+                    else:
+                        rt2 = rng.choice([rt, 31, rng.gpr(excl)])
+                    if not wback and l == 1 and k % 3 == 1 and rn != 31:
+                        rt = rn   # load over the base, no writeback: defined
+                        if rt2 == rt:
+                            rt2 = rng.gpr((rt,))
+                    imm = [-64, 63, -1, 0, 1, rng.randrange(-64, 64)][k % 6]
+                    if not place(rng, t, rn, 0 if mode == 1 else imm * sc, 2 * sc):
+                        continue
+                    if l == 0:
+                        for r in (rt, rt2):
+                            if r != 31 and r != rn:
+                                t.x[r] = rng.val()
+                    t.inst((opc << 30) | (0b101 << 27) | (mode << 23) | (l << 22) |
+                           ((imm & 0x7f) << 15) | (rt2 << 10) | (rn << 5) | rt)
+                    tests.append(t)
+    return tests
+
+
+def branch_layout(t, rng, dist):
+    """Taken target pad_1 after the fall-through pad, backward target pad_2 before _start."""
+    filler = {"near": 0, "mid": 1000, "far": 200000}[dist]
+    fill = [".fill %d, 4, 0x00000000" % filler] if filler else []
+    t.post = fill + [pad(1)]
+    t.pre = [pad(2)] + fill
+
+
+def gen_branch(rng, scale):
+    tests = []
+    for cond in range(16):
+        for f in range(16):
+            t = Test("branch", "bcond", rng)
+            t.nzcv = f << 28
+            back = rng.random() < 0.25
+            branch_layout(t, rng, rng.choice(["near", "mid"]))
+            t.seq.append("b.%s pad_%d" % (COND_NAMES[cond], 2 if back else 1))
+            tests.append(t)
+    for dist in ("near", "mid", "far"):
+        for d in ("fwd", "back"):
+            t = Test("branch", "bcond-" + dist, rng)
+            t.nzcv = 0
+            branch_layout(t, rng, dist)
+            t.seq.append("b.eq pad_%d" % (1 if d == "fwd" else 2))
+            if dist == "far" and d == "back":
+                continue
+            tests.append(t)
+    for mn in ("b", "bl"):
+        for dist in ("near", "mid"):
+            for d in (1, 2):
+                for _ in range(scale):
+                    t = Test("branch", mn, rng)
+                    branch_layout(t, rng, dist)
+                    t.seq.append("%s pad_%d" % (mn, d))
+                    tests.append(t)
+    for mn in ("cbz", "cbnz"):
+        for w in ("w", "x"):
+            for vc in ("zero", "nonzero", "low32zero", "edge"):
+                for _ in range(scale):
+                    t = Test("branch", mn, rng)
+                    branch_layout(t, rng, rng.choice(["near", "mid"]))
+                    rt = rng.gpr()
+                    t.x[rt] = {"zero": 0, "nonzero": rng.getrandbits(64) | 1,
+                               "low32zero": rng.getrandbits(32) << 32,
+                               "edge": rng.choice(EDGE)}[vc]
+                    t.seq.append("%s %s%d, pad_%d" % (mn, w, rt, rng.choice([1, 2])))
+                    tests.append(t)
+    for mn in ("tbz", "tbnz"):
+        for bit in (0, 1, 31, 32, 33, 62, 63, None):
+            for setbit in (0, 1):
+                t = Test("branch", mn, rng)
+                branch_layout(t, rng, rng.choice(["near", "mid"]))
+                rt = rng.gpr()
+                b = rng.randrange(64) if bit is None else bit
+                v = rng.getrandbits(64)
+                v = v | (1 << b) if setbit else v & ~(1 << b)
+                t.x[rt] = v & MASK64
+                reg = "w" if b < 32 and rng.random() < 0.5 else "x"
+                t.seq.append("%s %s%d, #%d, pad_%d" % (mn, reg, rt, b, rng.choice([1, 2])))
+                tests.append(t)
+    for mn in ("br", "blr", "ret"):
+        for rc in ("x30", "gpr"):
+            for _ in range(2 * scale):
+                t = Test("branch", mn, rng)
+                branch_layout(t, rng, rng.choice(["near", "mid"]))
+                rn = 30 if rc == "x30" else rng.gpr((30,))
+                d = rng.choice([1, 2])
+                t.x[rn] = ("sym", "pad_%d" % d, 0)
+                t.seq.append("%s x%d" % (mn, rn) if not (mn == "ret" and rn == 30) else "ret")
+                tests.append(t)
+    for _ in range(2 * scale):
+        t = Test("branch", "bl-ret", rng)
+        t.post = [pad(1), "subroutine:", "    ret"]
+        t.seq.append("bl subroutine")
+        tests.append(t)
+    return tests
+
+
+SYSREG_STRICT = ["ctr_el0", "dczid_el0", "tpidrro_el0", "fpcr", "fpsr"]
+SYSREG_ID = ["midr_el1", "mpidr_el1", "revidr_el1", "id_aa64pfr0_el1", "id_aa64pfr1_el1",
+             "id_aa64isar0_el1", "id_aa64isar1_el1", "id_aa64isar2_el1", "id_aa64mmfr0_el1",
+             "id_aa64mmfr1_el1", "id_aa64mmfr2_el1", "id_aa64dfr0_el1", "S3_0_C0_C4_4"]
+
+
+def gen_sysreg(rng, scale):
+    tests = []
+    for reg in SYSREG_STRICT + ["nzcv"]:
+        for _ in range(2 * scale):
+            t = Test("sysreg", "mrs-" + reg, rng)
+            t.seq.append("mrs x%d, %s" % (rng.gpr(), reg))
+            tests.append(t)
+    for _ in range(4 * scale):
+        t = Test("sysreg", "msr-nzcv", rng)
+        r = rng.gpr()
+        t.x[r] = rng.choice([rng.getrandbits(64), rng.randrange(16) << 28])
+        t.seq.append("msr nzcv, x%d" % r)
+        tests.append(t)
+    for reg in ("tpidr_el0", "fpcr", "fpsr"):
+        for _ in range(3 * scale):
+            t = Test("sysreg", "msr-mrs-" + reg, rng)
+            a, b = rng.gpr(), rng.gpr()
+            t.x[a] = rng.choice([rng.getrandbits(64), 0, MASK64, 0x03c00000, 0x0800009f])
+            t.seq += ["msr %s, x%d" % (reg, a), "mrs x%d, %s" % (b, reg)]
+            tests.append(t)
+    for k in range(4 * scale):
+        t = Test("sysreg", "dc-zva", rng)
+        r = rng.gpr()
+        off = [0, 64, 4032, 64 * rng.randrange(1, 63) + rng.randrange(64)][k % 4]
+        t.x[r] = ("page", off)
+        t.seq.append("dc zva, x%d" % r)
+        tests.append(t)
+    for reg in SYSREG_ID:
+        t = Test("sysreg-id", "mrs-" + reg.lower(), rng)
+        t.seq.append("mrs x%d, %s" % (rng.gpr(), reg))
+        tests.append(t)
+    return tests
+
+
+HINTS = ["nop", "yield", "csdb", "bti", "bti c", "bti j", "bti jc", "paciasp", "autiasp",
+         "pacibsp", "autibsp", "paciaz", "autiaz", "pacibz", "autibz", "xpaclri",
+         "hint #0x50", "hint #0x7f", "hint #0x2a", "prfm pldl1keep, page"]
+
+
+def gen_hint(rng, scale):
+    tests = []
+    for h in HINTS:
+        for _ in range(scale):
+            t = Test("hint", h.split()[0] if h.startswith(("hint", "prfm")) else h.replace(" ", "-"), rng)
+            t.seq.append(h)
+            tests.append(t)
+    return tests
+
+
+def gen_tbi(rng, scale):
+    tests = []
+    for mn, nb in (("ldr x%d, [x%d, #%d]", 8), ("str x%d, [x%d, #%d]", 8),
+                   ("ldrb w%d, [x%d, #%d]", 1)):
+        for tag in (0x01, 0x5a, 0x80, 0xff):
+            t = Test("tbi", mn.split()[0], rng)
+            rt, rn = rng.gpr(), rng.gpr()
+            if rt == rn:
+                rn = (rt + 1) % 31
+            t.x[rt] = rng.val()
+            off = 8 * rng.randrange(0, 500)
+            t.x[rn] = ("page", (tag << 56) - (1 << 64) if tag >= 0x80 else tag << 56)
+            t.seq.append(mn % (rt, rn, off))
+            tests.append(t)
+    return tests
+
+
+def gen_signals(rng, scale):
+    tests = []
+
+    def st(sub):
+        t = Test("signals", sub, rng)
+        t.signals = True
+        t.expect = "signal"
+        t.memsp(16 * rng.randrange(8, 250))
+        return t
+
+    for imm in (0, 1, 0xffff):
+        t = st("udf")
+        t.seq.append("udf #%d" % imm)
+        tests.append(t)
+    for imm in (0, 1, 0x3e8, 0xffff):
+        t = st("brk")
+        t.seq.append("brk #%d" % imm)
+        tests.append(t)
+    t = st("hlt")
+    t.seq.append("hlt #0")
+    tests.append(t)
+    for addr in (0, 0x10, 0x800, 0xff8):
+        t = st("load-unmapped")
+        r1, r2 = rng.gpr(), rng.gpr()
+        if r1 == r2:
+            r2 = (r1 + 1) % 31
+        t.x[r2] = addr
+        t.seq.append("ldr x%d, [x%d]" % (r1, r2))
+        tests.append(t)
+    t = st("store-text")
+    r1, r2 = rng.gpr(), rng.gpr()
+    if r1 == r2:
+        r2 = (r1 + 1) % 31
+    t.x[r2] = ("sym", "_start", 0)
+    t.seq.append("str x%d, [x%d]" % (r1, r2))
+    tests.append(t)
+    for off in (1, 8):
+        t = st("sp-misaligned")
+        t.memsp(1024 + off)
+        t.seq.append("ldr x%d, [sp]" % rng.gpr())
+        tests.append(t)
+    t = st("br-misaligned")
+    r = rng.gpr((30,))
+    t.x[r] = ("sym", "pad_1", 2)
+    branch_layout(t, rng, "near")
+    t.seq.append("br x%d" % r)
+    tests.append(t)
+    t = st("br-null")
+    r = rng.gpr((30,))
+    t.x[r] = 0
+    t.seq.append("blr x%d" % r)
+    tests.append(t)
+    return tests
+
+
+CLASSES = [
+    ("identity", gen_identity), ("dp-imm", gen_dp_imm), ("bitfield", gen_bitfield),
+    ("dp-reg", gen_dp_reg), ("condsel", gen_condsel), ("condcmp", gen_condcmp),
+    ("muldiv", gen_muldiv), ("loadstore", gen_loadstore), ("pairs", gen_pairs),
+    ("branch", gen_branch), ("sysreg", gen_sysreg), ("hint", gen_hint),
+    ("tbi", gen_tbi), ("signals", gen_signals),
+]
+
+
+def cmd_gen(args):
+    os.makedirs(os.path.join(args.out, "src"), exist_ok=True)
+    only = set(args.classes.split(",")) if args.classes else None
+    rows = []
+    counts = {}
+    for i, (name, fn) in enumerate(CLASSES):
+        # Each class gets its own stream so adding a class never reshuffles another.
+        rng = Rng("%d:%s" % (args.seed, name))
+        tests = fn(rng, args.scale)
+        if only and name not in only:
+            continue
+        subcount = {}
+        for t in tests:
+            n = subcount.get(t.sub, 0)
+            subcount[t.sub] = n + 1
+            tid = "%s.%s.%03d" % (t.cls, t.sub, n)
+            with open(os.path.join(args.out, "src", tid + ".s"), "w") as f:
+                f.write(render(t, tid))
+            req = 0 if t.cls in OPTIONAL_CLASSES else 1
+            rows.append((tid, t.cls, t.sub, req, t.expect))
+            counts[t.cls] = counts.get(t.cls, 0) + 1
+    with open(os.path.join(args.out, "manifest.pre.tsv"), "w") as f:
+        for r in rows:
+            f.write("%s\t%s\t%s\t%d\t%s\n" % r)
+    for c, _ in CLASSES:
+        if c in counts:
+            print("  %-10s %5d" % (c, counts[c]))
+    print("  %-10s %5d" % ("total", len(rows)))
+
+
+# ---------------------------------------------------------------- finalize
+
+def elf_symbols(data):
+    (e_shoff,) = struct.unpack_from("<Q", data, 0x28)
+    e_shentsize, e_shnum, _ = struct.unpack_from("<HHH", data, 0x3a)
+    shdrs = []
+    for i in range(e_shnum):
+        shdrs.append(struct.unpack_from("<IIQQQQIIQQ", data, e_shoff + i * e_shentsize))
+    syms, sections = {}, []
+    for sh in shdrs:
+        name, typ, flags, addr, off, size, link, info, align, entsize = sh
+        sections.append((addr, off, size, typ))
+        if typ == 2:  # SHT_SYMTAB
+            stro = shdrs[link][4]
+            for j in range(size // entsize):
+                st_name, st_info, st_other, st_shndx, st_value, st_size = struct.unpack_from(
+                    "<IBBHQQ", data, off + j * entsize)
+                end = data.index(b"\0", stro + st_name)
+                syms[data[stro + st_name:end].decode()] = st_value
+    return syms, sections
+
+
+def vread(data, sections, addr, n):
+    for a, off, size, typ in sections:
+        if typ == 1 and a and a <= addr and addr + n <= a + size:
+            return data[off + addr - a: off + addr - a + n]
+    raise KeyError(hex(addr))
+
+
+def cmd_finalize(args):
+    rows = [l.rstrip("\n").split("\t") for l in open(os.path.join(args.dir, "manifest.pre.tsv"))]
+    info = {}
+    for tid, *_ in rows:
+        path = os.path.join(args.dir, "tests", tid)
+        data = open(path, "rb").read()
+        syms, secs = elf_symbols(data)
+        ti, te = syms["test_insn"], syms["test_end"]
+        n = min((te - ti) // 4, 4)
+        words = struct.unpack("<%dI" % n, vread(data, secs, ti, 4 * n)) if n else ()
+        init = struct.unpack("<33Q", vread(data, secs, syms["init_state"], 33 * 8))
+        info[tid] = [ti, words, init, []]
+    tids = [r[0] for r in rows]
+    for i in range(0, len(tids), 200):
+        batch = tids[i:i + 200]
+        out = subprocess.run(["objdump", "-d", "-j", ".text"] +
+                             [os.path.join(args.dir, "tests", t) for t in batch],
+                             capture_output=True, text=True, check=True).stdout
+        cur = None
+        for line in out.splitlines():
+            if ":     file format" in line:
+                cur = os.path.basename(line.split(":")[0])
+                continue
+            if cur is None or "\t" not in line:
+                continue
+            a = line.split(":", 1)[0].strip()
+            try:
+                addr = int(a, 16)
+            except ValueError:
+                continue
+            ti, words, _, dis = info[cur]
+            if ti <= addr < ti + 4 * len(words) and len(dis) < 4:
+                parts = line.split("\t")
+                dis.append(" ".join(p.strip() for p in parts[2:]).strip())
+    bad = []
+    with open(os.path.join(args.dir, "manifest.tsv"), "w") as f:
+        f.write("# a64diff manifest format=%d\n" % FORMAT_VERSION)
+        f.write("# id\tclass\tsub\trequired\texpect\tinsn_addr\tencodings\tdisasm\tinit(x0..x30,sp,nzcv)\n")
+        for tid, cls, sub, req, expect in rows:
+            ti, words, init, dis = info[tid]
+            d = " ; ".join(dis) if dis else "(none)"
+            if cls != "signals" and any(("undefined" in x or ".inst" in x or "udf" in x) for x in dis):
+                bad.append((tid, d))
+            f.write("%s\t%s\t%s\t%s\t%s\t0x%x\t%s\t%s\t%s\n" % (
+                tid, cls, sub, req, expect, ti,
+                ",".join("%08x" % w for w in words) or "-", d.replace("\t", " "),
+                ",".join("%x" % v for v in init)))
+    if bad:
+        for tid, d in bad:
+            print("finalize: %s disassembles as an undefined instruction: %s" % (tid, d), file=sys.stderr)
+        return 1
+    print("finalize: %d tests" % len(rows))
+    return 0
+
+
+def main():
+    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    sub = ap.add_subparsers(dest="cmd", required=True)
+    g = sub.add_parser("gen")
+    g.add_argument("--seed", type=int, default=1)
+    g.add_argument("--scale", type=int, default=1, help="repetitions per field combination")
+    g.add_argument("--classes", default="", help="comma list; default all")
+    g.add_argument("--out", required=True)
+    fz = sub.add_parser("finalize")
+    fz.add_argument("--dir", required=True)
+    sub.add_parser("classes")
+    args = ap.parse_args()
+    if args.cmd == "gen":
+        cmd_gen(args)
+        return 0
+    if args.cmd == "classes":
+        for c, _ in CLASSES:
+            print(c, "optional" if c in OPTIONAL_CLASSES else "required")
+        return 0
+    return cmd_finalize(args)
+
+
+if __name__ == "__main__":
+    sys.exit(main())
