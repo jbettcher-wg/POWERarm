@@ -8,6 +8,15 @@
  * a64diff, prints the reports to the console between markers, prints
  * "A64DIFF-GUEST-EXIT insn=N programs=M" and powers off.
  *
+ * Rootfs jobs: the host attaches each rootfs as a read-only virtio-blk disk,
+ * in the order of A64DIFF_ROOTFS=name:fstype,... (vda, vdb, ...).  The
+ * initramfs carries the virtio and filesystem modules of the booted kernel
+ * (/a64diff/modules, loaded in the order of /a64diff/modules/order); each disk
+ * is mounted at /a64diff/rootfs/<name> and handed to a64diff as --rootfs.
+ *
+ * Suites: "insn" (manifest.tsv) and one per /a64diff/bundle/programs/<suite>.jobs,
+ * named after the file; A64DIFF_SUITES lists them ("all" = every one).
+ *
  * Knobs arrive as kernel command-line environment variables:
  *   A64DIFF_JOBS, A64DIFF_TIMEOUT, A64DIFF_DEADLINE (seconds from boot for
  *   both suites together), A64DIFF_SKIP,
@@ -15,7 +24,10 @@
  *   POWERARM_* / FEX_* variable, which a64diff passes to the emulator.
  */
 #define _GNU_SOURCE
+#include <dirent.h>
+#include <errno.h>
 #include <fcntl.h>
+#include <sys/syscall.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -67,6 +79,106 @@ static char* left(char* buf) {
   return buf;
 }
 
+static double uptime(void) {
+  double u = -1;
+  FILE* f = fopen("/proc/uptime", "r");
+  if (f) {
+    if (fscanf(f, "%lf", &u) != 1) u = -1;
+    fclose(f);
+  }
+  return u;
+}
+
+static void load_modules(void) {
+  FILE* f = fopen("/a64diff/modules/order", "r");
+  char name[256];
+  while (f && fgets(name, sizeof name, f)) {
+    name[strcspn(name, "\n")] = 0;
+    if (!name[0]) continue;
+    char path[512];
+    snprintf(path, sizeof path, "/a64diff/modules/%s", name);
+    int fd = open(path, O_RDONLY | O_CLOEXEC);
+    if (fd < 0 || (syscall(SYS_finit_module, fd, "", 0) && errno != EEXIST))
+      printf("A64DIFF-GUEST-ERROR module %s: %s\n", name, strerror(errno));
+    if (fd >= 0) close(fd);
+  }
+  if (f) fclose(f);
+}
+
+/* Mount the rootfs disks; returns the number of --rootfs arguments added. */
+static int mount_rootfs(char** args, int max) {
+  const char* spec = getenv("A64DIFF_ROOTFS");
+  if (!spec || !*spec) return 0;
+  load_modules();
+  mkdir("/a64diff/rootfs", 0755);
+  char* list = strdup(spec);
+  int n = 0, disk = 0;
+  for (char* item = strtok(list, ","); item && n + 2 <= max; item = strtok(NULL, ","), disk++) {
+    char* colon = strchr(item, ':');
+    const char* fstype = colon ? colon + 1 : "ext4";
+    if (colon) *colon = 0;
+    char dev[32], dir[256];
+    snprintf(dev, sizeof dev, "/dev/vd%c", 'a' + disk);
+    snprintf(dir, sizeof dir, "/a64diff/rootfs/%s", item);
+    mkdir(dir, 0755);
+    for (int i = 0; i < 200 && access(dev, F_OK); i++) usleep(50000);
+    int rc = mount(dev, dir, fstype, MS_RDONLY, !strcmp(fstype, "ext4") ? "noload" : "");
+    if (rc) {
+      printf("A64DIFF-GUEST-ERROR rootfs %s: mount %s (%s): %s\n", item, dev, fstype, strerror(errno));
+      continue;
+    }
+    printf("A64DIFF-GUEST rootfs %s mounted from %s (%s) at %.2fs\n", item, dev, fstype, uptime());
+    char* a = malloc(strlen(item) + strlen(dir) + 2);
+    sprintf(a, "%s=%s", item, dir);
+    args[n++] = "--rootfs";
+    args[n++] = a;
+  }
+  return n;
+}
+
+/* A64DIFF_ROOTFS_BENCH=1 (measurement aid): read every file of each mounted
+ * rootfs once and report the time, then power off without running suites. */
+static void read_tree(const char* dir, long* files, long long* bytes) {
+  DIR* d = opendir(dir);
+  if (!d) return;
+  struct dirent* e;
+  static char buf[1 << 16];
+  while ((e = readdir(d))) {
+    if (!strcmp(e->d_name, ".") || !strcmp(e->d_name, "..")) continue;
+    char p[4096];
+    snprintf(p, sizeof p, "%s/%s", dir, e->d_name);
+    struct stat st;
+    if (lstat(p, &st)) continue;
+    if (S_ISDIR(st.st_mode)) {
+      read_tree(p, files, bytes);
+    } else if (S_ISREG(st.st_mode)) {
+      int fd = open(p, O_RDONLY);
+      ssize_t n;
+      while (fd >= 0 && (n = read(fd, buf, sizeof buf)) > 0) *bytes += n;
+      if (fd >= 0) close(fd);
+      (*files)++;
+    }
+  }
+  closedir(d);
+}
+
+static int wanted(const char* suites, const char* name) {
+  if (!strcmp(suites, "all")) return 1;
+  size_t n = strlen(name);
+  for (const char* p = suites; *p;) {
+    const char* e = strchr(p, ',');
+    size_t l = e ? (size_t)(e - p) : strlen(p);
+    if (l == n && !strncmp(p, name, n)) return 1;
+    if (!e) break;
+    p = e + 1;
+  }
+  return 0;
+}
+
+static int cmp_names(const void* a, const void* b) {
+  return strcmp(*(char* const*)a, *(char* const*)b);
+}
+
 static void cat(const char* marker, const char* path) {
   printf("A64DIFF-BEGIN %s\n", marker);
   FILE* f = fopen(path, "r");
@@ -103,40 +215,80 @@ int main(void) {
   while (f && fgets(l, sizeof l, f))
     if (!strncmp(l, "MMU", 3)) printf("A64DIFF-GUEST %s", l);
   if (f) fclose(f);
-  int insn_rc = -1, prog_rc = -1;
+  char exitline[1024] = "A64DIFF-GUEST-EXIT";
   if (ps != atol(want)) {
     printf("A64DIFF-GUEST-ERROR page size %ld, expected %s: wrong kernel image\n", ps, want);
+    strcat(exitline, " error=1");
   } else {
     const char* jobs = env_or("A64DIFF_JOBS", "4");
     const char* timeout = env_or("A64DIFF_TIMEOUT", "30");
     char dl[32];
     deadline_s = atol(env_or("A64DIFF_DEADLINE", "0"));
     const char* skip = env_or("A64DIFF_SKIP", "");
-    const char* suites = env_or("A64DIFF_SUITES", "insn,programs");
+    const char* suites = env_or("A64DIFF_SUITES", "all");
+    char* rootfs_args[32];
+    int nrootfs = mount_rootfs(rootfs_args, 32);
+    if (getenv("A64DIFF_ROOTFS_BENCH")) {
+      for (int j = 1; j < nrootfs; j += 2) {
+        const char* dir = strchr(rootfs_args[j], '=') + 1;
+        long files = 0;
+        long long bytes = 0;
+        double t = uptime();
+        read_tree(dir, &files, &bytes);
+        printf("A64DIFF-GUEST-BENCH %s files=%ld bytes=%lld read-all=%.2fs\n", rootfs_args[j], files, bytes, uptime() - t);
+      }
+      suites = "none";
+    }
     mkdir("/tmp/r", 0755);
     chown("/tmp/r", 65534, 65534);
-    if (strstr(suites, "insn")) {
+    if (wanted(suites, "insn") && access(B "/manifest.tsv", F_OK) == 0) {
       char* r1[] = {TOOL, "run", "--manifest", B "/manifest.tsv", "--root", B, "--out", "/tmp/r/insn", "-j", (char*)jobs, "--timeout",
                     (char*)timeout, "--deadline", left(dl), "--skip", (char*)skip, "--", EMU, NULL};
       run(r1, NULL);
       char* c1[] = {TOOL, "compare", "--manifest", B "/manifest.tsv", "--golden", B "/golden", "--actual", "/tmp/r/insn", "--report",
                     "/tmp/r/insn.report", "--max-detail", "5", "--skip", (char*)skip, NULL};
-      insn_rc = run(c1, "/tmp/r/insn.log");
+      int rc = run(c1, "/tmp/r/insn.log");
       cat("insn.log", "/tmp/r/insn.log");
       cat("insn.report", "/tmp/r/insn.report");
+      sprintf(exitline + strlen(exitline), " insn=%d", rc);
     }
-    if (strstr(suites, "programs")) {
-      char* r2[] = {TOOL, "run", "--jobs", B "/programs/programs.jobs", "--root", B, "--out", "/tmp/r/programs", "-j", (char*)jobs,
-                    "--timeout", (char*)timeout, "--deadline", left(dl), "--", EMU, NULL};
+    char* names[64];
+    int nn = 0;
+    DIR* d = opendir(B "/programs");
+    struct dirent* e;
+    while (d && (e = readdir(d)) && nn < 64) {
+      size_t l = strlen(e->d_name);
+      if (l > 5 && !strcmp(e->d_name + l - 5, ".jobs")) names[nn++] = strndup(e->d_name, l - 5);
+    }
+    if (d) closedir(d);
+    qsort(names, nn, sizeof(char*), cmp_names);
+    for (int i = 0; i < nn; i++) {
+      const char* suite = names[i];
+      if (!wanted(suites, suite)) continue;
+      char jobsf[256], golden[256], out[256], log[256], report[256], m1[128], m2[128];
+      snprintf(jobsf, sizeof jobsf, B "/programs/%s.jobs", suite);
+      snprintf(golden, sizeof golden, B "/golden-%s", suite);
+      snprintf(out, sizeof out, "/tmp/r/%s", suite);
+      snprintf(log, sizeof log, "/tmp/r/%s.log", suite);
+      snprintf(report, sizeof report, "/tmp/r/%s.report", suite);
+      char* r2[64] = {TOOL, "run", "--jobs", jobsf, "--root", B, "--out", out, "-j", (char*)jobs, "--timeout", (char*)timeout,
+                      "--deadline", left(dl)};
+      int k = 14;
+      for (int j = 0; j < nrootfs; j++) r2[k++] = rootfs_args[j];
+      r2[k++] = "--";
+      r2[k++] = EMU;
+      r2[k] = NULL;
       run(r2, NULL);
-      char* c2[] = {TOOL, "pcompare", "--jobs", B "/programs/programs.jobs", "--golden", B "/golden-programs", "--actual",
-                    "/tmp/r/programs", "--report", "/tmp/r/programs.report", "--max-detail", "5", NULL};
-      prog_rc = run(c2, "/tmp/r/programs.log");
-      cat("programs.log", "/tmp/r/programs.log");
-      cat("programs.report", "/tmp/r/programs.report");
+      char* c2[] = {TOOL, "pcompare", "--jobs", jobsf, "--golden", golden, "--actual", out, "--report", report, "--max-detail", "5", NULL};
+      int rc = run(c2, log);
+      snprintf(m1, sizeof m1, "%s.log", suite);
+      snprintf(m2, sizeof m2, "%s.report", suite);
+      cat(m1, log);
+      cat(m2, report);
+      sprintf(exitline + strlen(exitline), " %s=%d", suite, rc);
     }
   }
-  printf("A64DIFF-GUEST-EXIT insn=%d programs=%d\n", insn_rc, prog_rc);
+  printf("%s\n", exitline);
   fflush(stdout);
   sync();
   reboot(RB_POWER_OFF);
