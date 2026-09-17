@@ -254,6 +254,17 @@ void RegisterFS(FEX::HLE::SyscallHandler* Handler) {
   // *at() syscall handlers — overlay-aware. Replaces the bare passthrough
   // registrations in Passthrough.cpp (which were causing split state between
   // file-creation paths and *at() resolution targets).
+  REGISTER_SYSCALL_IMPL(statfs, [](FEXCore::Core::CpuStateFrame* Frame, const char* path, void* buf) -> uint64_t {
+    // struct statfs is the asm-generic 64-bit layout on arm64 and powerpc64
+    // (fstatfs is a passthrough for the same reason).
+    GuestPath Guest_path(path);
+    if (Guest_path.error()) {
+      return Guest_path.error();
+    }
+    uint64_t Result = FEX::HLE::_SyscallHandler->FM.Statfs(Guest_path.c_str(), buf);
+    SYSCALL_ERRNO();
+  });
+
   REGISTER_SYSCALL_IMPL(fchmodat, [](FEXCore::Core::CpuStateFrame* Frame, int dirfd, const char* pathname, mode_t mode) -> uint64_t {
     GuestPath Guest_pathname(pathname);
     if (Guest_pathname.error()) {

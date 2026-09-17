@@ -27,6 +27,9 @@ pipeline-emitter: exited=yes code=0 signaled=no
 pipeline-counter: exited=yes code=4 signaled=no
 posix_spawn: ret=0 bytes=21 lines=3
 posix_spawn-status: exited=yes code=0 signaled=no
+posix_spawn-missing: ret=ENOENT(2)
+vfork-child-write: seen-by-parent=yes
+vfork-exit3: exited=yes code=3 signaled=no
 argv0-child: argc=2 argv0=vforked
 vfork-execve: exited=yes code=0 signaled=no
 done

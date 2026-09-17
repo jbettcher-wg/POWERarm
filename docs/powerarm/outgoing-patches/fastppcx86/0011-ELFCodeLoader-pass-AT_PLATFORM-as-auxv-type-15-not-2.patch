@@ -1,0 +1,40 @@
+From ad2e7675bcf8c162972728d41c6a6521eb89346f Mon Sep 17 00:00:00 2001
+From: Jordan Bettcher <thebettcher@gmail.com>
+Date: Wed, 16 Sep 2026 23:33:29 -0600
+Subject: [PATCH 11/13] ELFCodeLoader: pass AT_PLATFORM as auxv type 15, not 24
+
+getauxval(AT_PLATFORM) returned NULL for every guest; on Linux x86-64 it is
+"x86_64" (i686 for 32-bit). The loader put the platform string under type
+24, which is AT_BASE_PLATFORM, instead of AT_PLATFORM (15). glibc takes its
+platform from 15; $PLATFORM in rpaths and the legacy platform library
+subdirectories come from it.
+
+Evidence, 64K host, FEX_HOSTPAGEMODE=force, a static x86-64 test printing
+getauxval(AT_PLATFORM):
+  before: AT_PLATFORM=(null)
+  after:  AT_PLATFORM=x86_64
+
+Found in POWERarm by dumping the auxv of an Arch Linux ARM program (type 24
+under POWERarm where arm64 Linux has type 15).
+---
+ Source/Tools/FEXInterpreter/ELFCodeLoader.h | 4 +++-
+ 1 file changed, 3 insertions(+), 1 deletion(-)
+
+diff --git a/Source/Tools/FEXInterpreter/ELFCodeLoader.h b/Source/Tools/FEXInterpreter/ELFCodeLoader.h
+index 79269a5f6..a39e7d2fb 100644
+--- a/Source/Tools/FEXInterpreter/ELFCodeLoader.h
++++ b/Source/Tools/FEXInterpreter/ELFCodeLoader.h
+@@ -798,7 +798,9 @@ public:
+     AuxVariables.emplace_back(auxv_t {16, HWCap});                        // AT_HWCAP
+     AuxVariables.emplace_back(auxv_t {26, HWCap2});                       // AT_HWCAP2
+     AuxVariables.emplace_back(auxv_t {51, CalculateSignalStackSize()});   // AT_MINSIGSTKSZ
+-    AuxPlatform = &AuxVariables.emplace_back(auxv_t {24, ~0ULL});         // AT_PLATFORM
++    // AT_PLATFORM is 15; 24 is AT_BASE_PLATFORM, which the kernel does not set
++    // on x86. glibc reads its platform (and getauxval(AT_PLATFORM)) from 15.
++    AuxPlatform = &AuxVariables.emplace_back(auxv_t {AT_PLATFORM, ~0ULL}); // AT_PLATFORM
+     AuxExecFN = &AuxVariables.emplace_back(auxv_t {AT_EXECFN, ~0ULL});    // AT_EXECFN
+ 
+     if (Is64BitMode()) {
+-- 
+2.55.0
+

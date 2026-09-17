@@ -1,0 +1,165 @@
+From 9fd1bbba715d759b5c87e1872f05cb7844da1b38 Mon Sep 17 00:00:00 2001
+From: Jordan Bettcher <thebettcher@gmail.com>
+Date: Wed, 16 Sep 2026 23:34:13 -0600
+Subject: [PATCH 12/13] FEXInterpreter, FileManager: keep FEX's own descriptors
+ out of the guest's fd range
+
+FEX opens descriptors before the guest starts: the FEXServer socket, the log
+descriptor, and FileManager's rootfs and /proc directory descriptors. They
+took the lowest free numbers, so a guest's first open() returned 4 or more
+instead of 3. Programs, and build outputs that record descriptor numbers,
+see the difference from Linux.
+
+New FEX::MoveFDOutOfGuestRange (Common/FDUtils.h) moves such a descriptor
+just below the RLIMIT_NOFILE soft limit, keeping its close-on-exec flag, and
+closes the original. It leaves the descriptor where it is when the limit is
+under 256. Applied to the FEXServer connection, the server-provided log
+descriptor, the stderr and file log descriptors, and FileManager's rootfs
+and /proc directories.
+
+Evidence, 64K host, FEX_HOSTPAGEMODE=force, a static x86-64 test whose first
+call is open("/dev/null"):
+  before: first open fd=4
+  after:  first open fd=3 (Linux: 3)
+Ubuntu 24.04 bash from the RootFS still reads files and lists /proc/self/fd.
+
+Found in POWERarm, where an Arch Linux ARM program under a rootfs got 4 (the
+socket at 3, rootfs at 6, /proc at 7).
+---
+ Source/Common/FDUtils.h                       | 29 +++++++++++++++++++
+ Source/Common/FEXServerClient.cpp             |  6 ++--
+ .../Tools/FEXInterpreter/FEXInterpreter.cpp   |  5 ++--
+ .../LinuxSyscalls/FileManagement.cpp          |  4 +--
+ 4 files changed, 37 insertions(+), 7 deletions(-)
+
+diff --git a/Source/Common/FDUtils.h b/Source/Common/FDUtils.h
+index f4e1d6bb4..2aff671b4 100644
+--- a/Source/Common/FDUtils.h
++++ b/Source/Common/FDUtils.h
+@@ -5,6 +5,7 @@
+ 
+ #include <fcntl.h>
+ #include <linux/limits.h>
++#include <sys/resource.h>
+ #include <unistd.h>
+ 
+ namespace FEX {
+@@ -15,4 +16,32 @@ inline int get_fdpath(int fd, char* SymlinkPath) {
+   return readlinkat(AT_FDCWD, Path.c_str(), SymlinkPath, PATH_MAX);
+ }
+ 
++// Moves a descriptor the emulator keeps for itself (FEXServer socket, log,
++// rootfs and /proc directories) to the top of the descriptor table, below the
++// RLIMIT_NOFILE soft limit, and closes the original. On Linux the guest's own
++// descriptors are numbered from the lowest free slot, so emulator descriptors
++// sitting at 3, 4, ... shifted every guest open (a first open returned 5
++// instead of 3). Returns the new descriptor, or the original one if it cannot
++// be moved (a small limit, or already high).
++inline int MoveFDOutOfGuestRange(int FD) {
++  if (FD < 0) {
++    return FD;
++  }
++  struct rlimit Limit {};
++  if (getrlimit(RLIMIT_NOFILE, &Limit) != 0 || Limit.rlim_cur == RLIM_INFINITY || Limit.rlim_cur < 256) {
++    return FD;
++  }
++  const int Base = static_cast<int>(Limit.rlim_cur) - 64;
++  if (FD >= Base) {
++    return FD;
++  }
++  const bool CloExec = (fcntl(FD, F_GETFD) & FD_CLOEXEC) != 0;
++  const int NewFD = fcntl(FD, CloExec ? F_DUPFD_CLOEXEC : F_DUPFD, Base);
++  if (NewFD < 0) {
++    return FD;
++  }
++  close(FD);
++  return NewFD;
++}
++
+ } // namespace FEX
+diff --git a/Source/Common/FEXServerClient.cpp b/Source/Common/FEXServerClient.cpp
+index d924f2e7d..613300148 100644
+--- a/Source/Common/FEXServerClient.cpp
++++ b/Source/Common/FEXServerClient.cpp
+@@ -197,7 +197,7 @@ int ConnectToServer(ConnectionOption ConnectionOption) {
+       LogMan::Msg::EFmt("Couldn't connect to FEXServer socket {} {}", ServerSocketName, errno);
+     }
+   } else {
+-    return SocketFD;
++    return FEX::MoveFDOutOfGuestRange(SocketFD);
+   }
+ #endif
+ 
+@@ -214,7 +214,7 @@ int ConnectToServer(ConnectionOption ConnectionOption) {
+       LogMan::Msg::EFmt("Couldn't connect to FEXServer socket {} {}", ServerSocketPath, errno);
+     }
+   } else {
+-    return SocketFD;
++    return FEX::MoveFDOutOfGuestRange(SocketFD);
+   }
+ 
+   close(SocketFD);
+@@ -380,7 +380,7 @@ void RequestServerKill(int ServerSocket) {
+ }
+ 
+ int RequestLogFD(int ServerSocket) {
+-  return RequestPIDFDPacket(ServerSocket, PacketType::TYPE_GET_LOG_FD);
++  return FEX::MoveFDOutOfGuestRange(RequestPIDFDPacket(ServerSocket, PacketType::TYPE_GET_LOG_FD));
+ }
+ 
+ fextl::string RequestRootFSPath(int ServerSocket) {
+diff --git a/Source/Tools/FEXInterpreter/FEXInterpreter.cpp b/Source/Tools/FEXInterpreter/FEXInterpreter.cpp
+index e013bbac1..acc0131e5 100644
+--- a/Source/Tools/FEXInterpreter/FEXInterpreter.cpp
++++ b/Source/Tools/FEXInterpreter/FEXInterpreter.cpp
+@@ -11,6 +11,7 @@ $end_info$
+ #include "Common/ArgumentLoader.h"
+ #include "Common/FEXServerClient.h"
+ #include "Common/Config.h"
++#include "Common/FDUtils.h"
+ #include "Common/HostFeatures.h"
+ #include "Common/Linux/SBRKAllocations.h"
+ #include "PortabilityInfo.h"
+@@ -126,7 +127,7 @@ void Init() {
+     // can run in to problems of writing to some file
+     auto LogFD = OutputFD;
+     if (LogFile == "stderr") {
+-      LogFD = dup(STDERR_FILENO);
++      LogFD = FEX::MoveFDOutOfGuestRange(dup(STDERR_FILENO));
+     } else if (LogFile == "server") {
+       Logging::FEXServer::FEXServerFD = FEXServerClient::RequestLogFD(FEXServerClient::GetServerFD());
+       if (FEXServer::FEXServerFD != -1) {
+@@ -139,7 +140,7 @@ void Init() {
+       // run writes fewer bytes than the previous one. Alternative would be
+       // O_APPEND (accumulate across runs), but the historical shape here is
+       // "one log per run" — matches the stderr/stdout paths above.
+-      LogFD = open(LogFile.c_str(), O_CREAT | O_TRUNC | O_CLOEXEC | O_WRONLY, USER_PERMS);
++      LogFD = FEX::MoveFDOutOfGuestRange(open(LogFile.c_str(), O_CREAT | O_TRUNC | O_CLOEXEC | O_WRONLY, USER_PERMS));
+     }
+ 
+     if (LogFD == -1) {
+diff --git a/Source/Tools/LinuxEmulation/LinuxSyscalls/FileManagement.cpp b/Source/Tools/LinuxEmulation/LinuxSyscalls/FileManagement.cpp
+index 0b46c5ea3..d441e826e 100644
+--- a/Source/Tools/LinuxEmulation/LinuxSyscalls/FileManagement.cpp
++++ b/Source/Tools/LinuxEmulation/LinuxSyscalls/FileManagement.cpp
+@@ -286,7 +286,7 @@ FileManager::FileManager(FEXCore::Context::Context* ctx)
+   }
+ 
+   if (!LDPath().empty()) {
+-    RootFSFD = open(LDPath().c_str(), O_DIRECTORY | O_PATH | O_CLOEXEC);
++    RootFSFD = FEX::MoveFDOutOfGuestRange(open(LDPath().c_str(), O_DIRECTORY | O_PATH | O_CLOEXEC));
+     if (RootFSFD == -1) {
+       RootFSFD = AT_FDCWD;
+     } else {
+@@ -411,7 +411,7 @@ FileManager::FileManager(FEXCore::Context::Context* ctx)
+   }
+ 
+   // Keep an fd open for /proc, to bypass chroot-style sandboxes
+-  ProcFD = open("/proc", O_RDONLY | O_CLOEXEC);
++  ProcFD = FEX::MoveFDOutOfGuestRange(open("/proc", O_RDONLY | O_CLOEXEC));
+   if (ProcFD != -1) {
+     // Track the st_dev of /proc, to check for inode equality
+     struct stat Buffer;
+-- 
+2.55.0
+

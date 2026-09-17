@@ -50,4 +50,5 @@ uname: nodename-nonempty=yes release-nonempty=yes version-nonempty=yes
 uname: release-at-least-4.x=yes
 uname-bad-ptr: ret=-1 errno=EFAULT(14)
 gethostname: ret=0 matches-uname=yes
+auxv: platform=aarch64 execfn-set=yes random-set=yes pagesz-pow2=yes
 done
