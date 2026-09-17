@@ -118,6 +118,7 @@ directory private per series. "f470" is the M2 tree, "powerarm" is f0a9da187
 | C15 | Relocatable variable-width guest-address loads (width recorded, re-emitted with nop padding) and the same-block delta form under the cache | CODE-CACHE.md "Next targets" | `JIT/PPC64LE/JIT.cpp`, `ALUOps.cpp` | cache-mode codegen +3.8% steady state | done | slice (10 Lua objects + ar/ld, CPU 100): cache off 45.02 s; cold 31.18 -> 30.28 s, warm 28.28 -> 27.22 s; `cc1` reloc-failed 0; format version 5 |
 | C16 | Cache size cap, LRU sweep at compaction, stale build-id namespaces removed | CODE-CACHE.md "Default-on" | `Core/CodeCache.cpp` | default-on | not touched | |
 | C17 | `fork` of a large POWERarm process (`sh` subshells) | strace of zlib `configure` | kernel, allocator | 1.4 ms per fork, 218 ms of `configure` | not touched | |
+| C18 | Config id from the distinct host MIDRs (not one per CPU in the affinity mask); `/` appended to `POWERARM_APP_CACHE_LOCATION` | pinned and unpinned runs wrote separate caches | `Core/CodeCache.cpp`, `Common/Config.cpp` | cache sharing across `taskset` | done | one config id for CPU 100 and CPUs 0-87 |
 
 ## Follow-ups to measure
 

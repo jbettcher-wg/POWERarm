@@ -385,8 +385,14 @@ uint64_t ComputeCodeCacheConfigId() {
                      F.SupportsVCmpFlagBranch, F.SupportsFlagTransparentSelect, F.SupportsAFP, F.SupportsFloatExceptions, F.IsInstCountCI}) {
         Hasher.Add(uint64_t {B});
       }
-      Hasher.Add(uint64_t {F.CPUMIDRs.size()});
-      for (uint32_t MIDR : F.CPUMIDRs) {
+      // The distinct MIDR values, not one per CPU: the count follows the
+      // process's CPU affinity, and a `taskset` run must share the cache of an
+      // unpinned one. Codegen only reads the values (the LRCPC2 erratum list).
+      fextl::vector<uint32_t> MIDRs = F.CPUMIDRs;
+      std::ranges::sort(MIDRs);
+      MIDRs.erase(std::unique(MIDRs.begin(), MIDRs.end()), MIDRs.end());
+      Hasher.Add(uint64_t {MIDRs.size()});
+      for (uint32_t MIDR : MIDRs) {
         Hasher.Add(uint64_t {MIDR});
       }
     }
