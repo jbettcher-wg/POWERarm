@@ -233,6 +233,7 @@ void IRBuilder::ResetWorkingList() {
   IREmitter::ReownOrClaimBuffer();
 
   JumpTargets.clear();
+  GPRCache = {};
   BlockSetPC = false;
   ShouldDump = false;
   CurrentCodeBlock = nullptr;
@@ -373,12 +374,43 @@ void IRBuilder::NoExecInstruction(uint64_t PC) {
 // Guest register access
 // ---------------------------------------------------------------------------
 
+// Context-backed registers (the ones with no static slot) keep a short-range
+// cache of their last known value: a load within GPR_CACHE_WINDOW guest
+// instructions of a store or load of the same register, in the same IR block,
+// reuses that SSA value instead of reading the slot again. That removes the
+// std-then-ld of one slot the pipeline research measured (PIPE Rule 1(a)) and
+// repeated loads of a register a few instructions apart.
+//
+// Every store still happens, in place, so CPUState is exact at every guest
+// instruction boundary, as before. The cache is only a statement about what
+// the slot holds, and it is dropped when that could change behind the
+// frontend's back: at a code block change (a new block starts with no SSA
+// values, and the syscall and exception paths all end the block), at a new
+// compile, and for a stored value that is not 64 bits wide, whose upper half
+// is not the stored one. The window is short so that the reused value does not
+// have to stay live across much code; with five dynamic host registers a long
+// lifetime is spilled to the stack instead, which costs more than the load it
+// replaced. Measured (A64Bench warm ms, CPU 104; window in instructions):
+//   window     crc32  sha256    vm  sort
+//   off         1450    1428  2620  1049
+//   1            598    1295  2339   993
+//   3            403     990  1901   973
+//   8            402     960  1742   970
+//   32           401     952  1905   901
+// gcc -O2 lvm.c moved by under 1% at every window.
 Ref IRBuilder::LoadGPRSlot(uint32_t Index) {
   const int Slot = GuestRegToSlot[Index];
   if (Slot >= 0) {
     return _LoadRegister(Slot, RegClass::GPR, OpSize::i64Bit);
   }
-  return _LoadContext(OpSize::i64Bit, RegClass::GPR, FEXCore::Core::CPUState::GPROffset(Index));
+  auto& Cached = GPRCache[Index];
+  if (Cached.Value && Cached.Block == GetCurrentBlock() && CurrentPC >= Cached.PC && CurrentPC - Cached.PC <= GPR_CACHE_WINDOW) {
+    Cached.PC = CurrentPC;
+    return Cached.Value;
+  }
+  Ref Value = _LoadContext(OpSize::i64Bit, RegClass::GPR, FEXCore::Core::CPUState::GPROffset(Index));
+  Cached = {.Value = Value, .Block = GetCurrentBlock(), .PC = CurrentPC};
+  return Value;
 }
 
 void IRBuilder::StoreGPRSlot(uint32_t Index, Ref Value) {
@@ -389,6 +421,11 @@ void IRBuilder::StoreGPRSlot(uint32_t Index, Ref Value) {
     Store->Reg = PhysicalRegister(RegClass::GPRFixed, Slot).Raw;
   } else {
     _StoreContext(OpSize::i64Bit, RegClass::GPR, Value, FEXCore::Core::CPUState::GPROffset(Index));
+    if (GetOpSize(Value) == OpSize::i64Bit) {
+      GPRCache[Index] = {.Value = Value, .Block = GetCurrentBlock(), .PC = CurrentPC};
+    } else {
+      GPRCache[Index] = {};
+    }
   }
 }
 
