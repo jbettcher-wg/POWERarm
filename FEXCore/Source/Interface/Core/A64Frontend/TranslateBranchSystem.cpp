@@ -240,6 +240,7 @@ bool IRBuilder::MSR_reg(uint32_t Word) {
     return true;
   }
   case REG_FPSR:
+    // POWERARM-M1-TODO(fpu): FPSR is stored only. The cumulative exception bits (IOC, DZC, OFC, UFC, IXC, IDC) are not raised by FP operations and QC is not raised by saturating operations; mapping FPSCR's sticky bits (VX, ZX, OX, UX, XX) needs the JIT's own FP use kept out of FPSCR.
     _StoreContext(OpSize::i32Bit, RegClass::GPR, _And(OpSize::i64Bit, LoadX(Rt), Constant(SystemRegisters::FPSR_WRITABLE_MASK)),
                   offsetof(FEXCore::Core::CPUState, fpsr));
     return true;

@@ -111,6 +111,9 @@ const IRBuilder::HandlerEntry IRBuilder::HandlerTable[] = {
   {"STR_reg_fpsimd", &IRBuilder::STR_LDR_reg_fpsimd}, {"LDR_reg_fpsimd", &IRBuilder::STR_LDR_reg_fpsimd},
   {"STx_mult_1", &IRBuilder::LDx_STx_mult}, {"STx_mult_2", &IRBuilder::LDx_STx_mult},
   {"LDx_mult_1", &IRBuilder::LDx_STx_mult}, {"LDx_mult_2", &IRBuilder::LDx_STx_mult},
+  // Advanced SIMD. The translated set is the subset measured in
+  // docs/powerarm/M1b-SIMD-SUBSET.md plus its cheap neighbours.
+  // POWERARM-M1-TODO(simd): no translator yet for saturating arithmetic and narrowing (SQADD, UQSUB, SQXTN, SQSHRN, ...), MUL/PMUL/PMULL, the multiply-accumulate and doubling families, TBL/TBX, register and rounding shifts (SSHL, URSHR, RSHRN, ...), SLI/SRI, CLS/CLZ/RBIT vector, ABD/ABA, pairwise-long adds, vector FP arithmetic, compares and conversions (FADD vector, FCMEQ, FCVTZS vector, ...), FRECPE/FRSQRTE, FMOV of a half-precision vector immediate, and the AES/SHA/SHA512/SHA3 entries; none is in the measured subset.
   // Advanced SIMD: copy.
   {"DUP_gen", &IRBuilder::DUP_gen}, {"DUP_elt_1", &IRBuilder::DUP_elt_1}, {"DUP_elt_2", &IRBuilder::DUP_elt_2},
   {"UMOV", &IRBuilder::UMOV}, {"SMOV", &IRBuilder::SMOV}, {"INS_gen", &IRBuilder::INS_gen}, {"INS_elt", &IRBuilder::INS_elt},

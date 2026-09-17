@@ -69,7 +69,76 @@ No `fccmp`, `frint*`, `fcvtns`/`fcvtnu`, `tbl`/`tbx`, `pmull`, AES, SHA, CRC32
 or LD2-4/ST2-4 structure loads appear in the reachable corpus; `sha256sum` and
 `md5sum` in busybox are plain integer code.
 
-## Full counts
+## Implementation status
+
+Translated (decoder entries with a translator, `IRBuilder::HandlerTable`):
+
+| Class | Entries |
+|---|---:|
+| SIMD&FP register loads/stores (literal, unsigned offset, unscaled, pre/post-index, register offset, pairs) | 10 |
+| LD1/ST1 (1-4 registers; LD2-4/ST2-4 not translated) | 4 |
+| SIMD copy (DUP general/element, INS general/element, UMOV, SMOV) and scalar DUP | 7 |
+| SIMD modified immediate (MOVI/MVNI/ORR/BIC, FMOV single/double; FMOV half not translated) | 2 |
+| SIMD three same (ADD, SUB, CMEQ/CMGT/CMGE/CMHI/CMHS/CMTST, AND/BIC/ORR/ORN/EOR/BSL/BIT/BIF, UMAX/UMIN/SMAX/SMIN, ADDP/UMAXP/UMINP) | 23 |
+| SIMD scalar three same (ADD, SUB, CMEQ/CMGT/CMGE/CMHI/CMHS/CMTST on D) | 8 |
+| SIMD two-register misc (CMEQ/CMGT/CMGE/CMLE/CMLT #0, CNT, NOT, NEG, ABS, REV32, REV64, XTN, FCVTL, FCVTN) | 14 |
+| SIMD scalar two-register misc (CMEQ/CMGT/CMGE/CMLE/CMLT #0 on D; FCVTZS/FCVTZU/SCVTF/UCVTF scalar) | 9 |
+| SIMD across lanes (ADDV, UMAXV, UMINV) | 3 |
+| SIMD three different (SADDL, UADDL, SSUBL, USUBL, SADDW, UADDW, ADDHN, SUBHN, with the 2 forms) | 8 |
+| SIMD shift by immediate (SSHR, USHR, SHL, SHRN, SSHLL, USHLL; scalar SSHR/USHR/SHL) | 9 |
+| EXT, UZP1/UZP2/ZIP1/ZIP2/TRN1/TRN2 | 7 |
+| FP/integer and FP/fixed conversions (all FCVT[NPMZA][SU], SCVTF/UCVTF, FMOV general) | 17 |
+| FP one register (FMOV, FABS, FNEG, FSQRT, FCVT; no FRINT*) | 5 |
+| FP compare, immediate, conditional compare/select | 6 |
+| FP two register (FADD/FSUB/FMUL/FDIV/FNMUL, FMIN/FMAX/FMINNM/FMAXNM) | 9 |
+| FP three register (FMADD, FMSUB, FNMADD, FNMSUB) | 4 |
+| **SIMD and FP total** | **145** |
+| Exclusive and atomic-width loads/stores (LDXR/LDAXR/STXR/STLXR, LDAR/LDLAR/STLR/STLLR), needed by glibc's locks | 8 |
+
+Scalar FP covers half, single and double precision. FPCR.RMode reaches the
+host rounding mode on MSR; FZ16 is emulated for half precision; FZ, DN and
+AHP are stored only, and FPSR's cumulative exception bits are not raised
+(`POWERARM-M1-TODO(fpu)` markers).
+
+IR ops added (IR.json, lowered in `JIT/PPC64LE/A64FPOps.cpp`), because the
+existing conversion ops have x86 semantics:
+
+- `A64FloatToGPR`: FPToFixed with every A64 rounding, saturation, NaN -> 0.
+  `Float_ToGPR_ZS` returns INT_MIN for NaN and positive overflow and has no
+  unsigned form.
+- `A64FloatFromGPR`: signed or unsigned, one rounding. `Float_FromGPR_S` is
+  signed only and converts i64 -> f32 through a double.
+- `A64FToF`: FCVT half/single/double, quieting a signalling NaN.
+  `Float_FToF` keeps it signalling and has no half precision. The half
+  conversions use `xscvhpdp`/`xscvdphp` on ISA 3.0 and GPR code on POWER8.
+
+Everything else maps onto existing IR ops; A64 semantics the host op does
+not have (NaN operand precedence, FMIN/FMAX, the fused multiply-add group,
+unsigned vector compares, 64-bit vector lanes) are composed in the frontend.
+
+Tests (`unittests/A64Frontend`, 46 programs, about 6000 generated SIMD/FP
+cases plus the corpus): all pass on the POWER9 by default, with
+`POWERARM_MAXINST=1` and with `POWERARM_HOSTFEATURES=disableisa30`.
+
+Exit targets, all matching the Pi byte for byte: static glibc and musl
+`hello`, `printf_float` (`%f %e %g %a`, `strtod`) against both libcs, the
+string/memory exerciser and scalar FP program against both, and busybox
+`echo`, `cat`, `wc`, `sort`, `sort -n`, `sha256sum`, `md5sum`.
+
+### Backend lowering bugs found
+
+In `FEXCore/Source/Interface/Core/JIT/PPC64LE/VectorOps.cpp` (they may also
+affect fastppcx86):
+
+- `VFNMLA` (3747-3748) and `VFNMLS` (3767-3768) use `xvnmsub*`/`xvnmadd*`,
+  which negate after rounding. The IR ops (x86 FNMADD/FNMSUB) are one
+  rounding of the negated expression, so results differ under FE_UPWARD and
+  FE_DOWNWARD, and the sign of a NaN result is flipped.
+- `Float_FromGPR_S` (4557-4558) converts i64 -> f32 with `fcfid` then `frsp`:
+  two roundings, wrong for integers that are not exact in double (e.g.
+  2^53+1 near a single-precision tie). `fcfids` rounds once.
+- `VAddV` 32-bit (586) uses `vsumsws`, which saturates; ADDV wraps.
+
 
 Per-entry counts, grouped by class, per binary. "Entry" is the `a64.inc`
 decoder entry, "Mnemonic" is objdump's alias.

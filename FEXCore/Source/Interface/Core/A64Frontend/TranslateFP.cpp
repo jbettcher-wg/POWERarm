@@ -134,6 +134,7 @@ Ref IRBuilder::DoubleToHalf(Ref D, bool ApplyFZ16) {
 
 Ref IRBuilder::PropagateNaNOperand(OpSize ElementSize, Ref A, Ref B) {
   // Lanes where A is a quiet NaN and B a signalling NaN take B for A.
+  // POWERARM-M1-TODO(fpu): this adds about a dozen vector instructions to every scalar FP arithmetic op; a fused A64 arithmetic IR op (or a NaN check branching to the fixup) would make the common non-NaN path free.
   const auto RS = OpSize::i128Bit;
   Ref Quiet = FPConstant(QuietBit(ElementSize), ElementSize);
   Ref NaNA = _VFCMPUNO(RS, ElementSize, A, A);
@@ -236,6 +237,7 @@ bool IRBuilder::FMOV_float_imm(uint32_t Word) {
 // One register
 // ---------------------------------------------------------------------------
 
+// POWERARM-M1-TODO(fpu): FRINTN/FRINTP/FRINTM/FRINTZ/FRINTA/FRINTX/FRINTI (scalar round to integral) have no translator; none is in the measured subset.
 bool IRBuilder::FPOneRegister(uint32_t Word, FPUnaryOp Op) {
   OpSize Size {};
   if (!FPTypeSize(Bits(Word, 23, 22), &Size)) {
