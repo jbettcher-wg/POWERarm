@@ -73,6 +73,11 @@ const IRBuilder::HandlerEntry IRBuilder::HandlerTable[] = {
   {"STTRH", &IRBuilder::LoadStoreImm9}, {"LDTRH", &IRBuilder::LoadStoreImm9}, {"LDTRSH", &IRBuilder::LoadStoreImm9},
   {"STTR", &IRBuilder::LoadStoreImm9}, {"LDTR", &IRBuilder::LoadStoreImm9}, {"LDTRSW", &IRBuilder::LoadStoreImm9},
   {"STRx_reg", &IRBuilder::LoadStoreRegOffset}, {"LDRx_reg", &IRBuilder::LoadStoreRegOffset},
+  // Exclusive loads and stores (software monitor).
+  {"LDXR", &IRBuilder::LoadExclusive}, {"LDAXR", &IRBuilder::LoadExclusive},
+  {"STXR", &IRBuilder::StoreExclusive}, {"STLXR", &IRBuilder::StoreExclusive},
+  {"LDAR", &IRBuilder::LoadStoreAtomicWidth}, {"LDLAR", &IRBuilder::LoadStoreAtomicWidth},
+  {"STLR", &IRBuilder::LoadStoreAtomicWidth}, {"STLLR", &IRBuilder::LoadStoreAtomicWidth},
   // Data processing (register): 2 source, 1 source.
   {"UDIV", &IRBuilder::UDIV}, {"SDIV", &IRBuilder::SDIV},
   {"LSLV", &IRBuilder::LSLV}, {"LSRV", &IRBuilder::LSRV}, {"ASRV", &IRBuilder::ASRV}, {"RORV", &IRBuilder::RORV},

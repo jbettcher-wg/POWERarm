@@ -119,6 +119,7 @@ public:
   bool LoadStoreImm9(uint32_t Word); bool STRx_LDRx_imm_2(uint32_t Word);
   bool PRFM_imm(uint32_t Word);
   bool LoadStoreRegOffset(uint32_t Word);
+  bool LoadExclusive(uint32_t Word); bool StoreExclusive(uint32_t Word); bool LoadStoreAtomicWidth(uint32_t Word);
   // Data processing (register).
   bool UDIV(uint32_t Word); bool SDIV(uint32_t Word);
   bool LSLV(uint32_t Word); bool LSRV(uint32_t Word); bool ASRV(uint32_t Word); bool RORV(uint32_t Word);
