@@ -299,7 +299,10 @@ machine.
   named after the ARM instructions and are already lowered on ppc64le. fastppcx86 lowered x86
   SHA-NI onto them.
 - **AES:** the existing `VAESEnc/Dec` ops have x86 `AESENC` semantics. `AESE`/`AESD`/`AESMC`/
-  `AESIMC` need new ops or compositions of the existing ones.
+  `AESIMC` are compositions of them (`TranslateCrypto.cpp`); the fused `vxor; vcipher` round of
+  NEON-LANDINGS §4.2 is not built yet.
+- **Advertised so far:** `fp`, `asimd`, `aes`, `pmull`, `sha1`, `sha2`, `crc32`, `fphp`,
+  `asimdhp`, `cpuid` (`simd_crypto` passes Pi parity). `atomics` is still missing from tier 1.
 - **32-bit code:** none. There's no AArch32 and no armhf multilib; ARMv9 cores dropped AArch32
   at EL0 as well. Guest pointers are host pointers, so thunks pass them through untouched.
 

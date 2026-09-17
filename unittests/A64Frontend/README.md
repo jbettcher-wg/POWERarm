@@ -97,8 +97,8 @@ Every program switches SP to a static stack in `.bss`, so SP and all data
 addresses are identical on the Pi and under POWERarm and can be printed.
 
 `sysreg` is not compared with the Pi: the presented ID_AA64ISAR0/ISAR1 values
-differ from the Pi 5 by design (the presented profile leaves out the crypto,
-CRC32, atomics and later extensions). On the Pi those checks print FAIL.
+differ from the Pi 5 by design (the presented profile leaves out atomics,
+SHA-512 and the later extensions). On the Pi those checks print FAIL.
 
 ## Positive controls
 
