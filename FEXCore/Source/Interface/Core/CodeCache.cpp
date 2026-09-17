@@ -775,7 +775,7 @@ namespace {
   }
 
   constexpr std::array<char, 4> SegmentMagic = {'P', 'A', 'C', 'C'};
-  constexpr uint32_t SegmentVersion = 4;
+  constexpr uint32_t SegmentVersion = 5;
   constexpr size_t MaxSegments = 8;
   // A runtime writer skips files with fewer new blocks than this. Stops a
   // process that compiled a handful of rare-path blocks from spending a
@@ -879,11 +879,16 @@ namespace {
   }
 
   // Bytes of the code a relocation rewrites.
-  uint64_t RelocWidth(CPU::RelocationTypes Type) {
-    switch (Type) {
+  uint64_t RelocWidth(const CPU::Relocation& Reloc) {
+    switch (Reloc.Header.Type) {
     case CPU::RelocationTypes::RELOC_NAMED_SYMBOL_LITERAL:
     case CPU::RelocationTypes::RELOC_GUEST_RIP_LITERAL:
     case CPU::RelocationTypes::RELOC_LINK_RECORD: return sizeof(uint64_t);
+    case CPU::RelocationTypes::RELOC_GUEST_RIP_MOVE:
+      if (Reloc.GuestRIP.Instructions != 0) {
+        return uint64_t {Reloc.GuestRIP.Instructions} * 4;
+      }
+      [[fallthrough]];
     default: return PPC64Emitter::Emitter::LoadConstantFixedBytes;
     }
   }
@@ -1494,7 +1499,7 @@ static void CollectLiveBlocks(CodeCache& Cache, ContextImpl& CTX, const Executab
     bool Cacheable = true;
     for (const auto& R : Relocs) {
       if (R.Header.Type == CPU::RelocationTypes::RELOC_NAMED_THUNK_MOVE || R.Header.Offset < Begin ||
-          R.Header.Offset + RelocWidth(R.Header.Type) > Begin + Size) {
+          R.Header.Offset + RelocWidth(R) > Begin + Size) {
         Cacheable = false;
         break;
       }
@@ -1854,7 +1859,7 @@ bool CodeCache::ApplyCodeRelocations(uint64_t GuestEntry, std::span<std::byte> C
   }
 
   for (const auto& Reloc : EntryRelocations) {
-    const uint64_t Width = RelocWidth(Reloc.Header.Type);
+    const uint64_t Width = RelocWidth(Reloc);
     if (Reloc.Header.Offset > Code.size() || Width > Code.size() - Reloc.Header.Offset) {
       LogMan::Msg::EFmt("Code cache relocation at {:#x} overruns its {:#x} byte block", Reloc.Header.Offset, Code.size());
       return false;
@@ -1886,8 +1891,27 @@ bool CodeCache::ApplyCodeRelocations(uint64_t GuestEntry, std::span<std::byte> C
     }
     case CPU::RelocationTypes::RELOC_GUEST_RIP_MOVE: {
       uint64_t Pointer = Reloc.GuestRIP.GuestRIP + GuestEntry;
-      FEXCore::CPU::PPC64EmitterBase PatchEmitter(&CTX, Ptr, Remaining);
-      PatchEmitter.LoadConstantFixed(PPC64Emitter::r(Reloc.GuestRIP.RegisterIndex), Pointer);
+      if (Reloc.GuestRIP.Instructions == 0) {
+        FEXCore::CPU::PPC64EmitterBase PatchEmitter(&CTX, Ptr, Remaining);
+        PatchEmitter.LoadConstantFixed(PPC64Emitter::r(Reloc.GuestRIP.RegisterIndex), Pointer);
+        break;
+      }
+      // Variable width: stored as nops, so the file does not depend on the
+      // writer's load base. On install, the rebased value must fit the
+      // instructions the writer emitted; the block is compiled otherwise.
+      // Emitted into a scratch window first: LoadConstant may need more room.
+      uint8_t Window[PPC64Emitter::Emitter::LoadConstantFixedBytes + 4];
+      FEXCore::CPU::PPC64EmitterBase PatchEmitter(&CTX, Window, sizeof(Window));
+      if (!ForStorage) {
+        PatchEmitter.LoadConstant(PPC64Emitter::r(Reloc.GuestRIP.RegisterIndex), Pointer);
+      }
+      if (PatchEmitter.GetOffset() > Width || Width > sizeof(Window)) {
+        return false;
+      }
+      while (PatchEmitter.GetOffset() < Width) {
+        PatchEmitter.nop();
+      }
+      memcpy(Ptr, Window, Width);
       break;
     }
     case CPU::RelocationTypes::RELOC_LINK_RECORD: break;

@@ -715,9 +715,14 @@ private:
   fextl::vector<PPC64Emitter::Label> CallReturnEntryLabels;
 
   // Resolved once at construction: code caching OR SMCSemanticPatch on, i.e.
-  // somebody rewrites the exit-RIP window in place and it has to stay a
-  // fixed-width 20-byte site. Off means InsertExitRIPMove may use the ordinary
-  // variable-width LoadConstant. See the resolution site in JIT.cpp.
+  // something consumes the relocations this backend records for guest-RIP
+  // loads. Off means no relocation is recorded at all. See JIT.cpp.
+  bool RetainRelocations {};
+
+  // SMCSemanticPatch on: guest-RIP loads are the fixed 20-byte window its fault
+  // handler re-encodes. With only the code cache on they are the ordinary
+  // variable-width LoadConstant, and the relocation records the width the
+  // loader may re-emit into (RelocGuestRIP::Instructions).
   bool ExitRIPFixedWidth {};
 
   // Spill slots management.
@@ -1203,10 +1208,17 @@ private:
   // !ExitRIPFixedWidth -- when a code cache or SMCSemanticPatch is on, that op
   // must emit the byte-exact 20-byte LoadConstantFixed window that
   // CodeCache::ApplyCodeRelocations re-emits RELOC_GUEST_RIP_MOVE into.
+  //
+  // With RetainRelocations and variable-width RIP loads (the code cache), a
+  // guest RIP is rebased on load and a plain constant is not, so a delta is
+  // taken only between two values of the same kind: GuestRIP marks an entry
+  // produced by OP_ENTRYPOINTOFFSET. The difference of two guest RIPs of one
+  // block is invariant under the load base, so the addi needs no relocation.
   struct {
     uint64_t Value;
     uint8_t Reg;      // GeneralRegisters[] index
     bool Valid;
+    bool GuestRIP;
   } LastConstantCache {};
 
   // The value DEF_OP(EntrypointOffset) materialises: `(Entry + Op->Offset)`

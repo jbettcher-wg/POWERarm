@@ -21,8 +21,7 @@ enum class RelocationTypes : uint32_t {
   // 8 byte literal (relative to binary base address)
   RELOC_GUEST_RIP_LITERAL,
 
-  // Fixed size guest RIP move
-  // 4 instruction constant generation
+  // Guest RIP move: fixed 5-instruction window, or the recorded width
   // Aligned to struct RelocGuestRIP
   RELOC_GUEST_RIP_MOVE,
 
@@ -74,7 +73,12 @@ struct RelocGuestRIP final {
   // GPR index the constant is being moved to (for non-literal relocations)
   uint8_t RegisterIndex;
 
-  char Pad[3];
+  // RELOC_GUEST_RIP_MOVE: instructions emitted for the load. 0 means the fixed
+  // 5-instruction LoadConstantFixed window; otherwise the loader re-emits a
+  // variable-width LoadConstant into this many instructions, padded with nops.
+  uint8_t Instructions;
+
+  char Pad[2];
 
   // The base RIP (to be moved by the register for non-literal relocations).
   // In a serialized code cache, this is relative to the binary base address.
