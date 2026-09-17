@@ -1,0 +1,164 @@
+#!/bin/sh
+# SPDX-License-Identifier: MIT
+# Pi side (aarch64): build the A64Tcc program bundle and capture its goldens.
+#
+#   build-bundle.sh OUTDIR [-j N]
+#
+# Produces OUTDIR/a64tcc-<hash>/, a directory bundle for
+#   Scripts/powerarm/a64diff-run.sh {64k|4k-kvm} POWERARM --bundle DIR --suites programs
+# holding:
+#   programs/tcc/ a static TinyCC (pinned commit) with its include dir, libtcc1.a,
+#                 runmain.o and a musl sysroot (pinned Debian musl-dev), so the
+#                 same compiler sees the same headers and libraries on both sides
+#   programs/src/ the C sources in unittests/A64Tcc/src
+#   programs/bin  static busybox (pinned Debian busybox-static) and the
+#                 A64Syscalls sys_* programs
+#   programs/programs.jobs, golden-programs/
+# Jobs copy the sources into their fresh cwd and compile them there, so no
+# absolute path reaches an object file; objects and executables are compared
+# byte for byte by `cat`ing them to stdout. Nothing here is committed.
+#
+# The goldens are the native run. A second native run must match them
+# (determinism), and every sys_* output must match unittests/A64Syscalls/golden.
+set -eu
+
+TCC_URL=https://repo.or.cz/tinycc.git
+TCC_COMMIT=0fb54300b56512754221d80adda85ddb9815bceb
+MUSL_URL=https://snapshot.debian.org/file/e0c0f9fdda5053d869b1fd8ba27f7f926a79499e
+MUSL_SHA256=384ea029e3694baac696d3993d93246f9a4b3741c493697e1ceb7256d8820748
+BUSYBOX_URL=https://snapshot.debian.org/file/6d31276d7d9ae8fd1fd27b9b368bef89e7677d62
+BUSYBOX_SHA256=c833be48abfa16bc19c4966ec93e289ff1ce5d2f1476cad3a57bd105378cd15c
+
+[ $# -ge 1 ] || { sed -n '3,22p' "$0" >&2; exit 2; }
+out=$1
+shift
+jobs=1
+while [ $# -gt 0 ]; do
+  case $1 in
+    -j) jobs=$2; shift 2 ;;
+    *) echo "usage: $0 OUTDIR [-j N]" >&2; exit 2 ;;
+  esac
+done
+[ "$(uname -m)" = aarch64 ] || { echo "build-bundle: run this on the aarch64 golden machine" >&2; exit 2; }
+
+here=$(cd "$(dirname "$0")" && pwd)
+repo=$(cd "$here/../.." && pwd)
+sys=$repo/unittests/A64Syscalls
+mkdir -p "$out"
+out=$(cd "$out" && pwd)
+work=$out/work
+mkdir -p "$work"
+
+t0=$(date +%s)
+step() { echo "[$(( $(date +%s) - t0 ))s] $*"; }
+
+fetch() { # URL SHA256 FILE
+  if [ ! -f "$3" ] || ! echo "$2  $3" | sha256sum -c --status; then
+    curl -sSfL -o "$3.tmp" "$1"
+    echo "$2  $3.tmp" | sha256sum -c --status || { echo "build-bundle: checksum mismatch for $1" >&2; exit 1; }
+    mv "$3.tmp" "$3"
+  fi
+}
+
+hash=$( (echo "$TCC_COMMIT $MUSL_SHA256 $BUSYBOX_SHA256"; cd "$repo" &&
+  cat unittests/A64Tcc/build-bundle.sh unittests/A64Tcc/src/*.c unittests/A64Syscalls/*.c unittests/A64Syscalls/*.h \
+      unittests/A64Diff/tool/a64diff.c unittests/A64Diff/tool/a64diff.h) | sha256sum | cut -c1-12)
+root=$out/a64tcc-$hash
+rm -rf "$root"
+mkdir -p "$root/programs/tcc/sysroot/include" "$root/programs/tcc/sysroot/lib" "$root/programs/src" "$root/programs/bin" "$root/tests" "$root/golden"
+step "bundle $root"
+
+step "fetch pinned packages"
+fetch "$MUSL_URL" "$MUSL_SHA256" "$work/musl-dev.deb"
+fetch "$BUSYBOX_URL" "$BUSYBOX_SHA256" "$work/busybox-static.deb"
+rm -rf "$work/musl" "$work/busybox"
+dpkg-deb -x "$work/musl-dev.deb" "$work/musl"
+dpkg-deb -x "$work/busybox-static.deb" "$work/busybox"
+cp -R "$work/musl/usr/include/aarch64-linux-musl/." "$root/programs/tcc/sysroot/include/"
+for f in crt1.o crti.o crtn.o libc.a; do cp "$work/musl/usr/lib/aarch64-linux-musl/$f" "$root/programs/tcc/sysroot/lib/"; done
+cp "$work/busybox/usr/bin/busybox" "$root/programs/bin/busybox"
+
+step "tinycc $TCC_COMMIT"
+if [ ! -d "$work/tinycc/.git" ]; then
+  git clone -q "$TCC_URL" "$work/tinycc"
+fi
+git -C "$work/tinycc" fetch -q origin 2>/dev/null || true
+git -C "$work/tinycc" checkout -q --detach "$TCC_COMMIT"
+git -C "$work/tinycc" clean -qfdx
+# {B} is tcc's -B directory; the jobs pass -B<bundle>/tcc, so both sides
+# compile against the bundle's sysroot and never the machine's own headers.
+(cd "$work/tinycc" &&
+  ./configure --config-musl --config-bcheck=no --extra-ldflags=-static --sysincludepaths='{B}/include:{B}/sysroot/include' \
+    --libpaths='{B}:{B}/sysroot/lib' --crtprefix='{B}/sysroot/lib' > "$work/tcc-configure.log" &&
+  ln -sfn "$root/programs/tcc/sysroot" sysroot &&
+  make -j"$jobs" > "$work/tcc-make.log" 2>&1) || { tail -n 20 "$work/tcc-make.log" >&2; exit 1; }
+file "$work/tinycc/tcc" | grep -q 'statically linked' || { echo "build-bundle: tcc is not static" >&2; exit 1; }
+cp "$work/tinycc/tcc" "$work/tinycc/libtcc1.a" "$work/tinycc/runmain.o" "$root/programs/tcc/"
+cp -R "$work/tinycc/include" "$root/programs/tcc/include"
+
+step "A64Syscalls programs"
+for c in "$sys"/sys_*.c; do
+  p=$(basename "$c" .c)
+  gcc -static -O2 -Wall -Werror -o "$root/programs/bin/$p" "$c"
+done
+cp "$here"/src/*.c "$root/programs/src/"
+
+step "jobs"
+T=@ROOT@/programs/tcc/tcc
+B=-B@ROOT@/programs/tcc
+BB=@ROOT@/programs/bin/busybox
+S=@ROOT@/programs/src
+tab=$(printf '\t')
+{
+  echo "# A64Tcc bundle jobs. TAB-separated: id class required stdin argv..."
+  echo "# Generated by unittests/A64Tcc/build-bundle.sh."
+  for c in "$sys"/sys_*.c; do
+    p=$(basename "$c" .c)
+    echo "syscalls.$p${tab}syscalls${tab}1${tab}-${tab}@ROOT@/programs/bin/$p"
+  done
+  echo "tcc.version${tab}tcc${tab}1${tab}-${tab}$T${tab}-v"
+  for p in hello multi libc; do
+    echo "tcc.obj.$p${tab}tcc${tab}1${tab}-${tab}$BB${tab}sh${tab}-c${tab}$BB cp $S/$p.c . && $T $B -c $p.c -o $p.o && $BB cat $p.o"
+    echo "tcc.exe.$p${tab}tcc${tab}1${tab}-${tab}$BB${tab}sh${tab}-c${tab}$BB cp $S/$p.c . && $T $B -static $p.c -o $p && $BB cat $p"
+    echo "tcc.run.$p${tab}tcc${tab}1${tab}-${tab}$BB${tab}sh${tab}-c${tab}$BB cp $S/$p.c . && $T $B -static $p.c -o $p && ./$p one two"
+  done
+  echo "tcc.jit.multi${tab}tcc${tab}1${tab}-${tab}$BB${tab}sh${tab}-c${tab}$BB cp $S/multi.c . && $T $B -run multi.c"
+  echo "tcc.error.bad${tab}tcc${tab}1${tab}-${tab}$BB${tab}sh${tab}-c${tab}$BB cp $S/bad.c . && $T $B -c bad.c -o bad.o"
+} > "$root/programs/programs.jobs"
+printf '# a64diff manifest format=1\n# id\tclass\tsub\trequired\texpect\tinsn_addr\tencodings\tdisasm\tinit(x0..x30,sp,nzcv)\n' > "$root/manifest.tsv"
+
+step "a64diff tool"
+cc -O2 -Wall -o "$work/a64diff" "$repo/unittests/A64Diff/tool/a64diff.c"
+tool=$work/a64diff
+
+step "golden run (native)"
+"$tool" run --jobs "$root/programs/programs.jobs" --root "$root" --out "$root/golden-programs" -j "$jobs" --timeout 120
+rm -rf "$root/golden-programs/"*.cwd
+for c in "$sys"/sys_*.c; do
+  p=$(basename "$c" .c)
+  cmp -s "$sys/golden/$p.txt" "$root/golden-programs/syscalls.$p.out" ||
+    { echo "build-bundle: syscalls.$p differs from unittests/A64Syscalls/golden/$p.txt" >&2; exit 1; }
+done
+
+step "determinism: second native run must match the goldens"
+rm -rf "$work/native"
+"$tool" run --jobs "$root/programs/programs.jobs" --root "$root" --out "$work/native" -j "$jobs" --timeout 120 > /dev/null
+"$tool" pcompare --jobs "$root/programs/programs.jobs" --golden "$root/golden-programs" --actual "$work/native" \
+  --report "$work/native.report" --max-detail 5 > "$work/native.log" || true
+grep -v '^CONTROL-FIRED' "$work/native.log"
+grep -q 'RESULT=PASS$' "$work/native.log" || { echo "build-bundle: native re-run does not match the goldens" >&2; exit 1; }
+
+{
+  echo "name a64tcc-$hash"
+  echo "format 1"
+  echo "created $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  echo "golden-host $(uname -srm)"
+  echo "golden-pagesize $(getconf PAGESIZE)"
+  echo "tcc $TCC_URL $TCC_COMMIT"
+  echo "musl-dev $MUSL_URL sha256 $MUSL_SHA256"
+  echo "busybox-static $BUSYBOX_URL sha256 $BUSYBOX_SHA256"
+  echo "gcc $(gcc --version | head -n 1)"
+  echo "tests 0"
+  echo "program-jobs $(grep -vc '^#' "$root/programs/programs.jobs")"
+} > "$root/VERSION"
+step "done: $root"

@@ -1,6 +1,9 @@
 // SPDX-License-Identifier: MIT
 #include "LinuxSyscalls/Syscalls.h"
 
+#include <algorithm>
+#include <cstring>
+
 namespace FEX::HLE::FaultSafeUserMemAccess {
 #ifdef ARCHITECTURE_arm64
 __attribute__((naked)) size_t CopyFromUser(void* Dest, const void* Src, size_t Size) {
@@ -256,4 +259,22 @@ bool IsFaultLocation(uint64_t PC) {
   return false;
 }
 #endif
+ssize_t CopyStringFromUser(char* Dest, const char* Src, size_t DestSize) {
+  // Copy up to each 4K boundary at a time: a string that ends just before an
+  // unmapped page is still valid, so nothing past a found NUL may be touched.
+  size_t Copied = 0;
+  while (Copied < DestSize) {
+    const uintptr_t Addr = reinterpret_cast<uintptr_t>(Src) + Copied;
+    const size_t ToBoundary = 4096 - (Addr & 4095);
+    const size_t Chunk = std::min(DestSize - Copied, ToBoundary);
+    if (CopyFromUser(Dest + Copied, reinterpret_cast<const void*>(Addr), Chunk) != 0) {
+      return -EFAULT;
+    }
+    if (const auto* Nul = static_cast<const char*>(memchr(Dest + Copied, 0, Chunk))) {
+      return Nul - Dest;
+    }
+    Copied += Chunk;
+  }
+  return -ENAMETOOLONG;
+}
 } // namespace FEX::HLE::FaultSafeUserMemAccess

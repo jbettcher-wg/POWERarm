@@ -204,13 +204,13 @@ FEX::HLE::ThreadStateObject* CreateNewThread(FEXCore::Context::Context* CTX, FEX
 
   // Sets the child TID to pointer in ParentTID
   if (flags & CLONE_PARENT_SETTID) {
-    *reinterpret_cast<pid_t*>(args->args.parent_tid) = Result;
+    (void)FaultSafeUserMemAccess::WriteToUser(reinterpret_cast<pid_t*>(args->args.parent_tid), static_cast<pid_t>(Result));
   }
 
   // Sets the child TID to the pointer in ChildTID
   if (flags & CLONE_CHILD_SETTID) {
     NewThread->ThreadInfo.set_child_tid = reinterpret_cast<int32_t*>(args->args.child_tid);
-    *reinterpret_cast<pid_t*>(args->args.child_tid) = Result;
+    (void)FaultSafeUserMemAccess::WriteToUser(reinterpret_cast<pid_t*>(args->args.child_tid), static_cast<pid_t>(Result));
   }
 
   // When the thread exits, clear the child thread ID at ChildTID
@@ -229,7 +229,7 @@ FEX::HLE::ThreadStateObject* CreateNewThread(FEXCore::Context::Context* CTX, FEX
       // success); the failure sentinel lives in pidfd itself (= -1).
       LogMan::Msg::EFmt("Couldn't get pidfd of TID {}\n", Result);
     } else {
-      *reinterpret_cast<int*>(args->args.pidfd) = pidfd;
+      (void)FaultSafeUserMemAccess::WriteToUser(reinterpret_cast<int*>(args->args.pidfd), pidfd);
     }
   }
 
@@ -366,6 +366,8 @@ static int CloneFork(uint32_t flags, uint64_t exit_signal) {
 //      child leaves the process debuggable instead of frozen.  Child-writes-
 //      through-shared-VM semantics remain unimplemented (see
 //      vfork-no-vm-sharing notes); exit-status/ordering semantics hold.
+//
+// POWERARM-M1-TODO(syscalls): clone(CLONE_VM|CLONE_VFORK) without CLONE_THREAD (vfork(2), glibc posix_spawn) runs the child in a COPY of the address space, so nothing the child writes before execve/_exit reaches the parent. Visible consequence: glibc posix_spawn reports an exec failure by storing errno in memory shared with the child, so posix_spawn of a missing program returns 0 and the child exits 127 instead of returning ENOENT (musl uses a CLOEXEC pipe and is unaffected; fork+exec, and every spawn whose exec succeeds, behave like Linux). Real sharing needs the vfork child to run guest code without touching FEX's shared heap (attempt 1 above); unittests/A64Syscalls/sys_process.c leaves this case out.
 
 uint64_t ForkGuest(FEXCore::Core::InternalThreadState* Thread, FEXCore::Core::CpuStateFrame* Frame, FEX::HLE::clone3_args* args) {
   const uint64_t flags = args->args.flags;
@@ -454,7 +456,8 @@ uint64_t ForkGuest(FEXCore::Core::InternalThreadState* Thread, FEXCore::Core::Cp
     // Sets the child TID to the pointer in ChildTID
     if (flags & CLONE_CHILD_SETTID) {
       ThreadObject->ThreadInfo.set_child_tid = child_tid;
-      *child_tid = ThreadObject->ThreadInfo.TID;
+      // The kernel ignores a failed put_user here.
+      (void)FaultSafeUserMemAccess::WriteToUser(child_tid, static_cast<pid_t>(ThreadObject->ThreadInfo.TID));
     }
 
     // When the thread exits, clear the child thread ID at ChildTID
@@ -469,7 +472,7 @@ uint64_t ForkGuest(FEXCore::Core::InternalThreadState* Thread, FEXCore::Core::Cp
   } else {
     if (Result != -1) {
       if (flags & CLONE_PARENT_SETTID) {
-        *parent_tid = Result;
+        (void)FaultSafeUserMemAccess::WriteToUser(parent_tid, Result);
       }
 
       // CLONE_PIDFD emulation for the fork (non-CLONE_THREAD) path.
@@ -486,7 +489,7 @@ uint64_t ForkGuest(FEXCore::Core::InternalThreadState* Thread, FEXCore::Core::Cp
       if (flags & CLONE_PIDFD) {
         const int pidfd = ::syscall(SYSCALL_DEF(pidfd_open), Result, 0);
         if (pidfd >= 0) {
-          *reinterpret_cast<int*>(args->args.pidfd) = pidfd;
+          (void)FaultSafeUserMemAccess::WriteToUser(reinterpret_cast<int*>(args->args.pidfd), pidfd);
         } else {
           LogMan::Msg::EFmt("CLONE_PIDFD: pidfd_open for child pid {} failed (errno {})", Result, errno);
         }
@@ -592,7 +595,9 @@ void RegisterThread(FEX::HLE::SyscallHandler* Handler) {
                           }
                           FEX::HLE::clone3_args args {};
                           args.Type = TypeOfClone::TYPE_CLONE3;
-                          memcpy(&args.args, cl_args, std::min(sizeof(FEX::HLE::kernel_clone3_args), size));
+                          if (FaultSafeUserMemAccess::CopyFromUser(&args.args, cl_args, std::min(sizeof(FEX::HLE::kernel_clone3_args), size)) != 0) {
+                            return -EFAULT;
+                          }
                           return CloneHandler(Frame, &args);
                         }));
 
@@ -611,11 +616,12 @@ void RegisterThread(FEX::HLE::SyscallHandler* Handler) {
     auto ThreadObject = FEX::HLE::ThreadManager::GetStateObjectFromCPUState(Frame);
 
     if (ThreadObject->ThreadInfo.clear_child_tid) {
-      auto Addr = std::atomic_ref<int32_t>(*ThreadObject->ThreadInfo.clear_child_tid);
-      Addr.store(0);
-      // FUTEX_WAKE val is int; kernel accepts INT_MAX as wake-all. ~0ULL silently truncates to -1
-      // which the kernel treats the same way, but INT_MAX is the documented spelling.
-      syscall(SYSCALL_DEF(futex), ThreadObject->ThreadInfo.clear_child_tid, FUTEX_WAKE, INT_MAX, 0, 0, 0);
+      // kernel/fork.c mm_release: put_user, and the wake only if it succeeded.
+      if (FaultSafeUserMemAccess::WriteToUser(ThreadObject->ThreadInfo.clear_child_tid, int32_t {0})) {
+        // FUTEX_WAKE val is int; kernel accepts INT_MAX as wake-all. ~0ULL silently truncates to -1
+        // which the kernel treats the same way, but INT_MAX is the documented spelling.
+        syscall(SYSCALL_DEF(futex), ThreadObject->ThreadInfo.clear_child_tid, FUTEX_WAKE, INT_MAX, 0, 0, 0);
+      }
     }
 
     ThreadObject->StatusCode = status;
@@ -663,7 +669,9 @@ void RegisterThread(FEX::HLE::SyscallHandler* Handler) {
                             const auto auxvSize = auxv.size;
                             size_t MinSize = std::min(auxvSize, UserSize);
 
-                            memcpy(addr, reinterpret_cast<void*>(auxvBase), MinSize);
+                            if (FaultSafeUserMemAccess::CopyToUser(addr, reinterpret_cast<void*>(auxvBase), MinSize) != 0) {
+                              return -EFAULT;
+                            }
 
                             // Returns the size of auxv without truncation.
                             return auxvSize;

@@ -1030,6 +1030,8 @@ bool Mincore(FEXCore::Core::InternalThreadState* Thread, void* addr, size_t leng
   }
 
   auto* Hndl = Handler::Get();
+  // Filled locally and copied out after the lock: a bad vec is EFAULT.
+  fextl::vector<uint8_t> GuestVec(GuestPages);
   {
     auto lk = FEXCore::GuardSignalDeferringSectionWithFallback<std::shared_lock>(Hndl->VMATracking.Mutex, Thread);
     for (uint64_t i = 0; i < GuestPages; ++i) {
@@ -1042,8 +1044,12 @@ bool Mincore(FEXCore::Core::InternalThreadState* Thread, void* addr, size_t leng
         *Result = static_cast<uint64_t>(-ENOMEM);
         return true;
       }
-      vec[i] = HostVec[(Page - GranuleStart) / HostSize];
+      GuestVec[i] = HostVec[(Page - GranuleStart) / HostSize];
     }
+  }
+  if (FaultSafeUserMemAccess::CopyToUser(vec, GuestVec.data(), GuestPages) != 0) {
+    *Result = static_cast<uint64_t>(-EFAULT);
+    return true;
   }
 
   *Result = 0;

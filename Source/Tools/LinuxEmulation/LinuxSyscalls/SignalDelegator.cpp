@@ -2237,7 +2237,7 @@ uint64_t SignalDelegator::GuestSigTimedWait(uint64_t* set, siginfo_t* info, cons
     return -EINVAL;
   }
 
-  uint64_t Result = ::syscall(SYS_rt_sigtimedwait, set, info, timeout);
+  uint64_t Result = ::syscall(SYS_rt_sigtimedwait, set, info, timeout, sigsetsize);
 
   return Result == -1 ? -errno : Result;
 }

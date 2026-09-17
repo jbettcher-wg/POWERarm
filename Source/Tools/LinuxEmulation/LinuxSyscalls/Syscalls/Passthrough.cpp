@@ -20,6 +20,7 @@ $end_info$
 
 
 #include <FEXCore/IR/IR.h>
+#include <FEXCore/fextl/vector.h>
 #include <FEXHeaderUtils/Syscalls.h>
 
 #include <algorithm>
@@ -725,7 +726,11 @@ static int ReadSchedPriority(uint64_t Param, uint64_t Result) {
   if (!GuestStructReadable(Param, Result)) {
     return -1;
   }
-  return *reinterpret_cast<const int32_t*>(Param);
+  int32_t Priority {};
+  if (!FaultSafeUserMemAccess::ReadFromUser(&Priority, reinterpret_cast<const int32_t*>(Param))) {
+    return -1;
+  }
+  return Priority;
 }
 
 // Prefix of the kernel's struct sched_attr. Identical layout for 32-bit and
@@ -768,10 +773,11 @@ static uint64_t WrappedSchedSetattr(FEXCore::Core::CpuStateFrame* Frame, uint64_
   int Policy = -1;
   int Priority = -1;
   if (GuestStructReadable(attr, Result)) {
-    const auto* GuestAttr = reinterpret_cast<const CensusSchedAttr*>(attr);
-    if (GuestAttr->size >= sizeof(CensusSchedAttr)) {
-      Policy = static_cast<int>(GuestAttr->sched_policy);
-      Priority = static_cast<int>(GuestAttr->sched_priority);
+    CensusSchedAttr GuestAttr {};
+    if (FaultSafeUserMemAccess::ReadFromUser(&GuestAttr, reinterpret_cast<const CensusSchedAttr*>(attr)) &&
+        GuestAttr.size >= sizeof(CensusSchedAttr)) {
+      Policy = static_cast<int>(GuestAttr.sched_policy);
+      Priority = static_cast<int>(GuestAttr.sched_priority);
     }
   }
 
@@ -792,8 +798,10 @@ static uint64_t WrappedSchedSetaffinity(FEXCore::Core::CpuStateFrame* Frame, uin
   cpu_set_t HostSet;
   CPU_ZERO(&HostSet);
   const size_t GuestBytes = std::min<size_t>(cpusetsize, sizeof(cpu_set_t));
-  FaultSafeUserMemAccess::VerifyIsReadable(reinterpret_cast<const void*>(mask), GuestBytes);
-  const auto* GuestMask = reinterpret_cast<const uint8_t*>(mask);
+  uint8_t GuestMask[sizeof(cpu_set_t)] {};
+  if (FaultSafeUserMemAccess::CopyFromUser(GuestMask, reinterpret_cast<const void*>(mask), GuestBytes) != 0) {
+    return -EFAULT;
+  }
   const uint32_t GuestCount = FEX::CPUInfo::MappedCPUCount();
   bool AnyMapped = false;
   for (uint32_t Bit = 0; Bit < std::min<uint32_t>(GuestBytes * 8, GuestCount); ++Bit) {
@@ -814,8 +822,8 @@ static uint64_t WrappedSchedSetaffinity(FEXCore::Core::CpuStateFrame* Frame, uin
   }
   if (FEX::HLE::ThreadCensus::Enabled()) {
     const bool Readable = GuestStructReadable(mask, Result);
-    FEX::HLE::ThreadCensus::OnSetAffinity(static_cast<int64_t>(pid), Readable ? reinterpret_cast<const uint8_t*>(mask) : nullptr,
-                                          Readable ? cpusetsize : 0, static_cast<int64_t>(Result));
+    FEX::HLE::ThreadCensus::OnSetAffinity(static_cast<int64_t>(pid), Readable ? GuestMask : nullptr,
+                                          Readable ? GuestBytes : 0, static_cast<int64_t>(Result));
   }
   if (Result == 0) {
     // The guest placed this thread deliberately; CoreIsolation must never
@@ -845,14 +853,15 @@ static uint64_t WrappedSchedGetaffinity(FEXCore::Core::CpuStateFrame* Frame, uin
   // size thread pools from this result).
   FEX::HLE::CoreIsolation::ReportedAffinityOverride(pid == 0 ? static_cast<uint32_t>(FHU::Syscalls::gettid()) : static_cast<uint32_t>(pid),
                                                     &HostSet);
-  FaultSafeUserMemAccess::VerifyIsWritable(reinterpret_cast<void*>(mask), NeededBytes);
-  auto* GuestMask = reinterpret_cast<uint8_t*>(mask);
-  memset(GuestMask, 0, NeededBytes);
+  fextl::vector<uint8_t> GuestMask(NeededBytes);
   for (uint32_t Bit = 0; Bit < GuestCount; ++Bit) {
     const uint32_t HostID = FEX::CPUInfo::MapGuestToHostCPU(Bit);
     if (HostID < CPU_SETSIZE && CPU_ISSET(HostID, &HostSet)) {
       GuestMask[Bit / 8] |= 1u << (Bit % 8);
     }
+  }
+  if (FaultSafeUserMemAccess::CopyToUser(reinterpret_cast<void*>(mask), GuestMask.data(), NeededBytes) != 0) {
+    return -EFAULT;
   }
   return NeededBytes;
 }
@@ -864,13 +873,11 @@ static uint64_t WrappedGetcpu(FEXCore::Core::CpuStateFrame* Frame, uint64_t cpu,
   if (Result == static_cast<uint64_t>(-1)) {
     return -errno;
   }
-  if (cpu) {
-    FaultSafeUserMemAccess::VerifyIsWritable(reinterpret_cast<void*>(cpu), sizeof(uint32_t));
-    *reinterpret_cast<uint32_t*>(cpu) = FEX::CPUInfo::MapHostToGuestCPU(HostCPU);
+  if (cpu && !FaultSafeUserMemAccess::WriteToUser(reinterpret_cast<uint32_t*>(cpu), FEX::CPUInfo::MapHostToGuestCPU(HostCPU))) {
+    return -EFAULT;
   }
-  if (node) {
-    FaultSafeUserMemAccess::VerifyIsWritable(reinterpret_cast<void*>(node), sizeof(uint32_t));
-    *reinterpret_cast<uint32_t*>(node) = HostNode;
+  if (node && !FaultSafeUserMemAccess::WriteToUser(reinterpret_cast<uint32_t*>(node), HostNode)) {
+    return -EFAULT;
   }
   return Result;
 }
@@ -903,7 +910,14 @@ static uint64_t WrappedGetcpu(FEXCore::Core::CpuStateFrame* Frame, uint64_t cpu,
 static uint64_t VDSOClockGetTime(FEXCore::Core::CpuStateFrame* Frame, uint64_t clk_id, uint64_t tp) {
   const auto Fn = FEX::VDSO::GetHostVDSOClocks().ClockGetTime;
   if (Fn) {
-    return static_cast<uint64_t>(static_cast<int64_t>(Fn(static_cast<clockid_t>(clk_id), reinterpret_cast<struct timespec*>(tp))));
+    // The host vDSO writes through the pointer in user mode, so it would fault
+    // on a bad one instead of returning EFAULT: fill a local and copy it out.
+    struct timespec Local {};
+    const int64_t Result = Fn(static_cast<clockid_t>(clk_id), &Local);
+    if (Result == 0 && !FaultSafeUserMemAccess::WriteToUser(reinterpret_cast<struct timespec*>(tp), Local)) {
+      return -EFAULT;
+    }
+    return static_cast<uint64_t>(Result);
   }
   return SyscallPassthrough2<SYSCALL_DEF(clock_gettime)>(Frame, clk_id, tp);
 }
@@ -911,7 +925,13 @@ static uint64_t VDSOClockGetTime(FEXCore::Core::CpuStateFrame* Frame, uint64_t c
 static uint64_t VDSOClockGetRes(FEXCore::Core::CpuStateFrame* Frame, uint64_t clk_id, uint64_t tp) {
   const auto Fn = FEX::VDSO::GetHostVDSOClocks().ClockGetRes;
   if (Fn) {
-    return static_cast<uint64_t>(static_cast<int64_t>(Fn(static_cast<clockid_t>(clk_id), reinterpret_cast<struct timespec*>(tp))));
+    // See VDSOClockGetTime. A NULL res is allowed.
+    struct timespec Local {};
+    const int64_t Result = Fn(static_cast<clockid_t>(clk_id), tp ? &Local : nullptr);
+    if (Result == 0 && tp && !FaultSafeUserMemAccess::WriteToUser(reinterpret_cast<struct timespec*>(tp), Local)) {
+      return -EFAULT;
+    }
+    return static_cast<uint64_t>(Result);
   }
   return SyscallPassthrough2<SYSCALL_DEF(clock_getres)>(Frame, clk_id, tp);
 }
@@ -919,8 +939,17 @@ static uint64_t VDSOClockGetRes(FEXCore::Core::CpuStateFrame* Frame, uint64_t cl
 static uint64_t VDSOGetTimeOfDay(FEXCore::Core::CpuStateFrame* Frame, uint64_t tv, uint64_t tz) {
   const auto Fn = FEX::VDSO::GetHostVDSOClocks().GetTimeOfDay;
   if (Fn) {
-    return static_cast<uint64_t>(
-      static_cast<int64_t>(Fn(reinterpret_cast<struct timeval*>(tv), reinterpret_cast<struct timezone*>(tz))));
+    // See VDSOClockGetTime. Either pointer may be NULL.
+    struct timeval LocalTV {};
+    struct timezone LocalTZ {};
+    const int64_t Result = Fn(tv ? &LocalTV : nullptr, tz ? &LocalTZ : nullptr);
+    if (Result == 0) {
+      if ((tv && !FaultSafeUserMemAccess::WriteToUser(reinterpret_cast<struct timeval*>(tv), LocalTV)) ||
+          (tz && !FaultSafeUserMemAccess::WriteToUser(reinterpret_cast<struct timezone*>(tz), LocalTZ))) {
+        return -EFAULT;
+      }
+    }
+    return static_cast<uint64_t>(Result);
   }
   return SyscallPassthrough2<SYSCALL_DEF(gettimeofday)>(Frame, tv, tz);
 }

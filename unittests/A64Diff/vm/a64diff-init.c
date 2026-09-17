@@ -89,6 +89,10 @@ int main(void) {
   mount("tmpfs", "/tmp", "tmpfs", 0, "mode=1777");
   mkdir("/dev/shm", 01777);
   mount("tmpfs", "/dev/shm", "tmpfs", 0, "mode=1777");
+  /* Pseudo-terminals (posix_openpt) for the A64Syscalls sys_tty program. */
+  mkdir("/dev/pts", 0755);
+  mount("devpts", "/dev/pts", "devpts", 0, "ptmxmode=0666,mode=0620");
+  if (access("/dev/ptmx", F_OK) != 0) symlink("pts/ptmx", "/dev/ptmx");
   setenv("HOME", "/tmp", 1);
 
   long ps = sysconf(_SC_PAGESIZE);

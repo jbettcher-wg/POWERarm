@@ -10,6 +10,7 @@ $end_info$
 
 #include "LinuxSyscalls/Arm64/Syscalls.h"
 #include "LinuxSyscalls/SignalDelegator.h"
+#include "LinuxSyscalls/Syscalls.h"
 
 #include <FEXCore/Core/CoreState.h>
 #include <FEXCore/fextl/fmt.h>
@@ -126,11 +127,42 @@ uint64_t SeccompEmulator::Handle(FEXCore::Core::CpuStateFrame* Frame, uint32_t O
     return -EINVAL;
   }
 
+  // Guest structures are copied in and out here so a bad pointer is EFAULT.
   switch (Op) {
   case SECCOMP_SET_MODE_STRICT: return SetModeStrict(Frame, flags, arg);
-  case SECCOMP_SET_MODE_FILTER: return SetModeFilter(Frame, flags, static_cast<const sock_fprog*>(arg));
-  case SECCOMP_GET_ACTION_AVAIL: return GetActionAvail(flags, static_cast<const uint32_t*>(arg));
-  case SECCOMP_GET_NOTIF_SIZES: return GetNotifSizes(flags, static_cast<struct seccomp_notif_sizes*>(arg));
+  case SECCOMP_SET_MODE_FILTER: {
+    if (!arg) {
+      return SetModeFilter(Frame, flags, nullptr);
+    }
+    sock_fprog Prog {};
+    if (!FaultSafeUserMemAccess::ReadFromUser(&Prog, static_cast<const sock_fprog*>(arg))) {
+      return -EFAULT;
+    }
+    fextl::vector<sock_filter> Filter;
+    if (Prog.len != 0 && Prog.len <= BPF_MAXINSNS) {
+      Filter.resize(Prog.len);
+      if (FaultSafeUserMemAccess::CopyFromUser(Filter.data(), Prog.filter, sizeof(sock_filter) * Prog.len) != 0) {
+        return -EFAULT;
+      }
+      Prog.filter = Filter.data();
+    }
+    return SetModeFilter(Frame, flags, &Prog);
+  }
+  case SECCOMP_GET_ACTION_AVAIL: {
+    uint32_t Action {};
+    if (arg && !FaultSafeUserMemAccess::ReadFromUser(&Action, static_cast<const uint32_t*>(arg))) {
+      return -EFAULT;
+    }
+    return GetActionAvail(flags, arg ? &Action : nullptr);
+  }
+  case SECCOMP_GET_NOTIF_SIZES: {
+    struct seccomp_notif_sizes Sizes {};
+    const uint64_t Result = GetNotifSizes(flags, &Sizes);
+    if (Result == 0 && !FaultSafeUserMemAccess::WriteToUser(static_cast<struct seccomp_notif_sizes*>(arg), Sizes)) {
+      return -EFAULT;
+    }
+    return Result;
+  }
   default:
     // operation is unknown or is not supported by this kernel version or configuration.
     return -EINVAL;

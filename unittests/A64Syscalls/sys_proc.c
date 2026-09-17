@@ -65,7 +65,9 @@ static void t_ids(void)
 	pid_t pg = getpgid(0);
 	pid_t sid = getsid(0);
 	printf("getpgid: positive=%s equals-getpgrp=%s\n", YN(pg > 0), YN(pg == getpgrp()));
-	printf("getsid: positive=%s\n", YN(sid > 0));
+	/* 0 when the session is init's own (a process started straight from an
+	 * initramfs init, e.g. the 4K KVM test guest), otherwise positive */
+	printf("getsid: nonneg=%s\n", YN(sid >= 0));
 	errno = 0;
 	printf("getpgid-bogus: ret=%d errno=%s\n", getpgid(0x7ffffff0), errstr(errno));
 	errno = 0;

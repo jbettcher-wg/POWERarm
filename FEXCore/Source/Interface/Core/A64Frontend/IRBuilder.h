@@ -170,6 +170,8 @@ public:
   // Scalar floating point.
   bool FMOV_float_gen(uint32_t Word); bool FMOV_float(uint32_t Word); bool FMOV_float_imm(uint32_t Word);
   bool FABS_float(uint32_t Word); bool FNEG_float(uint32_t Word); bool FSQRT_float(uint32_t Word); bool FCVT_float(uint32_t Word);
+  bool FRINTN_float(uint32_t Word); bool FRINTP_float(uint32_t Word); bool FRINTM_float(uint32_t Word); bool FRINTZ_float(uint32_t Word);
+  bool FRINTA_float(uint32_t Word); bool FRINTX_float(uint32_t Word); bool FRINTI_float(uint32_t Word);
   bool FADD_float(uint32_t Word); bool FSUB_float(uint32_t Word); bool FMUL_float(uint32_t Word); bool FDIV_float(uint32_t Word);
   bool FNMUL_float(uint32_t Word); bool FMIN_float(uint32_t Word); bool FMAX_float(uint32_t Word);
   bool FMINNM_float(uint32_t Word); bool FMAXNM_float(uint32_t Word);
@@ -283,6 +285,9 @@ private:
   enum class FPUnaryOp { Abs, Neg, Sqrt };
   enum class FPBinaryOp { Add, Sub, Mul, Div, NMul, Min, Max, MinNum, MaxNum };
   bool FPOneRegister(uint32_t Word, FPUnaryOp Op);
+  enum class FPRounding { TiesEven, PosInf, NegInf, Zero, TiesAway, Current };
+  bool FPRoundInt(uint32_t Word, FPRounding Mode);
+  Ref FPRoundToIntegral(Ref X, OpSize ElementSize, FPRounding Mode);
   bool FPTwoRegister(uint32_t Word, FPBinaryOp Op);
   bool FPConvertToInt(uint32_t Word, uint8_t Rounding, bool Signed);
   bool FPConvertFromInt(uint32_t Word, bool Signed, bool Fixed);

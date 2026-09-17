@@ -35,7 +35,8 @@ mmap-hint-2^52: ok=yes below-limit=yes
 mmap-fixed-2^56: failed=yes errno=ENOMEM(12)
 mmap-noreplace-2^56: failed=yes errno=ENOMEM(12)
 mmap-hint-2^56: ok=yes below-limit=yes
-mmap-noreplace-below-2^47: same-addr=yes writable=1
+mmap-noreplace-below-2^46: same-addr=yes writable=1
+mmap-noreplace-below-2^47: mapped-writable-or-enomem=yes
 mmap-file-private-ro: aligned=yes content=yes
 mmap-file-private-ro: writable=0
 mmap-file-offset: content=yes

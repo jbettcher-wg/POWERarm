@@ -12,7 +12,7 @@ getgroups-too-small: einval-or-single=yes
 setresuid-noop: ret=0
 setregid-noop: ret=0
 getpgid: positive=yes equals-getpgrp=yes
-getsid: positive=yes
+getsid: nonneg=yes
 getpgid-bogus: ret=-1 errno=ESRCH(3)
 getsid-bogus: ret=-1 errno=ESRCH(3)
 umask: roundtrip-027=0027 roundtrip-0777=0777 masked-01777=0777 old-restored=yes

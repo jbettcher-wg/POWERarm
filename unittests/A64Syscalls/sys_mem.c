@@ -160,10 +160,20 @@ static void t_highaddr(void)
 		if (p != MAP_FAILED)
 			munmap(p, ps);
 	}
-	/* Just below the 47-bit limit */
-	void *a = (void *)((1UL << 47) - 4 * ps);
+	/* Just below 2^46: inside the user VA of every configuration (a 47-bit
+	 * arm64 kernel, POWERarm's 46-bit guest VA on a 4K POWER host). */
+	void *a = (void *)((1UL << 46) - 4 * ps);
 	void *p = mmap(a, ps, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED_NOREPLACE, -1, 0);
-	printf("mmap-noreplace-below-2^47: same-addr=%s writable=%d\n", YN(p == a), p == a ? writable(p) : -1);
+	printf("mmap-noreplace-below-2^46: same-addr=%s writable=%d\n", YN(p == a), p == a ? writable(p) : -1);
+	if (p != MAP_FAILED)
+		munmap(p, ps);
+	/* Just below 2^47: mapped where the user VA is 47 bits, ENOMEM where it
+	 * is 46 (never EEXIST: nothing of the process may sit up there). */
+	a = (void *)((1UL << 47) - 4 * ps);
+	errno = 0;
+	p = mmap(a, ps, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED_NOREPLACE, -1, 0);
+	printf("mmap-noreplace-below-2^47: mapped-writable-or-enomem=%s\n",
+	       YN(p == a ? writable(p) == 1 : (p == MAP_FAILED && errno == ENOMEM)));
 	if (p != MAP_FAILED)
 		munmap(p, ps);
 }

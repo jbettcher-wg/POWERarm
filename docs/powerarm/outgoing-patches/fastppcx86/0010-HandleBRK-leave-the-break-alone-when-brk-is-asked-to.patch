@@ -1,0 +1,50 @@
+From 63c1644799cbba38e771436090de347dd546fa70 Mon Sep 17 00:00:00 2001
+From: Jordan Bettcher <thebettcher@gmail.com>
+Date: Wed, 16 Sep 2026 22:29:24 -0600
+Subject: [PATCH] HandleBRK: leave the break alone when brk is asked to go
+ below its start
+
+Linux refuses a break below the start of the data segment by returning the
+current break with nothing changed (mm/mmap.c brk). HandleBRK instead set
+the break size to 0 and unmapped the whole break area. glibc's malloc heap
+lives there, so the next malloc'd access faults.
+
+Trigger: brk() with an address below the initial break, e.g. brk(4096).
+
+Evidence, 64K host, FEX_HOSTPAGEMODE=force, a static x86-64 test that calls
+syscall(SYS_brk, 4096), then mallocs and writes 100 KB:
+  before: SIGSEGV (core dumped)
+  after:  brk-below-start: unchanged=yes heap-usable=yes
+Linux (the same test on an aarch64 Raspberry Pi 5): unchanged=yes, heap
+usable.
+
+Found in POWERarm by the A64Syscalls sys_mem test.
+---
+ .../Tools/LinuxEmulation/LinuxSyscalls/Syscalls.cpp   | 11 +++--------
+ 1 file changed, 3 insertions(+), 8 deletions(-)
+
+diff --git a/Source/Tools/LinuxEmulation/LinuxSyscalls/Syscalls.cpp b/Source/Tools/LinuxEmulation/LinuxSyscalls/Syscalls.cpp
+index c60a3846c..f23de317e 100644
+--- a/Source/Tools/LinuxEmulation/LinuxSyscalls/Syscalls.cpp
++++ b/Source/Tools/LinuxEmulation/LinuxSyscalls/Syscalls.cpp
+@@ -1094,14 +1094,9 @@ uint64_t SyscallHandler::HandleBRK(FEXCore::Core::CpuStateFrame* Frame, void* Ad
+     // Allocating out data space
+     uint64_t NewEnd = reinterpret_cast<uint64_t>(Addr);
+     if (NewEnd < DataSpace) {
+-      // Not allowed to move brk end below original start
+-      // Set the size to zero
+-      DataSpaceSize = 0;
+-
+-      // Munmap the whole space.
+-      [[maybe_unused]] auto ok = GuestMunmap(Frame->Thread, reinterpret_cast<void*>(DataSpace), DataSpaceMappedSize);
+-      LOGMAN_THROW_A_FMT(ok != -1, "Munmap failed");
+-      DataSpaceMappedSize = 0;
++      // mm/mmap.c brk: a break below the start of the data segment is refused
++      // and the current break is returned, with nothing unmapped. This used to
++      // unmap the whole break area, taking a live malloc heap with it.
+     } else {
+       uint64_t NewSize = NewEnd - DataSpace;
+       // HOST: DataSpaceMappedSize describes real mappings, so the emulated break
+-- 
+2.55.0
+
