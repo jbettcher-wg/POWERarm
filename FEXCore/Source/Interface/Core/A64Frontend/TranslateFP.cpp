@@ -664,6 +664,72 @@ bool IRBuilder::SCVTF_int_2(uint32_t Word) { return FPScalarSIMDConvert(Word, fa
 bool IRBuilder::UCVTF_int_2(uint32_t Word) { return FPScalarSIMDConvert(Word, false, false); }
 
 // ---------------------------------------------------------------------------
+// Vector FNEG/FABS/FABD, scalar FABD, vector SCVTF/UCVTF
+// ---------------------------------------------------------------------------
+
+bool IRBuilder::FPVectorUnary(uint32_t Word, bool IsNeg) {
+  const bool Q = Bit(Word, 30);
+  const bool Z = Bit(Word, 22);
+  if (Z && !Q) {
+    return false;
+  }
+  const auto ES = Z ? OpSize::i64Bit : OpSize::i32Bit;
+  const auto RS = OpSize::i128Bit;
+  Ref V = LoadV(Bits(Word, 9, 5));
+  StoreVQ(Bits(Word, 4, 0), Q, IsNeg ? _VFNeg(RS, ES, V).Node : _VFAbs(RS, ES, V).Node);
+  return true;
+}
+
+bool IRBuilder::FNEG_2(uint32_t Word) { return FPVectorUnary(Word, true); }
+bool IRBuilder::FABS_2(uint32_t Word) { return FPVectorUnary(Word, false); }
+
+bool IRBuilder::FPAbsoluteDifference(uint32_t Word, bool Scalar) {
+  // FABD = FPAbs(FPSub(a, b)); FPAbs clears the sign of a NaN too.
+  const bool Q = Scalar || Bit(Word, 30);
+  const bool Z = Bit(Word, 22);
+  if (!Scalar && Z && !Q) {
+    return false;
+  }
+  const auto ES = Z ? OpSize::i64Bit : OpSize::i32Bit;
+  const auto RS = OpSize::i128Bit;
+  Ref A = LoadV(Bits(Word, 9, 5));
+  Ref B = LoadV(Bits(Word, 20, 16));
+  Ref Result = _VFAbs(RS, ES, _VFSub(RS, ES, PropagateNaNOperand(ES, A, B), B));
+  if (Scalar) {
+    StoreVSized(Bits(Word, 4, 0), ES, Result);
+  } else {
+    StoreVQ(Bits(Word, 4, 0), Q, Result);
+  }
+  return true;
+}
+
+bool IRBuilder::FABD_2(uint32_t Word) { return FPAbsoluteDifference(Word, true); }
+bool IRBuilder::FABD_4(uint32_t Word) { return FPAbsoluteDifference(Word, false); }
+
+bool IRBuilder::FPVectorIntToFloat(uint32_t Word, bool Signed) {
+  // Lane by lane through the scalar conversion, which rounds with FPCR.RMode.
+  const bool Q = Bit(Word, 30);
+  const bool Z = Bit(Word, 22);
+  if (Z && !Q) {
+    return false;
+  }
+  const auto ES = Z ? OpSize::i64Bit : OpSize::i32Bit;
+  const auto RS = OpSize::i128Bit;
+  const uint8_t Lanes = (Q ? 16 : 8) / IR::OpSizeToSize(ES);
+  Ref V = LoadV(Bits(Word, 9, 5));
+  Ref Result = _VectorImm(RS, OpSize::i8Bit, 0);
+  for (uint8_t i = 0; i < Lanes; ++i) {
+    Ref Converted = _A64FloatFromGPR(ES, ES, _VExtractToGPR(RS, ES, V, i), Signed);
+    Result = _VInsElement(RS, ES, i, 0, Result, Converted);
+  }
+  StoreV(Bits(Word, 4, 0), Result);
+  return true;
+}
+
+bool IRBuilder::SCVTF_int_4(uint32_t Word) { return FPVectorIntToFloat(Word, true); }
+bool IRBuilder::UCVTF_int_4(uint32_t Word) { return FPVectorIntToFloat(Word, false); }
+
+// ---------------------------------------------------------------------------
 // Vector FCVTL/FCVTN
 // ---------------------------------------------------------------------------
 

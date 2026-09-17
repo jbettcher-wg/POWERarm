@@ -343,6 +343,8 @@ bool IRBuilder::SIMDPairwise(uint32_t Word, PairwiseOp Op) {
   case PairwiseOp::Add: Result = _VAdd(RS, ES, Even, Odd); break;
   case PairwiseOp::UMax: Result = _VUMax(RS, ES, Even, Odd); break;
   case PairwiseOp::UMin: Result = _VUMin(RS, ES, Even, Odd); break;
+  case PairwiseOp::SMax: Result = _VSMax(RS, ES, Even, Odd); break;
+  case PairwiseOp::SMin: Result = _VSMin(RS, ES, Even, Odd); break;
   }
   StoreVQ(Bits(Word, 4, 0), Q, Result);
   return true;
@@ -351,6 +353,8 @@ bool IRBuilder::SIMDPairwise(uint32_t Word, PairwiseOp Op) {
 bool IRBuilder::ADDP_vec(uint32_t Word) { return SIMDPairwise(Word, PairwiseOp::Add); }
 bool IRBuilder::UMAXP(uint32_t Word) { return SIMDPairwise(Word, PairwiseOp::UMax); }
 bool IRBuilder::UMINP(uint32_t Word) { return SIMDPairwise(Word, PairwiseOp::UMin); }
+bool IRBuilder::SMAXP(uint32_t Word) { return SIMDPairwise(Word, PairwiseOp::SMax); }
+bool IRBuilder::SMINP(uint32_t Word) { return SIMDPairwise(Word, PairwiseOp::SMin); }
 
 bool IRBuilder::ADDV(uint32_t Word) {
   const bool Q = Bit(Word, 30);
@@ -535,6 +539,33 @@ bool IRBuilder::SIMDThreeDifferent(uint32_t Word, ThreeDifferentOp Op) {
   case ThreeDifferentOp::USubL: StoreV(Rd, _VSub(RS, WideES, ZExt(A), ZExt(B))); break;
   case ThreeDifferentOp::SAddW: StoreV(Rd, _VAdd(RS, WideES, A, SExt(B))); break;
   case ThreeDifferentOp::UAddW: StoreV(Rd, _VAdd(RS, WideES, A, ZExt(B))); break;
+  case ThreeDifferentOp::SSubW: StoreV(Rd, _VSub(RS, WideES, A, SExt(B))); break;
+  case ThreeDifferentOp::USubW: StoreV(Rd, _VSub(RS, WideES, A, ZExt(B))); break;
+  case ThreeDifferentOp::UMull:
+  case ThreeDifferentOp::SMull:
+  case ThreeDifferentOp::UMlal:
+  case ThreeDifferentOp::SMlal:
+  case ThreeDifferentOp::UMlsl:
+  case ThreeDifferentOp::SMlsl: {
+    const bool Signed = Op == ThreeDifferentOp::SMull || Op == ThreeDifferentOp::SMlal || Op == ThreeDifferentOp::SMlsl;
+    Ref Product {};
+    if (Size == 0) {
+      // No 8x8 widening multiply op: widen both, then the modular 16-bit multiply.
+      Product = _VMul(RS, WideES, Signed ? SExt(A) : ZExt(A), Signed ? SExt(B) : ZExt(B));
+    } else if (Signed) {
+      Product = Q ? _VSMull2(RS, ES, A, B).Node : _VSMull(RS, ES, A, B).Node;
+    } else {
+      Product = Q ? _VUMull2(RS, ES, A, B).Node : _VUMull(RS, ES, A, B).Node;
+    }
+    if (Op == ThreeDifferentOp::UMull || Op == ThreeDifferentOp::SMull) {
+      StoreV(Rd, Product);
+    } else if (Op == ThreeDifferentOp::UMlal || Op == ThreeDifferentOp::SMlal) {
+      StoreV(Rd, _VAdd(RS, WideES, LoadV(Rd), Product));
+    } else {
+      StoreV(Rd, _VSub(RS, WideES, LoadV(Rd), Product));
+    }
+    break;
+  }
   case ThreeDifferentOp::AddHN:
     StoreNarrow(Rd, Q, _VUShrNI(RS, WideES, _VAdd(RS, WideES, A, B), 8U << Size));
     break;
@@ -553,6 +584,14 @@ bool IRBuilder::SADDW(uint32_t Word) { return SIMDThreeDifferent(Word, ThreeDiff
 bool IRBuilder::UADDW(uint32_t Word) { return SIMDThreeDifferent(Word, ThreeDifferentOp::UAddW); }
 bool IRBuilder::ADDHN(uint32_t Word) { return SIMDThreeDifferent(Word, ThreeDifferentOp::AddHN); }
 bool IRBuilder::SUBHN(uint32_t Word) { return SIMDThreeDifferent(Word, ThreeDifferentOp::SubHN); }
+bool IRBuilder::SSUBW(uint32_t Word) { return SIMDThreeDifferent(Word, ThreeDifferentOp::SSubW); }
+bool IRBuilder::USUBW(uint32_t Word) { return SIMDThreeDifferent(Word, ThreeDifferentOp::USubW); }
+bool IRBuilder::UMULL_vec(uint32_t Word) { return SIMDThreeDifferent(Word, ThreeDifferentOp::UMull); }
+bool IRBuilder::SMULL_vec(uint32_t Word) { return SIMDThreeDifferent(Word, ThreeDifferentOp::SMull); }
+bool IRBuilder::UMLAL_vec(uint32_t Word) { return SIMDThreeDifferent(Word, ThreeDifferentOp::UMlal); }
+bool IRBuilder::SMLAL_vec(uint32_t Word) { return SIMDThreeDifferent(Word, ThreeDifferentOp::SMlal); }
+bool IRBuilder::UMLSL_vec(uint32_t Word) { return SIMDThreeDifferent(Word, ThreeDifferentOp::UMlsl); }
+bool IRBuilder::SMLSL_vec(uint32_t Word) { return SIMDThreeDifferent(Word, ThreeDifferentOp::SMlsl); }
 
 // ---------------------------------------------------------------------------
 // Shift by immediate
@@ -713,6 +752,220 @@ bool IRBuilder::ZIP1(uint32_t Word) { return SIMDPermute(Word, PermuteOp::Zip1);
 bool IRBuilder::ZIP2(uint32_t Word) { return SIMDPermute(Word, PermuteOp::Zip2); }
 bool IRBuilder::TRN1(uint32_t Word) { return SIMDPermute(Word, PermuteOp::Trn1); }
 bool IRBuilder::TRN2(uint32_t Word) { return SIMDPermute(Word, PermuteOp::Trn2); }
+
+// ---------------------------------------------------------------------------
+// Shifts by register, shift-and-insert, shift-and-accumulate
+// ---------------------------------------------------------------------------
+
+bool IRBuilder::SIMDShiftRegister(uint32_t Word, bool Signed, bool Scalar) {
+  // SSHL/USHL: the count is the signed low byte of each lane of Rm; a
+  // non-negative count shifts left (0 when >= W), a negative one shifts right
+  // by its magnitude (0 when >= W unsigned, sign fill signed).
+  const bool Q = Scalar || Bit(Word, 30);
+  const uint32_t Size = Bits(Word, 23, 22);
+  if ((Scalar && Size != 3) || (!Q && Size == 3)) {
+    return false;
+  }
+  const auto ES = ElementSizeFor(Size);
+  const auto RS = OpSize::i128Bit;
+  const uint8_t Extend = (8U << Size) - 8;
+  Ref V = LoadV(Bits(Word, 9, 5));
+  Ref Count = LoadV(Bits(Word, 20, 16));
+  if (Extend) {
+    Count = _VSShrI(RS, ES, _VShlI(RS, ES, Count, Extend), Extend);
+  }
+  Ref Left = _VUShl(RS, ES, V, Count, true);
+  Ref Negated = _VNeg(RS, ES, Count);
+  Ref Result {};
+  if (Signed) {
+    Result = _VBSL(RS, _VCMPLTZ(RS, ES, Count), _VSShr(RS, ES, V, Negated, true), Left);
+  } else {
+    Result = _VOr(RS, RS, Left, _VUShr(RS, ES, V, Negated, true));
+  }
+  StoreVQ(Bits(Word, 4, 0), Q && !Scalar, Result);
+  return true;
+}
+
+bool IRBuilder::USHL_2(uint32_t Word) { return SIMDShiftRegister(Word, false, false); }
+bool IRBuilder::SSHL_2(uint32_t Word) { return SIMDShiftRegister(Word, true, false); }
+bool IRBuilder::USHL_1(uint32_t Word) { return SIMDShiftRegister(Word, false, true); }
+bool IRBuilder::SSHL_1(uint32_t Word) { return SIMDShiftRegister(Word, true, true); }
+
+bool IRBuilder::SIMDShiftInsertAccumulate(uint32_t Word, ShiftInsertOp Op) {
+  const bool Q = Bit(Word, 30);
+  const uint32_t Immh = Bits(Word, 22, 19);
+  const uint32_t ImmhImmb = Bits(Word, 22, 16);
+  if (Immh == 0) {
+    return false;
+  }
+  const uint32_t SizeLog2 = 31 - std::countl_zero(Immh);
+  if (!Q && SizeLog2 == 3) {
+    return false;
+  }
+  const uint32_t ElementBits = 8U << SizeLog2;
+  const auto ES = ElementSizeFor(SizeLog2);
+  const auto RS = OpSize::i128Bit;
+  const uint32_t Rd = Bits(Word, 4, 0);
+  Ref V = LoadV(Bits(Word, 9, 5));
+  Ref D = LoadV(Rd);
+  Ref Ones = VectorConstant64(~0ULL);
+  const uint32_t RightShift = 2 * ElementBits - ImmhImmb; // 1..W
+  const uint32_t LeftShift = ImmhImmb - ElementBits;       // 0..W-1
+
+  Ref Result {};
+  switch (Op) {
+  case ShiftInsertOp::Sri:
+    // Keep Rd's top RightShift bits, take the rest from Rn >> RightShift.
+    // VUShrI gives 0 for a shift of W, which keeps all of Rd.
+    Result = _VOr(RS, RS, _VAndn(RS, RS, D, _VUShrI(RS, ES, Ones, RightShift)), _VUShrI(RS, ES, V, RightShift));
+    break;
+  case ShiftInsertOp::Sli:
+    Result = _VOr(RS, RS, _VAndn(RS, RS, D, _VShlI(RS, ES, Ones, LeftShift)), _VShlI(RS, ES, V, LeftShift));
+    break;
+  case ShiftInsertOp::Usra: Result = _VAdd(RS, ES, D, _VUShrI(RS, ES, V, RightShift)); break;
+  case ShiftInsertOp::Ssra: Result = _VAdd(RS, ES, D, _VSShrI(RS, ES, V, RightShift)); break;
+  }
+  StoreVQ(Rd, Q, Result);
+  return true;
+}
+
+bool IRBuilder::SRI_2(uint32_t Word) { return SIMDShiftInsertAccumulate(Word, ShiftInsertOp::Sri); }
+bool IRBuilder::SLI_2(uint32_t Word) { return SIMDShiftInsertAccumulate(Word, ShiftInsertOp::Sli); }
+bool IRBuilder::USRA_2(uint32_t Word) { return SIMDShiftInsertAccumulate(Word, ShiftInsertOp::Usra); }
+bool IRBuilder::SSRA_2(uint32_t Word) { return SIMDShiftInsertAccumulate(Word, ShiftInsertOp::Ssra); }
+
+// ---------------------------------------------------------------------------
+// Pairwise long adds, multiplies, misc
+// ---------------------------------------------------------------------------
+
+bool IRBuilder::SIMDAddLongPairwise(uint32_t Word, bool Signed, bool Accumulate) {
+  const bool Q = Bit(Word, 30);
+  const uint32_t Size = Bits(Word, 23, 22);
+  if (Size == 3) {
+    return false;
+  }
+  const auto ES = ElementSizeFor(Size);
+  const auto WideES = ElementSizeFor(Size + 1);
+  const auto RS = OpSize::i128Bit;
+  const uint32_t Rd = Bits(Word, 4, 0);
+  Ref V = LoadV(Bits(Word, 9, 5));
+  // Even and odd lanes of the whole register in the low half; a 64-bit vector
+  // only reads the first half of each.
+  Ref Even = _VUnZip(RS, ES, V, V);
+  Ref Odd = _VUnZip2(RS, ES, V, V);
+  Ref Sum = Signed ? _VAdd(RS, WideES, _VSXTL(RS, ES, Even), _VSXTL(RS, ES, Odd)).Node :
+                     _VAdd(RS, WideES, _VUXTL(RS, ES, Even), _VUXTL(RS, ES, Odd)).Node;
+  if (Accumulate) {
+    Sum = _VAdd(RS, WideES, LoadV(Rd), Sum);
+  }
+  StoreVQ(Rd, Q, Sum);
+  return true;
+}
+
+bool IRBuilder::UADDLP(uint32_t Word) { return SIMDAddLongPairwise(Word, false, false); }
+bool IRBuilder::SADDLP(uint32_t Word) { return SIMDAddLongPairwise(Word, true, false); }
+bool IRBuilder::UADALP(uint32_t Word) { return SIMDAddLongPairwise(Word, false, true); }
+bool IRBuilder::SADALP(uint32_t Word) { return SIMDAddLongPairwise(Word, true, true); }
+
+bool IRBuilder::SIMDMultiply(uint32_t Word, int Accumulate) {
+  // MUL (Accumulate 0), MLA (+1), MLS (-1).
+  const bool Q = Bit(Word, 30);
+  const uint32_t Size = Bits(Word, 23, 22);
+  if (Size == 3) {
+    return false;
+  }
+  const auto ES = ElementSizeFor(Size);
+  const auto RS = OpSize::i128Bit;
+  const uint32_t Rd = Bits(Word, 4, 0);
+  Ref Product = _VMul(RS, ES, LoadV(Bits(Word, 9, 5)), LoadV(Bits(Word, 20, 16)));
+  if (Accumulate > 0) {
+    Product = _VAdd(RS, ES, LoadV(Rd), Product);
+  } else if (Accumulate < 0) {
+    Product = _VSub(RS, ES, LoadV(Rd), Product);
+  }
+  StoreVQ(Rd, Q, Product);
+  return true;
+}
+
+bool IRBuilder::MUL_vec(uint32_t Word) { return SIMDMultiply(Word, 0); }
+bool IRBuilder::MLA_vec(uint32_t Word) { return SIMDMultiply(Word, 1); }
+bool IRBuilder::MLS_vec(uint32_t Word) { return SIMDMultiply(Word, -1); }
+
+bool IRBuilder::MUL_elt(uint32_t Word) {
+  // MUL by element: Rm lane `index` multiplies every lane of Rn.
+  const bool Q = Bit(Word, 30);
+  const uint32_t Size = Bits(Word, 23, 22);
+  const uint32_t H = Bit(Word, 11), L = Bit(Word, 21), M = Bit(Word, 20);
+  uint32_t Index {}, Rm {};
+  if (Size == 1) {
+    Index = (H << 2) | (L << 1) | M;
+    Rm = Bits(Word, 19, 16);
+  } else if (Size == 2) {
+    Index = (H << 1) | L;
+    Rm = (M << 4) | Bits(Word, 19, 16);
+  } else {
+    return false;
+  }
+  const auto ES = ElementSizeFor(Size);
+  const auto RS = OpSize::i128Bit;
+  Ref Element = _VDupElement(RS, ES, LoadV(Rm), Index);
+  StoreVQ(Bits(Word, 4, 0), Q, _VMul(RS, ES, LoadV(Bits(Word, 9, 5)), Element));
+  return true;
+}
+
+bool IRBuilder::REV16_asimd(uint32_t Word) {
+  // Swap the bytes of every pair: interleave odd lanes before even lanes.
+  if (Bits(Word, 23, 22) != 0) {
+    return false;
+  }
+  const auto RS = OpSize::i128Bit;
+  Ref V = LoadV(Bits(Word, 9, 5));
+  Ref Even = _VUnZip(RS, OpSize::i8Bit, V, V);
+  Ref Odd = _VUnZip2(RS, OpSize::i8Bit, V, V);
+  StoreVQ(Bits(Word, 4, 0), Bit(Word, 30), _VZip(RS, OpSize::i8Bit, Odd, Even));
+  return true;
+}
+
+bool IRBuilder::NEG_1(uint32_t Word) {
+  if (Bits(Word, 23, 22) != 3) {
+    return false;
+  }
+  StoreVSized(Bits(Word, 4, 0), OpSize::i64Bit, _VNeg(OpSize::i128Bit, OpSize::i64Bit, LoadV(Bits(Word, 9, 5))));
+  return true;
+}
+
+bool IRBuilder::ABS_1(uint32_t Word) {
+  if (Bits(Word, 23, 22) != 3) {
+    return false;
+  }
+  StoreVSized(Bits(Word, 4, 0), OpSize::i64Bit, _VAbs(OpSize::i128Bit, OpSize::i64Bit, LoadV(Bits(Word, 9, 5))));
+  return true;
+}
+
+bool IRBuilder::ADDP_pair(uint32_t Word) {
+  // ADDP Dd, Vn.2D: the sum of both lanes.
+  if (Bits(Word, 23, 22) != 3) {
+    return false;
+  }
+  StoreVSized(Bits(Word, 4, 0), OpSize::i64Bit, _VAddV(OpSize::i128Bit, OpSize::i64Bit, LoadV(Bits(Word, 9, 5))));
+  return true;
+}
+
+bool IRBuilder::UQSUB_1(uint32_t Word) {
+  // UQSUB on D registers: the difference, or 0 where it would go below zero.
+  // POWERARM-M1-TODO(simd): FPSR.QC is not raised by the saturating operations.
+  if (Bits(Word, 23, 22) != 3) {
+    return false;
+  }
+  const auto RS = OpSize::i128Bit;
+  const auto ES = OpSize::i64Bit;
+  Ref A = LoadV(Bits(Word, 9, 5));
+  Ref B = LoadV(Bits(Word, 20, 16));
+  // B > A unsigned  <=>  max(A, B) != A.
+  Ref Underflow = _VNot(RS, ES, _VCMPEQ(RS, ES, _VUMax(RS, ES, A, B), A));
+  StoreVSized(Bits(Word, 4, 0), ES, _VAndn(RS, RS, _VSub(RS, ES, A, B), Underflow));
+  return true;
+}
 
 // ---------------------------------------------------------------------------
 // Table lookup

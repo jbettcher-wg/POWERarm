@@ -166,6 +166,18 @@ const IRBuilder::HandlerEntry IRBuilder::HandlerTable[] = {
   {"UZP1", &IRBuilder::UZP1}, {"UZP2", &IRBuilder::UZP2}, {"ZIP1", &IRBuilder::ZIP1}, {"ZIP2", &IRBuilder::ZIP2},
   {"TRN1", &IRBuilder::TRN1}, {"TRN2", &IRBuilder::TRN2},
   {"TBL", &IRBuilder::TBL}, {"TBX", &IRBuilder::TBX},
+  // Advanced SIMD: M2 census gaps.
+  {"USHL_2", &IRBuilder::USHL_2}, {"SSHL_2", &IRBuilder::SSHL_2}, {"USHL_1", &IRBuilder::USHL_1}, {"SSHL_1", &IRBuilder::SSHL_1},
+  {"SRI_2", &IRBuilder::SRI_2}, {"SLI_2", &IRBuilder::SLI_2}, {"USRA_2", &IRBuilder::USRA_2}, {"SSRA_2", &IRBuilder::SSRA_2},
+  {"UADDLP", &IRBuilder::UADDLP}, {"SADDLP", &IRBuilder::SADDLP}, {"UADALP", &IRBuilder::UADALP}, {"SADALP", &IRBuilder::SADALP},
+  {"SSUBW", &IRBuilder::SSUBW}, {"USUBW", &IRBuilder::USUBW},
+  {"UMULL_vec", &IRBuilder::UMULL_vec}, {"SMULL_vec", &IRBuilder::SMULL_vec}, {"UMLAL_vec", &IRBuilder::UMLAL_vec},
+  {"SMLAL_vec", &IRBuilder::SMLAL_vec}, {"UMLSL_vec", &IRBuilder::UMLSL_vec}, {"SMLSL_vec", &IRBuilder::SMLSL_vec},
+  {"MUL_vec", &IRBuilder::MUL_vec}, {"MLA_vec", &IRBuilder::MLA_vec}, {"MLS_vec", &IRBuilder::MLS_vec}, {"MUL_elt", &IRBuilder::MUL_elt},
+  {"SMAXP", &IRBuilder::SMAXP}, {"SMINP", &IRBuilder::SMINP}, {"REV16_asimd", &IRBuilder::REV16_asimd},
+  {"NEG_1", &IRBuilder::NEG_1}, {"ABS_1", &IRBuilder::ABS_1}, {"ADDP_pair", &IRBuilder::ADDP_pair}, {"UQSUB_1", &IRBuilder::UQSUB_1},
+  {"FNEG_2", &IRBuilder::FNEG_2}, {"FABS_2", &IRBuilder::FABS_2}, {"FABD_2", &IRBuilder::FABD_2}, {"FABD_4", &IRBuilder::FABD_4},
+  {"SCVTF_int_4", &IRBuilder::SCVTF_int_4}, {"UCVTF_int_4", &IRBuilder::UCVTF_int_4},
   // Scalar floating point.
   {"FMOV_float_gen", &IRBuilder::FMOV_float_gen}, {"FMOV_float", &IRBuilder::FMOV_float}, {"FMOV_float_imm", &IRBuilder::FMOV_float_imm},
   {"FABS_float", &IRBuilder::FABS_float}, {"FNEG_float", &IRBuilder::FNEG_float}, {"FSQRT_float", &IRBuilder::FSQRT_float},
