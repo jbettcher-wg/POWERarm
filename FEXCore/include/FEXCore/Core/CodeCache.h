@@ -235,16 +235,14 @@ public:
   virtual ~AbstractCodeCache() = default;
 
   /**
-   * Computes a unique identifier for the referenced binary file to be used for
-   * generating the code map.
-   * This identifier is independent of FEX build/runtime configuration and
-   * stable across FEX updates.
+   * Identity of a mapped guest file for the code map and the code cache
+   * filename: a hash of its (device, inode, size, mtime, ctime).
    *
-   * It is derived from the file's *content and identity*, not from its path: a
-   * path string is neither stable (the same library is reached through the
-   * RootFS prefix, through /proc/self/fd, through a bind mount) nor unique (a
-   * rebuilt binary keeps its path). FD may be -1, in which case only the path is
-   * available and the result is a weaker, path-derived id.
+   * It is cheap (no file content is read) and deliberately not relied on for
+   * correctness: every cached block carries a hash of the guest instruction
+   * bytes it was translated from and is only installed if the process's memory
+   * still holds those bytes. A stale identity can therefore only cost misses.
+   * FD may be -1, in which case the id is derived from the path alone.
    */
   virtual uint64_t ComputeCodeMapId(std::string_view Filename, int FD) = 0;
 
