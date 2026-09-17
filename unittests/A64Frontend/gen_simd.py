@@ -798,6 +798,30 @@ def gen_simd_struct1(p):
                     dumpbuf=not is_load)
 
 
+def gen_simd_struct2(p):
+    """LD2/ST2 interleaved structures: every width, offset and post-index."""
+    p.emit("        adrp    x19, buf")
+    p.emit("        add     x19, x19, :lo12:buf")
+    p.emit("        add     x19, x19, #128")
+    widths = [("8b", 8), ("16b", 16), ("4h", 8), ("8h", 16), ("2s", 8), ("4s", 16), ("2d", 16)]
+    for _ in range(300):
+        width, nbytes = p.rng.choice(widths)
+        first = p.rng.randrange(32)
+        second = (first + 1) % 32
+        v = {first: p.vec(), second: p.vec()}
+        is_load = p.rng.random() < 0.5
+        op = "ld2" if is_load else "st2"
+        lst = f"v{first}.{width}, v{second}.{width}"
+        pre = ["mov x20, x19", f"sub x20, x20, #{p.rng.randrange(0, 64)}"]
+        mode = p.rng.randrange(3)
+        if mode == 0:
+            p.vcase(pre + [f"{op} {{{lst}}}, [x20]"], v, dumpbuf=not is_load)
+        elif mode == 1:
+            p.vcase(pre + [f"{op} {{{lst}}}, [x20], #{2 * nbytes}"], v, dumpbuf=not is_load)
+        else:
+            p.vcase(pre + [f"{op} {{{lst}}}, [x20], x10"], v, {10: p.rng.choice([0, 7, 0xFFFFFFFFFFFFFFE0])}, dumpbuf=not is_load)
+
+
 GROUPS = {
     "simd_loadstore": gen_simd_loadstore,
     "simd_copy": gen_simd_copy,
@@ -809,6 +833,7 @@ GROUPS = {
     "fp_half": gen_fp_half,
     "fp_round": gen_fp_round,
     "simd_struct1": gen_simd_struct1,
+    "simd_struct2": gen_simd_struct2,
     "exclusive": gen_exclusive,
 }
 

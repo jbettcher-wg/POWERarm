@@ -72,6 +72,7 @@ by default and none with the knob set.
 | `fp_half` | differential, generated | half precision: arithmetic, FMIN/FMAX(NM), fused group, FABS/FNEG/FSQRT, compares, FCSEL, FMOV forms, FCVT to/from single and double, conversions to/from integers and fixed point, vector FCVTL/FCVTN (half/single and single/double); every rounding mode with and without FZ16; double-to-half rounding and overflow boundaries |
 | `fp_round` | differential, generated | FRINTN/P/M/Z/A/X/I on half, single and double: every edge value and ties (0.5 steps, just below 0.5, 2^52 boundary) in every FPCR rounding mode, plus random operands |
 | `simd_struct1` | differential, generated | LD1/ST1 single-element structures: B/H/S/D lanes at every index, offset, post-index by element size and by register |
+| `simd_struct2` | differential, generated | LD2/ST2 interleaved structures: every element width, D and Q, offset and post-index |
 | `exclusive` | differential, generated | LDXR/LDAXR then STXR/STLXR at every width: success, store without a load, a second store, CLREX in between, NZCV across a successful store; LDAR/STLR. A store to a different address than the load is IMPLEMENTATION DEFINED (the Pi lets it succeed within a region) and is not tested |
 | `hello`, `printf_float`, `strmem`, `fpmath` (and `musl_*`) | differential | static glibc (and musl) programs: printf float formatting, the string/memory routines over lengths and alignments, scalar FP code |
 | `bb_*` | differential | busybox `echo`, `cat`, `wc`, `sort`, `sort -n`, `sha256sum`, `md5sum` |

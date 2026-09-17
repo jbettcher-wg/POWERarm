@@ -168,8 +168,9 @@ bool IRBuilder::LDx_STx_mult(uint32_t Word) {
   case 0b1010: Registers = 2; break;
   case 0b0110: Registers = 3; break;
   case 0b0010: Registers = 4; break;
+  case 0b1000: return LD2_ST2_mult(Word);
   default:
-    // POWERARM-M1-TODO(simd): LD2/LD3/LD4 and ST2/ST3/ST4 (interleaved structures) are not translated; none appears in the M1b corpus.
+    // POWERARM-M2-TODO(simd): LD3/LD4 and ST3/ST4 (three- and four-way interleaved structures) are not translated.
     return false;
   }
 
@@ -201,6 +202,68 @@ bool IRBuilder::LDx_STx_mult(uint32_t Word) {
     Ref Increment = Rm == 31 ? Constant(Registers * RegBytes) : LoadX(Rm);
     StoreXSP(Rn, _Add(OpSize::i64Bit, Base, Increment));
   }
+  return true;
+}
+
+bool IRBuilder::LD2_ST2_mult(uint32_t Word) {
+  // Two interleaved structures: memory holds A0 B0 A1 B1 ... and the
+  // registers hold A and B. With the memory read as vectors M0 (low) and M1,
+  // A and B are the even and odd elements of M1:M0 (UZP1/UZP2 of M0, M1), and
+  // the store is the inverse (ZIP1/ZIP2). The 64-bit forms use one 128-bit
+  // image, the same construction as SIMDPermute's 64-bit unzip and zip
+  // (NEON-LANDINGS 3.13: vpku*um for the load, vmrgl/h* for the store).
+  const bool Q = Bit(Word, 30);
+  const bool PostIndex = Bit(Word, 23);
+  const bool IsLoad = Bit(Word, 22);
+  const uint32_t Rm = Bits(Word, 20, 16);
+  const uint32_t Size = Bits(Word, 11, 10);
+  const uint32_t Rn = Bits(Word, 9, 5);
+  const uint32_t Rt = Bits(Word, 4, 0);
+  const uint32_t Rt2 = (Rt + 1) % 32;
+  if (!Q && Size == 3) {
+    return false;
+  }
+  const auto ES = static_cast<OpSize>(1U << Size);
+  const auto RS = OpSize::i128Bit;
+  const uint64_t Bytes = Q ? 32 : 16;
+
+  Ref Base = LoadXSP(Rn);
+  auto WriteBack = [&]() {
+    if (PostIndex) {
+      StoreXSP(Rn, _Add(OpSize::i64Bit, Base, Rm == 31 ? Constant(Bytes) : LoadX(Rm)));
+    }
+  };
+  if (IsLoad) {
+    Ref A {}, B {};
+    if (Q) {
+      Ref M0 = _LoadMem(RegClass::FPR, RS, Base, Invalid(), OpSize::i8Bit, MemOffsetType::SXTX, 1);
+      Ref M1 = _LoadMem(RegClass::FPR, RS, _Add(OpSize::i64Bit, Base, Constant(16)), Invalid(), OpSize::i8Bit, MemOffsetType::SXTX, 1);
+      A = _VUnZip(RS, ES, M0, M1);
+      B = _VUnZip2(RS, ES, M0, M1);
+    } else {
+      Ref C = _LoadMem(RegClass::FPR, RS, Base, Invalid(), OpSize::i8Bit, MemOffsetType::SXTX, 1);
+      A = _VUnZip(RS, ES, C, C);
+      B = _VUnZip2(RS, ES, C, C);
+    }
+    WriteBack();
+    StoreVQ(Rt, Q, A);
+    StoreVQ(Rt2, Q, B);
+    return true;
+  }
+
+  Ref A = LoadV(Rt);
+  Ref B = LoadV(Rt2);
+  if (Q) {
+    Ref M0 = _VZip(RS, ES, A, B);
+    Ref M1 = _VZip2(RS, ES, A, B);
+    _StoreMem(RegClass::FPR, RS, M0, Base, Invalid(), OpSize::i8Bit, MemOffsetType::SXTX, 1);
+    _StoreMem(RegClass::FPR, RS, M1, _Add(OpSize::i64Bit, Base, Constant(16)), Invalid(), OpSize::i8Bit, MemOffsetType::SXTX, 1);
+  } else {
+    Ref X = _VInsElement(RS, OpSize::i64Bit, 1, 0, A, A);
+    Ref Y = _VInsElement(RS, OpSize::i64Bit, 1, 0, B, B);
+    _StoreMem(RegClass::FPR, RS, _VZip2(RS, ES, X, Y), Base, Invalid(), OpSize::i8Bit, MemOffsetType::SXTX, 1);
+  }
+  WriteBack();
   return true;
 }
 
