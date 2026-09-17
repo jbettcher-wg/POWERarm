@@ -104,6 +104,14 @@ void RegisterMemory(FEX::HLE::SyscallHandler* Handler) {
   REGISTER_SYSCALL_IMPL(
     mremap, [](FEXCore::Core::CpuStateFrame* Frame, void* old_address, size_t old_size, size_t new_size, int flags, void* new_address) -> uint64_t {
       // MREMAP_* are identical on both (checked by the generator).
+      // mm/mremap.c: the flag checks come before anything looks at an address.
+#ifndef MREMAP_DONTUNMAP
+#define MREMAP_DONTUNMAP 4
+#endif
+      if ((flags & ~(MREMAP_FIXED | MREMAP_MAYMOVE | MREMAP_DONTUNMAP)) || ((flags & MREMAP_FIXED) && !(flags & MREMAP_MAYMOVE)) ||
+          ((flags & MREMAP_DONTUNMAP) && (!(flags & MREMAP_MAYMOVE) || old_size != new_size))) {
+        return -EINVAL;
+      }
       if ((flags & MREMAP_FIXED) && !GuestVA::RangeFits(reinterpret_cast<uint64_t>(new_address), new_size)) {
         return -EINVAL;
       }

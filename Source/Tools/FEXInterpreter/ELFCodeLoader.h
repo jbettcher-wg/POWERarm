@@ -652,8 +652,21 @@ public:
     const auto VASize = FEX::HLE::Arm64::GuestVA::Bits();
     uint64_t StackHint {};
 
-    // Calculate the highest point the stack could go.
-    StackHint = (1ULL << VASize) - FULL_STACK_SIZE;
+    // Calculate the highest point the stack could go. Like arm64 Linux
+    // (fs/binfmt_elf.c randomize_stack_top with arm64's STACK_RND_MASK of 0x3ffff
+    // 4K pages), the top is slid down by up to 1 GiB unless the personality
+    // has ADDR_NO_RANDOMIZE. Without the slide the stack took the topmost
+    // pages of the guest VA, so a guest mmap there (MAP_FIXED_NOREPLACE just
+    // under 2^47) failed with EEXIST where it succeeds on arm64.
+    uint64_t StackTop = 1ULL << VASize;
+    if (!(Personality & ADDR_NO_RANDOMIZE)) {
+      uint64_t Slide {};
+      if (GetRandom(&Slide, sizeof(Slide))) {
+        Slide = FEXCore::HostPage::AlignDown((Slide & 0x3ffffULL) << 12);
+        StackTop -= Slide;
+      }
+    }
+    StackHint = StackTop - FULL_STACK_SIZE;
 
     auto PageSize = sysconf(_SC_PAGESIZE);
     PageSize = PageSize > 0 ? PageSize : static_cast<long>(FEXCore::HostPage::Size());
