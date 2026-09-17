@@ -93,6 +93,32 @@ Also check whether each B item affects fastppcx86. If it does, add a patch under
 | N12 | Exact `FRECPE`/`FRSQRTE` tables | NEON §3.12 | float-lane translator | correctness | not touched | |
 | N13 | VSX-aware allocator class: pin V16–V31 into vs0–vs31 for float-only/`xv*` values and VSX-only temporaries (not per-op moves; context round trip 15.2 cycles, half-to-half 4) | NEON §2(a); FP §8, §13 | vector register allocator | removes the ~18% of cycles lost to V16–V31 context traffic in FP blocks | not touched | |
 
+## C: code cache and translation of cold code
+
+Spec: `docs/powerarm/CODE-CACHE.md`. Timings on CPU 100, `m2time` script, cache
+directory private per series. "f470" is the M2 tree, "powerarm" is f0a9da187
+(OPT-BRANCHES merged), "branch" is powerarm-opt/codecache after merging it.
+
+| ID | Item | Spec | Touches | Expected impact | Status | Result |
+|---|---|---|---|---|---|---|
+| C1 | Build the A64 decode table by enumerating each matcher's free index bits into a CSR bucket array; name-sorted handler index | CODE-CACHE.md "Where cold-process time goes" | `A64Frontend/DecodeTable.cpp`, `IRBuilder.cpp` | 15% of `POWERarm /usr/bin/true` | done c620b91b8 | `true` 22.5 -> 20.1 ms per process (100 runs) |
+| C2 | Code cache with block linking: `RELOC_LINK_RECORD`, record GuestRIP and StubAddr relocations, linking no longer forced off | CODE-CACHE.md "The stall" | `JIT/Relocations.h`, `JIT/PPC64LE/JIT.cpp` | cache-on steady state | done 67d516d18, 17673ac6a | `cc1 -O2 lvm.c` with the cache enabled: 21.3 -> 12.35 s (cache off 11.90 s) |
+| C3 | Code cache format v4: per-block lazy install with guest-byte and integrity checks, keys with host features and build id, append-only segments with flock compaction, saves at exit/execve | CODE-CACHE.md "Design" | `Core/CodeCache.cpp`, `Core.cpp`, `SyscallsSMCTracking.cpp`, `Syscalls/Thread.cpp` | 20-25% of builds is re-translation | done 17673ac6a | warm vs powerarm (f0a9da187): `gcc -c empty.c` 0.404 -> 0.157 s, zlib `configure` 12.94 -> 5.15 s, zlib build 117.7 -> 71.3 s, Lua build 103.3 -> 66.1 s; cold 0.409 / 6.58 / 74.7 / 70.2 s |
+| C4 | File identity from `fstat` instead of streaming XXH3 over every mapped executable | CODE-CACHE.md "Design" | `Core/CodeCache.cpp` | 2% of `gcc -c empty.c`, cache on or off | done 78e3583bf | xxhash 2.1% -> 0.0% of `gcc -c empty.c` with the cache off |
+| C5 | Code map writer only for `POWERARM_SERVERCODECACHE=1` | CODE-CACHE.md "Design" | `FEXInterpreter.cpp` | a server round trip plus a write per block | done c481ea16a | not measured separately |
+| C6 | `check-code-cache.sh` stress test | CODE-CACHE.md "Correctness" | `Scripts/powerarm` | | done 5d2e27803 | all checks pass (75 s) |
+| C7 | Write-protect a cached block's pages before checking its guest bytes | CODE-CACHE.md "Design" | `Core/CodeCache.cpp` | closes an SMC race | done d3a9714da | correctness only |
+| C8 | Entry hashes checked only for another boot's segments; lock-free segment list; per-thread file memo | CODE-CACHE.md "Design" | `Core/CodeCache.cpp` | xxhash 8% of warm `gcc -c empty.c` | done d03b76fac | warm `gcc -c empty.c` 164 -> 148 ms |
+| C9 | Link records' unlinked words derived after relocation (link-first exits start with a RIP window) | CODE-CACHE.md "Design" | `Core/CodeCache.cpp` | cache after the OPT-BRANCHES merge | done 892c0a2c9 | 68694 of 68701 `cc1` blocks load, reloc-failed 0 |
+| C10 | vfork copy-back of only written pages (soft-dirty or exclusive-page scan) | brief | `Syscalls/Thread.cpp` | vfork-heavy `make`/`gcc` | dropped on measurement | `process_vm_readv` total 25 ms of a 12 s zlib `configure` (469 calls), 1.4 ms of `gcc -c empty.c` |
+| C11 | Asynchronous cache writes on a background core | owner direction | `Core/CodeCache.cpp` | save cost off the guest thread | dropped on measurement | writes are 1.5 s of a 91.5 s cold Lua build (116 processes); a writer cannot outlive `exit_group` |
+| C12 | Background install of cached blocks on non-sibling cores (`SCHED_IDLE`) | owner direction | `Core/CodeCache.cpp` | 7.7 s of guest-thread install time in a warm Lua build | dropped on measurement | warm Lua 86.9 -> 90.5 s with it (8.7M blocks installed vs 6.6M used; lock contention) |
+| C13 | Server-side pre-translation of never-seen binaries | owner direction | `POWERarmServer`, offline compiler | cold runs | not touched | bounded by the cold-warm gap: 3.4 s of a 74.7 s zlib build, 4.1 s of 70.2 s Lua |
+| C14 | Tiered compilation (fast tier, background optimised tier, relink swap) | owner direction | JIT, lookup cache | steady state | evaluated only | see CODE-CACHE.md "Background work" |
+| C15 | Relocatable variable-width guest-address loads (width recorded, re-emitted with nop padding) and the same-block delta form under the cache | CODE-CACHE.md "Next targets" | `JIT/PPC64LE/JIT.cpp`, `ALUOps.cpp` | cache-mode codegen +3.8% steady state | not touched | |
+| C16 | Cache size cap, LRU sweep at compaction, stale build-id namespaces removed | CODE-CACHE.md "Default-on" | `Core/CodeCache.cpp` | default-on | not touched | |
+| C17 | `fork` of a large POWERarm process (`sh` subshells) | strace of zlib `configure` | kernel, allocator | 1.4 ms per fork, 218 ms of `configure` | not touched | |
+
 ## Follow-ups to measure
 
 - Abandoning a guest signal handler (`siglongjmp`/`longjmp` out of it) leaks the handler's host
