@@ -95,10 +95,18 @@ Also check whether each B item affects fastppcx86. If it does, add a patch under
 
 ## Follow-ups to measure
 
-- Abandoning a guest signal handler (`siglongjmp`/`longjmp` out of it) leaks the handler's host
-  stack frame in the signal delegator (`SignalDelegator.cpp` StoreThreadState; shared with upstream
-  FEX) and crashes after ~2500 abandoned handlers; 150 abandoned handlers also crash or hang
-  intermittently (2 of 32 runs). Found by OPT-BRANCHES while writing `callret.c`, not fixed.
+- Done f4aa730da (test 0442316d6): abandoning a guest signal handler (`siglongjmp`/`longjmp` out
+  of it) leaked the handler's host stack frame in the signal delegator (`SignalDelegator.cpp`
+  StoreThreadState; shared with upstream FEX) and crashed after ~2500 abandoned handlers; 150
+  abandoned handlers also crashed or hung intermittently (2 of 32 runs), when the guest stack sat
+  just under the host stack and the leaked frames ran into it. Found by OPT-BRANCHES while writing
+  `callret.c`. Deliveries now record handler levels, detect abandoned ones (guest SP past the frame
+  at delivery or syscall entry, or the frame's private words overwritten) and build the next frame
+  where the abandoned ones were, saving and restoring the interrupted context's live host stack;
+  see "Abandoned guest handlers" in `SignalDelegator.cpp`. `unittests/A64Syscalls/sys_siglongjmp`
+  fails every run before and passes 24/24 in default and `POWERARM_MAXINST=1` after; `callret.c`
+  has its siglongjmp section back (golden in `.powerarm-golden/fix-siglongjmp`). fastppcx86 patch:
+  `docs/powerarm/outgoing-patches/fastppcx86/0017-*`.
 
 - `mulld` measured 8.7 cycles vs the documented 5 (PIPE §8).
 - Whether mixed integer/vector workloads use more of the core's width (issue-queue stall events).
