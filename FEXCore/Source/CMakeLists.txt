@@ -28,6 +28,7 @@ set(SRCS
   Interface/Core/A64Frontend/TranslateBranchSystem.cpp
   Interface/Core/A64Frontend/TranslateDataProcessing.cpp
   Interface/Core/A64Frontend/TranslateExclusive.cpp
+  Interface/Core/A64Frontend/TranslateFP.cpp
   Interface/Core/A64Frontend/TranslateLoadStore.cpp
   Interface/Core/A64Frontend/TranslateSIMD.cpp
   Interface/Core/A64Frontend/TranslateSIMDLoadStore.cpp)

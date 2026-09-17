@@ -233,11 +233,12 @@ bool IRBuilder::MSR_reg(uint32_t Word) {
     // StoreNZCV reads bits 31:28; the rest of the word is RES0.
     _StoreNZCV(LoadX(Rt));
     return true;
-  case REG_FPCR:
-    // POWERARM-M1-TODO(frontend): FPCR is stored only. Syncing RMode/FZ/DN into the host FPSCR belongs to the FP translators (W2).
-    _StoreContext(OpSize::i32Bit, RegClass::GPR, _And(OpSize::i64Bit, LoadX(Rt), Constant(SystemRegisters::FPCR_WRITABLE_MASK)),
-                  offsetof(FEXCore::Core::CPUState, fpcr));
+  case REG_FPCR: {
+    Ref FPCR = _And(OpSize::i64Bit, LoadX(Rt), Constant(SystemRegisters::FPCR_WRITABLE_MASK));
+    _StoreContext(OpSize::i32Bit, RegClass::GPR, FPCR, offsetof(FEXCore::Core::CPUState, fpcr));
+    SyncHostRoundingMode(FPCR);
     return true;
+  }
   case REG_FPSR:
     _StoreContext(OpSize::i32Bit, RegClass::GPR, _And(OpSize::i64Bit, LoadX(Rt), Constant(SystemRegisters::FPSR_WRITABLE_MASK)),
                   offsetof(FEXCore::Core::CPUState, fpsr));

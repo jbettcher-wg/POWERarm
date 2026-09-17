@@ -167,6 +167,20 @@ public:
   bool EXT(uint32_t Word);
   bool UZP1(uint32_t Word); bool UZP2(uint32_t Word); bool ZIP1(uint32_t Word); bool ZIP2(uint32_t Word);
   bool TRN1(uint32_t Word); bool TRN2(uint32_t Word);
+  // Scalar floating point.
+  bool FMOV_float_gen(uint32_t Word); bool FMOV_float(uint32_t Word); bool FMOV_float_imm(uint32_t Word);
+  bool FABS_float(uint32_t Word); bool FNEG_float(uint32_t Word); bool FSQRT_float(uint32_t Word); bool FCVT_float(uint32_t Word);
+  bool FADD_float(uint32_t Word); bool FSUB_float(uint32_t Word); bool FMUL_float(uint32_t Word); bool FDIV_float(uint32_t Word);
+  bool FNMUL_float(uint32_t Word); bool FMIN_float(uint32_t Word); bool FMAX_float(uint32_t Word);
+  bool FMINNM_float(uint32_t Word); bool FMAXNM_float(uint32_t Word);
+  bool FPThreeRegister(uint32_t Word);
+  bool FCMP_float(uint32_t Word); bool FCCMP_float(uint32_t Word); bool FCSEL_float(uint32_t Word);
+  bool FCVTNS_float(uint32_t Word); bool FCVTNU_float(uint32_t Word); bool FCVTPS_float(uint32_t Word); bool FCVTPU_float(uint32_t Word);
+  bool FCVTMS_float(uint32_t Word); bool FCVTMU_float(uint32_t Word); bool FCVTZS_float_int(uint32_t Word); bool FCVTZU_float_int(uint32_t Word);
+  bool FCVTAS_float(uint32_t Word); bool FCVTAU_float(uint32_t Word);
+  bool SCVTF_float_int(uint32_t Word); bool UCVTF_float_int(uint32_t Word); bool SCVTF_float_fix(uint32_t Word); bool UCVTF_float_fix(uint32_t Word);
+  bool FCVTZS_float_fix(uint32_t Word); bool FCVTZU_float_fix(uint32_t Word);
+  bool FCVTZS_int_2(uint32_t Word); bool FCVTZU_int_2(uint32_t Word); bool SCVTF_int_2(uint32_t Word); bool UCVTF_int_2(uint32_t Word);
   // clang-format on
 
 private:
@@ -263,6 +277,23 @@ private:
   void StoreNarrow(uint32_t Rd, bool Upper, Ref Narrow);
   // A 128-bit vector with Pattern in both 64-bit lanes.
   Ref VectorConstant64(uint64_t Pattern);
+
+  // Scalar FP shared bodies (TranslateFP.cpp).
+  enum class FPUnaryOp { Abs, Neg, Sqrt };
+  enum class FPBinaryOp { Add, Sub, Mul, Div, NMul, Min, Max, MinNum, MaxNum };
+  bool FPOneRegister(uint32_t Word, FPUnaryOp Op);
+  bool FPTwoRegister(uint32_t Word, FPBinaryOp Op);
+  bool FPConvertToInt(uint32_t Word, uint8_t Rounding, bool Signed);
+  bool FPConvertFromInt(uint32_t Word, bool Signed, bool Fixed);
+  bool FPConvertToFixed(uint32_t Word, bool Signed);
+  bool FPScalarSIMDConvert(uint32_t Word, bool ToInt, bool Signed);
+  // Every ElementSize lane of the 128-bit result holds Bits.
+  Ref FPConstant(uint64_t Bits, OpSize ElementSize);
+  // Operand 1 for a VSX arithmetic op so that the op propagates NaNs the A64 way.
+  Ref PropagateNaNOperand(OpSize ElementSize, Ref A, Ref B);
+  Ref FPMinMax(OpSize ElementSize, Ref A, Ref B, bool IsMax, bool IsNumber);
+  // Host rounding mode <- FPCR.RMode of the given FPCR value.
+  void SyncHostRoundingMode(Ref FPCR);
 
   struct JumpTargetInfo {
     Ref BlockEntry;
