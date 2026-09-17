@@ -115,8 +115,11 @@ int main(void)
 	syscall(SYS_clock_gettime, CLOCK_MONOTONIC, &b);
 	printf("clock_nanosleep-abs-15ms: ret=%ld reached-target=%s\n", r, YN(ts_ns(&b) >= ts_ns(&abs_t)));
 
-	/* absolute time in the past returns immediately */
-	abs_t.tv_sec -= 100;
+	/* absolute time in the past returns immediately. 1 ns after the epoch of
+	 * CLOCK_MONOTONIC is always past; "100 s ago" is negative (EINVAL) on a
+	 * machine that booted less than 100 s before, like a test VM. */
+	abs_t.tv_sec = 0;
+	abs_t.tv_nsec = 1;
 	syscall(SYS_clock_gettime, CLOCK_MONOTONIC, &a);
 	r = syscall(SYS_clock_nanosleep, CLOCK_MONOTONIC, TIMER_ABSTIME, &abs_t, NULL);
 	syscall(SYS_clock_gettime, CLOCK_MONOTONIC, &b);

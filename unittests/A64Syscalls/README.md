@@ -96,6 +96,13 @@ printed, but keep the binary and golden paired anyway.
 The committed goldens were captured on a Raspberry Pi 5 with Linux 6.18
 (16K pages, 47-bit VA), glibc static, gcc 14, and /tmp on tmpfs.
 
+## Running on the 4K KVM guest
+
+`compare.sh` runs on the bare host only. The A64Tcc bundle
+(`unittests/A64Tcc/build-bundle.sh`) carries these programs and their
+goldens as `syscalls.*` jobs, and `Scripts/powerarm/a64diff-run.sh 4k-kvm`
+runs them on the 4K kernel.
+
 ## Running and diffing under POWERarm (POWER9 host)
 
 Copy the `bin/` directory built on the Pi to the host. These are static
