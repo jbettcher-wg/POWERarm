@@ -32,6 +32,22 @@ IRBuilder::IRBuilder(FEXCore::Context::ContextImpl* ctx)
 
 // clang-format off
 const IRBuilder::HandlerEntry IRBuilder::HandlerTable[] = {
+  // PC-relative addressing.
+  {"ADR", &IRBuilder::ADR}, {"ADRP", &IRBuilder::ADRP},
+  // Add/sub (immediate).
+  {"ADD_imm", &IRBuilder::ADD_imm}, {"ADDS_imm", &IRBuilder::ADDS_imm},
+  {"SUB_imm", &IRBuilder::SUB_imm}, {"SUBS_imm", &IRBuilder::SUBS_imm},
+  // Logical (immediate).
+  {"AND_imm", &IRBuilder::AND_imm}, {"ORR_imm", &IRBuilder::ORR_imm},
+  {"EOR_imm", &IRBuilder::EOR_imm}, {"ANDS_imm", &IRBuilder::ANDS_imm},
+  // Move wide.
+  {"MOVN", &IRBuilder::MOVN}, {"MOVZ", &IRBuilder::MOVZ}, {"MOVK", &IRBuilder::MOVK},
+  // Bitfield, including the aliases the table lists separately.
+  {"SBFM", &IRBuilder::SBFM}, {"BFM", &IRBuilder::BFM}, {"UBFM", &IRBuilder::UBFM},
+  {"ASR_1", &IRBuilder::SBFM}, {"ASR_2", &IRBuilder::SBFM},
+  {"SXTB_1", &IRBuilder::SBFM}, {"SXTB_2", &IRBuilder::SBFM},
+  {"SXTH_1", &IRBuilder::SBFM}, {"SXTH_2", &IRBuilder::SBFM}, {"SXTW", &IRBuilder::SBFM},
+  {"EXTR", &IRBuilder::EXTR},
   // Branches and exceptions.
   {"B_cond", &IRBuilder::B_cond}, {"B_uncond", &IRBuilder::B_uncond}, {"BL", &IRBuilder::BL},
   {"CBZ", &IRBuilder::CBZ}, {"CBNZ", &IRBuilder::CBNZ}, {"TBZ", &IRBuilder::TBZ}, {"TBNZ", &IRBuilder::TBNZ},
@@ -46,6 +62,31 @@ const IRBuilder::HandlerEntry IRBuilder::HandlerTable[] = {
   {"DC_ZVA", &IRBuilder::DC_ZVA},
   {"DC_CVAU", &IRBuilder::CacheMaintenanceNop}, {"IC_IVAU", &IRBuilder::CacheMaintenanceNop},
   {"UnallocatedEncoding", &IRBuilder::UnallocatedEncoding},
+  // Data processing (register): 2 source, 1 source.
+  {"UDIV", &IRBuilder::UDIV}, {"SDIV", &IRBuilder::SDIV},
+  {"LSLV", &IRBuilder::LSLV}, {"LSRV", &IRBuilder::LSRV}, {"ASRV", &IRBuilder::ASRV}, {"RORV", &IRBuilder::RORV},
+  {"RBIT_int", &IRBuilder::RBIT_int}, {"REV16_int", &IRBuilder::REV16_int}, {"REV", &IRBuilder::REV},
+  {"REV32_int", &IRBuilder::REV32_int}, {"CLZ_int", &IRBuilder::CLZ_int}, {"CLS_int", &IRBuilder::CLS_int},
+  // Logical and add/sub (shifted and extended register), with carry.
+  {"AND_shift", &IRBuilder::LogicalShifted}, {"BIC_shift", &IRBuilder::LogicalShifted},
+  {"ORR_shift", &IRBuilder::LogicalShifted}, {"ORN_shift", &IRBuilder::LogicalShifted},
+  {"EOR_shift", &IRBuilder::LogicalShifted}, {"EON", &IRBuilder::LogicalShifted},
+  {"ANDS_shift", &IRBuilder::LogicalShifted}, {"BICS", &IRBuilder::LogicalShifted},
+  {"ADD_shift", &IRBuilder::AddSubShifted}, {"ADDS_shift", &IRBuilder::AddSubShifted},
+  {"SUB_shift", &IRBuilder::AddSubShifted}, {"SUBS_shift", &IRBuilder::AddSubShifted},
+  {"ADD_ext", &IRBuilder::AddSubExtended}, {"ADDS_ext", &IRBuilder::AddSubExtended},
+  {"SUB_ext", &IRBuilder::AddSubExtended}, {"SUBS_ext", &IRBuilder::AddSubExtended},
+  {"ADC", &IRBuilder::ADC}, {"ADCS", &IRBuilder::ADCS}, {"SBC", &IRBuilder::SBC}, {"SBCS", &IRBuilder::SBCS},
+  // Conditional compare and select.
+  {"CCMN_reg", &IRBuilder::CondCompare}, {"CCMP_reg", &IRBuilder::CondCompare},
+  {"CCMN_imm", &IRBuilder::CondCompare}, {"CCMP_imm", &IRBuilder::CondCompare},
+  {"CSEL", &IRBuilder::CondSelect}, {"CSINC", &IRBuilder::CondSelect},
+  {"CSINV", &IRBuilder::CondSelect}, {"CSNEG", &IRBuilder::CondSelect},
+  // 3 source.
+  {"MADD", &IRBuilder::MADD}, {"MSUB", &IRBuilder::MSUB},
+  {"SMADDL", &IRBuilder::SMADDL}, {"SMSUBL", &IRBuilder::SMSUBL},
+  {"UMADDL", &IRBuilder::UMADDL}, {"UMSUBL", &IRBuilder::UMSUBL},
+  {"SMULH", &IRBuilder::SMULH}, {"UMULH", &IRBuilder::UMULH},
 };
 // clang-format on
 
