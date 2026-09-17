@@ -1,0 +1,8 @@
+vaddubs (UQADD.16B): 4096 pairs-of-vectors, SAT==QC on all: yes (SAT set in 2160)
+vaddsbs (SQADD.16B): SAT==QC on all: yes (SAT set in 1144 of 4096)
+ADDV.16B (vsum4ubs+vsumsws) SAT hits: 0; SADDLV.16B (vsum4sbs+vsumsws): 0; ADDV/SADDLV.8H (vsum4shs+vsumsws): 0; vsumsws alone on 4 random words (the VAddV i32 bug): 80353 of 200000
+ADDV.16B all-0xFF: SAT=0
+ADDV.8H all-0x8000: SAT=0
+vsumsws on 4x INT_MAX (ADDV.4S via vsumsws): SAT=1 (ARM ADDV wraps: QC must stay 0)
+vpkuhum/vpkuwum (XTN/SHRN/UZP1) SAT hits: 0 of 100000; vmhaddshs (SQDMULH.8H) SAT!=QC: 0, vmhraddshs: 0 (SAT set 73 times)
+time-base ticks per op: vaddubs alone 0.11, vaddubs+mfvscr 2.16 (19.0x)

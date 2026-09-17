@@ -1,0 +1,381 @@
+# POWER parity probe, POWER9 (ISA 3.0) build
+cmhi        8 297d6104df23f025 297d6104df23f025 OK
+cmhi       16 acfc075106dd9db5 acfc075106dd9db5 OK
+cmhi       32 b65f7bc529231de1 b65f7bc529231de1 OK
+cmhi       64 e6ab33fb0107d3fd e6ab33fb0107d3fd OK
+cmhs        8 f5460ea89f6cb925 f5460ea89f6cb925 OK
+cmhs       16 6409da117b80fde9 6409da117b80fde9 OK
+cmhs       32 0a54fc013b5b8c71 0a54fc013b5b8c71 OK
+cmhs       64 eb32544a41caa0a5 eb32544a41caa0a5 OK
+cmgt        8 4315aff9dfabb825 4315aff9dfabb825 OK
+cmgt       64 772532c163aba375 772532c163aba375 OK
+cmge        8 ea92a78c664cf125 ea92a78c664cf125 OK
+cmge       64 4aa76c95fbefe81d 4aa76c95fbefe81d OK
+cmtst       8 8902350e5fc01638 8902350e5fc01638 OK
+cmtst      16 e548d7d7eb347feb e548d7d7eb347feb OK
+cmtst      32 ec8825cba378f309 ec8825cba378f309 OK
+cmtst      64 7a8015260a1f05bd 7a8015260a1f05bd OK
+sqadd       8 85b59a282e8644a5 85b59a282e8644a5 OK
+sqadd      16 c90016af68022340 c90016af68022340 OK
+sqadd      32 4c4ba1a7eec8502a 4c4ba1a7eec8502a OK
+sqadd      64 53be67dfcd76b4b5 53be67dfcd76b4b5 OK
+uqadd       8 542729fc66b23fa5 542729fc66b23fa5 OK
+uqadd      16 9529eee60695efa1 9529eee60695efa1 OK
+uqadd      32 b455ff5f13fe69e8 b455ff5f13fe69e8 OK
+uqadd      64 29a537ae49a62378 29a537ae49a62378 OK
+sqsub       8 bf35cfd4aca75025 bf35cfd4aca75025 OK
+sqsub      16 de6d654c65d412cf de6d654c65d412cf OK
+sqsub      32 65fdcb5f843237c2 65fdcb5f843237c2 OK
+sqsub      64 ce17a323f477e69c ce17a323f477e69c OK
+uqsub       8 085b3cc2972052a5 085b3cc2972052a5 OK
+uqsub      16 18012bbd6c18db04 18012bbd6c18db04 OK
+uqsub      32 e9f2e69b37a8c7fd e9f2e69b37a8c7fd OK
+uqsub      64 8750ac2f01c602bd 8750ac2f01c602bd OK
+suqadd      8 ---------------- SKIP
+suqadd     32 ---------------- SKIP
+usqadd      8 ---------------- SKIP
+usqadd     32 ---------------- SKIP
+sqabs       8 80c4c031285f6c25 80c4c031285f6c25 OK
+sqabs      32 edd4e349a6151c53 edd4e349a6151c53 OK
+sqabs      64 120fdf27522a81c7 120fdf27522a81c7 OK
+sqneg       8 70b2d20be03b6c25 70b2d20be03b6c25 OK
+sqneg      32 5b27c7c667a4a095 5b27c7c667a4a095 OK
+sqneg      64 ef3caf384899a4b0 ef3caf384899a4b0 OK
+abs         8 a858aa5b17a0a325 a858aa5b17a0a325 OK
+abs        64 95d73e8be58d17df 95d73e8be58d17df OK
+neg         8 9846bc35cf7ca325 9846bc35cf7ca325 OK
+neg        64 a1bc1bdcc19aeb18 a1bc1bdcc19aeb18 OK
+mul         8 7dcffbe644c11b25 7dcffbe644c11b25 OK
+mul        16 3734dbfad6fd7da5 3734dbfad6fd7da5 OK
+mul        32 80e1cd91b51d0725 80e1cd91b51d0725 OK
+mla         8 ab6c8b2f1f30c678 ab6c8b2f1f30c678 OK
+mla        16 585e83eaac1516f8 585e83eaac1516f8 OK
+mla        32 0a9f1ae0e34bf67e 0a9f1ae0e34bf67e OK
+mls        16 1ba9acd57d85ad01 1ba9acd57d85ad01 OK
+mls        32 89c0b93c752fe98e 89c0b93c752fe98e OK
+sqdmulh    16 68c25d9d8da31a94 68c25d9d8da31a94 OK
+sqdmulh    32 77902f88345498e2 77902f88345498e2 OK
+sqrdmulh   16 43a6dd3c5ed8a874 43a6dd3c5ed8a874 OK
+sqrdmulh   32 4ebe9d6fe54f145e 4ebe9d6fe54f145e OK
+sqdmull    16 ac127c44b2c3f960 ac127c44b2c3f960 OK
+sqdmull    32 3d54127db26c1a59 3d54127db26c1a59 OK
+smull       8 01f873fcffc1599d 01f873fcffc1599d OK
+smull      16 50f021550e778060 50f021550e778060 OK
+smull      32 a6cb456a874d7bac a6cb456a874d7bac OK
+umull       8 20bb95bed0eca765 20bb95bed0eca765 OK
+umull      16 e9559ca7129d77c1 e9559ca7129d77c1 OK
+umull      32 1ec2978e11c58af8 1ec2978e11c58af8 OK
+smull2      8 012f2cd73436801d 012f2cd73436801d OK
+smull2     16 12cabeba8002fd27 12cabeba8002fd27 OK
+smull2     32 b4269d27b02ebf2a b4269d27b02ebf2a OK
+umull2      8 9c1a11307c210cb1 9c1a11307c210cb1 OK
+umull2     32 fdf82b6c5b2398b2 fdf82b6c5b2398b2 OK
+sabd        8 d04320e32d274b25 d04320e32d274b25 OK
+sabd       16 8d5367818f0f4bc7 8d5367818f0f4bc7 OK
+sabd       32 3e8fe25e91f94b17 3e8fe25e91f94b17 OK
+uabd        8 805bd5e03662c225 805bd5e03662c225 OK
+uabd       16 3269f355b4f9d7b7 3269f355b4f9d7b7 OK
+uabd       32 2ac034424ecf0b83 2ac034424ecf0b83 OK
+uabdl       8 fea76a26df420125 fea76a26df420125 OK
+uabdl      16 ace639e1ebb3b03b ace639e1ebb3b03b OK
+uabdl      32 21941fc0b1f2b7ea 21941fc0b1f2b7ea OK
+sabdl       8 8d4a9058ea99f125 8d4a9058ea99f125 OK
+sabdl      32 0e1d8e2a46b6cc82 0e1d8e2a46b6cc82 OK
+sshl        8 6bc453fec81a1ffd 6bc453fec81a1ffd OK
+sshl       16 44d1a7b79541101d 44d1a7b79541101d OK
+sshl       32 86a77cfeac3b774b 86a77cfeac3b774b OK
+sshl       64 79ddd29870aa300c 79ddd29870aa300c OK
+ushl        8 b9a0ebac1f128194 b9a0ebac1f128194 OK
+ushl       16 302c5f29c5651dd4 302c5f29c5651dd4 OK
+ushl       32 b8671d702fdd57cd b8671d702fdd57cd OK
+ushl       64 04d97b015eb9497c 04d97b015eb9497c OK
+srshl       8 1acb13a23d132973 1acb13a23d132973 OK
+srshl      16 1dfe7b5032671bf5 1dfe7b5032671bf5 OK
+srshl      32 0fcc40966a1386ab 0fcc40966a1386ab OK
+srshl      64 35c0b89cdc44694f 35c0b89cdc44694f OK
+urshl       8 7c56bb560b7a186f 7c56bb560b7a186f OK
+urshl      16 7df9d44e313790b0 7df9d44e313790b0 OK
+urshl      32 f744e1a92fe3f4cf f744e1a92fe3f4cf OK
+urshl      64 e745b7736638de46 e745b7736638de46 OK
+sqshl_r     8 6125183f57382af0 6125183f57382af0 OK
+sqshl_r    16 44ea16c7e2304779 44ea16c7e2304779 OK
+sqshl_r    32 02baa4b6c8ee4f61 02baa4b6c8ee4f61 OK
+sqshl_r    64 d5cec9176ca239e3 d5cec9176ca239e3 OK
+uqshl_r     8 c3d80475d741d971 c3d80475d741d971 OK
+uqshl_r    16 dcca10fb66281f0d dcca10fb66281f0d OK
+uqshl_r    32 5b589b1fdf53a258 5b589b1fdf53a258 OK
+uqshl_r    64 3d4d82473187cf2b 3d4d82473187cf2b OK
+sqrshl      8 ---------------- SKIP
+sqrshl     32 ---------------- SKIP
+uqrshl      8 ---------------- SKIP
+uqrshl     32 ---------------- SKIP
+sshr        8 2174ea8b077d2325 2174ea8b077d2325 OK
+sshr       16 3f287bedcd692ec9 3f287bedcd692ec9 OK
+sshr       32 75906f8db54ecc9e 75906f8db54ecc9e OK
+sshr       64 f0a6c362a454105b f0a6c362a454105b OK
+ushr        8 22c86ca77811a325 22c86ca77811a325 OK
+ushr       16 e6ea59a47f262858 e6ea59a47f262858 OK
+ushr       32 896b872184d5d412 896b872184d5d412 OK
+ushr       64 49ade6b2ef62643a 49ade6b2ef62643a OK
+srshr       8 8212df64ab0ba325 8212df64ab0ba325 OK
+srshr      16 5c12e957f31103bb 5c12e957f31103bb OK
+srshr      32 ea0950e3e3858d67 ea0950e3e3858d67 OK
+srshr      64 ab4b8aa56ce28023 ab4b8aa56ce28023 OK
+urshr       8 aa223674d091a325 aa223674d091a325 OK
+urshr      16 ce04ebd67f057046 ce04ebd67f057046 OK
+urshr      32 84c110160b4bafba 84c110160b4bafba OK
+urshr      64 4922d30109d9c2db 4922d30109d9c2db OK
+shl         8 0218cf60e712a325 0218cf60e712a325 OK
+shl        16 9db16093b30d5e74 9db16093b30d5e74 OK
+shl        32 8275d82088f5e3a3 8275d82088f5e3a3 OK
+shl        64 b55dea028fc4725c b55dea028fc4725c OK
+sqshl_i     8 8bfc6c19ede0ec25 8bfc6c19ede0ec25 OK
+sqshl_i    16 36722175e39dcc04 36722175e39dcc04 OK
+sqshl_i    32 7a0f1afb208cdf23 7a0f1afb208cdf23 OK
+sqshl_i    64 463b814374b08b09 463b814374b08b09 OK
+uqshl_i     8 294f14f63d9eb525 294f14f63d9eb525 OK
+uqshl_i    16 0a2cb689b53bf960 0a2cb689b53bf960 OK
+uqshl_i    32 a473f48bc7c26b4c a473f48bc7c26b4c OK
+uqshl_i    64 0c3217c0833e1269 0c3217c0833e1269 OK
+sqshlu      8 5681c59a141df525 5681c59a141df525 OK
+sqshlu     16 1da6ffd0824280b0 1da6ffd0824280b0 OK
+sqshlu     32 cfb90ef98ffc964a cfb90ef98ffc964a OK
+sqshlu     64 54ad6b70634d0a9d 54ad6b70634d0a9d OK
+shrn        8 fdcbaca83f92abe2 fdcbaca83f92abe2 OK
+shrn       16 1848fa03e0a64042 1848fa03e0a64042 OK
+shrn       32 6986f8212a6854b5 6986f8212a6854b5 OK
+rshrn       8 9d397a3914d06ce6 9d397a3914d06ce6 OK
+rshrn      16 1829d1bc5b876b5a 1829d1bc5b876b5a OK
+rshrn      32 5acfd48b1a2ae78c 5acfd48b1a2ae78c OK
+sqshrn      8 2c61920840ae909a 2c61920840ae909a OK
+sqshrn     16 d54dac170d024021 d54dac170d024021 OK
+sqshrn     32 519b51ea0e4016fd 519b51ea0e4016fd OK
+sqrshrn     8 93d00acd13c50452 93d00acd13c50452 OK
+sqrshrn    16 6a5ba5eb55952086 6a5ba5eb55952086 OK
+sqrshrn    32 ff57428f9f0f281c ff57428f9f0f281c OK
+uqshrn      8 4082b4bfda8c952d 4082b4bfda8c952d OK
+uqshrn     16 ae2ee406cd82151c ae2ee406cd82151c OK
+uqshrn     32 a9783b3a6ab555b2 a9783b3a6ab555b2 OK
+uqrshrn     8 46d8a06125bc2740 46d8a06125bc2740 OK
+uqrshrn    16 e7b7529684d1e929 e7b7529684d1e929 OK
+uqrshrn    32 6f632daf90ba4343 6f632daf90ba4343 OK
+sqshrun     8 fe1c7ed21f50bfa6 fe1c7ed21f50bfa6 OK
+sqshrun    16 212df1082b39ab26 212df1082b39ab26 OK
+sqshrun    32 8eb87dbf3a281364 8eb87dbf3a281364 OK
+sqrshrun    8 b10be290c65d59d7 b10be290c65d59d7 OK
+sqrshrun   16 baa25fb5aca3ddbe baa25fb5aca3ddbe OK
+sqrshrun   32 8f96bba937000c1e 8f96bba937000c1e OK
+xtn         8 994a477f4e132e85 994a477f4e132e85 OK
+xtn        16 f64b9877cb4aa98f f64b9877cb4aa98f OK
+xtn        32 0a86b59b14efc7c9 0a86b59b14efc7c9 OK
+sqxtn       8 36e18f4ade1029bb 36e18f4ade1029bb OK
+sqxtn      16 5b6823f0e6505da7 5b6823f0e6505da7 OK
+sqxtn      32 59dc62d05a321f10 59dc62d05a321f10 OK
+uqxtn       8 2a7227f8905bf8c7 2a7227f8905bf8c7 OK
+uqxtn      16 d8d3667143020ba2 d8d3667143020ba2 OK
+uqxtn      32 58219d203484fe50 58219d203484fe50 OK
+sqxtun      8 a8d9b8746512cdb2 a8d9b8746512cdb2 OK
+sqxtun     16 64b73baa8f422afa 64b73baa8f422afa OK
+sqxtun     32 788e6d70fac919a0 788e6d70fac919a0 OK
+addhn       8 05480ed205a6510b 05480ed205a6510b OK
+addhn      16 b53f1106dec2fda6 b53f1106dec2fda6 OK
+addhn      32 689d49df34b7b75b 689d49df34b7b75b OK
+raddhn      8 c2c8080688efc4a3 c2c8080688efc4a3 OK
+raddhn     16 a7f09dc7083c197a a7f09dc7083c197a OK
+raddhn     32 20772a61261253d9 20772a61261253d9 OK
+subhn       8 e7ebf65058db6f7f e7ebf65058db6f7f OK
+subhn      32 26be548365a5ce4d 26be548365a5ce4d OK
+sxtl        8 379b608ac9626325 379b608ac9626325 OK
+sxtl       16 0328dde0b92f8640 0328dde0b92f8640 OK
+sxtl       32 43c32e22ce65c761 43c32e22ce65c761 OK
+uxtl        8 200a1e2e97c22325 200a1e2e97c22325 OK
+uxtl       16 ca40ea514c2c395c ca40ea514c2c395c OK
+uxtl       32 9083cc609754ffe5 9083cc609754ffe5 OK
+sxtl2       8 379b608ac9626325 379b608ac9626325 OK
+sxtl2      16 4aee6be588a22086 4aee6be588a22086 OK
+sxtl2      32 0fd0295ab05d6176 0fd0295ab05d6176 OK
+uxtl2       8 200a1e2e97c22325 200a1e2e97c22325 OK
+uxtl2      16 aa9b08b96fb60c50 aa9b08b96fb60c50 OK
+uxtl2      32 ff92ee8723991fda ff92ee8723991fda OK
+saddl       8 8b7325a9bd104525 8b7325a9bd104525 OK
+saddl      16 c4f6cad15c82dbcc c4f6cad15c82dbcc OK
+saddl      32 53f75414dab79f7e 53f75414dab79f7e OK
+uaddl       8 56f3690fa907aaa5 56f3690fa907aaa5 OK
+uaddl      32 722917c290fc1ade 722917c290fc1ade OK
+saddlp      8 f4f090ed76846325 f4f090ed76846325 OK
+saddlp     16 15a32e24f140f823 15a32e24f140f823 OK
+saddlp     32 90cac62f58997ed5 90cac62f58997ed5 OK
+uaddlp      8 c959a2326a342325 c959a2326a342325 OK
+uaddlp     16 0b18fb94be9082b2 0b18fb94be9082b2 OK
+uaddlp     32 eb1aafcea46e9ea5 eb1aafcea46e9ea5 OK
+sadalp      8 d0f8b16ac14977d9 d0f8b16ac14977d9 OK
+sadalp     16 543a8bf6fcaaf94d 543a8bf6fcaaf94d OK
+uadalp      8 0c485c080e55d76d 0c485c080e55d76d OK
+uadalp     16 3e38a9cefa3120c5 3e38a9cefa3120c5 OK
+addp        8 d20b81a848b2a325 d20b81a848b2a325 OK
+addp       16 e8abe532a2cbbc92 e8abe532a2cbbc92 OK
+addp       32 aa487c7b26ccbd41 aa487c7b26ccbd41 OK
+addp       64 cdd4993153bfc38c cdd4993153bfc38c OK
+umaxp       8 c990ad374a03a325 c990ad374a03a325 OK
+umaxp      16 25bf6529b81fb254 25bf6529b81fb254 OK
+umaxp      32 4a303c6490ac663f 4a303c6490ac663f OK
+uminp       8 371a4d4754afcb25 371a4d4754afcb25 OK
+uminp      16 e1fbce49da6668b6 e1fbce49da6668b6 OK
+uminp      32 68a97ba87ddb6169 68a97ba87ddb6169 OK
+smaxp       8 c990ad374a03a325 c990ad374a03a325 OK
+smaxp      32 c2842c30bc8c2d30 c2842c30bc8c2d30 OK
+sminp       8 371a4d4754afcb25 371a4d4754afcb25 OK
+sminp      32 1cb269e9e928eee2 1cb269e9e928eee2 OK
+addv        8 3cabde9de02a2325 3cabde9de02a2325 OK
+addv       16 6355f9ddaec698e4 6355f9ddaec698e4 OK
+addv       32 f84f6eae246fa7ed f84f6eae246fa7ed OK
+saddlv      8 60d86d699ffbeb25 60d86d699ffbeb25 OK
+saddlv     16 a2876b0cc87eda5b a2876b0cc87eda5b OK
+saddlv     32 87cc055ce698f66d 87cc055ce698f66d OK
+uaddlv      8 262fb19b0857e325 262fb19b0857e325 OK
+uaddlv     16 b8f810898c5946cd b8f810898c5946cd OK
+uaddlv     32 1dcee0b949126c26 1dcee0b949126c26 OK
+umaxv       8 0dd0b84953cd2325 0dd0b84953cd2325 OK
+umaxv      16 595789d5a8fa7d5f 595789d5a8fa7d5f OK
+umaxv      32 10fe04067dc02c53 10fe04067dc02c53 OK
+uminv       8 0dd0b84953cd2325 0dd0b84953cd2325 OK
+uminv      16 c0f0a8095e509244 c0f0a8095e509244 OK
+uminv      32 c35e0005fd2c5dfc c35e0005fd2c5dfc OK
+smaxv       8 0dd0b84953cd2325 0dd0b84953cd2325 OK
+smaxv      16 8e451efaba43bfb0 8e451efaba43bfb0 OK
+smaxv      32 982cdf44e7e881cc 982cdf44e7e881cc OK
+sminv       8 0dd0b84953cd2325 0dd0b84953cd2325 OK
+sminv      16 e7bf58875be7d6d5 e7bf58875be7d6d5 OK
+sminv      32 cd0af4040e6b26c5 cd0af4040e6b26c5 OK
+cnt         8 7b5089e0e3528b25 7b5089e0e3528b25 OK
+clz         8 14bc3ede98c46025 14bc3ede98c46025 OK
+clz        16 9ec0a7167df45b14 9ec0a7167df45b14 OK
+clz        32 62f7b04a4f11c9d8 62f7b04a4f11c9d8 OK
+cls         8 5451217f00ef0925 5451217f00ef0925 OK
+cls        16 f2bc8fbc136e36c2 f2bc8fbc136e36c2 OK
+cls        32 04776dd8680d366b 04776dd8680d366b OK
+rbit        8 f3b98bdde87ca325 f3b98bdde87ca325 OK
+rev64       8 9e731e58b77ca325 9e731e58b77ca325 OK
+rev64      16 b9c90bbf31d5bc91 b9c90bbf31d5bc91 OK
+rev64      32 887105b727f14502 887105b727f14502 OK
+rev32       8 9e731e58b77ca325 9e731e58b77ca325 OK
+rev32      16 d9caf8198b9a48b9 d9caf8198b9a48b9 OK
+rev16       8 9e731e58b77ca325 9e731e58b77ca325 OK
+zip1        8 f72a706b692eaf25 f72a706b692eaf25 OK
+zip1       16 ffe808dbddb43940 ffe808dbddb43940 OK
+zip1       32 6dc3d383a5ef803e 6dc3d383a5ef803e OK
+zip1       64 e1256663b6742982 e1256663b6742982 OK
+zip2        8 2f2f5066d5909b25 2f2f5066d5909b25 OK
+zip2       16 f2c744438debd992 f2c744438debd992 OK
+zip2       32 a020460dff82e73c a020460dff82e73c OK
+zip2       64 31f44613041ed4e4 31f44613041ed4e4 OK
+uzp1        8 371a4d4754afcb25 371a4d4754afcb25 OK
+uzp1       16 14c356b1efd948ce 14c356b1efd948ce OK
+uzp1       32 292433c15e5b8c65 292433c15e5b8c65 OK
+uzp1       64 e1256663b6742982 e1256663b6742982 OK
+uzp2        8 c990ad374a03a325 c990ad374a03a325 OK
+uzp2       16 ec1ccf4a342a4538 ec1ccf4a342a4538 OK
+uzp2       32 c78868bac869abbf c78868bac869abbf OK
+uzp2       64 31f44613041ed4e4 31f44613041ed4e4 OK
+trn1        8 bf1d773ebc959b25 bf1d773ebc959b25 OK
+trn1       16 c401fe7305260ff6 c401fe7305260ff6 OK
+trn1       32 bd28c14cce74ced1 bd28c14cce74ced1 OK
+trn1       64 e1256663b6742982 e1256663b6742982 OK
+trn2        8 a19c4354a7524b25 a19c4354a7524b25 OK
+trn2       16 c930341559230cb8 c930341559230cb8 OK
+trn2       32 00b7037ce2a21603 00b7037ce2a21603 OK
+trn2       64 31f44613041ed4e4 31f44613041ed4e4 OK
+ext         8 73f3c2bd54f4c325 73f3c2bd54f4c325 OK
+tbl         8 e06a6e03a773f87c e06a6e03a773f87c OK
+tbx         8 76c7f817563749b4 76c7f817563749b4 OK
+udot        8 39f69e204eb3463f 39f69e204eb3463f OK
+sdot        8 caed81ba711acca5 caed81ba711acca5 OK
+pmull      64 a3494a556b2d2724 a3494a556b2d2724 OK
+pmull2     64 e4221769bc97ad33 e4221769bc97ad33 OK
+pmull8      8 8bb4d46303a83025 8bb4d46303a83025 OK
+pmull8_2    8 aff709370416d4e5 aff709370416d4e5 OK
+aese_v      8 eb9577f99a85fe00 eb9577f99a85fe00 OK
+aesd_v      8 f50fb54752810cbb f50fb54752810cbb OK
+aesmc_v     8 0b8a553495a6997b 0b8a553495a6997b OK
+aesimc_v    8 0e6111f10e4526ab 0e6111f10e4526ab OK
+frintn     32 a1ca61657f7796a1 a1ca61657f7796a1 OK
+frintn     64 abcb28789468c8aa abcb28789468c8aa OK
+frinta     32 85ca54ac2b258aed 85ca54ac2b258aed OK
+frinta     64 7e091cea568fd5a7 7e091cea568fd5a7 OK
+frintm     32 f5b5ac6afad9cd0a f5b5ac6afad9cd0a OK
+frintm     64 4851e5ca93bc0532 4851e5ca93bc0532 OK
+frintp     32 8bc030f70d931ffb 8bc030f70d931ffb OK
+frintp     64 875f91502b269a16 875f91502b269a16 OK
+frintz     32 dfd2568cb7190f0e dfd2568cb7190f0e OK
+frintz     64 61f3e0376f5c12fa 61f3e0376f5c12fa OK
+fcvtzs     32 f8816f22d2864ba1 f8816f22d2864ba1 OK
+fcvtzs     64 dda202eb8b3612cf dda202eb8b3612cf OK
+fcvtzu     32 72710d4677854408 72710d4677854408 OK
+fcvtzu     64 b4c92e11be06f924 b4c92e11be06f924 OK
+scvtf      32 1bdd7a055d7f14f5 1bdd7a055d7f14f5 OK
+scvtf      64 b3d1956bfa26e6c8 b3d1956bfa26e6c8 OK
+ucvtf      32 7afd364dba4a57b7 7afd364dba4a57b7 OK
+ucvtf      64 312236adc8b3952b 312236adc8b3952b OK
+frecpe     32 93a2e201b5f2d09f 93a2e201b5f2d09f OK
+frsqrte    32 5acd20f6a75ce085 5acd20f6a75ce085 OK
+fmax       32 cac9606b4033adea cac9606b4033adea OK
+fmin       32 cbe5f138809f609e cbe5f138809f609e OK
+fmaxnm     32 abb45a00d97f8399 abb45a00d97f8399 OK
+fminnm     32 f81486f2bfab22ed f81486f2bfab22ed OK
+fmax       64 ed67f16a8d7b5760 ed67f16a8d7b5760 OK
+fminnm     64 e744568f770c8003 e744568f770c8003 OK
+frecps     32 f09ca9c27e317043 f09ca9c27e317043 OK
+frsqrts    32 dde3e97650a98320 dde3e97650a98320 OK
+fmla   .rn 32 7df2c21afa4ff51d 7df2c21afa4ff51d OK
+fmls   .rn 32 754989bad44939ef 754989bad44939ef OK
+fmla   .rn 64 e8dcf5a5a722742f e8dcf5a5a722742f OK
+fmls   .rn 64 e7bb2c5ce5337394 e7bb2c5ce5337394 OK
+scvtf  .rn 32 1bdd7a055d7f14f5 1bdd7a055d7f14f5 OK
+ucvtf  .rn 64 312236adc8b3952b 312236adc8b3952b OK
+fmla_nv.rn 32 7df2c21afa4ff51d eb6b4f6abde807e6 MISMATCH (documenting form: naive xvmadd/xvnmsub NaN precedence and rounding) imm=0 k=4 a=5effffff021a03c96ca65112ffc00000 b=a2fa994dc4e61f9a7fc00000ff800042 c=338000003f80000040200000a6ad835d ref=c27a994c3f8000007fc00000ffc00042 got=c27a994c3f8000007fc00000ffc00000
+fmls_nv.rn 32 754989bad44939ef c81868822226b304 MISMATCH (documenting form: naive xvmadd/xvnmsub NaN precedence and rounding) imm=0 k=1 a=7fc000003fc000007f8000017fc00000 b=29267a3d0f9fa597afef60624a800000 c=fb14f1c04b0000005532210188c78027 ref=ffc000004b000000ffc00001ffc00000 got=7fc000004b0000007fc000017fc00000
+fmls_ng.rn 32 754989bad44939ef 784d7862c598c184 MISMATCH (documenting form: naive xvmadd/xvnmsub NaN precedence and rounding) imm=0 k=4 a=5effffff021a03c96ca65112ffc00000 b=a2fa994dc4e61f9a7fc00000ff800042 c=338000003f80000040200000a6ad835d ref=427a994c3f8000007fc00000ffc00042 got=427a994c3f8000007fc000007fc00000
+fmla_nv.rn 64 e8dcf5a5a722742f ff5e750684453f35 MISMATCH (documenting form: naive xvmadd/xvnmsub NaN precedence and rounding) imm=0 k=67 a=d227fe93f481fcd27ff8000000000000 b=528715d78d3fe463383b567df6e86e73 c=22c8b73022598cc67ff8000000000123 ref=e4c14f5b09319a2f7ff8000000000123 got=e4c14f5b09319a2f7ff8000000000000
+fmls_nv.rn 64 e7bb2c5ce5337394 3c75a486a73e1a52 MISMATCH (documenting form: naive xvmadd/xvnmsub NaN precedence and rounding) imm=0 k=0 a=1d511cb393e7ae82fff0000000000042 b=7fefffffffffffff2e65f69d1b8c3eeb c=c3e00000000000000d1b3451f58ff829 ref=dd511cb393e7ae817ff8000000000042 got=dd511cb393e7ae81fff8000000000042
+fmls_ng.rn 64 e7bb2c5ce5337394 cb025d7439385652 MISMATCH (documenting form: naive xvmadd/xvnmsub NaN precedence and rounding) imm=0 k=67 a=d227fe93f481fcd27ff8000000000000 b=528715d78d3fe463383b567df6e86e73 c=22c8b73022598cc67ff8000000000123 ref=64c14f5b09319a2f7ff8000000000123 got=64c14f5b09319a2ffff8000000000000
+fmla   .ru 32 d55a08b69c90a644 d55a08b69c90a644 OK
+fmls   .ru 32 92aaf19f27a34acf 92aaf19f27a34acf OK
+fmla   .ru 64 d3133bb177696e77 d3133bb177696e77 OK
+fmls   .ru 64 48a37d4689ae9176 48a37d4689ae9176 OK
+scvtf  .ru 32 74aafb79d8e0af54 74aafb79d8e0af54 OK
+ucvtf  .ru 64 aed683403d44a80f aed683403d44a80f OK
+fmla_nv.ru 32 d55a08b69c90a644 be30224b9427561b MISMATCH (documenting form: naive xvmadd/xvnmsub NaN precedence and rounding) imm=0 k=4 a=5effffff021a03c96ca65112ffc00000 b=a2fa994dc4e61f9a7fc00000ff800042 c=338000003f80000040200000a6ad835d ref=c27a994c3f8000007fc00000ffc00042 got=c27a994c3f8000007fc00000ffc00000
+fmls_nv.ru 32 92aaf19f27a34acf 13bc0d63faf770ab MISMATCH (documenting form: naive xvmadd/xvnmsub NaN precedence and rounding) imm=0 k=0 a=88a42fd6ee89500a3380000040490fdb b=cf000000a9b1d2a427515256ff800042 c=5201ed86a95e4e72e6380e4d40400000 ref=5201ed86d8bec2a5e6380e4dffc00042 got=5201ed85d8bec2a6e6380e4effc00042
+fmls_ng.ru 32 92aaf19f27a34acf 947ad17962184708 MISMATCH (documenting form: naive xvmadd/xvnmsub NaN precedence and rounding) imm=0 k=4 a=5effffff021a03c96ca65112ffc00000 b=a2fa994dc4e61f9a7fc00000ff800042 c=338000003f80000040200000a6ad835d ref=427a994d3f8000017fc00000ffc00042 got=427a994d3f8000017fc000007fc00000
+fmla_nv.ru 64 d3133bb177696e77 7961b13e191290a1 MISMATCH (documenting form: naive xvmadd/xvnmsub NaN precedence and rounding) imm=0 k=67 a=d227fe93f481fcd27ff8000000000000 b=528715d78d3fe463383b567df6e86e73 c=22c8b73022598cc67ff8000000000123 ref=e4c14f5b09319a2e7ff8000000000123 got=e4c14f5b09319a2e7ff8000000000000
+fmls_nv.ru 64 48a37d4689ae9176 7e26c1e2b5545579 MISMATCH (documenting form: naive xvmadd/xvnmsub NaN precedence and rounding) imm=0 k=0 a=1d511cb393e7ae82fff0000000000042 b=7fefffffffffffff2e65f69d1b8c3eeb c=c3e00000000000000d1b3451f58ff829 ref=dd511cb393e7ae817ff8000000000042 got=dd511cb393e7ae82fff8000000000042
+fmls_ng.ru 64 48a37d4689ae9176 7361167d29e78850 MISMATCH (documenting form: naive xvmadd/xvnmsub NaN precedence and rounding) imm=0 k=67 a=d227fe93f481fcd27ff8000000000000 b=528715d78d3fe463383b567df6e86e73 c=22c8b73022598cc67ff8000000000123 ref=64c14f5b09319a2f7ff8000000000123 got=64c14f5b09319a2ffff8000000000000
+fmla   .rd 32 ad5b20bbf6e9ad57 ad5b20bbf6e9ad57 OK
+fmls   .rd 32 d8437d6e30818980 d8437d6e30818980 OK
+fmla   .rd 64 88062e1b565a25a9 88062e1b565a25a9 OK
+fmls   .rd 64 65c55907f01ff8e7 65c55907f01ff8e7 OK
+scvtf  .rd 32 4dd472355b2860a3 4dd472355b2860a3 OK
+ucvtf  .rd 64 4d898b2961959474 4d898b2961959474 OK
+fmla_nv.rd 32 ad5b20bbf6e9ad57 a9f71be32afa27d0 MISMATCH (documenting form: naive xvmadd/xvnmsub NaN precedence and rounding) imm=0 k=4 a=5effffff021a03c96ca65112ffc00000 b=a2fa994dc4e61f9a7fc00000ff800042 c=338000003f80000040200000a6ad835d ref=c27a994d3f7fffff7fc00000ffc00042 got=c27a994d3f7fffff7fc00000ffc00000
+fmls_nv.rd 32 d8437d6e30818980 b786668e10a09c88 MISMATCH (documenting form: naive xvmadd/xvnmsub NaN precedence and rounding) imm=0 k=0 a=88a42fd6ee89500a3380000040490fdb b=cf000000a9b1d2a427515256ff800042 c=5201ed86a95e4e72e6380e4d40400000 ref=5201ed85d8bec2a6e6380e4effc00042 got=5201ed86d8bec2a5e6380e4dffc00042
+fmls_ng.rd 32 d8437d6e30818980 2598239ae27a1f2b MISMATCH (documenting form: naive xvmadd/xvnmsub NaN precedence and rounding) imm=0 k=4 a=5effffff021a03c96ca65112ffc00000 b=a2fa994dc4e61f9a7fc00000ff800042 c=338000003f80000040200000a6ad835d ref=427a994c3f8000007fc00000ffc00042 got=427a994c3f8000007fc000007fc00000
+fmla_nv.rd 64 88062e1b565a25a9 0a357380f83b238b MISMATCH (documenting form: naive xvmadd/xvnmsub NaN precedence and rounding) imm=0 k=67 a=d227fe93f481fcd27ff8000000000000 b=528715d78d3fe463383b567df6e86e73 c=22c8b73022598cc67ff8000000000123 ref=e4c14f5b09319a2f7ff8000000000123 got=e4c14f5b09319a2f7ff8000000000000
+fmls_nv.rd 64 65c55907f01ff8e7 a2304942a3ae41d0 MISMATCH (documenting form: naive xvmadd/xvnmsub NaN precedence and rounding) imm=0 k=0 a=1d511cb393e7ae82fff0000000000042 b=7fefffffffffffff2e65f69d1b8c3eeb c=c3e00000000000000d1b3451f58ff829 ref=dd511cb393e7ae827ff8000000000042 got=dd511cb393e7ae81fff8000000000042
+fmls_ng.rd 64 65c55907f01ff8e7 a2c83736364e53f9 MISMATCH (documenting form: naive xvmadd/xvnmsub NaN precedence and rounding) imm=0 k=67 a=d227fe93f481fcd27ff8000000000000 b=528715d78d3fe463383b567df6e86e73 c=22c8b73022598cc67ff8000000000123 ref=64c14f5b09319a2e7ff8000000000123 got=64c14f5b09319a2efff8000000000000
+fmla   .rz 32 fad393e95e0b05ae fad393e95e0b05ae OK
+fmls   .rz 32 abab0e022151a1cc abab0e022151a1cc OK
+fmla   .rz 64 a9a8ed1fd6b16b78 a9a8ed1fd6b16b78 OK
+fmls   .rz 64 264ca5a8014df303 264ca5a8014df303 OK
+scvtf  .rz 32 baa73a70e7fd04dd baa73a70e7fd04dd OK
+ucvtf  .rz 64 4d898b2961959474 4d898b2961959474 OK
+fmla_nv.rz 32 fad393e95e0b05ae b9a79899723bfbbd MISMATCH (documenting form: naive xvmadd/xvnmsub NaN precedence and rounding) imm=0 k=4 a=5effffff021a03c96ca65112ffc00000 b=a2fa994dc4e61f9a7fc00000ff800042 c=338000003f80000040200000a6ad835d ref=c27a994c3f7fffff7fc00000ffc00042 got=c27a994c3f7fffff7fc00000ffc00000
+fmls_nv.rz 32 abab0e022151a1cc 46ecd6e179fb5e93 MISMATCH (documenting form: naive xvmadd/xvnmsub NaN precedence and rounding) imm=0 k=1 a=7fc000003fc000007f8000017fc00000 b=29267a3d0f9fa597afef60624a800000 c=fb14f1c04b0000005532210188c78027 ref=ffc000004affffffffc00001ffc00000 got=7fc000004affffff7fc000017fc00000
+fmls_ng.rz 32 abab0e022151a1cc 3d931b2eb571fa13 MISMATCH (documenting form: naive xvmadd/xvnmsub NaN precedence and rounding) imm=0 k=4 a=5effffff021a03c96ca65112ffc00000 b=a2fa994dc4e61f9a7fc00000ff800042 c=338000003f80000040200000a6ad835d ref=427a994c3f8000007fc00000ffc00042 got=427a994c3f8000007fc000007fc00000
+fmla_nv.rz 64 a9a8ed1fd6b16b78 1ffdfccc430569b2 MISMATCH (documenting form: naive xvmadd/xvnmsub NaN precedence and rounding) imm=0 k=67 a=d227fe93f481fcd27ff8000000000000 b=528715d78d3fe463383b567df6e86e73 c=22c8b73022598cc67ff8000000000123 ref=e4c14f5b09319a2e7ff8000000000123 got=e4c14f5b09319a2e7ff8000000000000
+fmls_nv.rz 64 264ca5a8014df303 e1c068f701a8b641 MISMATCH (documenting form: naive xvmadd/xvnmsub NaN precedence and rounding) imm=0 k=0 a=1d511cb393e7ae82fff0000000000042 b=7fefffffffffffff2e65f69d1b8c3eeb c=c3e00000000000000d1b3451f58ff829 ref=dd511cb393e7ae817ff8000000000042 got=dd511cb393e7ae81fff8000000000042
+fmls_ng.rz 64 264ca5a8014df303 85b2ac37a569e241 MISMATCH (documenting form: naive xvmadd/xvnmsub NaN precedence and rounding) imm=0 k=67 a=d227fe93f481fcd27ff8000000000000 b=528715d78d3fe463383b567df6e86e73 c=22c8b73022598cc67ff8000000000123 ref=64c14f5b09319a2e7ff8000000000123 got=64c14f5b09319a2efff8000000000000
+frecps_nv  32 f09ca9c27e317043 9ef99abe2cf5e2b5 MISMATCH (expected to differ: documents why the naive form is not enough) imm=0 k=1 a=7fc000003fc000007f8000017fc00000 b=29267a3d0f9fa597afef60624a800000 c=fb14f1c04b0000005532210188c78027 ref=ffc0000040000000ffc00001ffc00000 got=7fc00000400000007fc000017fc00000
+frsqrts_nv 32 dde3e97650a98320 39c181d23b3dd9a5 MISMATCH (expected to differ: documents why the naive form is not enough) imm=0 k=1 a=7fc000003fc000007f8000017fc00000 b=29267a3d0f9fa597afef60624a800000 c=fb14f1c04b0000005532210188c78027 ref=ffc000003fc00000ffc00001ffc00000 got=7fc000003fc000007fc000017fc00000
+fmax_naive 32 cac9606b4033adea aed23ee473d9ac1e MISMATCH (expected to differ: documents why the naive form is not enough) imm=0 k=1 a=7fc000003fc000007f8000017fc00000 b=29267a3d0f9fa597afef60624a800000 c=fb14f1c04b0000005532210188c78027 ref=7fc000003fc000007fc000017fc00000 got=29267a3d3fc000007fc000014a800000
+idiom probes: OK
+PARITY-FAILED (24 of 343 cases failing, 0 idiom failures)

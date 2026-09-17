@@ -1,0 +1,522 @@
+lvebx        X    p.240   v2.03   Load Vector Element Byte Indexed
+lvehx        X    p.240   v2.03   Load Vector Element Halfword Indexed
+lvewx        X    p.241   v2.03   Load Vector Element Word Indexed
+lvsl         X    p.245   v2.03   Load Vector for Shift Left
+lvsr         X    p.245   v2.03   Load Vector for Shift Right
+lvx          X    p.241   v2.03   Load Vector Indexed
+lvxl         X    p.241   v2.03   Load Vector Indexed Last
+lxsd         DS   p.484   v3.0    Load VSX Scalar Doubleword
+lxsdx        X    p.484   v2.06   Load VSX Scalar Doubleword Indexed
+lxsibzx      X    p.486   v3.0    Load VSX Scalar as Integer Byte & Zero Indexed
+lxsihzx      X    p.486   v3.0    Load VSX Scalar as Integer Halfword & Zero Indexed
+lxsiwax      X    p.487   v2.07   Load VSX Scalar as Integer Word Algebraic Indexed
+lxsiwzx      X    p.488   v2.07   Load VSX Scalar as Integer Word & Zero Indexed
+lxssp        DS   p.489   v3.0    Load VSX Scalar Single-Precision
+lxsspx       X    p.489   v2.07   Load VSX Scalar Single-Precision Indexed
+lxv          DQ   p.496   v3.0    Load VSX Vector
+lxvb16x      X    p.491   v3.0    Load VSX Vector Byte*16 Indexed
+lxvd2x       X    p.492   v2.06   Load VSX Vector Doubleword*2 Indexed
+lxvdsx       X    p.498   v2.06   Load VSX Vector Doubleword & Splat Indexed
+lxvh8x       X    p.499   v3.0    Load VSX Vector Halfword*8 Indexed
+lxvl         X    p.493   v3.0    Load VSX Vector with Length
+lxvll        X    p.495   v3.0    Load VSX Vector Left-justified with Length
+lxvw4x       X    p.500   v2.06   Load VSX Vector Word*4 Indexed
+lxvwsx       X    p.501   v3.0    Load VSX Vector Word & Splat Indexed
+lxvx         X    p.496   v3.0    Load VSX Vector Indexed
+mfvscr       VX   p.361   v2.03   Move From VSCR
+mfvsrd       X    p.110   v2.07   Move From VSR Doubleword
+mfvsrld      X    p.110   v3.0    Move From VSR Lower Doubleword
+mfvsrwz      X    p.111   v2.07   Move From VSR Word & Zero
+mtvscr       VX   p.361   v2.03   Move To VSCR
+mtvsrd       X    p.112   v2.07   Move To VSR Doubleword
+mtvsrdd      X    p.113   v3.0    Move To VSR Double Doubleword
+mtvsrwa      X    p.112   v2.07   Move To VSR Word Algebraic
+mtvsrws      X    p.114   v3.0    Move To VSR Word & Splat
+mtvsrwz      X    p.113   v2.07   Move To VSR Word & Zero
+stvebx       X    p.243   v2.03   Store Vector Element Byte Indexed
+stvehx       X    p.243   v2.03   Store Vector Element Halfword Indexed
+stvewx       X    p.244   v2.03   Store Vector Element Word Indexed
+stvx         X    p.244   v2.03   Store Vector Indexed
+stvxl        X    p.244   v2.03   Store Vector Indexed Last
+stxsd        DS   p.502   v3.0    Store VSX Scalar Doubleword
+stxsdx       X    p.502   v2.06   Store VSX Scalar Doubleword Indexed
+stxsibx      X    p.503   v3.0    Store VSX Scalar as Integer Byte Indexed
+stxsihx      X    p.503   v3.0    Store VSX Scalar as Integer Halfword Indexed
+stxsiwx      X    p.504   v2.07   Store VSX Scalar as Integer Word Indexed
+stxssp       DS   p.505   v3.0    Store VSX Scalar Single-Precision
+stxsspx      X    p.506   v2.07   Store VSX Scalar Single-Precision Indexed
+stxv         DQ   p.511   v3.0    Store VSX Vector
+stxvb16x     X    p.507   v3.0    Store VSX Vector Byte*16 Indexed
+stxvd2x      X    p.508   v2.06   Store VSX Vector Doubleword*2 Indexed
+stxvh8x      X    p.509   v3.0    Store VSX Vector Halfword*8 Indexed
+stxvl        X    p.511   v3.0    Store VSX Vector with Length
+stxvll       X    p.513   v3.0    Store VSX Vector Left-justified with Length
+stxvw4x      X    p.510   v2.06   Store VSX Vector Word*4 Indexed
+stxvx        X    p.514   v3.0    Store VSX Vector Indexed
+vabsdub      VX   p.296   v3.0    Vector Absolute Difference Unsigned Byte
+vabsduh      VX   p.296   v3.0    Vector Absolute Difference Unsigned Halfword
+vabsduw      VX   p.297   v3.0    Vector Absolute Difference Unsigned Word
+vaddcuq      VX   p.271   v2.07   Vector Add & write Carry Unsigned Quadword
+vaddcuw      VX   p.267   v2.03   Vector Add & Write Carry-Out Unsigned Word
+vaddecuq     VA   p.271   v2.07   Vector Add Extended & write Carry Unsigned Quadword
+vaddeuqm     VA   p.271   v2.07   Vector Add Extended Unsigned Quadword Modulo
+vaddfp       VX   p.320   v2.03   Vector Add Floating-Point
+vaddsbs      VX   p.267   v2.03   Vector Add Signed Byte Saturate
+vaddshs      VX   p.267   v2.03   Vector Add Signed Halfword Saturate
+vaddsws      VX   p.268   v2.03   Vector Add Signed Word Saturate
+vaddubm      VX   p.268   v2.03   Vector Add Unsigned Byte Modulo
+vaddubs      VX   p.270   v2.03   Vector Add Unsigned Byte Saturate
+vaddudm      VX   p.268   v2.07   Vector Add Unsigned Doubleword Modulo
+vadduhm      VX   p.269   v2.03   Vector Add Unsigned Halfword Modulo
+vadduhs      VX   p.270   v2.03   Vector Add Unsigned Halfword Saturate
+vadduqm      VX   p.268   v2.07   Vector Add Unsigned Quadword Modulo
+vadduwm      VX   p.269   v2.03   Vector Add Unsigned Word Modulo
+vadduws      VX   p.270   v2.03   Vector Add Unsigned Word Saturate
+vand         VX   p.311   v2.03   Vector Logical AND
+vandc        VX   p.311   v2.03   Vector Logical AND with Complement
+vavgsb       VX   p.294   v2.03   Vector Average Signed Byte
+vavgsh       VX   p.294   v2.03   Vector Average Signed Halfword
+vavgsw       VX   p.294   v2.03   Vector Average Signed Word
+vavgub       VX   p.295   v2.03   Vector Average Unsigned Byte
+vavguh       VX   p.295   v2.03   Vector Average Unsigned Halfword
+vavguw       VX   p.295   v2.03   Vector Average Unsigned Word
+vbpermd      VX   p.345   v3.0    Vector Bit Permute Doubleword
+vbpermq      VX   p.345   v2.07   Vector Bit Permute Quadword
+vcfsx        VX   p.324   v2.03   Vector Convert with round to nearest Signed Word format to FP
+vcfux        VX   p.324   v2.03  
+vcipher      VX   p.332   v2.07   Vector AES Cipher
+vcipherlast  VX   p.332   v2.07   Vector AES Cipher Last
+vclzb        VX   p.339   v2.07   Vector Count Leading Zeros Byte
+vclzd        VX   p.339   v2.07   Vector Count Leading Zeros Doubleword
+vclzh        VX   p.339   v2.07   Vector Count Leading Zeros Halfword
+vclzlsbb     VX   p.341   v3.0    Vector Count Leading Zero Least-Significant Bits Byte
+vclzw        VX   p.339   v2.07   Vector Count Leading Zeros Word
+vcmpbfp[.]   VC   p.327   v2.03   Vector Compare Bounds Floating-Point
+vcmpeqfp[.]  VC   p.328   v2.03   Vector Compare Equal To Floating-Point
+vcmpequb[.]  VC   p.302   v2.03   Vector Compare Equal To Unsigned Byte
+vcmpequd[.]  VC   p.303   v2.07   Vector Compare Equal To Unsigned Doubleword
+vcmpequh[.]  VC   p.302   v2.03   Vector Compare Equal To Unsigned Halfword
+vcmpequw[.]  VC   p.303   v2.03   Vector Compare Equal To Unsigned Word
+vcmpgefp[.]  VC   p.328   v2.03   Vector Compare Greater Than or Equal To Floating-Point
+vcmpgtfp[.]  VC   p.329   v2.03   Vector Compare Greater Than Floating-Point
+vcmpgtsb[.]  VC   p.304   v2.03   Vector Compare Greater Than Signed Byte
+vcmpgtsd[.]  VC   p.304   v2.07   Vector Compare Greater Than Signed Doubleword
+vcmpgtsh[.]  VC   p.305   v2.03   Vector Compare Greater Than Signed Halfword
+vcmpgtsw[.]  VC   p.305   v2.03   Vector Compare Greater Than Signed Word
+vcmpgtub[.]  VC   p.306   v2.03   Vector Compare Greater Than Unsigned Byte
+vcmpgtud[.]  VC   p.306   v2.07   Vector Compare Greater Than Unsigned Doubleword
+vcmpgtuh[.]  VC   p.307   v2.03   Vector Compare Greater Than Unsigned Halfword
+vcmpgtuw[.]  VC   p.307   v2.03   Vector Compare Greater Than Unsigned Word
+vcmpneb[.]   VC   p.308   v3.0    Vector Compare Not Equal Byte
+vcmpneh[.]   VC   p.309   v3.0    Vector Compare Not Equal Halfword
+vcmpnew[.]   VC   p.310   v3.0    Vector Compare Not Equal Word
+vcmpnezb[.]  VC   p.308   v3.0    Vector Compare Not Equal or Zero Byte
+vcmpnezh[.]  VC   p.309   v3.0    Vector Compare Not Equal or Zero Halfword
+vcmpnezw[.]  VC   p.310   v3.0    Vector Compare Not Equal or Zero Word
+vctsxs       VX   p.323   v2.03  
+vctuxs       VX   p.323   v2.03  
+vctzb        VX   p.340   v3.0    Vector Count Trailing Zeros Byte
+vctzd        VX   p.340   v3.0    Vector Count Trailing Zeros Doubleword
+vctzh        VX   p.340   v3.0    Vector Count Trailing Zeros Halfword
+vctzlsbb     VX   p.341   v3.0    Vector Count Trailing Zero Least-Significant Bits Byte
+vctzw        VX   p.340   v3.0    Vector Count Trailing Zeros Word
+veqv         VX   p.311   v2.07   Vector Equivalence
+vexptefp     VX   p.330   v2.03   Vector 2 Raised to the Exponent Estimate Floating-Point
+vextractd    VX   p.265   v3.0    Vector Extract Doubleword
+vextractub   VX   p.265   v3.0    Vector Extract Unsigned Byte
+vextractuh   VX   p.265   v3.0    Vector Extract Unsigned Halfword
+vextractuw   VX   p.265   v3.0    Vector Extract Unsigned Word
+vextsb2d     VX   p.292   v3.0    Vector Extend Sign Byte to Doubleword
+vextsb2w     VX   p.292   v3.0    Vector Extend Sign Byte to Word
+vextsh2d     VX   p.292   v3.0    Vector Extend Sign Halfword to Doubleword
+vextsh2w     VX   p.292   v3.0    Vector Extend Sign Halfword to Word
+vextsw2d     VX   p.293   v3.0    Vector Extend Sign Word to Doubleword
+vextublx     VX   p.342   v3.0    Vector Extract Unsigned Byte Left-Indexed
+vextubrx     VX   p.342   v3.0    Vector Extract Unsigned Byte Right-Indexed
+vextuhlx     VX   p.342   v3.0    Vector Extract Unsigned Halfword Left-Indexed
+vextuhrx     VX   p.342   v3.0    Vector Extract Unsigned Halfword Right-Indexed
+vextuwlx     VX   p.343   v3.0    Vector Extract Unsigned Word Left-Indexed
+vextuwrx     VX   p.343   v3.0    Vector Extract Unsigned Word Right-Indexed
+vgbbd        VX   p.338   v2.07   Vector Gather Bits by Byte by Doubleword
+vinsertb     VX   p.266   v3.0    Vector Insert Byte
+vinsertd     VX   p.266   v3.0    Vector Insert Doubleword
+vinserth     VX   p.266   v3.0    Vector Insert Halfword
+vinsertw     VX   p.266   v3.0    Vector Insert Word
+vlogefp      VX   p.330   v2.03   Vector Log Base 2 Estimate Floating-Point
+vmaddfp      VA   p.321   v2.03   Vector Multiply-Add Floating-Point
+vmaxfp       VX   p.322   v2.03   Vector Maximum Floating-Point
+vmaxsb       VX   p.298   v2.03   Vector Maximum Signed Byte
+vmaxsd       VX   p.298   v2.07   Vector Maximum Signed Doubleword
+vmaxsh       VX   p.299   v2.03   Vector Maximum Signed Halfword
+vmaxsw       VX   p.299   v2.03   Vector Maximum Signed Word
+vmaxub       VX   p.298   v2.03   Vector Maximum Unsigned Byte
+vmaxud       VX   p.298   v2.07   Vector Maximum Unsigned Doubleword
+vmaxuh       VX   p.299   v2.03   Vector Maximum Unsigned Halfword
+vmaxuw       VX   p.299   v2.03   Vector Maximum Unsigned Word
+vmhaddshs    VA   p.283   v2.03   Vector Multiply-High-Add Signed Halfword Saturate
+vmhraddshs   VA   p.283   v2.03   Vector Multiply-High-Round-Add Signed Halfword Saturate
+vminfp       VX   p.322   v2.03   Vector Minimum Floating-Point
+vminsb       VX   p.300   v2.03   Vector Minimum Signed Byte
+vminsd       VX   p.300   v2.07   Vector Minimum Signed Doubleword
+vminsh       VX   p.301   v2.03   Vector Minimum Signed Halfword
+vminsw       VX   p.301   v2.03   Vector Minimum Signed Word
+vminub       VX   p.300   v2.03   Vector Minimum Unsigned Byte
+vminud       VX   p.300   v2.07   Vector Minimum Unsigned Doubleword
+vminuh       VX   p.301   v2.03   Vector Minimum Unsigned Halfword
+vminuw       VX   p.301   v2.03   Vector Minimum Unsigned Word
+vmladduhm    VA   p.284   v2.03   Vector Multiply-Low-Add Unsigned Halfword Modulo
+vmrgew       VX   p.255   v2.07   Vector Merge Even Word
+vmrghb       VX   p.253   v2.03   Vector Merge High Byte
+vmrghh       VX   p.253   v2.03   Vector Merge High Halfword
+vmrghw       VX   p.254   v2.03   Vector Merge High Word
+vmrglb       VX   p.253   v2.03   Vector Merge Low Byte
+vmrglh       VX   p.253   v2.03   Vector Merge Low Halfword
+vmrglw       VX   p.254   v2.03   Vector Merge Low Word
+vmrgow       VX   p.255   v2.07   Vector Merge Odd Word
+vmsummbm     VA   p.285   v2.03   Vector Multiply-Sum Mixed Byte Modulo
+vmsumshm     VA   p.285   v2.03   Vector Multiply-Sum Signed Halfword Modulo
+vmsumshs     VA   p.286   v2.03   Vector Multiply-Sum Signed Halfword Saturate
+vmsumubm     VA   p.284   v2.03   Vector Multiply-Sum Unsigned Byte Modulo
+vmsumudm     VA   p.287   v3.0B   Vector Multiply-Sum Unsigned Doubleword Modulo
+vmsumuhm     VA   p.286   v2.03   Vector Multiply-Sum Unsigned Halfword Modulo
+vmsumuhs     VA   p.287   v2.03   Vector Multiply-Sum Unsigned Halfword Saturate
+vmul10cuq    VX   p.354   v3.0    Vector Multiply-by-10 & write Carry Unsigned Quadword
+vmul10ecuq   VX   p.354   v3.0   
+vmul10euq    VX   p.354   v3.0    Vector Multiply-by-10 Extended Unsigned Quadword
+vmul10uq     VX   p.354   v3.0    Vector Multiply-by-10 Unsigned Quadword
+vmulesb      VX   p.279   v2.03   Vector Multiply Even Signed Byte
+vmulesh      VX   p.280   v2.03   Vector Multiply Even Signed Halfword
+vmulesw      VX   p.281   v2.07   Vector Multiply Even Signed Word
+vmuleub      VX   p.279   v2.03   Vector Multiply Even Unsigned Byte
+vmuleuh      VX   p.280   v2.03   Vector Multiply Even Unsigned Halfword
+vmuleuw      VX   p.281   v2.07   Vector Multiply Even Unsigned Word
+vmulosb      VX   p.279   v2.03   Vector Multiply Odd Signed Byte
+vmulosh      VX   p.280   v2.03   Vector Multiply Odd Signed Halfword
+vmulosw      VX   p.281   v2.07   Vector Multiply Odd Signed Word
+vmuloub      VX   p.279   v2.03   Vector Multiply Odd Unsigned Byte
+vmulouh      VX   p.280   v2.03   Vector Multiply Odd Unsigned Halfword
+vmulouw      VX   p.281   v2.07   Vector Multiply Odd Unsigned Word
+vmuluwm      VX   p.282   v2.07   Vector Multiply Unsigned Word Modulo
+vnand        VX   p.311   v2.07   Vector NAND
+vncipher     VX   p.333   v2.07   Vector AES Inverse Cipher
+vncipherlast VX   p.333   v2.07   Vector AES Inverse Cipher Last
+vnegd        VX   p.291   v3.0    Vector Negate Doubleword
+vnegw        VX   p.291   v3.0    Vector Negate Word
+vnmsubfp     VA   p.321   v2.03   Vector Negative Multiply-Subtract Floating-Point
+vnor         VX   p.312   v2.03   Vector Logical NOR
+vor          VX   p.312   v2.03   Vector Logical OR
+vorc         VX   p.312   v2.07   Vector OR with Complement
+vperm        VA   p.258   v2.03   Vector Permute
+vpermr       VA   p.258   v3.0    Vector Permute Right-indexed
+vpermxor     VA   p.337   v2.07   Vector Permute & Exclusive-OR
+vpkpx        VX   p.246   v2.03   Vector Pack Pixel
+vpksdss      VX   p.246   v2.07   Vector Pack Signed Doubleword Signed Saturate
+vpksdus      VX   p.247   v2.07   Vector Pack Signed Doubleword Unsigned Saturate
+vpkshss      VX   p.247   v2.03   Vector Pack Signed Halfword Signed Saturate
+vpkshus      VX   p.248   v2.03   Vector Pack Signed Halfword Unsigned Saturate
+vpkswss      VX   p.248   v2.03   Vector Pack Signed Word Signed Saturate
+vpkswus      VX   p.249   v2.03   Vector Pack Signed Word Unsigned Saturate
+vpkudum      VX   p.249   v2.07   Vector Pack Unsigned Doubleword Unsigned Modulo
+vpkudus      VX   p.249   v2.07   Vector Pack Unsigned Doubleword Unsigned Saturate
+vpkuhum      VX   p.249   v2.03   Vector Pack Unsigned Halfword Unsigned Modulo
+vpkuhus      VX   p.250   v2.03   Vector Pack Unsigned Halfword Unsigned Saturate
+vpkuwum      VX   p.250   v2.03   Vector Pack Unsigned Word Unsigned Modulo
+vpkuwus      VX   p.250   v2.03   Vector Pack Unsigned Word Unsigned Saturate
+vpmsumb      VX   p.335   v2.07   Vector Polynomial Multiply-Sum Byte
+vpmsumd      VX   p.335   v2.07   Vector Polynomial Multiply-Sum Doubleword
+vpmsumh      VX   p.336   v2.07   Vector Polynomial Multiply-Sum Halfword
+vpmsumw      VX   p.336   v2.07   Vector Polynomial Multiply-Sum Word
+vpopcntb     VX   p.344   v2.07   Vector Population Count Byte
+vpopcntd     VX   p.344   v2.07   Vector Population Count Doubleword
+vpopcnth     VX   p.344   v2.07   Vector Population Count Halfword
+vpopcntw     VX   p.344   v2.07   Vector Population Count Word
+vprtybd      VX   p.313   v3.0    Vector Parity Byte Doubleword
+vprtybq      VX   p.313   v3.0    Vector Parity Byte Quadword
+vprtybw      VX   p.313   v3.0    Vector Parity Byte Word
+vrefp        VX   p.331   v2.03   Vector Reciprocal Estimate Floating-Point
+vrfim        VX   p.325   v2.03   Vector Round to Floating-Point Integral toward -Infinity
+vrfin        VX   p.325   v2.03   Vector Round to Floating-Point Integral Nearest
+vrfip        VX   p.325   v2.03   Vector Round to Floating-Point Integral toward +Infinity
+vrfiz        VX   p.326   v2.03   Vector Round to Floating-Point Integral toward Zero
+vrlb         VX   p.314   v2.03   Vector Rotate Left Byte
+vrld         VX   p.314   v2.07   Vector Rotate Left Doubleword
+vrldmi       VX   p.319   v3.0    Vector Rotate Left Doubleword then Mask Insert
+vrldnm       VX   p.319   v3.0    Vector Rotate Left Doubleword then AND with Mask
+vrlh         VX   p.314   v2.03   Vector Rotate Left Halfword
+vrlw         VX   p.314   v2.03   Vector Rotate Left Word
+vrlwmi       VX   p.318   v3.0    Vector Rotate Left Word then Mask Insert
+vrlwnm       VX   p.318   v3.0    Vector Rotate Left Word then AND with Mask
+vrsqrtefp    VX   p.331   v2.03   Vector Reciprocal Square Root Estimate Floating-Point
+vsbox        VX   p.333   v2.07   Vector AES S-Box
+vsel         VA   p.259   v2.03   Vector Select
+vshasigmad   VX   p.334   v2.07   Vector SHA-512 Sigma Doubleword
+vshasigmaw   VX   p.334   v2.07   Vector SHA-256 Sigma Word
+vsl          VX   p.262   v2.03   Vector Shift Left
+vslb         VX   p.315   v2.03   Vector Shift Left Byte
+vsld         VX   p.315   v2.07   Vector Shift Left Doubleword
+vsldoi       VA   p.261   v2.03   Vector Shift Left Double by Octet Immediate
+vslh         VX   p.315   v2.03   Vector Shift Left Halfword
+vslo         VX   p.262   v2.03   Vector Shift Left by Octet
+vslv         VX   p.263   v3.0    Vector Shift Left Variable
+vslw         VX   p.315   v2.03   Vector Shift Left Word
+vspltb       VX   p.256   v2.03   Vector Splat Byte
+vsplth       VX   p.256   v2.03   Vector Splat Halfword
+vspltisb     VX   p.257   v2.03   Vector Splat Immediate Signed Byte
+vspltish     VX   p.257   v2.03   Vector Splat Immediate Signed Halfword
+vspltisw     VX   p.257   v2.03   Vector Splat Immediate Signed Word
+vspltw       VX   p.256   v2.03   Vector Splat Word
+vsr          VX   p.262   v2.03   Vector Shift Right
+vsrab        VX   p.317   v2.03   Vector Shift Right Algebraic Byte
+vsrad        VX   p.317   v2.07   Vector Shift Right Algebraic Doubleword
+vsrah        VX   p.317   v2.03   Vector Shift Right Algebraic Halfword
+vsraw        VX   p.317   v2.03   Vector Shift Right Algebraic Word
+vsrb         VX   p.316   v2.03   Vector Shift Right Byte
+vsrd         VX   p.316   v2.07   Vector Shift Right Doubleword
+vsrh         VX   p.316   v2.03   Vector Shift Right Halfword
+vsro         VX   p.262   v2.03   Vector Shift Right by Octet
+vsrv         VX   p.263   v3.0    Vector Shift Right Variable
+vsrw         VX   p.316   v2.03   Vector Shift Right Word
+vsubcuq      VX   p.277   v2.07   Vector Subtract & write Carry Unsigned Quadword
+vsubcuw      VX   p.273   v2.03   Vector Subtract & Write Carry-Out Unsigned Word
+vsubecuq     VA   p.277   v2.07   Vector Subtract Extended & write Carry Unsigned Quadword
+vsubeuqm     VA   p.277   v2.07   Vector Subtract Extended Unsigned Quadword Modulo
+vsubfp       VX   p.320   v2.03   Vector Subtract Floating-Point
+vsubsbs      VX   p.273   v2.03   Vector Subtract Signed Byte Saturate
+vsubshs      VX   p.273   v2.03   Vector Subtract Signed Halfword Saturate
+vsubsws      VX   p.274   v2.03   Vector Subtract Signed Word Saturate
+vsububm      VX   p.275   v2.03   Vector Subtract Unsigned Byte Modulo
+vsububs      VX   p.276   v2.03   Vector Subtract Unsigned Byte Saturate
+vsubudm      VX   p.275   v2.07   Vector Subtract Unsigned Doubleword Modulo
+vsubuhm      VX   p.275   v2.03   Vector Subtract Unsigned Halfword Modulo
+vsubuhs      VX   p.276   v2.03   Vector Subtract Unsigned Halfword Saturate
+vsubuqm      VX   p.277   v2.07   Vector Subtract Unsigned Quadword Modulo
+vsubuwm      VX   p.275   v2.03   Vector Subtract Unsigned Word Modulo
+vsubuws      VX   p.276   v2.03   Vector Subtract Unsigned Word Saturate
+vsum2sws     VX   p.288   v2.03   Vector Sum across Half Signed Word Saturate
+vsum4sbs     VX   p.289   v2.03   Vector Sum across Quarter Signed Byte Saturate
+vsum4shs     VX   p.289   v2.03   Vector Sum across Quarter Signed Halfword Saturate
+vsum4ubs     VX   p.290   v2.03   Vector Sum across Quarter Unsigned Byte Saturate
+vsumsws      VX   p.288   v2.03   Vector Sum across Signed Word Saturate
+vupkhpx      VX   p.251   v2.03   Vector Unpack High Pixel
+vupkhsb      VX   p.252   v2.03   Vector Unpack High Signed Byte
+vupkhsh      VX   p.252   v2.03   Vector Unpack High Signed Halfword
+vupkhsw      VX   p.252   v2.07   Vector Unpack High Signed Word
+vupklpx      VX   p.251   v2.03   Vector Unpack Low Pixel
+vupklsb      VX   p.252   v2.03   Vector Unpack Low Signed Byte
+vupklsh      VX   p.252   v2.03   Vector Unpack Low Signed Halfword
+vupklsw      VX   p.252   v2.07   Vector Unpack Low Signed Word
+vxor         VX   p.312   v2.03   Vector Logical XOR
+xsabsdp      XX2  p.516   v2.06   VSX Scalar Absolute Double-Precision
+xsabsqp      X    p.516   v3.0    VSX Scalar Absolute Quad-Precision
+xsadddp      XX3  p.517   v2.06   VSX Scalar Add Double-Precision
+xsaddqp[o]   X    p.524   v3.0    VSX Scalar Add Quad-Precision [using round to Odd]
+xsaddsp      XX3  p.522   v2.07   VSX Scalar Add Single-Precision
+xscmpeqdp    XX3  p.528   v3.0    VSX Scalar Compare Equal Double-Precision
+xscmpexpdp   XX3  p.526   v3.0    VSX Scalar Compare Exponents Double-Precision
+xscmpexpqp   X    p.527   v3.0    VSX Scalar Compare Exponents Quad-Precision
+xscmpgedp    XX3  p.529   v3.0    VSX Scalar Compare Greater Than or Equal Double-Precision
+xscmpgtdp    XX3  p.530   v3.0    VSX Scalar Compare Greater Than Double-Precision
+xscmpodp     XX3  p.531   v2.06   VSX Scalar Compare Ordered Double-Precision
+xscmpoqp     X    p.533   v3.0    VSX Scalar Compare Ordered Quad-Precision
+xscmpudp     XX3  p.534   v2.06   VSX Scalar Compare Unordered Double-Precision
+xscmpuqp     X    p.536   v3.0    VSX Scalar Compare Unordered Quad-Precision
+xscpsgndp    XX3  p.537   v2.06   VSX Scalar Copy Sign Double-Precision
+xscpsgnqp    X    p.537   v3.0    VSX Scalar Copy Sign Quad-Precision
+xscvdphp     XX2  p.538   v3.0    Half-Precision format
+xscvdpqp     X    p.539   v3.0    VSX Scalar Convert Double-Precision to Quad-Precision format
+xscvdpsp     XX2  p.540   v2.06   VSX Scalar Convert with round Double-Precision to
+xscvdpspn    XX2  p.541   v2.07   VSX Scalar Convert Double-Precision to Single-Precision
+xscvdpsxds   XX2  p.542   v2.06  
+xscvdpsxws   XX2  p.544   v2.06  
+xscvdpuxds   XX2  p.546   v2.06  
+xscvdpuxws   XX2  p.548   v2.06  
+xscvhpdp     XX2  p.550   v3.0    VSX Scalar Convert Half-Precision to Double-Precision format
+xscvqpdp[o]  X    p.551   v3.0   
+xscvqpsdz    X    p.552   v3.0   
+xscvqpswz    X    p.554   v3.0   
+xscvqpudz    X    p.556   v3.0   
+xscvqpuwz    X    p.558   v3.0    Unsigned Word format
+xscvsdqp     X    p.560   v3.0   
+xscvspdp     XX2  p.561   v2.06   VSX Scalar Convert Single-Precision to Double-Precision format
+xscvspdpn    XX2  p.562   v2.07  
+xscvsxddp    XX2  p.563   v2.06  
+xscvsxdsp    XX2  p.564   v2.07  
+xscvudqp     X    p.565   v3.0   
+xscvuxddp    XX2  p.566   v2.06  
+xscvuxdsp    XX2  p.566   v2.07  
+xsdivdp      XX3  p.567   v2.06   VSX Scalar Divide Double-Precision
+xsdivqp[o]   X    p.569   v3.0    VSX Scalar Divide Quad-Precision [using round to Odd]
+xsdivsp      XX3  p.571   v2.07   VSX Scalar Divide Single-Precision
+xsiexpdp     X    p.573   v3.0    VSX Scalar Insert Exponent Double-Precision
+xsiexpqp     X    p.574   v3.0    VSX Scalar Insert Exponent Quad-Precision
+xsmaddadp    XX3  p.575   v2.06   VSX Scalar Multiply-Add Type-A Double-Precision
+xsmaddasp    XX3  p.578   v2.07   VSX Scalar Multiply-Add Type-A Single-Precision
+xsmaddmdp    XX3  p.575   v2.06   VSX Scalar Multiply-Add Type-M Double-Precision
+xsmaddmsp    XX3  p.578   v2.07   VSX Scalar Multiply-Add Type-M Single-Precision
+xsmaddqp[o]  X    p.581   v3.0    VSX Scalar Multiply-Add Quad-Precision [using round to Odd]
+xsmaxcdp     XX3  p.586   v3.0    VSX Scalar Maximum Type-C Double-Precision
+xsmaxdp      XX3  p.584   v2.06   VSX Scalar Maximum Double-Precision
+xsmaxjdp     XX3  p.588   v3.0    VSX Scalar Maximum Type-J Double-Precision
+xsmincdp     XX3  p.592   v3.0    VSX Scalar Minimum Type-C Double-Precision
+xsmindp      XX3  p.590   v2.06   VSX Scalar Minimum Double-Precision
+xsminjdp     XX3  p.594   v3.0    VSX Scalar Minimum Type-J Double-Precision
+xsmsubadp    XX3  p.596   v2.06   VSX Scalar Multiply-Subtract Type-A Double-Precision
+xsmsubasp    XX3  p.599   v2.07   VSX Scalar Multiply-Subtract Type-A Single-Precision
+xsmsubmdp    XX3  p.596   v2.06   VSX Scalar Multiply-Subtract Type-M Double-Precision
+xsmsubmsp    XX3  p.599   v2.07   VSX Scalar Multiply-Subtract Type-M Single-Precision
+xsmsubqp[o]  X    p.602   v3.0    Odd]
+xsmuldp      XX3  p.605   v2.06   VSX Scalar Multiply Double-Precision
+xsmulqp[o]   X    p.607   v3.0    VSX Scalar Multiply Quad-Precision [using round to Odd]
+xsmulsp      XX3  p.609   v2.07   VSX Scalar Multiply Single-Precision
+xsnabsdp     XX2  p.611   v2.06   VSX Scalar Negative Absolute Double-Precision
+xsnabsqp     X    p.611   v3.0    VSX Scalar Negative Absolute Quad-Precision
+xsnegdp      XX2  p.612   v2.06   VSX Scalar Negate Double-Precision
+xsnegqp      X    p.612   v3.0    VSX Scalar Negate Quad-Precision
+xsnmaddadp   XX3  p.613   v2.06   VSX Scalar Negative Multiply-Add Type-A Double-Precision
+xsnmaddasp   XX3  p.618   v2.07   VSX Scalar Negative Multiply-Add Type-A Single-Precision
+xsnmaddmdp   XX3  p.613   v2.06   VSX Scalar Negative Multiply-Add Type-M Double-Precision
+xsnmaddmsp   XX3  p.618   v2.07   VSX Scalar Negative Multiply-Add Type-M Single-Precision
+xsnmaddqp[o] X    p.621   v3.0   
+xsnmsubadp   XX3  p.624   v2.06   VSX Scalar Negative Multiply-Subtract Type-A Double-Precision
+xsnmsubasp   XX3  p.627   v2.07   VSX Scalar Negative Multiply-Subtract Type-A Single-Precision
+xsnmsubmdp   XX3  p.624   v2.06   VSX Scalar Negative Multiply-Subtract Type-M Double-Precision
+xsnmsubmsp   XX3  p.627   v2.07   VSX Scalar Negative Multiply-Subtract Type-M Single-Precision
+xsnmsubqp[o] X    p.630   v3.0    round to Odd]
+xsrdpi       XX2  p.633   v2.06   VSX Scalar Round Double-Precision to Integral
+xsrdpic      XX2  p.634   v2.06  
+xsrdpim      XX2  p.635   v2.06   VSX Scalar Round Double-Precision to Integral toward -Infinity
+xsrdpip      XX2  p.636   v2.06   VSX Scalar Round Double-Precision to Integral toward +Infinity
+xsrdpiz      XX2  p.637   v2.06   VSX Scalar Round Double-Precision to Integral toward Zero
+xsredp       XX2  p.638   v2.06   VSX Scalar Reciprocal Estimate Double-Precision
+xsresp       XX2  p.639   v2.07   VSX Scalar Reciprocal Estimate Single-Precision
+xsrsp        XX2  p.644   v2.07   VSX Scalar Round Double-Precision to Single-Precision
+xsrsqrtedp   XX2  p.645   v2.06   VSX Scalar Reciprocal Square Root Estimate Double-Precision
+xsrsqrtesp   XX2  p.646   v2.07   VSX Scalar Reciprocal Square Root Estimate Single-Precision
+xssqrtdp     XX2  p.647   v2.06   VSX Scalar Square Root Double-Precision
+xssqrtqp[o]  X    p.648   v3.0    VSX Scalar Square Root Quad-Precision [using round to Odd]
+xssqrtsp     XX2  p.650   v2.07   VSX Scalar Square Root Single-Precision
+xssubdp      XX3  p.651   v2.06   VSX Scalar Subtract Double-Precision
+xssubqp[o]   X    p.653   v3.0    VSX Scalar Subtract Quad-Precision [using round to Odd]
+xssubsp      XX3  p.655   v2.07   VSX Scalar Subtract Single-Precision
+xstdivdp     XX3  p.657   v2.06   VSX Scalar Test for software Divide Double-Precision
+xstsqrtdp    XX2  p.658   v2.06   VSX Scalar Test for software Square Root Double-Precision
+xststdcdp    XX2  p.659   v3.0    VSX Scalar Test Data Class Double-Precision
+xststdcqp    X    p.660   v3.0    VSX Scalar Test Data Class Quad-Precision
+xststdcsp    XX2  p.661   v3.0    VSX Scalar Test Data Class Single-Precision
+xsxexpdp     XX2  p.662   v3.0    VSX Scalar Extract Exponent Double-Precision
+xsxexpqp     X    p.662   v3.0    VSX Scalar Extract Exponent Quad-Precision
+xsxsigdp     XX2  p.663   v3.0    VSX Scalar Extract Significand Double-Precision
+xsxsigqp     X    p.663   v3.0    VSX Scalar Extract Significand Quad-Precision
+xvabsdp      XX2  p.664   v2.06   VSX Vector Absolute Double-Precision
+xvabssp      XX2  p.664   v2.06   VSX Vector Absolute Single-Precision
+xvadddp      XX3  p.665   v2.06   VSX Vector Add Double-Precision
+xvaddsp      XX3  p.669   v2.06   VSX Vector Add Single-Precision
+xvcmpeqdp[.] XX3  p.671   v2.06   VSX Vector Compare Equal Double-Precision
+xvcmpeqsp[.] XX3  p.672   v2.06   VSX Vector Compare Equal Single-Precision
+xvcmpgedp[.] XX3  p.673   v2.06   VSX Vector Compare Greater Than or Equal Double-Precision
+xvcmpgesp[.] XX3  p.674   v2.06   VSX Vector Compare Greater Than or Equal Single-Precision
+xvcmpgtdp[.] XX3  p.675   v2.06   VSX Vector Compare Greater Than Double-Precision
+xvcmpgtsp[.] XX3  p.676   v2.06   VSX Vector Compare Greater Than Single-Precision
+xvcpsgndp    XX3  p.677   v2.06   VSX Vector Copy Sign Double-Precision
+xvcpsgnsp    XX3  p.677   v2.06   VSX Vector Copy Sign Single-Precision
+xvcvdpsp     XX2  p.678   v2.06   VSX Vector Convert with round Double-Precision to
+xvcvdpsxds   XX2  p.679   v2.06  
+xvcvdpsxws   XX2  p.681   v2.06  
+xvcvdpuxds   XX2  p.683   v2.06  
+xvcvdpuxws   XX2  p.685   v2.06  
+xvcvhpsp     XX2  p.687   v3.0    VSX Vector Convert Half-Precision to Single-Precision format
+xvcvspdp     XX2  p.688   v2.06   VSX Vector Convert Single-Precision to Double-Precision format
+xvcvsphp     XX2  p.689   v3.0    Half-Precision format
+xvcvspsxds   XX2  p.690   v2.06   Signed Doubleword format
+xvcvspsxws   XX2  p.692   v2.06   Signed Word format
+xvcvspuxds   XX2  p.694   v2.06   Unsigned Doubleword format
+xvcvspuxws   XX2  p.696   v2.06  
+xvcvsxddp    XX2  p.698   v2.06  
+xvcvsxdsp    XX2  p.698   v2.06  
+xvcvsxwdp    XX2  p.699   v2.06   VSX Vector Convert Signed Word to Double-Precision format
+xvcvsxwsp    XX2  p.700   v2.06  
+xvcvuxddp    XX2  p.700   v2.06  
+xvcvuxdsp    XX2  p.701   v2.06  
+xvcvuxwdp    XX2  p.702   v2.06   VSX Vector Convert Unsigned Word to Double-Precision format
+xvcvuxwsp    XX2  p.702   v2.06  
+xvdivdp      XX3  p.703   v2.06   VSX Vector Divide Double-Precision
+xvdivsp      XX3  p.705   v2.06   VSX Vector Divide Single-Precision
+xviexpdp     XX3  p.707   v3.0    VSX Vector Insert Exponent Double-Precision
+xviexpsp     XX3  p.707   v3.0    VSX Vector Insert Exponent Single-Precision
+xvmaddadp    XX3  p.708   v2.06   VSX Vector Multiply-Add Type-A Double-Precision
+xvmaddasp    XX3  p.711   v2.06   VSX Vector Multiply-Add Type-A Single-Precision
+xvmaddmdp    XX3  p.708   v2.06   VSX Vector Multiply-Add Type-M Double-Precision
+xvmaddmsp    XX3  p.711   v2.06   VSX Vector Multiply-Add Type-M Single-Precision
+xvmaxdp      XX3  p.714   v2.06   VSX Vector Maximum Double-Precision
+xvmaxsp      XX3  p.716   v2.06   VSX Vector Maximum Single-Precision
+xvmindp      XX3  p.718   v2.06   VSX Vector Minimum Double-Precision
+xvminsp      XX3  p.720   v2.06   VSX Vector Minimum Single-Precision
+xvmsubadp    XX3  p.722   v2.06   VSX Vector Multiply-Subtract Type-A Double-Precision
+xvmsubasp    XX3  p.725   v2.06   VSX Vector Multiply-Subtract Type-A Single-Precision
+xvmsubmdp    XX3  p.722   v2.06   VSX Vector Multiply-Subtract Type-M Double-Precision
+xvmsubmsp    XX3  p.725   v2.06   VSX Vector Multiply-Subtract Type-M Single-Precision
+xvmuldp      XX3  p.728   v2.06   VSX Vector Multiply Double-Precision
+xvmulsp      XX3  p.730   v2.06   VSX Vector Multiply Single-Precision
+xvnabsdp     XX2  p.732   v2.06   VSX Vector Negative Absolute Double-Precision
+xvnabssp     XX2  p.732   v2.06   VSX Vector Negative Absolute Single-Precision
+xvnegdp      XX2  p.733   v2.06   VSX Vector Negate Double-Precision
+xvnegsp      XX2  p.733   v2.06   VSX Vector Negate Single-Precision
+xvnmaddadp   XX3  p.734   v2.06   VSX Vector Negative Multiply-Add Type-A Double-Precision
+xvnmaddasp   XX3  p.739   v2.06   VSX Vector Negative Multiply-Add Type-A Single-Precision
+xvnmaddmdp   XX3  p.734   v2.06   VSX Vector Negative Multiply-Add Type-M Double-Precision
+xvnmaddmsp   XX3  p.739   v2.06   VSX Vector Negative Multiply-Add Type-M Single-Precision
+xvnmsubadp   XX3  p.742   v2.06   VSX Vector Negative Multiply-Subtract Type-A Double-Precision
+xvnmsubasp   XX3  p.745   v2.06   VSX Vector Negative Multiply-Subtract Type-A Single-Precision
+xvnmsubmdp   XX3  p.742   v2.06   VSX Vector Negative Multiply-Subtract Type-M Double-Precision
+xvnmsubmsp   XX3  p.745   v2.06   VSX Vector Negative Multiply-Subtract Type-M Single-Precision
+xvrdpi       XX2  p.748   v2.06   VSX Vector Round Double-Precision to Integral
+xvrdpic      XX2  p.748   v2.06   rounding mode
+xvrdpim      XX2  p.749   v2.06   VSX Vector Round Double-Precision to Integral toward -Infinity
+xvrdpip      XX2  p.749   v2.06   VSX Vector Round Double-Precision to Integral toward +Infinity
+xvrdpiz      XX2  p.750   v2.06   VSX Vector Round Double-Precision to Integral toward Zero
+xvredp       XX2  p.751   v2.06   VSX Vector Reciprocal Estimate Double-Precision
+xvresp       XX2  p.752   v2.06   VSX Vector Reciprocal Estimate Single-Precision
+xvrspi       XX2  p.753   v2.06   VSX Vector Round Single-Precision to Integral
+xvrspic      XX2  p.753   v2.06   rounding mode
+xvrspim      XX2  p.754   v2.06   VSX Vector Round Single-Precision to Integral toward -Infinity
+xvrspip      XX2  p.754   v2.06   VSX Vector Round Single-Precision to Integral toward +Infinity
+xvrspiz      XX2  p.755   v2.06   VSX Vector Round Single-Precision to Integral toward Zero
+xvrsqrtedp   XX2  p.755   v2.06   VSX Vector Reciprocal Square Root Estimate Double-Precision
+xvrsqrtesp   XX2  p.757   v2.06   VSX Vector Reciprocal Square Root Estimate Single-Precision
+xvsqrtdp     XX2  p.758   v2.06   VSX Vector Square Root Double-Precision
+xvsqrtsp     XX2  p.759   v2.06   VSX Vector Square Root Single-Precision
+xvsubdp      XX3  p.760   v2.06   VSX Vector Subtract Double-Precision
+xvsubsp      XX3  p.762   v2.06   VSX Vector Subtract Single-Precision
+xvtdivdp     XX3  p.764   v2.06   VSX Vector Test for software Divide Double-Precision
+xvtdivsp     XX3  p.765   v2.06   VSX Vector Test for software Divide Single-Precision
+xvtsqrtdp    XX2  p.766   v2.06   VSX Vector Test for software Square Root Double-Precision
+xvtsqrtsp    XX2  p.766   v2.06   VSX Vector Test for software Square Root Single-Precision
+xvtstdcdp    XX2  p.767   v3.0    VSX Vector Test Data Class Double-Precision
+xvtstdcsp    XX2  p.768   v3.0    VSX Vector Test Data Class Single-Precision
+xvxexpdp     XX2  p.769   v3.0    VSX Vector Extract Exponent Double-Precision
+xvxexpsp     XX2  p.769   v3.0    VSX Vector Extract Exponent Single-Precision
+xvxsigdp     XX2  p.770   v3.0    VSX Vector Extract Significand Double-Precision
+xvxsigsp     XX2  p.770   v3.0    VSX Vector Extract Significand Single-Precision
+xxbrd        XX2  p.771   v3.0    VSX Vector Byte-Reverse Doubleword
+xxbrh        XX2  p.771   v3.0    VSX Vector Byte-Reverse Halfword
+xxbrq        XX2  p.772   v3.0    VSX Vector Byte-Reverse Quadword
+xxbrw        XX2  p.772   v3.0    VSX Vector Byte-Reverse Word
+xxextractuw  XX2  p.773   v3.0    VSX Vector Extract Unsigned Word
+xxinsertw    XX2  p.773   v3.0    VSX Vector Insert Word
+xxland       XX3  p.774   v2.06   VSX Vector Logical AND
+xxlandc      XX3  p.774   v2.06   VSX Vector Logical AND with Complement
+xxleqv       XX3  p.775   v2.07   VSX Vector Logical Equivalence
+xxlnand      XX3  p.775   v2.07   VSX Vector Logical NAND
+xxlnor       XX3  p.776   v2.06   VSX Vector Logical NOR
+xxlor        XX3  p.777   v2.06   VSX Vector Logical OR
+xxlorc       XX3  p.776   v2.07   VSX Vector Logical OR with Complement
+xxlxor       XX3  p.777   v2.06   VSX Vector Logical XOR
+xxmrghw      XX3  p.778   v2.06   VSX Vector Merge Word High
+xxmrglw      XX3  p.778   v2.06   VSX Vector Merge Word Low
+xxperm       XX3  p.779   v3.0    VSX Vector Permute
+xxpermdi     XX3  p.780   v2.06   VSX Vector Doubleword Permute Immediate
+xxpermr      XX3  p.779   v3.0    VSX Vector Permute Right-indexed
+xxsel        XX4  p.780   v2.06   VSX Vector Select
+xxsldwi      XX3  p.781   v2.06   VSX Vector Shift Left Double by Word Immediate
+xxspltib     X    p.781   v3.0    VSX Vector Splat Immediate Byte
+xxspltw      XX2  p.781   v2.06   VSX Vector Splat Word
