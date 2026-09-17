@@ -169,7 +169,7 @@ FEX::HLE::ThreadStateObject* CreateNewThread(FEXCore::Context::Context* CTX, FEX
   if (flags & CLONE_SETTLS) {
     NewThread->Thread->CurrentFrame->State.tpidr_el0 = args->args.tls;
   }
-  // POWERARM-M0-TODO(syscalls): the child resumes at State.pc; confirm the Syscall op has already advanced pc past svc #0 (x86 needed rip += 2 here).
+  // POWERARM-M1-TODO(syscalls): the new thread resumes at State.pc, so this relies on the A64 frontend storing the address after svc #0 in State.pc before the Syscall op runs (as ELR_EL1 holds it on arm64); x86 needed rip += 2 here. Unverified until the frontend lands; CLONE_THREAD is outside M1.
 
   // Initialize a new thread for execution.
   ExecutionThreadHandler Arg {
@@ -292,7 +292,7 @@ uint64_t HandleNewClone(FEX::HLE::ThreadStateObject* Thread, FEXCore::Context::C
   if (flags & CLONE_SETTLS) {
     NewThread->Thread->CurrentFrame->State.tpidr_el0 = GuestArgs->tls;
   }
-  // POWERARM-M0-TODO(syscalls): the child resumes at State.pc; confirm the Syscall op has already advanced pc past svc #0 (x86 needed rip += 2 here).
+  // POWERARM-M1-TODO(syscalls): the new thread resumes at State.pc, so this relies on the A64 frontend storing the address after svc #0 in State.pc before the Syscall op runs (as ELR_EL1 holds it on arm64); x86 needed rip += 2 here. Unverified until the frontend lands; CLONE_THREAD is outside M1.
 
   // Depending on clone settings, our TID and PID could have changed
   Thread->ThreadInfo.TID = FHU::Syscalls::gettid();
