@@ -9,6 +9,7 @@ $end_info$
 #include "LinuxSyscalls/SignalDelegator.h"
 #include "ArchHelpers/UContext.h"
 #include "LinuxSyscalls/Arm64/GeneratedABI.h"
+#include "LinuxSyscalls/ThreadManager.h"
 
 #include <FEXCore/Core/CoreState.h>
 #include <FEXCore/Debug/InternalThreadState.h>
@@ -67,6 +68,9 @@ uint64_t SignalDelegator::SetupFrame_Arm64(FEXCore::Core::InternalThreadState* T
   uc->uc_mcontext.sp = State.sp;
   uc->uc_mcontext.pc = ContextBackup->OriginalRIP;
   uc->uc_mcontext.pstate = State.nzcv;
+
+  // The mask rt_sigreturn restores: the one in effect before this delivery.
+  uc->uc_sigmask = FEX::HLE::ThreadManager::GetStateObjectFromFEXCoreThread(Thread)->SignalInfo.CurrentSignalMask.Val;
 
   uc->uc_stack.ss_sp = GuestStack->ss_sp;
   uc->uc_stack.ss_flags = GuestStack->ss_flags;

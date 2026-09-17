@@ -1,7 +1,6 @@
 /* sys_signal_delivery: tests that REQUIRE real signal delivery (signal
  * frames, sigreturn, SA_* delivery semantics, pending signals, sigtimedwait,
- * synchronous faults).  EXPECTED TO FAIL under POWERarm until guest signal
- * frames are implemented.  Kept separate from sys_signal.c on purpose. */
+ * synchronous faults).  Kept separate from sys_signal.c on purpose. */
 #include "a64sys.h"
 #include <setjmp.h>
 #include <stdint.h>

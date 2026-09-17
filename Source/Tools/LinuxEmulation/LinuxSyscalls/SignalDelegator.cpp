@@ -50,6 +50,7 @@ $end_info$
 #endif
 
 namespace FEX::HLE {
+static void CheckForPendingSignals(const FEX::HLE::ThreadStateObject* Thread);
 #ifdef ARCHITECTURE_x86_64
 __attribute__((naked)) static void sigrestore() {
   __asm volatile("syscall;" ::"a"(0xF) : "memory");
@@ -607,7 +608,16 @@ void SignalDelegator::RestoreThreadState(FEXCore::Core::InternalThreadState* Thr
       Frame->InSyscallInfo = Context->InSyscallInfo;
     }
 
+    // rt_sigreturn restores the mask from the frame, which the handler may
+    // have changed.
+    auto* ThreadObject = FEX::HLE::ThreadManager::GetStateObjectFromFEXCoreThread(Thread);
+    const auto* GuestUContext = reinterpret_cast<const FEXCore::arm64::ucontext_t*>(Context->UContextLocation);
+    ThreadObject->SignalInfo.CurrentSignalMask.Val =
+      GuestUContext->uc_sigmask & ~((1ULL << (SIGKILL - 1)) | (1ULL << (SIGSTOP - 1)));
+
     RestoreFrame_Arm64(Thread, Context, Frame, ucontext);
+
+    CheckForPendingSignals(ThreadObject);
   }
 }
 
@@ -1444,7 +1454,28 @@ void SignalDelegator::HandleGuestSignal(FEX::HLE::ThreadStateObject* ThreadObjec
         ++ThreadObject->SignalInfo.DeliveredGuestSignalsWithoutRestart;
       }
 
+      // The handler runs with the old mask plus sa_mask plus the signal
+      // (unless SA_NODEFER), as the guest sees it through sigprocmask; the
+      // frame's uc_sigmask (SetupFrame_Arm64) holds the old mask, which
+      // rt_sigreturn puts back. SA_RESETHAND resets the disposition as the
+      // handler is entered (kernel/signal.c handle_signal/signal_setup_done).
+      const uint64_t OldGuestMask = ThreadObject->SignalInfo.CurrentSignalMask.Val;
+      uint64_t HandlerMask = Handler.GuestAction.sa_mask.Val;
+      if (!(Handler.GuestAction.sa_flags & SA_NODEFER)) {
+        HandlerMask |= 1ULL << (Signal - 1);
+      }
+      HandlerMask &= ~((1ULL << (SIGKILL - 1)) | (1ULL << (SIGSTOP - 1)));
+      ThreadObject->SignalInfo.CurrentSignalMask.Val = OldGuestMask | HandlerMask;
+      if (Handler.GuestAction.sa_flags & SA_RESETHAND) {
+        Handler.GuestAction.sigaction_handler.handler = SIG_DFL;
+      }
+
       uint64_t NewMask = GetNewSigMask(Signal);
+      for (size_t i = 0; i < MAX_SIGNALS; ++i) {
+        if ((OldGuestMask & (1ULL << i)) && !HostHandlers[i + 1].Required.load(std::memory_order_relaxed)) {
+          NewMask |= 1ULL << i;
+        }
+      }
 
       // Update our host signal mask so we don't hit race conditions with signals
       // This allows us to maintain the expected signal mask through the guest signal handling and then all the way back again

@@ -10,7 +10,7 @@
 # Env:  RESULTS (dir for outputs, default a fresh mktemp dir),
 #       RUN_TIMEOUT (seconds, default 300),
 #       XFAIL (space-separated programs whose failure is expected; default
-#              "sys_signal_delivery").  XFAIL failures don't fail the run.
+#              none).  XFAIL failures don't fail the run.
 set -u
 
 if [ $# -lt 2 ]; then
@@ -24,7 +24,7 @@ here=$(cd "$(dirname "$0")" && pwd)
 results=${RESULTS:-$(mktemp -d "${TMPDIR:-/tmp}/a64sys-results.XXXXXX")}
 mkdir -p "$results"
 timeout_s=${RUN_TIMEOUT:-300}
-xfail=" ${XFAIL-sys_signal_delivery} "
+xfail=" ${XFAIL-} "
 
 if [ $# -gt 0 ]; then
 	progs=("$@")

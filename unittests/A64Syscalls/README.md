@@ -6,10 +6,7 @@ output natively on real aarch64 hardware as a golden file. Later you run the
 same static binary under POWERarm on a POWER9 host and diff the output
 byte-for-byte.
 
-> **Status:** these can't run under POWERarm until the A64 frontend lands.
-> Until then, you can only build them and capture goldens natively on aarch64.
-> `sys_signal_delivery` is also **expected to fail** under POWERarm until
-> guest signal frames are implemented. `compare.sh` reports it as XFAIL.
+> **Status:** these run under POWERarm now that the A64 frontend has landed.
 
 ## Programs
 
@@ -22,7 +19,7 @@ byte-for-byte.
 | `sys_proc` | getpid/getppid/gettid, get[res][ug]id, getgroups, getpgid/getsid (all as relations); `umask` round trip; `prlimit64` NOFILE lowered, read back, enforced (EMFILE), restored, errors; `set_tid_address` returns tid; `set_robust_list`/`get_robust_list`; `rseq` (ok-or-enosys); `getrandom` (sizes, GRND_NONBLOCK/GRND_RANDOM, errors); `sysinfo` sanity; `uname` sysname and machine exactly (`Linux`, `aarch64`) |
 | `sys_time` | `clock_gettime`/`clock_getres` for 8 clocks (raw syscalls, bypassing the vDSO), monotonic non-decreasing (raw and libc), realtime vs `gettimeofday` within 1 s, `nanosleep` 10 ms, `clock_nanosleep` relative/TIMER_ABSTIME/past, invalid clock → EINVAL, invalid tv_nsec → EINVAL, EFAULT, CPU-time clock advances |
 | `sys_signal` | **No delivery.** `rt_sigaction` install/query/restore with arm64 kernel `struct sigaction`; sa_flags round trip for SA_RESTART/SA_SIGINFO/SA_ONSTACK/SA_NODEFER/SA_RESETHAND/SA_NOCLDSTOP/SA_NOCLDWAIT; SA_UNSUPPORTED is cleared, SA_EXPOSE_TAGBITS (an arm64 flag) is kept; SIGKILL/SIGSTOP are stripped from sa_mask; RT signals; errors; `rt_sigprocmask` BLOCK/UNBLOCK/SETMASK (KILL/STOP can't be blocked), errors; `rt_sigpending` empty; `sigaltstack` set/query/ENOMEM/EINVAL/disable |
-| `sys_signal_delivery` | **EXPECTED TO FAIL until signal frames land.** raise/kill/tgkill/sigqueue delivery and si_code, handler mask (sa_mask + self, SA_NODEFER), mask restore on sigreturn, SA_RESETHAND, SA_ONSTACK, pending-while-blocked, RT queueing, sigtimedwait, synchronous SIGSEGV + siglongjmp, EINTR vs SA_RESTART on a blocked read |
+| `sys_signal_delivery` | raise/kill/tgkill/sigqueue delivery and si_code, handler mask (sa_mask + self, SA_NODEFER), mask restore on sigreturn, SA_RESETHAND, SA_ONSTACK, pending-while-blocked, RT queueing, sigtimedwait, synchronous SIGSEGV + siglongjmp, EINTR vs SA_RESTART on a blocked read |
 | `sys_fork_exec` | `fork` (clone SIGCHLD), raw `clone(SIGCHLD)`, `clone` with exit signal 0 + `__WCLONE`, `vfork`; `wait4` status macros, WNOHANG, rusage, ECHILD/EINVAL; `pipe2` parent↔child; CoW vs MAP_SHARED; shared file offset; `exit` vs `exit_group` codes (incl. truncation to 8 bits); SIGKILL'd child (kernel-side only); `execve` of `/proc/self/exe` (fallback argv[0]) with a marker arg checking O_CLOEXEC, env, handler reset, SIG_IGN kept, mask kept, altstack reset; execve errors (ENOENT, EACCES, ENOEXEC, bad interpreter, directory, ENOTDIR, EFAULT) |
 | `sys_process` | the process model a shell relies on: handlers returning through the default restorer (arm64 libcs never set SA_RESTORER), state preserved across a delivered signal, siginfo; SIGCHLD around fork/wait; `sigsuspend` with SIGCHLD pending and blocked runs the handler **before** returning (busybox ash `wait`); SA_RESTART vs EINTR on a pipe read interrupted by SIGCHLD; `execve` keeps the caller's argv[0] (via `/proc/self/exe` and by path) and gives an empty argv argc=1 with argv[0] ""; fork+pipe+dup2+execve pipeline; `posix_spawn` with a dup2 file action; vfork+execve; `readlink /proc/self/exe` names the program |
 | `sys_errno` | about 90 calls with guaranteed errnos, all via `syscall()`: EBADF, ENOENT, ESPIPE, EEXIST, ENOTEMPTY, ENOTDIR, EISDIR, ELOOP, ENAMETOOLONG, EFAULT (e.g. `write(fd,(void*)1,10)`), ERANGE (`getcwd` size 1), EINVAL, ENOTTY, EAGAIN, EPIPE, ECHILD, ESRCH, EMFILE, ENOMEM, EACCES, ENOSYS |
@@ -120,5 +117,5 @@ unified diff for each failure. It then prints a summary and exits nonzero
 if any non-XFAIL program failed.
 
 Outputs and `.diff` files are saved under `$RESULTS` (default: a fresh
-mktemp dir). `XFAIL` defaults to `sys_signal_delivery`; set `XFAIL=""` to
-make it count. `RUN_TIMEOUT` defaults to 300 s per program.
+mktemp dir). `XFAIL` (space-separated program names) marks failures as
+expected; it is empty by default. `RUN_TIMEOUT` defaults to 300 s per program.
