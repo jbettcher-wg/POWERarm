@@ -307,10 +307,9 @@ bool SyscallHandler::HandleSegfault(FEXCore::Core::InternalThreadState* Thread, 
     // therefore deadlocks against a concurrent fork(): the forking thread owns
     // CodeInvalidationMutex and waits for our VMATracking read lock, we own
     // VMATracking and wait for its CodeInvalidationMutex, and
-    // TakeCodeInvalidationWriteLockOrSteal dies after 4s (the SIGTRAP Claude
-    // Code / Bun hit on every process spawn under FEX, 2026-09-08; two cores
-    // with the fork thread in ForkableSharedMutex::lock and this thread in
-    // ForcedAssert). Fork could not be reordered instead without inverting
+    // TakeCodeInvalidationWriteLockOrSteal dies after 4s (observed as a SIGTRAP
+    // on process spawn: two cores with the fork thread in
+    // ForkableSharedMutex::lock and this thread in ForcedAssert). Fork could not be reordered instead without inverting
     // against CompileBlock.
     //
     // So read everything the handler needs out of the VMA now and drop the
@@ -2176,7 +2175,9 @@ void* SyscallHandler::GuestMmap(bool Is64Bit, FEXCore::Core::InternalThreadState
     //       us to be more optimal by using GuardSignalDeferringSection instead
     auto lk = FEXCore::GuardSignalDeferringSectionWithFallback(VMATracking.Mutex, Thread);
 
-    bool Map32Bit = !Is64Bit || (flags & FEX::HLE::X86_64_MAP_32BIT);
+    // AArch64 has no MAP_32BIT, and flags are host values here (on powerpc
+    // 0x40, x86's MAP_32BIT, is MAP_NORESERVE).
+    bool Map32Bit = !Is64Bit;
     if (Map32Bit) {
       Result = (uint64_t)Get32BitAllocator()->Mmap((void*)addr, length, HostProt, flags, fd, offset);
       if (FEX::HLE::HasSyscallError(Result) && HostProt != prot) {

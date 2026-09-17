@@ -1,0 +1,74 @@
+pagesize: power-of-two=yes at-least-4k=yes
+brk-query: nonzero=yes
+brk-grow: returns-requested=yes
+brk-grow: writable=yes
+brk-query2: equals-grown=yes
+brk-shrink: returns-requested=yes
+brk-bogus-low: unchanged=yes
+mmap-anon: aligned=yes zero=yes
+mmap-anon: readback=yes
+mmap-fixed-replace: same-addr=yes middle-zero=yes neighbours-kept=yes
+mmap-fixed-noreplace-busy: failed=yes errno=EEXIST(17)
+munmap-middle: ret=0
+munmap-middle: hole-readable=0 left-readable=1 right-readable=1
+mmap-fixed-noreplace-hole: same-addr=yes
+munmap-all: ret=0
+munmap-all: readable=0
+munmap-again: ret=0
+munmap-unaligned: ret=-1 errno=EINVAL(22)
+munmap-zero-len: ret=-1 errno=EINVAL(22)
+mmap-zero-len: failed=yes errno=EINVAL(22)
+mmap-private-and-shared: failed=yes errno=EINVAL(22)
+mmap-badfd: failed=yes errno=EBADF(9)
+mmap-anon-unaligned-offset: failed=yes errno=EINVAL(22)
+mmap-odd-len: aligned=yes second-page-writable=1
+mmap-shared-anon: ok=yes zero=yes
+mmap-fixed-2^47: failed=yes errno=ENOMEM(12)
+mmap-noreplace-2^47: failed=yes errno=ENOMEM(12)
+mmap-hint-2^47: ok=yes below-limit=yes
+mmap-fixed-2^48: failed=yes errno=ENOMEM(12)
+mmap-noreplace-2^48: failed=yes errno=ENOMEM(12)
+mmap-hint-2^48: ok=yes below-limit=yes
+mmap-fixed-2^52: failed=yes errno=ENOMEM(12)
+mmap-noreplace-2^52: failed=yes errno=ENOMEM(12)
+mmap-hint-2^52: ok=yes below-limit=yes
+mmap-fixed-2^56: failed=yes errno=ENOMEM(12)
+mmap-noreplace-2^56: failed=yes errno=ENOMEM(12)
+mmap-hint-2^56: ok=yes below-limit=yes
+mmap-noreplace-below-2^47: same-addr=yes writable=1
+mmap-file-private-ro: aligned=yes content=yes
+mmap-file-private-ro: writable=0
+mmap-file-offset: content=yes
+mmap-file-unaligned-offset: failed=yes errno=EINVAL(22)
+mmap-file-private-rw: mapping-changed=yes file-unchanged=yes
+madvise-dontneed-file-private: ret=0 reverted=yes
+mmap-file-shared: file-sees-write=yes
+mmap-file-shared: mapping-sees-pwrite=yes
+msync: ret=0
+mmap-shared-rw-on-rdonly-fd: failed=yes errno=EACCES(13)
+mmap-private-rw-on-rdonly-fd: ok=yes
+mmap-on-wronly-fd: failed=yes errno=EACCES(13)
+mmap-directory: failed=yes errno=ENODEV(19)
+mprotect-ro: ret=0 readable=1 writable=0 left-writable=1
+mprotect-none: ret=0 readable=0
+mprotect-rw: ret=0 writable=1 data-kept=yes
+mprotect-unaligned: ret=-1 errno=EINVAL(22)
+mprotect-bad-prot: ret=-1 errno=EINVAL(22)
+mprotect-unmapped: ret=-1 errno=ENOMEM(12)
+mremap-grow-inplace: same-addr=yes data-kept=yes new-zero=yes
+mremap-shrink: same-addr=yes tail-readable=0
+mremap-setup-blocker: ok=yes
+mremap-grow-blocked: failed=yes errno=ENOMEM(12)
+mremap-grow-maymove: moved=yes aligned=yes data-kept=yes old-readable=0
+mremap-fixed: at-dst=yes data-kept=yes old-readable=0
+mremap-fixed-without-maymove: failed=yes errno=EINVAL(22)
+mremap-unaligned: failed=yes errno=EINVAL(22)
+madvise-dontneed-anon: ret=0 zeroed=yes other-kept=yes
+madvise-willneed: ret=0
+madvise-normal: ret=0
+madvise-random: ret=0
+madvise-sequential: ret=0
+madvise-unaligned: ret=-1 errno=EINVAL(22)
+madvise-bad-advice: ret=-1 errno=EINVAL(22)
+madvise-unmapped: ret=-1 errno=ENOMEM(12)
+done

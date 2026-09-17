@@ -1,0 +1,21 @@
+raise-basic: ret=0 hits=1 sig-is-usr1=yes
+kill-siginfo: hits=1 code=SI_USER pid-matches=yes
+tgkill-siginfo: hits=1 code=SI_TKILL
+sigqueue-siginfo: hits=1 code=SI_QUEUE
+handler-mask: usr2-blocked=yes usr1-blocked=yes
+handler-mask-nodefer: usr2-blocked=yes usr1-blocked=no
+mask-restored-after-handler: usr1=no usr2=no
+resethand: hits=1 reset-to-dfl=yes
+onstack: ran-on-altstack=yes
+no-onstack: ran-on-altstack=no
+blocked: hits=0 pending-usr1=yes
+unblocked: hits=1
+rt-queue: hits=3
+sigtimedwait: got-usr2=yes code=SI_USER
+sigtimedwait-timeout: ret=-1 errno=EAGAIN(11)
+ignored-raise: ret=0 survived=yes
+segv: sig=SIGSEGV code=SEGV_MAPERR addr-matches=yes
+read-interrupted-no-restart: ret=-1 errno=EINTR(4) hits=1
+read-interrupted-sa_restart: ret=1 errno=OK(0) hits=1
+child-killed: signaled=yes sig-is-term=yes
+done

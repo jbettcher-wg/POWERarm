@@ -177,7 +177,8 @@ bool IsFaultLocation(uint64_t PC) {
 // `used`: with the x86-32 syscall handlers gone nothing calls these yet, and
 // ThinLTO would otherwise drop the functions together with the *_FaultInst
 // labels that IsFaultLocation still references.
-// POWERARM-M0-TODO(syscalls): the arm64 handlers that copy guest structs through possibly-bad pointers should call these.
+// They return 0 on success and EFAULT when the guest pointer faults; the arm64
+// stat, termios ioctl and signal handlers copy guest structs through them.
 __attribute__((naked, used)) size_t CopyFromUser(void* Dest, const void* Src, size_t Size) {
   __asm volatile(R"(
     cmpdi   3, 5, 0

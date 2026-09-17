@@ -297,7 +297,7 @@ public:
   // per-thread cache walk. ThreadCreationMutex used to be held for the whole
   // invalidation -- the wait for readers to drain, the code-buffer walk, the
   // syscalls in the after_callback -- so every CreateThread/DestroyThread
-  // (Bun does both constantly) serialised behind every SMC fault and vice
+  // (thread-heavy runtimes do both constantly) serialised behind every SMC fault and vice
   // versa, and a DestroyThread doing last-thread file I/O stalled invalidation.
   // Nothing takes CodeInvalidationMutex while holding ThreadCreationMutex
   // (ThreadManager.cpp never touches it; fork's LockBeforeFork takes the Stat

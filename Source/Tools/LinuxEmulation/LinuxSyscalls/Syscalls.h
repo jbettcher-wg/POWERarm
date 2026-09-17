@@ -105,29 +105,6 @@ uint64_t UnimplementedSyscallSafe(FEXCore::Core::CpuStateFrame* Frame, uint64_t 
 uint64_t ObservedFutexSyscall(FEXCore::Core::CpuStateFrame* Frame, uint64_t uaddr, uint64_t futex_op, uint64_t val,
                               uint64_t timeout, uint64_t uaddr2, uint64_t val3);
 
-// x86 guests use the asm-generic SOL_SOCKET option numbering; powerpc is one
-// of the legacy architectures with its own numbers for six of them. Translate
-// the guest's optname before handing it to the host kernel — without this,
-// e.g. a guest SO_PASSCRED (16) lands as host SO_RCVLOWAT (16), credentials
-// never get attached, and Chromium/CEF's unix-socket IPC bootstrap fails
-// with "missing credentials" (seen live: steamwebhelper restart loop).
-inline int TranslateGuestSockOptName(int level, int optname) {
-#ifdef __powerpc64__
-  if (level == SOL_SOCKET) {
-    switch (optname) {
-    case 16: return 20; // x86 SO_PASSCRED     -> ppc SO_PASSCRED
-    case 17: return 21; // x86 SO_PEERCRED     -> ppc SO_PEERCRED
-    case 18: return 16; // x86 SO_RCVLOWAT     -> ppc SO_RCVLOWAT
-    case 19: return 17; // x86 SO_SNDLOWAT     -> ppc SO_SNDLOWAT
-    case 20: return 18; // x86 SO_RCVTIMEO_OLD -> ppc SO_RCVTIMEO_OLD
-    case 21: return 19; // x86 SO_SNDTIMEO_OLD -> ppc SO_SNDTIMEO_OLD
-    default: break;
-    }
-  }
-#endif
-  return optname;
-}
-
 // FEX_HWTSO: hardware TSO via PROT_SAO pages (ppc64le, default off).
 //
 // POWER's Strong Access Ordering page attribute makes plain loads/stores to a
@@ -1145,15 +1122,6 @@ struct clone3_args {
 };
 
 uint64_t CloneHandler(FEXCore::Core::CpuStateFrame* Frame, FEX::HLE::clone3_args* args);
-
-// open(2) flag remapping — implementation is per-arch, in FlagRemapping.h
-#if defined(ARCHITECTURE_x86_64)
-#  include "LinuxSyscalls/x64/FlagRemapping.h"
-#elif defined(ARCHITECTURE_ppc64le)
-#  include "LinuxSyscalls/PPC64LE/FlagRemapping.h"
-#else
-#  error "RemapFromX86Flags / RemapToX86Flags: unknown host architecture"
-#endif
 
 /**
  * @brief Checks raw syscall return for error

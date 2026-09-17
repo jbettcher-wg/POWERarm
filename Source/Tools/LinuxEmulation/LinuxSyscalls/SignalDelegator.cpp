@@ -7,6 +7,7 @@ $end_info$
 */
 
 #include "LinuxSyscalls/SignalDelegator.h"
+#include "LinuxSyscalls/Arm64/GeneratedABI.h"
 #include "LinuxSyscalls/Syscalls.h"
 
 #include <FEXCore/Core/Context.h>
@@ -54,8 +55,6 @@ __attribute__((naked)) static void sigrestore() {
   __asm volatile("syscall;" ::"a"(0xF) : "memory");
 }
 #endif
-
-constexpr static uint32_t X86_MINSIGSTKSZ = 2048;
 
 // FEX_SIGTRACE=1: raw write() tracing of the signal delivery/defer/drain/
 // sigreturn flow. Diagnostic-only; snprintf in signal context matches the
@@ -2009,55 +2008,38 @@ void SignalDelegator::CheckXIDHandler() {
 }
 
 uint64_t SignalDelegator::RegisterGuestSigAltStack(FEX::HLE::ThreadStateObject* Thread, const stack_t* ss, stack_t* old_ss) {
-  bool UsingAltStack {};
-  uint64_t AltStackBase = reinterpret_cast<uint64_t>(Thread->SignalInfo.GuestAltStack.ss_sp);
-  uint64_t AltStackEnd = AltStackBase + Thread->SignalInfo.GuestAltStack.ss_size;
-  uint64_t GuestSP = Thread->Thread->CurrentFrame->State.sp;
+  // Mirrors kernel/signal.c do_sigaltstack for the arm64 guest.
+  auto& Current = Thread->SignalInfo.GuestAltStack;
+  const uint64_t Base = reinterpret_cast<uint64_t>(Current.ss_sp);
+  const uint64_t GuestSP = Thread->Thread->CurrentFrame->State.sp;
+  const bool Disarmed = (Current.ss_flags & SS_AUTODISARM) != 0;
+  const bool OnStack = !Disarmed && Current.ss_size != 0 && GuestSP > Base && GuestSP - Base <= Current.ss_size;
 
-  if (!(Thread->SignalInfo.GuestAltStack.ss_flags & SS_DISABLE) && GuestSP >= AltStackBase && GuestSP <= AltStackEnd) {
-    UsingAltStack = true;
-  }
-
-  // If we have an old signal set then give it back
   if (old_ss) {
-    *old_ss = Thread->SignalInfo.GuestAltStack;
-
-    if (UsingAltStack) {
-      // We are currently operating on the alt stack
-      // Let the guest know
-      old_ss->ss_flags |= SS_ONSTACK;
-    } else {
-      old_ss->ss_flags |= SS_DISABLE;
-    }
+    *old_ss = stack_t {};
+    old_ss->ss_sp = Current.ss_sp;
+    old_ss->ss_size = Current.ss_size;
+    old_ss->ss_flags = (Current.ss_size == 0 ? SS_DISABLE : OnStack ? SS_ONSTACK : 0) | (Current.ss_flags & SS_AUTODISARM);
   }
 
-  // Now assign the new action
   if (ss) {
-    // If we tried setting the alt stack while we are using it then throw an error
-    if (UsingAltStack) {
+    if (OnStack) {
       return -EPERM;
     }
-
-    // We need to check for invalid flags
-    // The only flag that can be passed is SS_AUTODISARM and SS_DISABLE
-    if ((ss->ss_flags & ~SS_ONSTACK) & // SS_ONSTACK is ignored
-        ~(SS_AUTODISARM | SS_DISABLE)) {
-      // A flag remained that isn't one of the supported ones?
+    const int Mode = ss->ss_flags & ~SS_AUTODISARM;
+    if (Mode != SS_DISABLE && Mode != SS_ONSTACK && Mode != 0) {
       return -EINVAL;
     }
-
-    if (ss->ss_flags & SS_DISABLE) {
-      // If SS_DISABLE Is specified then the rest of the details are ignored
-      Thread->SignalInfo.GuestAltStack = *ss;
+    if (Mode == SS_DISABLE) {
+      Current.ss_sp = nullptr;
+      Current.ss_size = 0;
+      Current.ss_flags = ss->ss_flags;
       return 0;
     }
-
-    // stack size needs to be at least X86_MINSIGSTKSZ
-    if (ss->ss_size < X86_MINSIGSTKSZ) {
+    if (ss->ss_size < FEX::HLE::Arm64::ABI::GUEST_MINSIGSTKSZ) {
       return -ENOMEM;
     }
-
-    Thread->SignalInfo.GuestAltStack = *ss;
+    Current = *ss;
   }
 
   return 0;

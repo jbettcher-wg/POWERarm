@@ -21,11 +21,13 @@ Arm64SyscallHandler::Arm64SyscallHandler(FEXCore::Context::Context* ctx, FEX::HL
 }
 
 void Arm64SyscallHandler::RegisterSyscallHandlers() {
-  // The shared implementations under LinuxSyscalls/Syscalls/ take plain
-  // integers, pointers and LP64 structs whose layout is the same for an
-  // AArch64 guest, so they are wired straight to the asm-generic numbers.
-  //
-  // POWERARM-M0-TODO(syscalls): the shared handlers were written against x86-64 guest values; flag/struct translation (O_* flags, termios, ioctl encoding, epoll_event packing, struct stat) must be re-derived for arm64 -> powerpc64 (DESIGN.md §5).
+  // The shared implementations under LinuxSyscalls/Syscalls/ are wired to
+  // the asm-generic numbers. Where an argument differs between arm64 and
+  // powerpc they translate it through Arm64/ABITranslation.h (O_* flags,
+  // SOL_SOCKET option names); everything else they pass is identical on both,
+  // which gen_abi_tables.py verifies (struct layouts, F_*, SA_*, signal
+  // numbers, MADV_*, RLIMIT_*, ...). The handlers that need more than that
+  // live in Arm64/.
   FEX::HLE::RegisterEpoll(this);
   FEX::HLE::RegisterFD(this);
   FEX::HLE::RegisterFS(this);
@@ -39,9 +41,16 @@ void Arm64SyscallHandler::RegisterSyscallHandlers() {
   FEX::HLE::RegisterStubs(this);
   FEX::HLE::RegisterPassthrough(this);
 
+  FEX::HLE::Arm64::RegisterMemory(this);
+  FEX::HLE::Arm64::RegisterFD(this);
+  FEX::HLE::Arm64::RegisterSignals(this);
+  FEX::HLE::Arm64::RegisterThread(this);
+
   // Everything not registered above keeps the default UnimplementedSyscall
-  // entry, which returns -ENOSYS.
-  // POWERARM-M0-TODO(syscalls): the x86-64-specific handlers (mmap family, clone/exit, rt_sigaction/rt_sigreturn, fstat/newfstatat, prctl, arch-specific TLS) were deleted with LinuxSyscalls/x64 and need arm64 versions (M1).
+  // entry, which stops the process with an "Unhandled system call" message.
+  // arm64 has no arch-specific TLS syscall (TPIDR_EL0 is set by clone's tls
+  // argument and by MSR in guest code).
+  // POWERARM-M1-TODO(syscalls): rt_sigreturn is wired to the delegator but real signal frames (fpsimd/esr records, the vDSO trampoline) are deferred; see the signals markers.
 }
 
 fextl::unique_ptr<FEX::HLE::SyscallHandler>
