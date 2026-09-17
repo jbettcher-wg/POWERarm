@@ -1943,6 +1943,25 @@ namespace {
   }
 } // namespace
 
+bool CodeCache::CompactAllSegments(const fextl::string& Base, uint64_t FileId) {
+  if (Base.empty()) {
+    return false;
+  }
+  const auto LockPath = Base + ".lock";
+  int LockFD = ::open(LockPath.c_str(), O_RDWR | O_CREAT | O_CLOEXEC, 0644);
+  if (LockFD == -1) {
+    return false;
+  }
+  bool Done = false;
+  if (::flock(LockFD, LOCK_EX | LOCK_NB) == 0) {
+    Done = ::access(SegmentPath(Base, 1).c_str(), F_OK) != 0 || CompactSegments(Base, {}, ComputeCodeCacheConfigId(), FileId);
+    Stats.Compactions.fetch_add(Done ? 1 : 0, std::memory_order_relaxed);
+    ::flock(LockFD, LOCK_UN);
+  }
+  ::close(LockFD);
+  return Done;
+}
+
 size_t CodeCache::SaveNewBlocks(Core::InternalThreadState&, std::span<const CodeCacheSaveTarget> Targets) {
   if (!IsGeneratingCache || Targets.empty()) {
     return 0;

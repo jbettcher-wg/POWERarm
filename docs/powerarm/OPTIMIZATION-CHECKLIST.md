@@ -208,4 +208,15 @@ Starts after the CLAUDE-SIMD workstream (Claude CLI instruction gaps) merges.
 | Q3 | Compute checklist items for the remaining `cc1` gap: P1(b), IR-walk merging, F1–F8, N1, remaining P/N rows | standard agents, split by area | `cc1 lvm.c`; slice |
 | Q4 | Review of lowerings and performance changes (correctness, ISA gating, missed wins) against the research docs | **one Fable agent**, after Q1–Q3 | written review; fixes routed to standard agents |
 
+Q1 result (branch `powerarm-q/aot`, smoke test, one run each, CPU 100, private cache dir):
+
+| Q1 measurement | Value |
+|---|---|
+| slice, empty cache | 24.84 s |
+| slice, after pre-translating `gcc`, `cc1`, `as`, `ld`, `make`, `bash`/`sh`, `libc.so.6`, `ld-linux-aarch64.so.1` (mode `all`) | 23.93 s (warm reference 23.7 s) |
+| pre-translation wall time (`-j 22`, CPUs 0-87) | 13.3 s, nearly all of it `cc1` (55,182 function entries, 825,563 seeds) |
+| cache size after pre-translation | 1.4 GiB (`cc1` 1.2 GiB; `cc1` in mode `calls` is 651 MiB, in `entries` 87 MiB) |
+| `cc1 -O2 lvm.c` after `cc1` pre-translation: loaded / not in index | `calls` 55,297 / 53,571; `all` 96,657 / 12,040 |
+| A64Frontend (default mode) / `check-code-cache.sh` | 52 passed, 0 failed / pass |
+
 Measurement rules for every step: one run per change on a small slice, full gates and full zlib/Lua numbers once at the end, `POWERARM_PORTABLE=1` while a binfmt registration exists, and a report within about an hour.

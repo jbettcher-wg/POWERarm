@@ -16,6 +16,7 @@ $end_info$
 #include "Common/Linux/SBRKAllocations.h"
 #include "PortabilityInfo.h"
 #include "ELFCodeLoader.h"
+#include "AOT/AOTGenerator.h"
 #include "VDSO_Emulation.h"
 #include "LinuxSyscalls/CoreIsolation.h"
 #include "LinuxSyscalls/GdbServer.h"
@@ -812,6 +813,17 @@ int main(int argc, char** argv, char** const envp) {
   auto BRKInfo = Loader.GetBRKInfo();
 
   SyscallHandler->DefaultProgramBreak(BRKInfo.Base, BRKInfo.Size);
+
+  // POWERARM_AOTTRANSLATE: translate the program into the code cache and exit
+  // without running it (Scripts/powerarm/aot-translate.sh drives this).
+  if (const char* AOTMode = getenv("FEX_AOTTRANSLATE"); AOTMode && *AOTMode && *AOTMode != 0) {
+    const int Status = FEX::AOT::TranslateMainElf(CTX.get(), SyscallHandler.get(), ParentThread->Thread, Loader.GetMainElfFD(),
+                                                  Loader.GetBaseOffset(), AOTMode);
+    SyscallHandler->CodeCacheImageExit(ParentThread->Thread);
+    fflush(stdout);
+    fflush(stderr);
+    _exit(Status);
+  }
 
   // Request server-side code cache generation. Opt-in (FEX_SERVERCODECACHE=1)
   // until the generator can reproduce the requesting client's configuration:

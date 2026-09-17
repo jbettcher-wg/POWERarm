@@ -120,6 +120,7 @@ public:
   bool SaveData(Core::InternalThreadState&, int TargetFD, const ExecutableFileSectionInfo&, uint64_t SerializedBaseAddress,
                 std::span<const GuestAddressRange> GuestRanges = {}) override;
   size_t SaveNewBlocks(Core::InternalThreadState&, std::span<const CodeCacheSaveTarget> Targets) override;
+  bool CompactAllSegments(const fextl::string& BasePath, uint64_t FileId) override;
 
   void InitiateCacheGeneration() override {
     IsGeneratingCache = true;
