@@ -10,6 +10,14 @@
 //
 // A64 is fixed-width, so there is no length decode: an instruction is the
 // 32-bit little-endian word at its PC.
+//
+// Block formation: one guest block per compile, decoded linearly from the
+// entry. The block ends after the first instruction that leaves the block
+// (B, BL, B.cond, CBZ/CBNZ, TBZ/TBNZ, BR/BLR/RET and the other
+// branch-register encodings), after an exception-generating instruction
+// (SVC, BRK, HLT, ...), after an instruction the translator does not know
+// (it raises SIGILL), at the instruction cap, or before an instruction whose
+// word is not in executable memory (that PC gets its own block and SIGSEGV).
 #pragma once
 
 #include "Interface/IR/IR.h"
@@ -29,6 +37,8 @@ struct InternalThreadState;
 
 namespace FEXCore::A64 {
 constexpr uint64_t INSTRUCTION_SIZE = 4;
+// Upper bound on instructions in one block, below the MaxInst config.
+constexpr uint64_t DEFAULT_MAX_INSTRUCTIONS = 1024;
 
 class Decoder final {
 public:
@@ -95,8 +105,8 @@ private:
   uint64_t ExecutableRangeBase {};
   uint64_t ExecutableRangeEnd {};
 
-  // POWERARM-M0-TODO(frontend): single-instruction blocks only; multiblock discovery (direct B/B.cond/CBZ/TBZ targets) and a pooled decode buffer come with the M2 translator.
-  std::array<DecodedInst, 1> DecodedBuffer {};
+  // POWERARM-M1-TODO(frontend): one guest block per compile; multiblock discovery (direct B/B.cond/CBZ/TBZ targets inside the compile unit) is a performance item for a later milestone.
+  fextl::vector<DecodedInst> DecodedBuffer;
 
   DecodedBlockInformation BlockInfo;
   fextl::set<uint64_t>* ExternalBranches {nullptr};

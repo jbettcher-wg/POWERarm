@@ -1,0 +1,244 @@
+// SPDX-License-Identifier: MIT
+//
+// A64 branches, exception generation and the EL0-visible system instructions.
+#include "Interface/Core/A64Frontend/IRBuilder.h"
+#include "Interface/Core/A64Frontend/SystemRegisters.h"
+#include "Interface/Core/A64Frontend/TranslateCommon.h"
+
+#include <FEXCore/Core/CoreState.h>
+#include <FEXCore/Core/SignalDelegator.h>
+
+namespace FEXCore::A64 {
+using namespace FEXCore::IR;
+
+// ---------------------------------------------------------------------------
+// Branches
+// ---------------------------------------------------------------------------
+
+bool IRBuilder::B_uncond(uint32_t Word) {
+  ExitToPC(CurrentPC + SignExtend(Bits(Word, 25, 0), 26) * 4);
+  return true;
+}
+
+bool IRBuilder::BL(uint32_t Word) {
+  StoreX(30, PCValue(CurrentPC + INSTRUCTION_SIZE));
+  ExitToPC(CurrentPC + SignExtend(Bits(Word, 25, 0), 26) * 4);
+  return true;
+}
+
+bool IRBuilder::B_cond(uint32_t Word) {
+  const uint64_t Target = CurrentPC + SignExtend(Bits(Word, 23, 5), 19) * 4;
+  const uint32_t Cond = Bits(Word, 3, 0);
+  if (Cond >= 0b1110) {
+    ExitToPC(Target);
+    return true;
+  }
+
+  auto Jump = _CondJump(InvalidNode, InvalidNode, InvalidNode, InvalidNode, MapCondition(Cond), OpSize::iInvalid, true);
+  EmitConditionalExit(Jump, Target);
+  return true;
+}
+
+bool IRBuilder::CompareBranch(uint32_t Word, bool IsNonZero) {
+  const bool Is64 = Bit(Word, 31);
+  const uint64_t Target = CurrentPC + SignExtend(Bits(Word, 23, 5), 19) * 4;
+  Ref Value = LoadX(Bits(Word, 4, 0));
+  auto Jump = _CondJump(Value, Constant(0), InvalidNode, InvalidNode, IsNonZero ? CondClass::NEQ : CondClass::EQ, SizeFor(Is64));
+  EmitConditionalExit(Jump, Target);
+  return true;
+}
+
+bool IRBuilder::CBZ(uint32_t Word) {
+  return CompareBranch(Word, false);
+}
+bool IRBuilder::CBNZ(uint32_t Word) {
+  return CompareBranch(Word, true);
+}
+
+bool IRBuilder::TestBranch(uint32_t Word, bool IsNonZero) {
+  const uint32_t BitNumber = (Bits(Word, 31, 31) << 5) | Bits(Word, 23, 19);
+  const uint64_t Target = CurrentPC + SignExtend(Bits(Word, 18, 5), 14) * 4;
+  Ref Value = LoadX(Bits(Word, 4, 0));
+  // The TSTZ/TSTNZ lowering requires the bit position as an inline constant.
+  auto Jump = _CondJump(Value, _InlineConstant(BitNumber), InvalidNode, InvalidNode, IsNonZero ? CondClass::TSTNZ : CondClass::TSTZ,
+                        OpSize::i64Bit);
+  EmitConditionalExit(Jump, Target);
+  return true;
+}
+
+bool IRBuilder::TBZ(uint32_t Word) {
+  return TestBranch(Word, false);
+}
+bool IRBuilder::TBNZ(uint32_t Word) {
+  return TestBranch(Word, true);
+}
+
+bool IRBuilder::BranchRegister(uint32_t Word, bool Link) {
+  // POWERARM-M1-TODO(frontend): BL/BLR/RET exit with BranchHint::None. The backend's Call/Return hints drive an x86-shaped shadow return stack (return address on the guest stack); an X30-based return prediction is a later performance item.
+  Ref Target = LoadX(Bits(Word, 9, 5));
+  if (Link) {
+    StoreX(30, PCValue(CurrentPC + INSTRUCTION_SIZE));
+  }
+  ExitFunction(Target);
+  BlockSetPC = true;
+  return true;
+}
+
+bool IRBuilder::BR(uint32_t Word) {
+  return BranchRegister(Word, false);
+}
+bool IRBuilder::BLR(uint32_t Word) {
+  return BranchRegister(Word, true);
+}
+bool IRBuilder::RET(uint32_t Word) {
+  return BranchRegister(Word, false);
+}
+
+// ---------------------------------------------------------------------------
+// Exception generation
+// ---------------------------------------------------------------------------
+
+bool IRBuilder::SVC(uint32_t Word) {
+  // The W1/W3 seam: syscall number in X8, arguments in X0-X5, result in X0.
+  // Linux ignores the SVC immediate.
+  //
+  // State.pc is published as the address after the SVC, which is what the
+  // arm64 kernel records in ELR_EL1: a clone child resumes there, and a signal
+  // frame built while the handler runs names the return address.
+  const uint64_t NextPC = CurrentPC + INSTRUCTION_SIZE;
+  _StoreContext(OpSize::i64Bit, RegClass::GPR, PCValue(NextPC), offsetof(FEXCore::Core::CPUState, pc));
+
+  Ref Result = _Syscall(LoadX(8), LoadX(0), LoadX(1), LoadX(2), LoadX(3), LoadX(4), LoadX(5));
+  StoreX(0, Result);
+
+  // The handler may have changed guest state behind the JIT (execve, sigreturn,
+  // a clone child), so leave the block and let the dispatcher resume at pc.
+  ExitToPC(NextPC);
+  return true;
+}
+
+bool IRBuilder::BRK(uint32_t) {
+  RaiseGuestSignal(CurrentPC, BreakDefinition {
+                                .ErrorRegister = 0,
+                                .Signal = FEXCore::Core::FAULT_SIGTRAP,
+                                .TrapNumber = 0,
+                                .si_code = 1, ///< TRAP_BRKPT
+                              });
+  return true;
+}
+
+// ---------------------------------------------------------------------------
+// System
+// ---------------------------------------------------------------------------
+
+bool IRBuilder::HINT(uint32_t) {
+  // NOP, YIELD, WFE, WFI, SEV, SEVL, BTI, PACIASP and the rest of the hint
+  // space, plus the DSB/DMB/ISB barriers: no guest-visible effect at EL0 here.
+  return true;
+}
+
+bool IRBuilder::CLREX(uint32_t) {
+  _StoreContext(OpSize::i8Bit, RegClass::GPR, Constant(0), offsetof(FEXCore::Core::CPUState, excl_valid));
+  return true;
+}
+
+bool IRBuilder::UnallocatedEncoding(uint32_t) {
+  return false;
+}
+
+bool IRBuilder::DC_ZVA(uint32_t Word) {
+  // DCZID_EL0 reports a 64-byte block (SystemRegisters.h); CacheLineZero
+  // zeroes 64 bytes from the address rounded down to 64.
+  _CacheLineZero(LoadX(Bits(Word, 4, 0)));
+  return true;
+}
+
+bool IRBuilder::CacheMaintenanceNop(uint32_t) {
+  // DC CVAU and IC IVAU: cache flushes for code the guest wrote. SMC tracking
+  // (mtrack) already invalidates translations of written pages.
+  return true;
+}
+
+namespace {
+  constexpr uint32_t SysReg(uint32_t Op0, uint32_t Op1, uint32_t CRn, uint32_t CRm, uint32_t Op2) {
+    return (Op0 << 14) | (Op1 << 11) | (CRn << 7) | (CRm << 3) | Op2;
+  }
+
+  // op0:op1:CRn:CRm:op2 from an MRS/MSR (register) word.
+  constexpr uint32_t SysRegOf(uint32_t Word) {
+    return ((2 + Bit(Word, 19)) << 14) | (Bits(Word, 18, 16) << 11) | (Bits(Word, 15, 12) << 7) | (Bits(Word, 11, 8) << 3) |
+           Bits(Word, 7, 5);
+  }
+
+  constexpr uint32_t REG_NZCV = SysReg(3, 3, 4, 2, 0);
+  constexpr uint32_t REG_FPCR = SysReg(3, 3, 4, 4, 0);
+  constexpr uint32_t REG_FPSR = SysReg(3, 3, 4, 4, 1);
+  constexpr uint32_t REG_TPIDR_EL0 = SysReg(3, 3, 13, 0, 2);
+  constexpr uint32_t REG_TPIDRRO_EL0 = SysReg(3, 3, 13, 0, 3);
+  constexpr uint32_t REG_CTR_EL0 = SysReg(3, 3, 0, 0, 1);
+  constexpr uint32_t REG_DCZID_EL0 = SysReg(3, 3, 0, 0, 7);
+} // namespace
+
+bool IRBuilder::MRS(uint32_t Word) {
+  const uint32_t Reg = SysRegOf(Word);
+  const uint32_t Rt = Bits(Word, 4, 0);
+
+  switch (Reg) {
+  case REG_NZCV: StoreX(Rt, _LoadNZCV()); return true;
+  case REG_FPCR: StoreW(Rt, _LoadContext(OpSize::i32Bit, RegClass::GPR, offsetof(FEXCore::Core::CPUState, fpcr))); return true;
+  case REG_FPSR: StoreW(Rt, _LoadContext(OpSize::i32Bit, RegClass::GPR, offsetof(FEXCore::Core::CPUState, fpsr))); return true;
+  case REG_TPIDR_EL0: StoreX(Rt, _LoadContext(OpSize::i64Bit, RegClass::GPR, offsetof(FEXCore::Core::CPUState, tpidr_el0))); return true;
+  case REG_TPIDRRO_EL0:
+    StoreX(Rt, _LoadContext(OpSize::i64Bit, RegClass::GPR, offsetof(FEXCore::Core::CPUState, tpidrro_el0)));
+    return true;
+  case REG_CTR_EL0: StoreX(Rt, Constant(SystemRegisters::CTR_EL0)); return true;
+  case REG_DCZID_EL0: StoreX(Rt, Constant(SystemRegisters::DCZID_EL0)); return true;
+  default: break;
+  }
+
+  // The ID register space Linux emulates for EL0 (arch/arm64/kernel/cpufeature.c,
+  // emulate_sys_reg): op0=3, op1=0, CRn=0, CRm=0 or 2..7. Unknown registers in
+  // CRm 2..7 read as zero; in CRm 0 only MIDR, MPIDR and REVIDR exist.
+  const uint32_t Op0 = Reg >> 14;
+  const uint32_t Op1 = (Reg >> 11) & 7;
+  const uint32_t CRn = (Reg >> 7) & 15;
+  const uint32_t CRm = (Reg >> 3) & 15;
+  const uint32_t Op2 = Reg & 7;
+  if (Op0 != 3 || Op1 != 0 || CRn != 0 || CRm == 1) {
+    return false;
+  }
+
+  uint64_t Value {};
+  if (!SystemRegisters::ReadIDRegister(CRm, Op2, &Value)) {
+    return false;
+  }
+  StoreX(Rt, Constant(Value));
+  return true;
+}
+
+bool IRBuilder::MSR_reg(uint32_t Word) {
+  const uint32_t Reg = SysRegOf(Word);
+  const uint32_t Rt = Bits(Word, 4, 0);
+
+  switch (Reg) {
+  case REG_NZCV:
+    // StoreNZCV reads bits 31:28; the rest of the word is RES0.
+    _StoreNZCV(LoadX(Rt));
+    return true;
+  case REG_FPCR:
+    // POWERARM-M1-TODO(frontend): FPCR is stored only. Syncing RMode/FZ/DN into the host FPSCR belongs to the FP translators (W2).
+    _StoreContext(OpSize::i32Bit, RegClass::GPR, _And(OpSize::i64Bit, LoadX(Rt), Constant(SystemRegisters::FPCR_WRITABLE_MASK)),
+                  offsetof(FEXCore::Core::CPUState, fpcr));
+    return true;
+  case REG_FPSR:
+    _StoreContext(OpSize::i32Bit, RegClass::GPR, _And(OpSize::i64Bit, LoadX(Rt), Constant(SystemRegisters::FPSR_WRITABLE_MASK)),
+                  offsetof(FEXCore::Core::CPUState, fpsr));
+    return true;
+  case REG_TPIDR_EL0: _StoreContext(OpSize::i64Bit, RegClass::GPR, LoadX(Rt), offsetof(FEXCore::Core::CPUState, tpidr_el0)); return true;
+  default:
+    // TPIDRRO_EL0 and every ID register are read-only at EL0.
+    return false;
+  }
+}
+
+} // namespace FEXCore::A64

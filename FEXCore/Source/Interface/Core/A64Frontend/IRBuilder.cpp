@@ -1,17 +1,62 @@
 // SPDX-License-Identifier: MIT
 #include "Interface/Core/A64Frontend/IRBuilder.h"
 #include "Interface/Context/Context.h"
+#include "Interface/IR/RegisterAllocationData.h"
 
 #include <FEXCore/Core/CoreState.h>
 #include <FEXCore/Core/SignalDelegator.h>
 #include <FEXCore/Utils/LogManager.h>
 
+#include <array>
+
 namespace FEXCore::A64 {
 using namespace FEXCore::IR;
+
+namespace {
+  // Guest register (0-30 = Xn, 31 = SP) -> static register slot, or -1 when the
+  // register lives only in the context. Derived from StaticGPRGuestReg so the
+  // two cannot disagree.
+  constexpr std::array<int8_t, 32> GuestRegToSlot = [] {
+    std::array<int8_t, 32> Slots {};
+    Slots.fill(-1);
+    for (size_t i = 0; i < FEXCore::Core::StaticGPRGuestReg.size(); ++i) {
+      Slots[FEXCore::Core::StaticGPRGuestReg[i]] = static_cast<int8_t>(i);
+    }
+    return Slots;
+  }();
+} // namespace
 
 IRBuilder::IRBuilder(FEXCore::Context::ContextImpl* ctx)
   : IREmitter {ctx->OpDispatcherAllocator, ctx->HostFeatures.SupportsTSOImm9, ctx->HostFeatures.SupportsTSODisp16}
   , CTX {ctx} {}
+
+// clang-format off
+const IRBuilder::HandlerEntry IRBuilder::HandlerTable[] = {
+  // Branches and exceptions.
+  {"B_cond", &IRBuilder::B_cond}, {"B_uncond", &IRBuilder::B_uncond}, {"BL", &IRBuilder::BL},
+  {"CBZ", &IRBuilder::CBZ}, {"CBNZ", &IRBuilder::CBNZ}, {"TBZ", &IRBuilder::TBZ}, {"TBNZ", &IRBuilder::TBNZ},
+  {"BR", &IRBuilder::BR}, {"BLR", &IRBuilder::BLR}, {"RET", &IRBuilder::RET},
+  {"SVC", &IRBuilder::SVC}, {"BRK", &IRBuilder::BRK},
+  // System. Every hint (NOP, YIELD, WFE, WFI, SEV, SEVL, BTI, PAC*SP, ...) is a NOP.
+  {"HINT", &IRBuilder::HINT}, {"NOP", &IRBuilder::HINT}, {"YIELD", &IRBuilder::HINT},
+  {"WFE", &IRBuilder::HINT}, {"WFI", &IRBuilder::HINT}, {"SEV", &IRBuilder::HINT}, {"SEVL", &IRBuilder::HINT},
+  {"DSB", &IRBuilder::HINT}, {"DMB", &IRBuilder::HINT}, {"ISB", &IRBuilder::HINT},
+  {"CLREX", &IRBuilder::CLREX},
+  {"MRS", &IRBuilder::MRS}, {"MSR_reg", &IRBuilder::MSR_reg},
+  {"DC_ZVA", &IRBuilder::DC_ZVA},
+  {"DC_CVAU", &IRBuilder::CacheMaintenanceNop}, {"IC_IVAU", &IRBuilder::CacheMaintenanceNop},
+  {"UnallocatedEncoding", &IRBuilder::UnallocatedEncoding},
+};
+// clang-format on
+
+InstHandler IRBuilder::FindHandler(std::string_view Name) {
+  for (const auto& Entry : HandlerTable) {
+    if (Entry.Name == Name) {
+      return Entry.Handler;
+    }
+  }
+  return nullptr;
+}
 
 void IRBuilder::ResetWorkingList() {
   IREmitter::ReownOrClaimBuffer();
@@ -75,29 +120,59 @@ void IRBuilder::Finalize() {
 }
 
 bool IRBuilder::FinishOp(uint64_t NextPC, bool LastOp) {
-  if (LastOp && !BlockSetPC) {
-    auto It = JumpTargets.find(NextPC);
-    if (It == JumpTargets.end()) {
-      ExitFunction(_InlineEntrypointOffset(OpSize::i64Bit, NextPC - Entry));
-    } else {
-      _Jump(It->second.BlockEntry);
-      return true;
-    }
+  if (BlockSetPC) {
+    // The instruction already left the block.
+    BlockSetPC = false;
+    return true;
   }
 
-  BlockSetPC = false;
+  if (LastOp) {
+    ExitToPC(NextPC);
+    return true;
+  }
+
   return false;
 }
 
+void IRBuilder::ExitToPC(uint64_t Target) {
+  auto It = JumpTargets.find(Target);
+  if (It != JumpTargets.end()) {
+    _Jump(It->second.BlockEntry);
+  } else {
+    ExitFunction(_InlineEntrypointOffset(OpSize::i64Bit, Target - Entry));
+  }
+  BlockSetPC = true;
+}
+
+void IRBuilder::EmitConditionalExit(IRPair<IROp_CondJump> Jump, uint64_t Target) {
+  auto CurrentBlock = GetCurrentBlock();
+
+  auto TakenBlock = CreateNewCodeBlockAfter(CurrentBlock);
+  SetTrueJumpTarget(Jump, TakenBlock);
+  SetCurrentCodeBlock(TakenBlock);
+  ExitToPC(Target);
+
+  auto NotTakenBlock = CreateNewCodeBlockAfter(TakenBlock);
+  SetFalseJumpTarget(Jump, NotTakenBlock);
+  SetCurrentCodeBlock(NotTakenBlock);
+  ExitToPC(CurrentPC + INSTRUCTION_SIZE);
+}
+
 void IRBuilder::RaiseGuestSignal(uint64_t PC, BreakDefinition Reason) {
-  _StoreContextGPR(OpSize::i64Bit, GetRelocatedPC(PC), offsetof(FEXCore::Core::CPUState, pc));
+  _StoreContext(OpSize::i64Bit, RegClass::GPR, PCValue(PC), offsetof(FEXCore::Core::CPUState, pc));
   _Break(Reason);
   BlockSetPC = true;
 }
 
 bool IRBuilder::TranslateInstruction(const Decoder::DecodedInst& Inst) {
-  // POWERARM-M0-TODO(frontend): no A64 translators yet; every instruction raises SIGILL. M1 interpreter / M2 translators replace this.
-  UnimplementedInstruction(Inst);
+  CurrentPC = Inst.PC;
+
+  const auto* Matcher = DecodeInstruction(Inst.Word);
+  if (!Matcher || !Matcher->Handler || !(this->*(Matcher->Handler))(Inst.Word)) {
+    // Handlers reject before emitting anything, so the signal is the whole
+    // translation of this instruction.
+    UnimplementedInstruction(Inst);
+  }
   return true;
 }
 
@@ -117,6 +192,97 @@ void IRBuilder::NoExecInstruction(uint64_t PC) {
                          .TrapNumber = 0,
                          .si_code = 2, ///< SEGV_ACCERR
                        });
+}
+
+// ---------------------------------------------------------------------------
+// Guest register access
+// ---------------------------------------------------------------------------
+
+Ref IRBuilder::LoadGPRSlot(uint32_t Index) {
+  const int Slot = GuestRegToSlot[Index];
+  if (Slot >= 0) {
+    return _LoadRegister(Slot, RegClass::GPR, OpSize::i64Bit);
+  }
+  return _LoadContext(OpSize::i64Bit, RegClass::GPR, FEXCore::Core::CPUState::GPROffset(Index));
+}
+
+void IRBuilder::StoreGPRSlot(uint32_t Index, Ref Value) {
+  const int Slot = GuestRegToSlot[Index];
+  if (Slot >= 0) {
+    // StoreRegister carries its static slot as the node's fixed physical register.
+    Ref Store = _StoreRegister(Value, OpSize::i64Bit);
+    Store->Reg = PhysicalRegister(RegClass::GPRFixed, Slot).Raw;
+  } else {
+    _StoreContext(OpSize::i64Bit, RegClass::GPR, Value, FEXCore::Core::CPUState::GPROffset(Index));
+  }
+}
+
+Ref IRBuilder::LoadX(uint32_t Reg) {
+  if (Reg == 31) {
+    return Constant(0);
+  }
+  return LoadGPRSlot(Reg);
+}
+
+Ref IRBuilder::LoadXSP(uint32_t Reg) {
+  return LoadGPRSlot(Reg);
+}
+
+void IRBuilder::StoreX(uint32_t Reg, Ref Value) {
+  if (Reg == 31) {
+    return;
+  }
+  StoreGPRSlot(Reg, Value);
+}
+
+void IRBuilder::StoreXSP(uint32_t Reg, Ref Value) {
+  StoreGPRSlot(Reg, Value);
+}
+
+void IRBuilder::StoreW(uint32_t Reg, Ref Value) {
+  if (Reg == 31) {
+    return;
+  }
+  StoreGPRSlot(Reg, ZeroExtend32(Value));
+}
+
+void IRBuilder::StoreWSP(uint32_t Reg, Ref Value) {
+  StoreGPRSlot(Reg, ZeroExtend32(Value));
+}
+
+// ---------------------------------------------------------------------------
+// Shared operand forms
+// ---------------------------------------------------------------------------
+
+Ref IRBuilder::ShiftReg(Ref Value, uint32_t ShiftType, uint32_t Amount, bool Is64) {
+  if (Amount == 0) {
+    return Value;
+  }
+  const auto Size = SizeFor(Is64);
+  switch (ShiftType) {
+  case 0: return _Lshl(Size, Value, Constant(Amount));
+  case 1: return _Lshr(Size, Value, Constant(Amount));
+  case 2: return _Ashr(Size, Value, Constant(Amount));
+  default: return _Ror(Size, Value, Constant(Amount));
+  }
+}
+
+Ref IRBuilder::ExtendReg(Ref Value, uint32_t Option, uint32_t Shift) {
+  Ref Extended {};
+  switch (Option) {
+  case 0b000: Extended = _Bfe(OpSize::i64Bit, 8, 0, Value); break;   // UXTB
+  case 0b001: Extended = _Bfe(OpSize::i64Bit, 16, 0, Value); break;  // UXTH
+  case 0b010: Extended = _Bfe(OpSize::i64Bit, 32, 0, Value); break;  // UXTW
+  case 0b011: Extended = Value; break;                               // UXTX
+  case 0b100: Extended = _Sbfe(OpSize::i64Bit, 8, 0, Value); break;  // SXTB
+  case 0b101: Extended = _Sbfe(OpSize::i64Bit, 16, 0, Value); break; // SXTH
+  case 0b110: Extended = _Sbfe(OpSize::i64Bit, 32, 0, Value); break; // SXTW
+  default: Extended = Value; break;                                  // SXTX
+  }
+  if (Shift == 0) {
+    return Extended;
+  }
+  return _Lshl(OpSize::i64Bit, Extended, Constant(Shift));
 }
 
 } // namespace FEXCore::A64
