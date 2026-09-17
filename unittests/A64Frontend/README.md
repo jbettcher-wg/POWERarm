@@ -65,6 +65,7 @@ by default and none with the knob set.
 | `fp_convert` | differential, generated | FCVT{N,P,M,Z,A}{S,U} to W/X, SCVTF/UCVTF from integers and fixed point, FCVTZS/FCVTZU to fixed point, scalar SIMD conversions; every edge value through the rounding variants |
 | `fp_fpcr` | differential | FPCR round trip and the rounding mode reaching arithmetic and conversions |
 | `fp_half` | differential, generated | half precision: arithmetic, FMIN/FMAX(NM), fused group, FABS/FNEG/FSQRT, compares, FCSEL, FMOV forms, FCVT to/from single and double, conversions to/from integers and fixed point, vector FCVTL/FCVTN (half/single and single/double); every rounding mode with and without FZ16; double-to-half rounding and overflow boundaries |
+| `exclusive` | differential, generated | LDXR/LDAXR then STXR/STLXR at every width: success, store without a load, a second store, CLREX in between, NZCV across a successful store; LDAR/STLR. A store to a different address than the load is IMPLEMENTATION DEFINED (the Pi lets it succeed within a region) and is not tested |
 | `hello`, `printf_float`, `strmem`, `fpmath` (and `musl_*`) | differential | static glibc (and musl) programs: printf float formatting, the string/memory routines over lengths and alignments, scalar FP code |
 | `bb_*` | differential | busybox `echo`, `cat`, `wc`, `sort`, `sort -n`, `sha256sum`, `md5sum` |
 

@@ -706,6 +706,49 @@ def gen_fp_half(p):
                     fpcr=fpcr)
 
 
+def gen_exclusive(p):
+    # Exclusive monitor and atomic-width loads/stores. X19 points at buf+128.
+    p.emit("        adrp    x19, buf")
+    p.emit("        add     x19, x19, :lo12:buf")
+    p.emit("        add     x19, x19, #128")
+    pairs = [("ldxr", "stxr"), ("ldaxr", "stlxr")]
+    for _ in range(80):
+        ld, st = p.rng.choice(pairs)
+        size = p.rng.choice([("x", ""), ("w", ""), ("w", "b"), ("w", "h")])
+        r, suffix = size
+        off = p.rng.randrange(0, 12) * 8
+        val = p.value()
+        kind = p.rng.randrange(5)
+        pre = [f"add x20, x19, #{off}"]
+        if kind == 0:
+            # Load, modify, store: succeeds.
+            p.case(pre + [f"{ld}{suffix} {r}1, [x20]", f"add {r}1, {r}1, #1", f"{st}{suffix} w2, {r}3, [x20]"], {3: val}, dumpbuf=True)
+        elif kind == 1:
+            # Store without a load: fails, memory unchanged.
+            p.case(pre + ["msr nzcv, x17", f"{st}{suffix} w2, {r}3, [x20]"], {3: val, 2: 0x55}, dumpbuf=True)
+        elif kind == 2:
+            # A store to another address after a load is IMPLEMENTATION
+            # DEFINED (the Pi succeeds within the same region), so it is not
+            # tested; a load of a different size before the store is used
+            # instead, and must leave the store to the loaded address working.
+            p.case(pre + [f"ldxrb w6, [x20]", f"{ld}{suffix} {r}1, [x20]", f"{st}{suffix} w2, {r}3, [x20]"], {3: val}, dumpbuf=True)
+        elif kind == 3:
+            # Two stores after one load: the second fails.
+            p.case(pre + [f"{ld}{suffix} {r}1, [x20]", f"{st}{suffix} w2, {r}3, [x20]", f"{st}{suffix} w4, {r}5, [x20]"],
+                   {3: val, 5: p.value()}, dumpbuf=True)
+        else:
+            # clrex between load and store: fails.
+            p.case(pre + [f"{ld}{suffix} {r}1, [x20]", "clrex", f"{st}{suffix} w2, {r}3, [x20]"], {3: val}, dumpbuf=True)
+    # NZCV survives a successful store.
+    for nzcv in range(16):
+        p.case(["mov x20, x19", "ldxr x1, [x20]", "stxr w2, x3, [x20]"], {3: 0x1122334455667788}, nzcv, dumpbuf=True)
+    for _ in range(40):
+        r, suffix = p.rng.choice([("x", ""), ("w", ""), ("w", "b"), ("w", "h")])
+        off = p.rng.randrange(0, 12) * 8
+        op = p.rng.choice(["ldar", "stlr"])
+        p.case([f"add x20, x19, #{off}", f"{op}{suffix} {r}1, [x20]"], {1: p.value()}, dumpbuf=op == "stlr")
+
+
 GROUPS = {
     "simd_loadstore": gen_simd_loadstore,
     "simd_copy": gen_simd_copy,
@@ -715,6 +758,7 @@ GROUPS = {
     "fp_convert": gen_fp_convert,
     "fp_fpcr": gen_fp_fpcr,
     "fp_half": gen_fp_half,
+    "exclusive": gen_exclusive,
 }
 
 
