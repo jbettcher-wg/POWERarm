@@ -22,6 +22,8 @@ argv0-child: argc=2 argv0=<self-path>
 execve-path-argv0-is-path: exited=yes code=0 signaled=no
 argv0-child: argc=1 argv0-empty=yes
 execve-empty-argv: exited=yes code=0 signaled=no
+argv0-child: argc=2 argv0=null-envp
+execve-null-envp: exited=yes code=0 signaled=no
 count-child: argv0=counter lines=3 bytes=21
 pipeline-emitter: exited=yes code=0 signaled=no
 pipeline-counter: exited=yes code=4 signaled=no
@@ -32,4 +34,8 @@ vfork-child-write: seen-by-parent=yes
 vfork-exit3: exited=yes code=3 signaled=no
 argv0-child: argc=2 argv0=vforked
 vfork-execve: exited=yes code=0 signaled=no
+fdsize-child: known=yes at-most-1024=yes
+execve-raised-nofile: exited=yes code=0 signaled=no
+vfork-smc: first=1 data-seen=yes code-seen=yes
+vfork-smc-exit: exited=yes code=0 signaled=no
 done

@@ -3,7 +3,9 @@
  * and wait, sigsuspend running the handler before it returns, SA_RESTART on
  * a blocking read, execve preserving argv[0] (multi-call binaries dispatch on
  * it), fork+pipe+dup2+execve pipelines, posix_spawn (including its exec errno)
- * and vfork (a child's write seen by the parent, vfork+execve), and
+ * and vfork (a child's write seen by the parent, vfork+execve, a child's
+ * writes next to and over code the parent ran), a NULL execve envp, the
+ * descriptor table size under a raised RLIMIT_NOFILE, and
  * /proc/self/exe naming the program rather than the emulator. */
 #include "a64sys.h"
 #include <fcntl.h>
@@ -11,6 +13,8 @@
 #include <signal.h>
 #include <spawn.h>
 #include <sys/auxv.h>
+#include <sys/mman.h>
+#include <sys/resource.h>
 #include <sys/wait.h>
 #include <time.h>
 
@@ -18,6 +22,7 @@
 #define MARK_EMIT "--a64sys-proc-emit"
 #define MARK_COUNT "--a64sys-proc-count"
 #define MARK_ENVONLY "A64SYS_PROC_ENVONLY"
+#define MARK_FDSIZE "--a64sys-proc-fdsize"
 
 extern char **environ;
 
@@ -64,6 +69,22 @@ static int mode_count(const char *argv0)
 	printf("count-child: argv0=%s lines=%zu bytes=%zu\n", argv0, lines, bytes);
 	fflush(stdout);
 	return 4;
+}
+
+/* the size of this process's descriptor table (FDSize in /proc/self/status) */
+static int mode_fdsize(void)
+{
+	char line[256];
+	long size = -1;
+	FILE *f = fopen("/proc/self/status", "r");
+	while (f && fgets(line, sizeof(line), f))
+		if (sscanf(line, "FDSize: %ld", &size) == 1)
+			break;
+	if (f)
+		fclose(f);
+	printf("fdsize-child: known=%s at-most-1024=%s\n", YN(size > 0), YN(size > 0 && size <= 1024));
+	fflush(stdout);
+	return 0;
 }
 
 /* ---- handlers ---- */
@@ -312,6 +333,63 @@ static void test_exec(void)
 	char *a4[] = { NULL };
 	char *env4[] = { MARK_ENVONLY "=1", NULL };
 	run_exec("execve-empty-argv", "/proc/self/exe", a4, env4);
+	/* a NULL envp is an empty environment */
+	char *a5[] = { "null-envp", MARK_ARGV0, NULL };
+	run_exec("execve-null-envp", "/proc/self/exe", a5, NULL);
+}
+
+/* A process started with a raised soft RLIMIT_NOFILE (Wine raises it to the
+ * hard limit) still gets an ordinary-sized descriptor table: nothing places a
+ * descriptor near the limit. */
+static void test_fd_table(void)
+{
+	struct rlimit old, raised;
+	getrlimit(RLIMIT_NOFILE, &old);
+	raised = old;
+	raised.rlim_cur = old.rlim_max;
+	setrlimit(RLIMIT_NOFILE, &raised);
+	char *av[] = { "fdsize", MARK_FDSIZE, NULL };
+	run_exec("execve-raised-nofile", "/proc/self/exe", av, environ);
+	setrlimit(RLIMIT_NOFILE, &old);
+}
+
+/* A vfork child writes next to code the parent has run, and rewrites that
+ * code. Both reach the parent, and the parent runs the new code. One 64K
+ * mapping: its first 4K (rounded up to the page size) is RWX and holds the
+ * code, and the data sits 32K in, in a plain RW mapping. On a 64K host that
+ * emulates 4K pages, both are in one host page, which SMC tracking
+ * write-protects once the code has run. */
+static void put_ret(unsigned char *p, unsigned imm)
+{
+	unsigned int insn[2] = { 0x52800000u | (imm << 5), 0xd65f03c0u }; /* mov w0,#imm; ret */
+	memcpy(p, insn, sizeof(insn));
+	__builtin___clear_cache((char *)p, (char *)p + sizeof(insn));
+}
+
+static void test_vfork_smc(void)
+{
+	const size_t gran = 65536;
+	char *res = mmap(NULL, 4 * gran, PROT_NONE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+	char *base = (char *)(((unsigned long)res + gran - 1) & ~(gran - 1));
+	mmap(base, gran, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED, -1, 0);
+	mprotect(base, 4096, PROT_READ | PROT_WRITE | PROT_EXEC);
+	unsigned char *code = (unsigned char *)base;
+	unsigned char *data = (unsigned char *)base + gran / 2;
+	put_ret(code, 1);
+	int (*volatile fn)(void) = (int (*)(void))code;
+	int first = fn();
+	fflush(stdout);
+	pid_t c = vfork();
+	if (c == 0) {
+		data[0] = 42;
+		put_ret(code, 2);
+		_exit(0);
+	}
+	int st;
+	waitpid(c, &st, 0);
+	printf("vfork-smc: first=%d data-seen=%s code-seen=%s\n", first, YN(data[0] == 42), YN(fn() == 2));
+	pr_status("vfork-smc-exit", st);
+	munmap(res, 4 * gran);
 }
 
 static void test_pipeline(void)
@@ -426,6 +504,8 @@ int main(int argc, char **argv)
 		return mode_argv0(argc, argv);
 	if (argc > 1 && !strcmp(argv[1], MARK_EMIT))
 		return mode_emit();
+	if (argc > 1 && !strcmp(argv[1], MARK_FDSIZE))
+		return mode_fdsize();
 	if (argc > 1 && !strcmp(argv[1], MARK_COUNT))
 		return mode_count(argv[0]);
 
@@ -444,6 +524,8 @@ int main(int argc, char **argv)
 	test_sigchld();
 	test_exec();
 	test_pipeline();
+	test_fd_table();
+	test_vfork_smc();
 	done();
 	return 0;
 }
