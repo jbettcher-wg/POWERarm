@@ -515,6 +515,22 @@ with the stub. If the host library then fails to load, `Thunks.cpp:334-357` call
 
 Belongs to M5 (thunks). The server-side preflight cache also serves the rootfs work in M3.
 
+**Discovery, not a database (M5).** `ThunksDB.json` is replaced by discovery. Each guest stub
+carries an ELF note with the sonames it replaces, the ABI and symbol versions it was generated
+against, and its host-half name. The server scans `GuestThunks/` and the host thunk directory,
+reads the notes and matches them against the actual host libraries. Adding a thunk means
+installing its two files: no JSON edit and no POWERarm rebuild. Owner priority: a slower first
+launch (up to about 0.5 s of lookup, cached afterwards) is acceptable if every direct match
+gets thunked automatically.
+
+**Deferred: auto-generated thunks for libraries without a curated thunk.** Signatures would
+come from host headers or DWARF, with a rule that every symbol the guest imports must be safely
+translatable. Hazards: memory ownership across allocators (`libfex_malloc` mitigates),
+libc-owned objects (`FILE*`, `DIR*`, `jmp_buf`), `va_list`, `long double`, C++ ABIs, callbacks,
+and late `dlsym` calls. **Owner decision 2026-09-16:** research this only after several real
+applications run with curated thunks, so the study uses measured import sets rather than
+guesses.
+
 ### 6.3 Scope decision: library thunks only
 
 Decided 2026-09-16: "thunk the toolchains" means **library thunks** (§6.1). Exec redirection
