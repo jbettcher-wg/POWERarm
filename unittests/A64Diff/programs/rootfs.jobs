@@ -1,0 +1,38 @@
+# A64Diff rootfs jobs: dynamically linked programs inside an AArch64 rootfs.
+# Block form (see load_jobs in tool/a64diff.c and the README): TAB-separated,
+# leading blanks ignored.  Guest paths (/usr/bin/...) resolve inside the rootfs;
+# relative paths resolve in the job's fresh working directory.
+job	rootfs.hello-dyn	rootfs	1
+	rootfs	minimal-debian
+	run	-	/usr/bin/hello-dyn	one	two words	
+end
+job	rootfs.hello-dyn-nopie	rootfs	1
+	rootfs	minimal-debian
+	run	-	/usr/bin/hello-dyn-nopie
+end
+job	rootfs.ldso-exec	rootfs	1
+	rootfs	minimal-debian
+	run	-	/lib/ld-linux-aarch64.so.1	/usr/bin/hello-dyn	via-ldso
+end
+job	rootfs.ldso-version	rootfs	1
+	rootfs	minimal-debian
+	run	-	/lib/ld-linux-aarch64.so.1	--version
+end
+job	rootfs.sequence	rootfs	1
+	rootfs	minimal-debian
+	input	@ROOT@/programs/corpus/tree
+	env	GREETING=hi there
+	run	-	/usr/bin/busybox	sh	-c	hello-dyn "$GREETING" > greeting.txt; echo "rc=$?" >> greeting.txt
+	run	-	/usr/bin/busybox	mkdir	-p	out/deep
+	run	a.txt	/usr/bin/busybox	sha256sum
+	run	-	/usr/bin/busybox	cp	b.txt	sub/c.txt	out/
+	try	-	/usr/bin/busybox	false
+	run	-	/usr/bin/busybox	sh	-c	hello-dyn-nopie > out/deep/nopie.txt 2>&1; exit 0
+	output	greeting.txt
+	output	out/
+end
+job	rootfs.missing-output	rootfs	1
+	rootfs	minimal-debian
+	run	-	/usr/bin/hello-dyn
+	output	never-written.txt
+end

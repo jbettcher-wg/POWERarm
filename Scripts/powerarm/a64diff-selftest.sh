@@ -43,6 +43,28 @@ insn() { # NAME BREAKMODE WANT CTL [compare args]
   expect "$name" "$want" "$rc" "$w/$name.log" "$ctl"
 }
 
+rootfs_args() {
+  for idf in "$root"/rootfs/*.id; do
+    [ -f "$idf" ] || continue
+    n=$(sed -n 's/^name //p' "$idf")
+    [ "$(sed -n 's/^location //p' "$idf")" = bundle ] && printf ' --rootfs %s=%s' "$n" "$root/rootfs/$n"
+  done
+  printf ' --rootfs-exec %s' "$here/a64diff-rootfs-exec.sh"
+}
+
+rootfsjobs() { # NAME WANT_EXIT CTL [run args]
+  name=$1 want=$2 ctl=$3
+  shift 3
+  # shellcheck disable=SC2046
+  "$tool" run --jobs "$root/programs/rootfs.jobs" --root "$root" --out "$w/$name" -j "$jobs" $(rootfs_args) "$@" > /dev/null 2>&1
+  set +e
+  "$tool" pcompare --jobs "$root/programs/rootfs.jobs" --golden "$root/golden-rootfs" --actual "$w/$name" --max-detail 0 \
+    --report "$w/$name.report" > "$w/$name.log" 2>&1
+  rc=$?
+  set -e
+  expect "$name" "$want" "$rc" "$w/$name.log" "$ctl"
+}
+
 prog() {
   name=$1 mode=$2 want=$3 ctl=$4
   A64DIFF_BREAK=$mode "$tool" run --jobs "$root/programs/programs.jobs" --root "$root" --out "$w/$name" -j "$jobs" -- "$broken" > /dev/null
@@ -60,6 +82,17 @@ insn blind-nzcv none 2 some-fail --blind-field nzcv
 insn blind-x7 none 2 some-fail --blind-field x7
 prog prog-neutral-wrapper none 0 all-fired
 prog prog-broken-trunc trunc 1 all-fired
+if [ -f "$root/programs/rootfs.jobs" ]; then
+  rootfsjobs rootfs-neutral 0 all-fired
+  rootfsjobs rootfs-broken-outputs 1 all-fired --break-outputs
+  # It must fail on the output files, and only there.
+  if grep -q '^    output ' "$w/rootfs-broken-outputs.report" && ! grep -qE '^    (status|steps|step [0-9]+ std)' "$w/rootfs-broken-outputs.report"; then
+    echo "SELFTEST OK rootfs-broken-outputs: flagged on output files only ($(grep -c '^    output ' "$w/rootfs-broken-outputs.report") files)"
+  else
+    echo "SELFTEST WRONG rootfs-broken-outputs: not flagged on the output files alone"
+    fails=$((fails + 1))
+  fi
+fi
 
 grep -E '^(identity|dp-imm|bitfield|dp-reg|condsel|condcmp|muldiv|loadstore|pairs|branch|sysreg|hint|sysreg-id|tbi|signals) ' "$w/broken-nop.log" | sed 's/^/    nop: /'
 if [ $fails = 0 ]; then
