@@ -271,7 +271,7 @@ On since OPT2-CACHEDEFAULT (`CodeCacheScope=rootfs`). The earlier blockers:
 
 ## Ahead-of-time translation (Q1)
 
-`Scripts/powerarm/aot-translate.sh [-j JOBS] [-m all|calls|entries] <POWERarm> [guest paths or dirs]`
+`Scripts/powerarm/aot-translate.sh [-j JOBS] [-m all|calls|entries] [-s MAXBYTES] <POWERarm> [guest paths or dirs]`
 fills the cache before a binary first runs. The default paths are `/usr/bin`
 and `/usr/lib` of `$POWERARM_ROOTFS`. The script runs one `POWERarm <file>` per
 ELF with `POWERARM_AOTTRANSLATE=<mode>` at nice 19. That process starts up
@@ -295,6 +295,48 @@ The cost is size. `cc1` in mode `all` takes 1.2 GiB of the 2 GiB default
 `CodeCacheMaxSize`. Pre-translating all of `/usr/lib` therefore needs a larger
 cap, or mode `calls` or `entries`. The numbers are in the checklist's Queue
 section.
+
+### Pre-translating the tools a build spawns (Q4, cold runs)
+
+The AOT policy that pays for cold runs is the opposite of the obvious one.
+A build spawns the same few short-lived tools over and over -- `sh`, the `gcc`
+driver, `as`, `ar`, `ld`, `collect2` -- and each of those runs is mostly
+translation: cold, the `gcc` driver burns 40 ms of its own user time against
+7.5 ms warm, and `as` 36 ms against 14 ms. Their cached code is small. The one
+giant binary, `cc1` (39 MB), is the opposite: pre-translating it in mode `all`
+costs 1.2 GiB, and a build re-runs it per source file, so it is warm by the
+second file anyway.
+
+The measured recipe, against the Arch Linux ARM rootfs (one cold and one warm
+slice run each, CPU 108, `POWERARM_PORTABLE=1`, private cache directory):
+
+```
+POWERARM_ROOTFS=<rootfs> POWERARM_APP_CACHE_LOCATION=<dir>/ POWERARM_PORTABLE=1 \
+  taskset -c 0-87 Scripts/powerarm/aot-translate.sh -j 22 -m entries <POWERarm> \
+  /usr/bin/bash /usr/bin/gcc /usr/bin/as /usr/bin/ar /usr/bin/ld /usr/bin/ld.bfd \
+  /usr/lib/gcc/aarch64-unknown-linux-gnu/*/collect2 \
+  /usr/lib/libc.so.6 /usr/lib/ld-linux-aarch64.so.1 \
+  /usr/lib/libbfd-*.so /usr/lib/libopcodes-*.so
+```
+
+| Pre-translation | AOT wall | cache | slice cold | slice warm |
+|---|---|---|---|---|
+| none (empty cache) | -- | 0 | 24.42 s | 21.30 s |
+| 11 tools, mode `entries` | 0.14 s | 28 MiB | 23.73 s | 21.20 s |
+| 11 tools, mode `all` | 0.59 s | 268 MiB | 23.65 s | 21.25 s |
+| 11 tools + `cc1`, mode `entries` | 1.05 s | 115 MiB | 23.70 s | 21.24 s |
+| `/usr/bin` + `/usr/lib` under 4 MiB (877 files), mode `entries` | 2.5 s | 466 MiB | not run | -- |
+
+Mode `entries` is the one to use: it keeps 90% of the cold win of mode `all`
+at a tenth of the size, and adding `cc1` on top buys nothing. `-s MAXBYTES`
+skips ELFs over a size, so `-m entries -s 4194304 /usr/bin /usr/lib` is the
+whole-rootfs form of the same policy; it costs 466 MiB, a quarter of the
+default `CodeCacheMaxSize`, and was not measured on the slice because the
+slice only reaches the eleven binaries above.
+
+This is not the answer to cold runs, only a third of a second of the 3.1 s
+cold-to-warm gap. The rest is `cc1` translating code no earlier run reached,
+and that is translation throughput, not cache policy: see the X series.
 
 ## Next targets
 
