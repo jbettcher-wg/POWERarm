@@ -1,0 +1,56 @@
+rt_sigaction-set0: ret=0
+rt_sigaction-get0: ret=0 handler=h1 flags=0 mask=USR2|TERM
+rt_sigaction-set1: ret=0
+rt_sigaction-get1: ret=0 handler=h1 flags=SA_RESTART mask=USR2|TERM
+rt_sigaction-set2: ret=0
+rt_sigaction-get2: ret=0 handler=h2 flags=SA_SIGINFO mask=USR2|TERM
+rt_sigaction-set3: ret=0
+rt_sigaction-get3: ret=0 handler=h1 flags=SA_ONSTACK mask=USR2|TERM
+rt_sigaction-set4: ret=0
+rt_sigaction-get4: ret=0 handler=h1 flags=SA_NODEFER mask=USR2|TERM
+rt_sigaction-set5: ret=0
+rt_sigaction-get5: ret=0 handler=h1 flags=SA_RESETHAND mask=USR2|TERM
+rt_sigaction-set6: ret=0
+rt_sigaction-get6: ret=0 handler=h2 flags=SA_SIGINFO|SA_ONSTACK|SA_RESTART|SA_NODEFER|SA_RESETHAND mask=USR2|TERM
+rt_sigaction-set7: ret=0
+rt_sigaction-get7: ret=0 handler=h1 flags=SA_NOCLDSTOP|SA_NOCLDWAIT mask=USR2|TERM
+rt_sigaction-old-on-set: ret=0 handler=h1 flags=SA_NOCLDSTOP|SA_NOCLDWAIT mask=USR2|TERM
+rt_sigaction-sig_ign: ret=0 handler=SIG_IGN flags=0 mask=0
+rt_sigaction-sig_dfl: ret=0 handler=SIG_DFL flags=0 mask=0
+rt_sigaction-mask-kill-stop-stripped: ret=0 handler=h1 flags=SA_RESTART mask=INT|RT34|RT64
+rt_sigaction-unsupported-probe: ret=0 handler=h1 flags=SA_EXPOSE_TAGBITS|SA_RESTART mask=0
+rt_sigaction-unknown-bit: ret=0 handler=h1 flags=SA_RESTART mask=0
+rt_sigaction-sig40: ret=0 handler=h2 flags=SA_SIGINFO mask=RT40
+rt_sigaction-sig64: ret=0 handler=h2 flags=SA_SIGINFO mask=RT40
+rt_sigaction-set-sigkill: ret=-1 errno=EINVAL(22)
+rt_sigaction-set-sigstop: ret=-1 errno=EINVAL(22)
+rt_sigaction-ign-sigkill: ret=-1 errno=EINVAL(22)
+rt_sigaction-query-sigkill: ret=0 handler=SIG_DFL flags=0 mask=0
+rt_sigaction-sig0: ret=-1 errno=EINVAL(22)
+rt_sigaction-sig65: ret=-1 errno=EINVAL(22)
+rt_sigaction-bad-sigsetsize: ret=-1 errno=EINVAL(22)
+rt_sigaction-bad-ptr: ret=-1 errno=EFAULT(14)
+rt_sigaction-bad-oldptr: ret=-1 errno=EFAULT(14)
+sigaction-libc: ret=0 handler-matches=yes siginfo=yes restart=yes onstack=yes nodefer=yes resethand=yes mask-alrm=yes mask-int=no
+sigaction-libc-kernel-view: ret=0 handler=h2 flags=SA_SIGINFO|SA_ONSTACK|SA_RESTART|SA_NODEFER|SA_RESETHAND mask=ALRM
+signal-libc-sigkill: err=yes errno=EINVAL(22)
+rt_sigprocmask-setmask-empty: ret=0 cur=0
+rt_sigprocmask-block: ret=0 old=INT|USR1|RT40 cur=INT|USR1|RT40
+rt_sigprocmask-block-more: ret=0 old=INT|USR1|USR2|TERM|RT40 cur=INT|USR1|USR2|TERM|RT40
+rt_sigprocmask-unblock: ret=0 old=USR1|USR2|RT40 cur=USR1|USR2|RT40
+rt_sigprocmask-setmask-kill-stop: ret=0 old=PIPE|RT64 cur=PIPE|RT64
+rt_sigprocmask-setmask-all: ret=0 cur=HUP|INT|QUIT|ILL|TRAP|ABRT|BUS|FPE|USR1|SEGV|USR2|PIPE|ALRM|TERM|STKFLT|CHLD|CONT|TSTP|TTIN|TTOU|URG|XCPU|XFSZ|VTALRM|PROF|WINCH|IO|PWR|SYS|32|33|RT34|RT40|RT64|0x7fffff7c00000000
+rt_sigprocmask-query-bad-how: ret=0
+rt_sigprocmask-bad-how: ret=-1 errno=EINVAL(22)
+rt_sigprocmask-bad-sigsetsize: ret=-1 errno=EINVAL(22)
+rt_sigprocmask-bad-ptr: ret=-1 errno=EFAULT(14)
+sigprocmask-libc: ret=0 winch=yes chld=yes usr1=no kernel-view=CHLD|WINCH
+rt_sigpending: ret=0 pending=0
+sigaltstack-query-initial: ret=0 disabled=yes
+sigaltstack-set: ret=0 sp-matches=yes size-matches=yes flags=0
+sigaltstack-too-small: ret=-1 errno=ENOMEM(12)
+sigaltstack-bad-flags: ret=-1 errno=EINVAL(22)
+sigaltstack-disable: ret=0 old-sp-matches=yes
+sigaltstack-after-disable: disabled=yes
+sigaltstack-disable-zero-size: ret=0
+done

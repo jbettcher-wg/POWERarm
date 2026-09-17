@@ -1,0 +1,53 @@
+getpid: positive=yes
+getppid: positive-or-zero=yes ne-pid=yes
+gettid: equals-pid=yes
+getpid-libc: equals-raw=yes
+uid: getuid==geteuid=yes
+gid: getgid==getegid=yes
+getresuid: ret=0 real-matches=yes eff-matches=yes saved==eff=yes
+getresgid: ret=0 real-matches=yes eff-matches=yes saved==eff=yes
+getgroups-count: nonneg=yes
+getgroups: consistent=yes
+getgroups-too-small: einval-or-single=yes
+setresuid-noop: ret=0
+setregid-noop: ret=0
+getpgid: positive=yes equals-getpgrp=yes
+getsid: positive=yes
+getpgid-bogus: ret=-1 errno=ESRCH(3)
+getsid-bogus: ret=-1 errno=ESRCH(3)
+umask: roundtrip-027=0027 roundtrip-0777=0777 masked-01777=0777 old-restored=yes
+prlimit64-get-nofile: ret=0 soft<=hard=yes soft>=3=yes
+prlimit64-set-nofile: ret=0 old-matches=yes
+prlimit64-readback: soft=64 hard-unchanged=yes
+getrlimit-libc: soft=64
+dup-past-nofile: stopped-before-80=yes errno=EMFILE(24)
+prlimit64-soft-above-hard: einval-or-infinite=yes
+prlimit64-restore: ret=0
+prlimit64-bad-resource: ret=-1 errno=EINVAL(22)
+prlimit64-bad-pid: ret=-1 errno=ESRCH(3)
+prlimit64-get-stack: ret=0 soft<=hard=yes
+prlimit64-core-zero: ret=0 soft=0
+set_tid_address: returns-gettid=yes
+set_robust_list: ret=0
+set_robust_list-bad-len: ret=-1 errno=EINVAL(22)
+get_robust_list: ret=0 head-matches=yes len=24
+rseq: ok-or-enosys=yes
+rseq-bad-len: fails=yes
+getrandom: ret=64
+getrandom-nonblock: ret=64
+getrandom: two-calls-differ=yes
+getrandom: mostly-nonzero=yes
+getrandom-zero-len: ret=0
+getrandom-random-nonblock: one-or-eagain=yes
+getrandom-bad-flags: ret=-1 errno=EINVAL(22)
+getrandom-bad-ptr: ret=-1 errno=EFAULT(14)
+getentropy: ret=0
+sysinfo: ret=0 mem_unit>0=yes uptime>0=yes totalram>0=yes freeram<=totalram=yes procs>0=yes
+sysinfo-bad-ptr: ret=-1 errno=EFAULT(14)
+nprocs-online: positive=yes
+uname: ret=0 sysname=Linux machine=aarch64
+uname: nodename-nonempty=yes release-nonempty=yes version-nonempty=yes
+uname: release-at-least-4.x=yes
+uname-bad-ptr: ret=-1 errno=EFAULT(14)
+gethostname: ret=0 matches-uname=yes
+done

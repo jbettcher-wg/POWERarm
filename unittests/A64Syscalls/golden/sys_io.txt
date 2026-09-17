@@ -1,0 +1,60 @@
+openat-create: ok
+write: ret=11
+lseek-cur-after-write: ret=11
+read-at-eof: ret=0
+lseek-set: ret=6
+read-3: ret=3 data="wor"
+lseek-cur+1: ret=10
+read-short: ret=1 data="d"
+lseek-end-2: ret=9
+lseek-negative: ret=-1 errno=EINVAL(22)
+lseek-bad-whence: ret=-1 errno=EINVAL(22)
+read-zero-len: ret=0
+write-zero-len: ret=0
+pread: ret=5 data="hello" offset-after=3
+pwrite: ret=5 offset-after=3
+pread-past-eof: ret=0
+pread-negative-offset: ret=-1 errno=EINVAL(22)
+after-pwrite: len=11 content="HELLO world"
+write-after-hole: ret=1 size=17
+hole: len=17 content="HELLO world.....X"
+writev: ret=8
+readv: ret=8 a="ab" b="cdef" c="gh"
+writev-negative-count: ret=-1 errno=EINVAL(22)
+readv-zero-count: ret=0
+pwritev: ret=8
+after-pwritev: len=10 content="ababcdefgh"
+preadv: ret=6 a="ba" b="bcde"
+append-write: ret=4 offset=14
+append-pwrite: ret=1
+after-append: len=15 content="ababcdefgh+app*"
+write-on-rdonly: ret=-1 errno=EBADF(9)
+o_trunc: size=0
+dup: distinct=yes greater=yes
+dup-shared-offset: ret=5
+dup3: ret-equals-target=yes cloexec=yes
+dup3-replace: ret-equals-target=yes cloexec=no
+dup3-same: ret=-1 errno=EINVAL(22)
+dup3-bad-flags: ret=-1 errno=EINVAL(22)
+dup3-bad-oldfd: ret=-1 errno=EBADF(9)
+dup-bad: ret=-1 errno=EBADF(9)
+dup2-same: ret-equals-fd=yes
+close-dup: ret=0
+close-target: ret=0
+close-twice: ret=-1 errno=EBADF(9)
+lowest-fd-reused: yes
+pipe2: ret=0 distinct=yes
+pipe2: rd-flags-accmode-rdonly=yes wr-flags-accmode-wronly=yes
+pipe-rw: wrote=8 read=4 data="pipe"
+pipe-rest: read=4 data="data"
+pipe-write-readend: ret=-1 errno=EBADF(9)
+pipe-lseek: ret=-1 errno=ESPIPE(29)
+pipe-pread: ret=-1 errno=ESPIPE(29)
+pipe-eof: ret=0
+pipe2-flags: ret=0 nonblock=yes cloexec=yes
+pipe-nonblock-empty: ret=-1 errno=EAGAIN(11)
+pipe2-bad-flags: ret=-1 errno=EINVAL(22)
+pipe2-bad-ptr: ret=-1 errno=EFAULT(14)
+dev-zero: ret=32 zero=yes
+dev-null: write=3 read=0
+done

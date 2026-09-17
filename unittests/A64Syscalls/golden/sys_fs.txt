@@ -1,0 +1,171 @@
+openat-creat-excl: ok
+openat-creat-excl-exists: fail errno=EEXIST(17)
+openat-creat-no-excl-exists: ok
+openat-directory-on-file: fail errno=ENOTDIR(20)
+openat-nonexistent: fail errno=ENOENT(2)
+openat-creat-missing-parent: fail errno=ENOENT(2)
+openat-file-as-dir: fail errno=ENOTDIR(20)
+openat-nofollow-symlink: fail errno=ELOOP(40)
+openat-follow-symlink: ok
+openat-path-nofollow-symlink: ok
+fstat-opath-symlink: ret=0 type=lnk
+fcntl-getfl-opath: O_NOFOLLOW|O_PATH
+read-opath: ret=-1 errno=EBADF(9)
+readlinkat-empty-path-on-opath: ret=4 data="file"
+openat-directory-on-dir: ok
+read-on-dir: ret=-1 errno=EISDIR(21)
+openat-dir-wronly: fail errno=EISDIR(21)
+openat-dirfd-relative: ok
+openat-bad-dirfd: fail errno=EBADF(9)
+openat-dirfd-is-file: fail errno=ENOTDIR(20)
+openat-absolute-ignores-dirfd: ok
+fstatat-dirfd: ret=0 mode=100640
+o_tmpfile: ok-or-eopnotsupp=yes
+o_tmpfile-link: ok-or-skipped=yes
+fcntl-getfl-rdwr-append: O_RDWR|O_APPEND|O_LARGEFILE
+fcntl-getfd: 0
+fcntl-setfd-cloexec: ret=0 getfd=1
+fcntl-setfd-0: ret=0 getfd=0
+fcntl-setfl-nonblock: ret=0
+fcntl-getfl-after-setfl: O_RDWR|O_APPEND|O_NONBLOCK|O_LARGEFILE
+fcntl-setfl-accmode-ignored: ret=0
+fcntl-getfl-after-setfl2: O_RDWR|O_LARGEFILE
+fcntl-dupfd-cloexec: at-least-50=yes getfd=1
+fcntl-dupfd: at-least-50=yes distinct=yes getfd=0
+fcntl-dupfd-negative: ret=-1 errno=EINVAL(22)
+fcntl-bad-cmd: ret=-1 errno=EINVAL(22)
+fcntl-bad-fd: ret=-1 errno=EBADF(9)
+fcntl-getfl-rdonly-nonblock: O_NONBLOCK|O_LARGEFILE getfd=1
+fcntl-getfl-wronly-sync: O_WRONLY|O_DSYNC|__O_SYNC|O_LARGEFILE
+fcntl-getfl-wronly-dsync: O_WRONLY|O_DSYNC|O_LARGEFILE
+fcntl-getfl-directory-nofollow: O_DIRECTORY|O_NOFOLLOW|O_LARGEFILE
+ioctl-tcgets-regular-file: ret=-1 errno=ENOTTY(25)
+ioctl-unknown-regular-file: ret=-1 errno=ENOTTY(25)
+ioctl-tiocgwinsz-regular-file: ret=-1 errno=ENOTTY(25)
+ioctl-fionread-regular-file: ret=0 avail=10
+stat-file: ret=0 type=reg perm=0644 nlink=1 size=10 blksize-nonzero=yes uid-is-euid=yes
+newfstatat-link-follow: ret=0 type=reg perm=0644 nlink=1 size=10 blksize-nonzero=yes uid-is-euid=yes
+newfstatat-link-follow: same-inode-as-file=yes
+newfstatat-link-nofollow: ret=0 type=lnk perm=0777 nlink=1 size=4 blksize-nonzero=yes uid-is-euid=yes
+newfstatat-dot: ret=0 type=dir perm=0700 blksize-nonzero=yes uid-is-euid=yes
+newfstatat-nonexistent: ret=-1 errno=ENOENT(2)
+newfstatat-bad-flags: ret=-1 errno=EINVAL(22)
+fstat-file: ret=0 type=reg perm=0644 nlink=1 size=10 blksize-nonzero=yes uid-is-euid=yes
+newfstatat-empty-path: ret=0 type=reg perm=0644 nlink=1 size=10 blksize-nonzero=yes uid-is-euid=yes
+fstat-vs-stat: same-inode=yes same-mtime=yes
+fstat-pipe: ret=0 type=fifo perm=0600 nlink=1 size=0 blksize-nonzero=yes uid-is-euid=yes
+fstat-devnull: ret=0 type=chr rdev-is-1:3=yes
+fstat-badfd: ret=-1 errno=EBADF(9)
+statx-file: ret=0 basic-mask-set=yes type=reg perm=0644 nlink=1 size=10
+statx-file: ino-matches-stat=yes dev-matches-stat=yes mtime-matches-stat=yes uid-matches=yes blksize-nonzero=yes
+statx-partial-mask: ret=0 type-and-size-set=yes type=reg size=10
+statx-link-nofollow: ret=0 type=lnk size=4
+statx-empty-path: ret=0 type=reg size=10
+statx-reserved-mask: ret=-1 errno=EINVAL(22)
+statx-bad-flags: ret=-1 errno=EINVAL(22)
+statx-nonexistent: ret=-1 errno=ENOENT(2)
+getdents64: count=9 multiple-calls=yes
+getdents64-entry: name=. type=dir
+getdents64-entry: name=.. type=dir
+getdents64-entry: name=Mid type=reg
+getdents64-entry: name=a.b type=reg
+getdents64-entry: name=alpha type=reg
+getdents64-entry: name=dir1 type=dir
+getdents64-entry: name=fifo type=fifo
+getdents64-entry: name=sym type=lnk
+getdents64-entry: name=zeta type=reg
+getdents64-rewind: count=9
+getdents64-tiny-buffer: ret=-1 errno=EINVAL(22)
+getdents64-bad-ptr: ret=-1 errno=EFAULT(14)
+getdents64-on-file: ret=-1 errno=ENOTDIR(20)
+readdir-libc: count=9
+rmdir-gd-emptied: ret=0
+readlinkat: ret=4 data="file"
+readlinkat-truncated: ret=2 data="fi"
+readlinkat-not-link: ret=-1 errno=EINVAL(22)
+readlinkat-zero-size: ret=-1 errno=EINVAL(22)
+readlinkat-nonexistent: ret=-1 errno=ENOENT(2)
+readlinkat-dangling: ret=38 data="a/very/long/target/that/does/not/exist"
+stat-dangling: ret=-1 errno=ENOENT(2)
+open-symlink-loop: ret=-1 errno=ELOOP(40)
+symlinkat-exists: ret=-1 errno=EEXIST(17)
+readlinkat-proc-self-exe: positive=yes absolute=yes
+faccessat-f_ok: ret=0
+faccessat-rw_ok: ret=0
+faccessat-x_ok-on-0644: denied=yes
+faccessat-r_ok-on-0000: denied-or-root=yes
+faccessat-x_ok-on-0500: ret=0
+faccessat-nonexistent: ret=-1 errno=ENOENT(2)
+faccessat-bad-mode: ret=-1 errno=EINVAL(22)
+faccessat2-eaccess: ret=0 errno=OK(0)
+faccessat2-eaccess-0000: denied-or-root=yes
+faccessat2-nofollow-dangling: ret=0 errno=OK(0)
+faccessat2-follow-dangling: ret=-1 errno=ENOENT(2)
+faccessat2-bad-flags: ret=-1 errno=EINVAL(22)
+faccessat2-empty-path: ret=0 errno=OK(0)
+access-libc: ret=0
+faccessat-libc-eaccess: ret=0
+getcwd: ok=yes is-tmpdir=yes
+getcwd-raw: ret-is-len+1=yes
+chdir-sub: ret=0
+getcwd-sub: suffix=/cd1/cd2
+chdir-dotdot: ret=0
+getcwd-dotdot: suffix=/cd1
+chdir-nonexistent: ret=-1 errno=ENOENT(2)
+chdir-file: ret=-1 errno=ENOTDIR(20)
+fchdir: ret=0
+getcwd-after-fchdir: is-tmpdir=yes
+getcwd-removed: ret=-1 errno=ENOENT(2)
+mkdirat: ret=0 type=dir perm=0755
+mkdirat-exists: ret=-1 errno=EEXIST(17)
+mkdirat-missing-parent: ret=-1 errno=ENOENT(2)
+mkdirat-under-file: ret=-1 errno=ENOTDIR(20)
+mkdirat-nested: ret=0 perm=0700
+unlinkat-dir-without-removedir: ret=-1 errno=EISDIR(21)
+unlinkat-removedir-nonempty: ret=-1 errno=ENOTEMPTY(39)
+unlinkat-removedir-on-file: ret=-1 errno=ENOTDIR(20)
+unlinkat-bad-flags: ret=-1 errno=EINVAL(22)
+unlinkat-nonexistent: ret=-1 errno=ENOENT(2)
+unlinkat-removedir-dot: ret=-1 errno=EINVAL(22)
+unlinkat-removedir: ret=0
+renameat2-noreplace-exists: ret=-1 errno=EEXIST(17)
+renameat2-noreplace-new: ret=0 ra-gone=yes
+renameat2-exchange: ret=0 rc-size=2
+renameat2-exchange-missing: ret=-1 errno=ENOENT(2)
+renameat2-exchange-and-noreplace: ret=-1 errno=EINVAL(22)
+renameat2-overwrite: ret=0 rb-size=2 rc-gone=yes
+renameat2-file-over-dir: ret=-1 errno=EISDIR(21)
+renameat2-dir-over-nonempty-dir: ret=-1 errno=ENOTEMPTY(39)
+renameat2-dir-into-itself: ret=-1 errno=EINVAL(22)
+renameat-dir: ret=0
+renameat2-bad-flags: ret=-1 errno=EINVAL(22)
+linkat: ret=0 nlink=2
+linkat-exists: ret=-1 errno=EEXIST(17)
+linkat-dir: ret=-1 errno=EPERM(1)
+linkat-symlink-nofollow: ret=0 type=lnk
+linkat-symlink-follow: ret=0 type=reg nlink=3
+linkat-bad-flags: ret=-1 errno=EINVAL(22)
+unlink-hard: ret=0
+nlink-after-unlink: 2
+fstat-unlinked-open: nlink=1 read=2
+symlinkat-empty-target: ret=-1 errno=ENOENT(2)
+utimensat-explicit: ret=0
+utimensat-explicit: atime=1000000000.123456789 mtime=1234567890.987654321
+utimensat-omit-atime: ret=0
+utimensat-omit-atime: atime=1000000000.123456789 mtime=1500000000.000000005
+utimensat-now-mtime: ret=0 atime=42.000000000 mtime-recent=yes
+utimensat-negative: ret=0
+utimensat-negative: atime=-1.000000000 mtime=-86400.000000500
+futimens: ret=0
+futimens: atime=7.000000007 mtime=8.000000008
+utimensat-null-path: ret=0
+utimensat-null-path: atime=9.000000009 mtime=10.000000010
+utimensat-symlink-nofollow: ret=0
+utimensat-symlink-nofollow-link: atime=100.000000001 mtime=200.000000002
+utimensat-symlink-nofollow-target: atime=9.000000009 mtime=10.000000010
+utimensat-bad-nsec: ret=-1 errno=EINVAL(22)
+utimensat-bad-flags: ret=-1 errno=EINVAL(22)
+utimensat-nonexistent: ret=-1 errno=ENOENT(2)
+utimensat-both-omit: ret=0
+utimensat-both-omit: atime=9.000000009 mtime=10.000000010
+done

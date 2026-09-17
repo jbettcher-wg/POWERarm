@@ -1,0 +1,46 @@
+clock_gettime-REALTIME: ret=0 nsec-in-range=yes nonneg=yes
+clock_getres-REALTIME: ret=0 sec=0 nsec=1
+clock_gettime-MONOTONIC: ret=0 nsec-in-range=yes nonneg=yes
+clock_getres-MONOTONIC: ret=0 sec=0 nsec=1
+clock_gettime-PROCESS_CPUTIME: ret=0 nsec-in-range=yes nonneg=yes
+clock_getres-PROCESS_CPUTIME: ret=0 sec=0 nsec=1
+clock_gettime-THREAD_CPUTIME: ret=0 nsec-in-range=yes nonneg=yes
+clock_getres-THREAD_CPUTIME: ret=0 sec=0 nsec=1
+clock_gettime-MONOTONIC_RAW: ret=0 nsec-in-range=yes nonneg=yes
+clock_getres-MONOTONIC_RAW: ret=0 sec=0 nsec=1
+clock_gettime-REALTIME_COARSE: ret=0 nsec-in-range=yes nonneg=yes
+clock_getres-REALTIME_COARSE: ret=0 sec=0 positive-le-10ms=yes
+clock_gettime-MONOTONIC_COARSE: ret=0 nsec-in-range=yes nonneg=yes
+clock_getres-MONOTONIC_COARSE: ret=0 sec=0 positive-le-10ms=yes
+clock_gettime-BOOTTIME: ret=0 nsec-in-range=yes nonneg=yes
+clock_getres-BOOTTIME: ret=0 sec=0 nsec=1
+clock_getres-null: ret=0
+monotonic-syscall: non-decreasing=yes
+monotonic-libc: non-decreasing=yes
+monotonic-libc-vs-raw: within-1s=yes ordered=yes
+gettimeofday: ret=0 usec-in-range=yes within-1s-of-realtime=yes after-2020=yes
+gettimeofday-null: ret=0
+gettimeofday-libc: ret=0 within-1s-of-realtime=yes
+time-libc: within-2s-of-realtime=yes
+nanosleep-10ms: ret=0 elapsed>=10ms=yes elapsed<5s=yes
+nanosleep-zero: ret=0
+clock_nanosleep-rel-20ms: ret=0 elapsed>=20ms=yes
+clock_nanosleep-abs-15ms: ret=0 reached-target=yes
+clock_nanosleep-abs-past: ret=0 immediate=yes
+clock_nanosleep-realtime-abs: ret=0
+clock_nanosleep-libc: ret=0
+clock_gettime-bad-clock: ret=-1 errno=EINVAL(22)
+clock_gettime-neg-clock: fails=yes
+clock_getres-bad-clock: ret=-1 errno=EINVAL(22)
+clock_gettime-bad-ptr: ret=-1 errno=EFAULT(14)
+gettimeofday-bad-ptr: ret=-1 errno=EFAULT(14)
+nanosleep-nsec-1e9: ret=-1 errno=EINVAL(22)
+nanosleep-nsec-neg: ret=-1 errno=EINVAL(22)
+nanosleep-sec-neg: ret=-1 errno=EINVAL(22)
+clock_nanosleep-nsec-1e9: ret=-1 errno=EINVAL(22)
+clock_nanosleep-bad-clock: ret=-1 errno=EINVAL(22)
+clock_nanosleep-thread-cputime: ret=-1 errno=EOPNOTSUPP(95)
+nanosleep-bad-ptr: ret=-1 errno=EFAULT(14)
+clock_settime-monotonic: ret=-1 errno=EINVAL(22)
+process-cputime: advances=yes
+done

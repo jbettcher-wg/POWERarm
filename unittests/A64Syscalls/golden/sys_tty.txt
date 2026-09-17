@@ -1,0 +1,64 @@
+posix_openpt: ok
+grantpt: ret=0
+unlockpt: ret=0
+tiocgptn: ret=0 set=yes
+ptsname: prefix-dev-pts=yes
+open-slave: ok
+isatty: master=1 slave=1
+tcgets-raw-slave: ret=0
+initial: iflag=ICRNL|IXON
+initial: oflag=OPOST|ONLCR
+initial: cflag=CS8|CREAD|baud=B38400|ibaud=B0
+initial: lflag=ISIG|ICANON|ECHO|ECHOE|ECHOK|ECHOCTL|ECHOKE|IEXTEN
+initial: line=0 cc=VINTR:3,VQUIT:28,VERASE:127,VKILL:21,VEOF:4,VEOL:0,VEOL2:0,VSTART:17,VSTOP:19,VSUSP:26,VMIN:1,VTIME:0,VREPRINT:18,VDISCARD:15,VWERASE:23,VLNEXT:22,VSWTC:0 cc17=0 cc18=0
+tcgets2-raw-slave: ret=0 ispeed=38400 ospeed=38400 matches-tcgets=yes
+tcgetattr: ret=0 flags-match-raw=yes cc-match-raw=yes ospeed=B38400 ispeed=B38400
+tcgets-raw-master: ret=0
+master: iflag=ICRNL|IXON
+master: oflag=OPOST|ONLCR
+master: cflag=CS8|CREAD|baud=B38400|ibaud=B0
+master: lflag=ISIG|ICANON|ECHO|ECHOE|ECHOK|ECHOCTL|ECHOKE|IEXTEN
+master: line=0 cc=VINTR:3,VQUIT:28,VERASE:127,VKILL:21,VEOF:4,VEOL:0,VEOL2:0,VSTART:17,VSTOP:19,VSUSP:26,VMIN:1,VTIME:0,VREPRINT:18,VDISCARD:15,VWERASE:23,VLNEXT:22,VSWTC:0 cc17=0 cc18=0
+tcsetattr-tcsanow-raw: ret=0
+after-cfmakeraw: iflag=0
+after-cfmakeraw: oflag=ONLCR
+after-cfmakeraw: cflag=CS8|CREAD|baud=B38400|ibaud=B0
+after-cfmakeraw: lflag=ECHOE|ECHOK|ECHOCTL|ECHOKE
+after-cfmakeraw: line=0 cc=VINTR:3,VQUIT:28,VERASE:127,VKILL:21,VEOF:4,VEOL:0,VEOL2:0,VSTART:17,VSTOP:19,VSUSP:26,VMIN:1,VTIME:0,VREPRINT:18,VDISCARD:15,VWERASE:23,VLNEXT:22,VSWTC:0 cc17=0 cc18=0
+tcsets-raw: ret=0
+tcsets-raw: vmin=3 vtime=7 baud=B9600 equal=yes
+cfgetospeed-after-b9600: B9600
+tcsetsw-raw: ret=0 oflag-opost-onlcr=yes baud=B115200 equal=yes
+raw-master-to-slave: wrote=4 read=4 data="abc\r"
+onlcr-slave-to-master: wrote=3 read=4 data="hi\r\n"
+fionread-slave: avail=7
+tcsetsf-raw: ret=0 echo=yes avail-after=0
+tcflsh-input: ret=0 avail-after=0
+tiocoutq: ret=0 outq=0
+tcflsh-bad-arg: ret=-1 errno=EINVAL(22)
+tcsetattr-tcsadrain-canon: ret=0
+canon-read-line1: read=4 data="one\n"
+canon-read-line2: read=4 data="two\n"
+tcsets2-bother: ret=0 baud=BOTHER ospeed=12345 ispeed=12345
+tiocgwinsz-initial: ret=0 row=0 col=0 xpix=0 ypix=0
+tiocswinsz-master-tiocgwinsz-slave: set=0 get=0 row=43 col=132 xpix=640 ypix=480
+tiocgwinsz-libc: ret=0 row=43 col=132
+tiocgpgrp-not-ctty: ret=-1 errno=ENOTTY(25)
+tiocgsid-not-ctty: ret=-1 errno=ENOTTY(25)
+child-tiocsctty: ret=0 errno=OK(0)
+child-tiocgpgrp: ret=0 matches-getpgrp=yes
+child-tiocgsid: ret=0 matches-getsid=yes
+child-tiocspgrp-self: ret=0
+child-tcgetpgrp-libc: matches=yes
+child-tiocspgrp-bogus: ret=-1 errno=ESRCH(3)
+child-tiocspgrp-negative: ret=-1 errno=EINVAL(22)
+child-open-dev-tty: ok=yes
+child: exited=yes code=0
+tcgets-devnull: ret=-1 errno=ENOTTY(25)
+tiocgwinsz-devnull: ret=-1 errno=ENOTTY(25)
+tcgets-bad-ptr: ret=-1 errno=EFAULT(14)
+tcsets-bad-ptr: ret=-1 errno=EFAULT(14)
+tcgets-bad-fd: ret=-1 errno=EBADF(9)
+unknown-ioctl-pty: ret=-1 errno=ENOTTY(25)
+master-read-after-slave-close: ret=-1 errno=EIO(5)
+done

@@ -1,0 +1,39 @@
+wait4-no-children: ret=-1 errno=ECHILD(10)
+pipe2-cloexec: ret=0
+pipe2-plain: ret=0
+fork: parent-sees-positive=yes
+wait4-wnohang-running: ret=0
+pipe-from-child: ppid-ok=yes pid-differs=yes global=1
+wait4-exit42: pid-matches=yes exited=yes code=42 signaled=no stopped=no
+wait4-rusage: utime-nonneg=yes usec-in-range=yes minflt-positive=yes
+fork-cow: global-unchanged=yes private-unchanged=yes shared-changed=yes
+wait4-reaped-again: ret=-1 errno=ECHILD(10)
+wait4-bogus-pid: ret=-1 errno=ECHILD(10)
+wait4-bad-options: ret=-1 errno=EINVAL(22)
+fork-shared-offset: parent-offset=5
+child-exit_group: pid-matches=yes exited=yes code=5 signaled=no stopped=no
+child-exit: pid-matches=yes exited=yes code=6 signaled=no stopped=no
+child-exit_group-truncated: pid-matches=yes exited=yes code=3 signaled=no stopped=no
+child-return-from-child-libc-exit: pid-matches=yes exited=yes code=0 signaled=no stopped=no
+raw-clone-sigchld: pid-matches=yes exited=yes code=11 signaled=no stopped=no
+raw-clone-no-exitsig-wclone: pid-matches=yes exited=yes code=12 signaled=no stopped=no
+vfork-exit13: pid-matches=yes exited=yes code=13 signaled=no stopped=no
+child-sigkill: pid-matches=yes exited=no signaled=yes sig=9 core=no stopped=no
+exec-child: argc=4 arg1=--a64sys-exec-child
+exec-child: env-mark=hello-exec path-unset=yes
+exec-child: cloexec-fd-closed=yes
+exec-child: plain-fd-open=yes
+exec-child: plain-fd-read=5 data=child
+exec-child: usr1-handler-reset-to-dfl=yes
+exec-child: usr2-ignore-kept=yes
+exec-child: mask-winch-kept=yes mask-usr1=no
+exec-child: altstack-disabled=yes
+execve-self: pid-matches=yes exited=yes code=3 signaled=no stopped=no
+execve-nonexistent: failed=yes errno=ENOENT(2)
+execve-notexec: failed=yes errno=EACCES(13)
+execve-garbage: failed=yes errno=ENOEXEC(8)
+execve-script: failed=yes errno=ENOENT(2)
+execve-adir: failed=yes errno=EACCES(13)
+execve-notexec/x: failed=yes errno=ENOTDIR(20)
+execve-bad-argv: efault=yes
+done
