@@ -196,3 +196,16 @@ rootfs 6/6; `check-code-cache.sh`, `check-user-strings.sh` and `check-rootfs-ser
 - `mulld` measured 8.7 cycles vs the documented 5 (PIPE §8).
 - Whether mixed integer/vector workloads use more of the core's width (issue-queue stall events).
 - Half-precision conversion `xscvhpdp` at 38 cycles (NEON §7): is there a faster exact path?
+
+## Queue (scheduled 2026-09-17, in order)
+
+Starts after the CLAUDE-SIMD workstream (Claude CLI instruction gaps) merges.
+
+| Step | Work | Owner | Gate |
+|---|---|---|---|
+| Q1 | AOT/background pre-translation of rootfs binaries (POWERarmServer or `POWERarmOfflineCompiler`), so cold runs behave like warm ones | standard agent | slice cold ≈ slice warm; zlib `configure` cold |
+| Q2 | Lazy cache install: install cached blocks on first reach instead of all ~11.4k at `cc1` start | standard agent (may run alongside Q1 if file areas don't overlap) | `gcc -c empty.c` warm; slice warm |
+| Q3 | Compute checklist items for the remaining `cc1` gap: P1(b), IR-walk merging, F1–F8, N1, remaining P/N rows | standard agents, split by area | `cc1 lvm.c`; slice |
+| Q4 | Review of lowerings and performance changes (correctness, ISA gating, missed wins) against the research docs | **one Fable agent**, after Q1–Q3 | written review; fixes routed to standard agents |
+
+Measurement rules for every step: one run per change on a small slice, full gates and full zlib/Lua numbers once at the end, `POWERARM_PORTABLE=1` while a binfmt registration exists, and a report within about an hour.
