@@ -764,6 +764,20 @@ struct sink {
   int shown, max;
 };
 
+/* If the emulator reported "... at pc 0xADDR", place it relative to the
+ * instruction under test: a stop in the prologue means the harness's own
+ * bootstrap instructions (adrp/add/ldr/ldp/mov sp/msr nzcv) are the problem. */
+static void where_stopped(FILE* f, const struct row* r, const char* err) {
+  const char* p = err ? strstr(err, "at pc 0x") : NULL;
+  if (!p || !r->addr || !r->enc) return;
+  uint64_t pc = strtoull(p + 6, NULL, 16), insn = strtoull(r->addr, NULL, 16);
+  uint64_t n = !strcmp(r->enc, "-") ? 0 : (strlen(r->enc) + 1) / 9;
+  const char* where = pc < insn ? "in the harness prologue, before the instruction under test"
+                      : pc < insn + 4 * n ? "at the instruction under test"
+                                          : "after the instruction under test (landing pads / dump stub)";
+  fprintf(f, "    stopped at pc 0x%" PRIx64 ": %s\n", pc, where);
+}
+
 static void emit_row_detail(struct sink* s, const struct row* r, const char* what, const struct a64d_rec* g, const struct a64d_rec* a,
                             const int* d, int nd, struct status gs, struct status as, const char* err) {
   FILE* outs[2] = {s->report, s->shown < s->max ? stdout : NULL};
@@ -777,6 +791,7 @@ static void emit_row_detail(struct sink* s, const struct row* r, const char* wha
       for (int i = 0; i < nd; i++) print_field(f, r, d[i], g, a);
     print_init(f, r);
     err_excerpt(f, err);
+    where_stopped(f, r, err);
   }
   s->shown++;
 }
