@@ -38,13 +38,16 @@ namespace {
   }
 } // namespace
 
-void IRBuilder::LoadStoreSingle(bool IsLoad, OpSize Size, bool SignExtend, bool Is64Dest, uint32_t Rt, Ref Address) {
+void IRBuilder::LoadStoreSingle(bool IsLoad, OpSize Size, bool SignExtend, bool Is64Dest, uint32_t Rt, Ref Address, Ref Offset) {
+  if (!Offset) {
+    Offset = Invalid();
+  }
   if (!IsLoad) {
-    _StoreMem(RegClass::GPR, Size, LoadX(Rt), Address, Invalid(), OpSize::i8Bit, MemOffsetType::SXTX, 1);
+    _StoreMem(RegClass::GPR, Size, LoadX(Rt), Address, Offset, OpSize::i8Bit, MemOffsetType::SXTX, 1);
     return;
   }
 
-  Ref Value = _LoadMem(RegClass::GPR, Size, Address, Invalid(), OpSize::i8Bit, MemOffsetType::SXTX, 1);
+  Ref Value = _LoadMem(RegClass::GPR, Size, Address, Offset, OpSize::i8Bit, MemOffsetType::SXTX, 1);
   if (SignExtend && Size != OpSize::i64Bit) {
     Value = _Sbfe(OpSize::i64Bit, IR::OpSizeAsBits(Size), 0, Value);
   }
@@ -105,11 +108,15 @@ bool IRBuilder::LoadStoreImm9(uint32_t Word) {
   const auto MemSize = IR::SizeToOpSize(1U << Size);
 
   Ref Base = LoadXSP(Rn);
-  Ref Offsetted = Offset ? _Add(OpSize::i64Bit, Base, Constant(Offset)) : Base;
+  Ref Offsetted = (Offset && WriteBack) ? _Add(OpSize::i64Bit, Base, Constant(Offset)) : Base;
   Ref Address = PostIndex ? Base : Offsetted;
 
   if (Decode.Op == MemOp::Store) {
     // The store precedes the writeback so a faulting store leaves Rn intact.
+    if (!WriteBack) {
+      LoadStoreSingle(false, MemSize, false, false, Rt, Base, Offset ? _InlineConstant(Offset) : nullptr);
+      return true;
+    }
     _StoreMem(RegClass::GPR, MemSize, LoadX(Rt), Address, Invalid(), OpSize::i8Bit, MemOffsetType::SXTX, 1);
     if (WriteBack) {
       StoreXSP(Rn, Offsetted);
@@ -128,7 +135,9 @@ bool IRBuilder::LoadStoreImm9(uint32_t Word) {
     return true;
   }
 
-  LoadStoreSingle(true, MemSize, Decode.SignExtend, Decode.Is64Dest, Rt, Address);
+  // No writeback: the offset rides on the load as a displacement instead of an
+  // Add into a scratch register.
+  LoadStoreSingle(true, MemSize, Decode.SignExtend, Decode.Is64Dest, Rt, Base, Offset ? _InlineConstant(Offset) : nullptr);
   return true;
 }
 
@@ -145,8 +154,8 @@ bool IRBuilder::STRx_LDRx_imm_2(uint32_t Word) {
 
   const uint64_t Offset = Bits(Word, 21, 10) << Size;
   Ref Base = LoadXSP(Bits(Word, 9, 5));
-  Ref Address = Offset ? _Add(OpSize::i64Bit, Base, Constant(Offset)) : Base;
-  LoadStoreSingle(Decode.Op == MemOp::Load, IR::SizeToOpSize(1U << Size), Decode.SignExtend, Decode.Is64Dest, Bits(Word, 4, 0), Address);
+  LoadStoreSingle(Decode.Op == MemOp::Load, IR::SizeToOpSize(1U << Size), Decode.SignExtend, Decode.Is64Dest, Bits(Word, 4, 0), Base,
+                  Offset ? _InlineConstant(Offset) : nullptr);
   return true;
 }
 
