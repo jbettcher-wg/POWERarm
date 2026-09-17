@@ -2,13 +2,14 @@
   <img src="docs/powerarm/assets/powerarm-logo.png" alt="POWERarm: AArch64 on POWER" width="640">
 </p>
 
-# POWERarm
 <p align="center">
+
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 ![Host: ppc64le](https://img.shields.io/badge/host-ppc64le%20(POWER8%2B)-2f4f7f)
 ![Guest: AArch64](https://img.shields.io/badge/guest-AArch64%20Linux-0091bd)
 ![Page size: 4K and 64K](https://img.shields.io/badge/page%20size-4K%20%7C%2064K-6c757d)
 ![Status: experimental](https://img.shields.io/badge/status-experimental-orange)
+
 </p>
 
 **Run AArch64 Linux programs on POWER.** POWERarm is a user-mode emulator for **ppc64le** hosts
