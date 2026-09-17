@@ -64,11 +64,11 @@ struct StartupTimes {
     rusage RU {};
     getrusage(RUSAGE_SELF, &RU);
     auto Line = fextl::fmt::format("POWERarm startup [{}] {}: premain-cpu {:.2f} config {:.2f} server {:.2f} loader {:.2f} core {:.2f} map {:.2f} "
-                                   "guest {:.2f} save {:.2f} teardown {:.2f} main {:.2f} ms; user {:.2f} sys {:.2f} ms\n",
+                                   "guest {:.2f} save {:.2f} teardown {:.2f} main {:.2f} ms; user {:.2f} sys {:.2f} ms; minflt {} majflt {}\n",
                                    ::getpid(), Name, static_cast<double>(PreMainCPUNS) / 1e6, MS(MAIN, CONFIG), MS(CONFIG, SERVER),
                                    MS(SERVER, LOADER), MS(LOADER, CORE), MS(CORE, MAP), MS(MAP, GUEST), MS(GUEST, SAVE), MS(SAVE, END),
                                    MS(MAIN, END), RU.ru_utime.tv_sec * 1e3 + RU.ru_utime.tv_usec / 1e3,
-                                   RU.ru_stime.tv_sec * 1e3 + RU.ru_stime.tv_usec / 1e3);
+                                   RU.ru_stime.tv_sec * 1e3 + RU.ru_stime.tv_usec / 1e3, RU.ru_minflt, RU.ru_majflt);
     (void)::write(STDERR_FILENO, Line.data(), Line.size());
   }
 };

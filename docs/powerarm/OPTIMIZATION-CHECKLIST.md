@@ -158,6 +158,15 @@ CPU 100, wall time per invocation; one run per change. Before this series: 121.1
 |---|---|---|---|---|
 | S0 | Env-gated phase timer `POWERARM_STARTUPTIMES=1`: CPU used before `main`, config, server, loader, core init, map, guest, cache save, teardown | `FEXInterpreter.cpp`, `LinuxSyscalls/StartupTimes.h`, `Syscalls/Thread.cpp` | done | warm, per process (ms): premain CPU 2-3, config 0.25, server 0.05, loader 0.05, core 1.0, map 0.2-0.6, guest `cc1` 59 / `as` 12.5 / driver 11 (own), save 0, teardown 6.1-6.8 (every process, `true` included: 6 of its 11 ms) |
 | S1 | Telemetry file at exit: one write, no `fsync` (was a `write` per line and an `fsync` that took 6-16 ms in every process) | `FEXCore/Source/Utils/Telemetry.cpp` | done | 121.1 -> 96.2 ms; teardown 6.1-6.8 -> 0.15-0.3 ms per process. Shared code: applies to fastppcx86 |
+| S2 | Code cache load timer (two `clock_gettime` per installed block, 1.2% of cycles) only with `POWERARM_CODECACHESTATS=1`; phase timer also prints minor/major faults | `Core/CodeCache.cpp`, `LinuxSyscalls/StartupTimes.h` | done | 94.8 -> 94.2 ms, within noise (both measured with `POWERARM_PORTABLE=1`, see below) |
+| S3 | L2 lookup cache indexed per A64 instruction (1024 entries per guest page, not 4096) | `Core/LookupCache.h` | reverted | 96.2 -> 95.1 ms, minor faults unchanged (1411 vs 1412 for `cc1`): the faults are in L1, not L2 |
+| S4 | Per-thread L1 (16 MiB at `MAX_L1_ENTRIES`, indexed by RIP) faulted and zeroed page by page: about 500 read plus write faults of 64 KiB pages per `cc1`, 30% of all faults | `Core/LookupCache.*` | not done | `POWERARM_THP=lookup` tried: `true` sys 2 -> 10 ms. Candidates: a smaller L1 for short processes (DynamicL1Cache costs a mask load per probe), or avoid the zero-page read fault before the write |
+
+Measurement note: at 09:41 on 2026-09-17 a binfmt_misc handler `POWERarm-aarch64` was registered
+(interpreter `~/Development/POWERarm/build-powerarm/Bin/POWERarm`, flags POCF). From then on every
+guest `execve` runs that binary, not the one under test, so `cc1` and `as` of a `gcc` run silently
+use another build (warm 94.8 ms became 109 ms with the same binary). `POWERARM_PORTABLE=1` skips
+binfmt; S2 and later numbers use it. S0 and S1 were measured and gated before the registration.
 
 ## Follow-ups to measure
 
