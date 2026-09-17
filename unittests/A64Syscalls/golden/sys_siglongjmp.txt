@@ -1,0 +1,12 @@
+raise: iterations=100000 jumped=100000 mask-restored=yes
+longjmp-blocked: jumped=20000 still-blocked=20000
+longjmp-nodefer: jumped=20000 blocked=0
+segv: faults=100000 jumped=93750 returned=6250 addr-ok=yes read-zero=yes sum=b864743a1a727151
+nested: inner=40000 out-of-both=20000 outer-returned=20000 raise-returned=20000 mask-restored=yes keep=4eb9e8d26e44aa03
+nodefer-recursive: jumped=10000 depth8=10000 max=8
+altstack: jumped=25000 nested-jumped=25000 on-altstack=50000 off-altstack=0 nested-on-altstack=25000 ss_onstack-after-jump=0
+callret: jumped=20000 sum=23a9a9eb9f2a8376 rec=0aa21305d0bccbc8
+deepening: jumped=20000 sum=9ee3f5a1d1475be0
+timer: hits>=3000 state-ok=yes rec=b01d534fb657a9e6
+threads: created=4 jumped=80000
+done
