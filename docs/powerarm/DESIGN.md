@@ -531,6 +531,14 @@ and late `dlsym` calls. **Owner decision 2026-09-16:** research this only after 
 applications run with curated thunks, so the study uses measured import sets rather than
 guesses.
 
+**Choosing thunk targets: by time spent, not by call count.** Rank candidates by how much of
+the program's CPU time the emulated library takes, measured with guest time attributed per
+shared object (the JIT's perf map + `perf`, or the FEXCore profiler). Call counts don't
+matter. Take the highest-time libraries first, and go further down the list only if needed.
+Every thunked call pays a fixed boundary-crossing cost, so a library called very often for
+very little work each time can come out *slower* thunked. Measure the crossing cost alongside,
+and require a net win before a library joins the curated set.
+
 ### 6.3 Scope decision: library thunks only
 
 Decided 2026-09-16: "thunk the toolchains" means **library thunks** (§6.1). Exec redirection
