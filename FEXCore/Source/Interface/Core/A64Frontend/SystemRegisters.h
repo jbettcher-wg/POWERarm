@@ -31,10 +31,9 @@ inline constexpr uint64_t CTR_EL0 = 0x9444C004;
 // Pi 5: 0x4. DZP=0, BlockSize=4: DC ZVA zeroes 64 bytes.
 inline constexpr uint64_t DCZID_EL0 = 0x4;
 
-// ID_AA64PFR0_EL1. Pi 5: 0x110011 (FP=1 and AdvSIMD=1 advertise half
-// precision). M1: EL0 and EL1 AArch64-only (1), FP=0 and AdvSIMD=0
-// (implemented, no FP16: fphp/asimdhp stay clear).
-inline constexpr uint64_t ID_AA64PFR0_EL1 = 0x0000000000000011;
+// ID_AA64PFR0_EL1. Pi 5: 0x110011. EL0 and EL1 AArch64-only (1), FP=1 and
+// AdvSIMD=1: implemented with half precision (fphp/asimdhp), as on the Pi.
+inline constexpr uint64_t ID_AA64PFR0_EL1 = 0x0000000000110011;
 // Pi 5: 0.
 inline constexpr uint64_t ID_AA64PFR1_EL1 = 0;
 // Pi 5: 0x6 (DebugVer only).
@@ -47,9 +46,8 @@ inline constexpr uint64_t ID_AA64ISAR1_EL1 = 0;
 inline constexpr uint64_t ID_AA64MMFR0_EL1 = 0x00000111FF000000;
 
 // FPCR bits EL0 can set. Pi 5 reads back 0x07C80000 after writing all-ones:
-// AHP(26), DN(25), FZ(24), RMode(23:22) and FZ16(19). FZ16 is left out
-// because the presented CPU has no FP16 (a deliberate difference from the Pi).
-inline constexpr uint64_t FPCR_WRITABLE_MASK = 0x07C00000;
+// AHP(26), DN(25), FZ(24), RMode(23:22) and FZ16(19), the same as here.
+inline constexpr uint64_t FPCR_WRITABLE_MASK = 0x07C80000;
 // FPSR bits EL0 can set. Pi 5: 0xF800009F (NZCV, QC, IDC, IXC..IOC).
 inline constexpr uint64_t FPSR_WRITABLE_MASK = 0xF800009F;
 

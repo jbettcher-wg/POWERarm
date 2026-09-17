@@ -39,7 +39,7 @@
         mov     x0, #-1
         msr     fpcr, x0
         mrs     x0, fpcr
-        CHECK   fpcr-writable-mask, 0x07c00000
+        CHECK   fpcr-writable-mask, 0x07c80000
         msr     fpcr, x19
         mrs     x0, fpcr
         CHECK   fpcr-restore, 0
@@ -72,7 +72,7 @@
         mrs     x0, revidr_el1
         CHECK   revidr_el1, 0
         mrs     x0, id_aa64pfr0_el1
-        CHECK   id_aa64pfr0_el1, 0x11
+        CHECK   id_aa64pfr0_el1, 0x110011
         mrs     x0, id_aa64pfr1_el1
         CHECK   id_aa64pfr1_el1, 0
         mrs     x0, id_aa64dfr0_el1

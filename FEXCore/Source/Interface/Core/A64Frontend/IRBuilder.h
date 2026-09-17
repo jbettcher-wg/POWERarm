@@ -119,6 +119,7 @@ public:
   bool LoadStoreImm9(uint32_t Word); bool STRx_LDRx_imm_2(uint32_t Word);
   bool PRFM_imm(uint32_t Word);
   bool LoadStoreRegOffset(uint32_t Word);
+  bool LoadExclusive(uint32_t Word); bool StoreExclusive(uint32_t Word); bool LoadStoreAtomicWidth(uint32_t Word);
   // Data processing (register).
   bool UDIV(uint32_t Word); bool SDIV(uint32_t Word);
   bool LSLV(uint32_t Word); bool LSRV(uint32_t Word); bool ASRV(uint32_t Word); bool RORV(uint32_t Word);
@@ -132,6 +133,55 @@ public:
   bool MADD(uint32_t Word); bool MSUB(uint32_t Word);
   bool SMADDL(uint32_t Word); bool SMSUBL(uint32_t Word); bool UMADDL(uint32_t Word); bool UMSUBL(uint32_t Word);
   bool SMULH(uint32_t Word); bool UMULH(uint32_t Word);
+  // SIMD&FP register loads and stores.
+  bool LDR_lit_fpsimd(uint32_t Word); bool STP_LDP_fpsimd(uint32_t Word);
+  bool STUR_LDUR_fpsimd(uint32_t Word); bool STR_LDR_imm_fpsimd_1(uint32_t Word); bool STR_LDR_imm_fpsimd_2(uint32_t Word);
+  bool STR_LDR_reg_fpsimd(uint32_t Word);
+  bool LDx_STx_mult(uint32_t Word);
+  // Advanced SIMD integer.
+  bool DUP_gen(uint32_t Word); bool DUP_elt_1(uint32_t Word); bool DUP_elt_2(uint32_t Word);
+  bool UMOV(uint32_t Word); bool SMOV(uint32_t Word); bool INS_gen(uint32_t Word); bool INS_elt(uint32_t Word);
+  bool MOVI(uint32_t Word); bool FMOV_vec_imm(uint32_t Word);
+  bool ADD_vector(uint32_t Word); bool SUB_2(uint32_t Word);
+  bool CMEQ_reg_2(uint32_t Word); bool CMGT_reg_2(uint32_t Word); bool CMGE_reg_2(uint32_t Word);
+  bool CMHS_2(uint32_t Word); bool CMHI_2(uint32_t Word); bool CMTST_2(uint32_t Word);
+  bool UMAX(uint32_t Word); bool UMIN(uint32_t Word); bool SMAX(uint32_t Word); bool SMIN(uint32_t Word);
+  bool ADD_1(uint32_t Word); bool SUB_1(uint32_t Word);
+  bool CMEQ_reg_1(uint32_t Word); bool CMGT_reg_1(uint32_t Word); bool CMGE_reg_1(uint32_t Word);
+  bool CMHS_1(uint32_t Word); bool CMHI_1(uint32_t Word); bool CMTST_1(uint32_t Word);
+  bool SIMDLogical(uint32_t Word);
+  bool ADDP_vec(uint32_t Word); bool UMAXP(uint32_t Word); bool UMINP(uint32_t Word);
+  bool ADDV(uint32_t Word); bool UMAXV(uint32_t Word); bool UMINV(uint32_t Word);
+  bool CMEQ_zero_2(uint32_t Word); bool CMGT_zero_2(uint32_t Word); bool CMGE_zero_2(uint32_t Word);
+  bool CMLE_2(uint32_t Word); bool CMLT_2(uint32_t Word);
+  bool CMEQ_zero_1(uint32_t Word); bool CMGT_zero_1(uint32_t Word); bool CMGE_zero_1(uint32_t Word);
+  bool CMLE_1(uint32_t Word); bool CMLT_1(uint32_t Word);
+  bool CNT(uint32_t Word); bool NOT(uint32_t Word); bool NEG_2(uint32_t Word); bool ABS_2(uint32_t Word);
+  bool REV64_asimd(uint32_t Word); bool REV32_asimd(uint32_t Word);
+  bool XTN(uint32_t Word);
+  bool SADDL(uint32_t Word); bool UADDL(uint32_t Word); bool SSUBL(uint32_t Word); bool USUBL(uint32_t Word);
+  bool SADDW(uint32_t Word); bool UADDW(uint32_t Word); bool ADDHN(uint32_t Word); bool SUBHN(uint32_t Word);
+  bool SSHR_2(uint32_t Word); bool USHR_2(uint32_t Word); bool SHL_2(uint32_t Word);
+  bool SSHR_1(uint32_t Word); bool USHR_1(uint32_t Word); bool SHL_1(uint32_t Word);
+  bool SHRN(uint32_t Word); bool SSHLL(uint32_t Word); bool USHLL(uint32_t Word);
+  bool EXT(uint32_t Word);
+  bool UZP1(uint32_t Word); bool UZP2(uint32_t Word); bool ZIP1(uint32_t Word); bool ZIP2(uint32_t Word);
+  bool TRN1(uint32_t Word); bool TRN2(uint32_t Word);
+  // Scalar floating point.
+  bool FMOV_float_gen(uint32_t Word); bool FMOV_float(uint32_t Word); bool FMOV_float_imm(uint32_t Word);
+  bool FABS_float(uint32_t Word); bool FNEG_float(uint32_t Word); bool FSQRT_float(uint32_t Word); bool FCVT_float(uint32_t Word);
+  bool FADD_float(uint32_t Word); bool FSUB_float(uint32_t Word); bool FMUL_float(uint32_t Word); bool FDIV_float(uint32_t Word);
+  bool FNMUL_float(uint32_t Word); bool FMIN_float(uint32_t Word); bool FMAX_float(uint32_t Word);
+  bool FMINNM_float(uint32_t Word); bool FMAXNM_float(uint32_t Word);
+  bool FPThreeRegister(uint32_t Word);
+  bool FCMP_float(uint32_t Word); bool FCCMP_float(uint32_t Word); bool FCSEL_float(uint32_t Word);
+  bool FCVTNS_float(uint32_t Word); bool FCVTNU_float(uint32_t Word); bool FCVTPS_float(uint32_t Word); bool FCVTPU_float(uint32_t Word);
+  bool FCVTMS_float(uint32_t Word); bool FCVTMU_float(uint32_t Word); bool FCVTZS_float_int(uint32_t Word); bool FCVTZU_float_int(uint32_t Word);
+  bool FCVTAS_float(uint32_t Word); bool FCVTAU_float(uint32_t Word);
+  bool SCVTF_float_int(uint32_t Word); bool UCVTF_float_int(uint32_t Word); bool SCVTF_float_fix(uint32_t Word); bool UCVTF_float_fix(uint32_t Word);
+  bool FCVTZS_float_fix(uint32_t Word); bool FCVTZU_float_fix(uint32_t Word);
+  bool FCVTZS_int_2(uint32_t Word); bool FCVTZU_int_2(uint32_t Word); bool SCVTF_int_2(uint32_t Word); bool UCVTF_int_2(uint32_t Word);
+  bool FCVTL(uint32_t Word); bool FCVTN(uint32_t Word);
   // clang-format on
 
 private:
@@ -160,6 +210,21 @@ private:
 
   static OpSize SizeFor(bool Is64) {
     return Is64 ? OpSize::i64Bit : OpSize::i32Bit;
+  }
+
+  // --- Vector register access -------------------------------------------------
+  // V0-V15 live in static host vector registers, V16-V31 in the context.
+  // Values are always 128 bits; element 0 is the low half (see CoreState.h).
+  Ref LoadV(uint32_t Reg);
+  void StoreV(uint32_t Reg, Ref Value);
+  // A64 writes to B/H/S/D registers and 64-bit vector results clear every
+  // bit above the written size.
+  void StoreVSized(uint32_t Reg, OpSize Size, Ref Value) {
+    StoreV(Reg, Size == OpSize::i128Bit ? Value : _VMov(Size, Value).Node);
+  }
+  // Q ? 128-bit result : 64-bit result with the upper half cleared.
+  void StoreVQ(uint32_t Reg, bool Q, Ref Value) {
+    StoreVSized(Reg, Q ? OpSize::i128Bit : OpSize::i64Bit, Value);
   }
 
   // --- Shared operand forms --------------------------------------------------
@@ -193,6 +258,52 @@ private:
   bool BranchRegister(uint32_t Word, bool Link);
   // One load or store of Size bytes at Address, with the A64 opc decode already done.
   void LoadStoreSingle(bool IsLoad, OpSize Size, bool SignExtend, bool Is64Dest, uint32_t Rt, Ref Address);
+  // One SIMD&FP register load or store of Size bytes at Address.
+  void LoadStoreV(bool IsLoad, OpSize Size, uint32_t Rt, Ref Address);
+
+  // Advanced SIMD shared bodies (TranslateSIMD.cpp).
+  enum class ThreeSameOp { Add, Sub, CmEq, CmGt, CmGe, CmHs, CmHi, CmTst, UMax, UMin, SMax, SMin };
+  enum class PairwiseOp { Add, UMax, UMin };
+  enum class CompareZeroOp { Eq, Gt, Ge, Le, Lt };
+  enum class ThreeDifferentOp { SAddL, UAddL, SSubL, USubL, SAddW, UAddW, AddHN, SubHN };
+  enum class ShiftImmOp { SShr, UShr, Shl, Shrn, SShll, UShll };
+  enum class PermuteOp { Uzp1, Uzp2, Zip1, Zip2, Trn1, Trn2 };
+  bool SIMDThreeSame(uint32_t Word, ThreeSameOp Op, bool Scalar);
+  bool SIMDPairwise(uint32_t Word, PairwiseOp Op);
+  bool SIMDAcrossLanesMinMax(uint32_t Word, bool IsMax);
+  bool SIMDCompareZero(uint32_t Word, CompareZeroOp Op, bool Scalar);
+  bool SIMDThreeDifferent(uint32_t Word, ThreeDifferentOp Op);
+  bool SIMDShiftImm(uint32_t Word, ShiftImmOp Op, bool Scalar);
+  bool SIMDPermute(uint32_t Word, PermuteOp Op);
+  void StoreNarrow(uint32_t Rd, bool Upper, Ref Narrow);
+  // A 128-bit vector with Pattern in both 64-bit lanes.
+  Ref VectorConstant64(uint64_t Pattern);
+
+  // Scalar FP shared bodies (TranslateFP.cpp).
+  enum class FPUnaryOp { Abs, Neg, Sqrt };
+  enum class FPBinaryOp { Add, Sub, Mul, Div, NMul, Min, Max, MinNum, MaxNum };
+  bool FPOneRegister(uint32_t Word, FPUnaryOp Op);
+  bool FPTwoRegister(uint32_t Word, FPBinaryOp Op);
+  bool FPConvertToInt(uint32_t Word, uint8_t Rounding, bool Signed);
+  bool FPConvertFromInt(uint32_t Word, bool Signed, bool Fixed);
+  bool FPConvertToFixed(uint32_t Word, bool Signed);
+  bool FPScalarSIMDConvert(uint32_t Word, bool ToInt, bool Signed);
+  // Every ElementSize lane of the 128-bit result holds Bits.
+  Ref FPConstant(uint64_t Bits, OpSize ElementSize);
+  // Operand 1 for a VSX arithmetic op so that the op propagates NaNs the A64 way.
+  Ref PropagateNaNOperand(OpSize ElementSize, Ref A, Ref B);
+  Ref FPMinMax(OpSize ElementSize, Ref A, Ref B, bool IsMax, bool IsNumber);
+  // All-ones 64-bit lanes when FPCR.FZ16 is set, zero otherwise.
+  Ref FZ16Mask();
+  // Element 0 half precision -> double, with the FZ16 input flush unless it
+  // is an FP-to-FP conversion. With KeepSignalling a signalling NaN stays
+  // signalling for operand precedence.
+  Ref HalfToDouble(Ref V, bool KeepSignalling, bool ApplyFZ16);
+  // Element 0 double -> half precision with one rounding, and the FZ16
+  // output flush unless it is an FP-to-FP conversion.
+  Ref DoubleToHalf(Ref D, bool ApplyFZ16);
+  // Host rounding mode <- FPCR.RMode of the given FPCR value.
+  void SyncHostRoundingMode(Ref FPCR);
 
   struct JumpTargetInfo {
     Ref BlockEntry;

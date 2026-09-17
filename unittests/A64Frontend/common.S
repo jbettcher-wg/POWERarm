@@ -11,6 +11,10 @@
 //                with every register, SP and NZCV exactly as on entry
 //                (X30 excepted: the caller's BL wrote it).
 //   dumpbuf      Prints the 256 bytes of `buf` as hex; preserves state like dump.
+//   vdump        Prints "v" then V0..V31 (each as 32 hex digits, high half
+//                first), FPCR and FPSR with the cumulative exception bits
+//                (IOC, DZC, OFC, UFC, IXC, IDC) masked out; preserves state
+//                like dump.
 //   test_exit    Macro: exit(0).
 //   check        Self-check: X0 = value, X1 = expected, X2 = pointer to a
 //                NUL-terminated name. Prints "PASS name" or "FAIL name got
@@ -208,6 +212,76 @@ dumpbuf:
         restore_state
         ret
 
+        .global vdump
+vdump:
+        save_state
+        sub     sp, sp, #512
+        str     q0, [sp, #0]
+        str     q1, [sp, #16]
+        str     q2, [sp, #32]
+        str     q3, [sp, #48]
+        str     q4, [sp, #64]
+        str     q5, [sp, #80]
+        str     q6, [sp, #96]
+        str     q7, [sp, #112]
+        str     q8, [sp, #128]
+        str     q9, [sp, #144]
+        str     q10, [sp, #160]
+        str     q11, [sp, #176]
+        str     q12, [sp, #192]
+        str     q13, [sp, #208]
+        str     q14, [sp, #224]
+        str     q15, [sp, #240]
+        str     q16, [sp, #256]
+        str     q17, [sp, #272]
+        str     q18, [sp, #288]
+        str     q19, [sp, #304]
+        str     q20, [sp, #320]
+        str     q21, [sp, #336]
+        str     q22, [sp, #352]
+        str     q23, [sp, #368]
+        str     q24, [sp, #384]
+        str     q25, [sp, #400]
+        str     q26, [sp, #416]
+        str     q27, [sp, #432]
+        str     q28, [sp, #448]
+        str     q29, [sp, #464]
+        str     q30, [sp, #480]
+        str     q31, [sp, #496]
+        adrp    x9, outbuf
+        add     x9, x9, :lo12:outbuf
+        mov     w10, #'v'
+        strb    w10, [x9], #1
+        mov     x15, #0
+1:      mov     w10, #' '
+        strb    w10, [x9], #1
+        lsl     x16, x15, #4
+        add     x16, x16, #8
+        ldr     x12, [sp, x16]
+        bl      hex64
+        lsl     x16, x15, #4
+        ldr     x12, [sp, x16]
+        bl      hex64
+        add     x15, x15, #1
+        cmp     x15, #32
+        b.ne    1b
+        mov     w10, #' '
+        strb    w10, [x9], #1
+        mrs     x12, fpcr
+        bl      hex64
+        mov     w10, #' '
+        strb    w10, [x9], #1
+        mrs     x12, fpsr
+        mov     x14, #0x9f
+        bic     x12, x12, x14
+        bl      hex64
+        mov     w10, #'\n'
+        strb    w10, [x9], #1
+        bl      flush_line
+        add     sp, sp, #512
+        restore_state
+        ret
+
         .global check
 check:
         mov     x16, x30
@@ -259,7 +333,7 @@ check:
         .balign 16
         .global buf
 buf:    .skip   256
-outbuf: .skip   1024
+outbuf: .skip   2048
 dump_counter: .skip 8
         .skip   65536
         .balign 16

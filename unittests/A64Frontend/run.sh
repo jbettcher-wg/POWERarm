@@ -24,8 +24,15 @@ report() {
   echo "$1 $2${3:+ ($3)}"
 }
 
+# <test>.bin and <test>.args, when present, name the binary and its
+# arguments (the busybox applet tests); otherwise ./<test> runs bare.
 run_emu() {
-  "$emu" "./$1" > "$1.powerarm" 2> "$1.stderr"
+  bin=$1
+  args=
+  [ -f "$1.bin" ] && bin=$(cat "$1.bin")
+  [ -f "$1.args" ] && args=$(cat "$1.args")
+  # shellcheck disable=SC2086
+  "$emu" "./$bin" $args > "$1.powerarm" 2> "$1.stderr"
   echo $? > "$1.powerarm.rc"
 }
 
@@ -53,13 +60,23 @@ for golden in *.golden; do
   fi
 done
 
-# Positive control for the comparison itself.
+# Positive controls for the comparison itself: one corrupted GPR line and
+# one corrupted vector line (a single hex digit of V17 in the second case).
 if [ -f addsub.powerarm ]; then
   sed '5s/^#\(.\)/#X/' addsub.golden > control.corrupted
   if cmp -s control.corrupted addsub.powerarm; then
     report FAIL comparison-control "a corrupted golden compared equal"
   else
     report PASS comparison-control "corrupted golden reported as a mismatch"
+  fi
+fi
+if [ -f fp_scalar.powerarm ]; then
+  awk 'NR == 4 { split($0, f, " "); d = substr(f[19], 32, 1); r = (d == "0") ? "1" : "0"; f[19] = substr(f[19], 1, 31) r; $0 = ""; for (i = 1; i <= length(f); i++) $0 = $0 (i > 1 ? " " : "") f[i] } { print }' \
+    fp_scalar.golden > control.vcorrupted
+  if cmp -s control.vcorrupted fp_scalar.powerarm || cmp -s control.vcorrupted fp_scalar.golden; then
+    report FAIL vector-comparison-control "a corrupted vector golden compared equal"
+  else
+    report PASS vector-comparison-control "corrupted V17 digit reported as a mismatch"
   fi
 fi
 

@@ -6,7 +6,8 @@
 // this directory, 0BSD, see THIRD_PARTY.md). Each INST(name, description,
 // bitstring) entry becomes a mask/expect matcher; '0'/'1' are fixed bits and
 // every other character is an operand field or a don't-care. Matchers are
-// ordered the way dynarmic orders them (more fixed bits first, stable) and
+// ordered the way dynarmic orders them (more fixed bits first, stable, then
+// the SIMD modified-immediate entries hoisted to the front) and
 // bucketed by dynarmic's fast-lookup index.
 //
 // A matcher's handler is the IRBuilder member function registered under the
@@ -27,6 +28,7 @@ struct InstMatcher final {
   uint32_t Mask;
   uint32_t Expect;
   InstHandler Handler;
+  uint32_t RawIndex; ///< Position in a64.inc.
 };
 
 // Returns the first matcher for Word, or nullptr if no table entry matches.
