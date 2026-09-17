@@ -22,8 +22,12 @@ set(SRCS
   Interface/Core/Core.cpp
   Interface/Core/CPUBackend.cpp
   Interface/Core/Addressing.cpp
+  Interface/Core/A64Frontend/DecodeTable.cpp
   Interface/Core/A64Frontend/Decoder.cpp
-  Interface/Core/A64Frontend/IRBuilder.cpp)
+  Interface/Core/A64Frontend/IRBuilder.cpp
+  Interface/Core/A64Frontend/TranslateBranchSystem.cpp
+  Interface/Core/A64Frontend/TranslateDataProcessing.cpp
+  Interface/Core/A64Frontend/TranslateLoadStore.cpp)
 
 # PPC64LE JIT backend. This fork targets PPC64LE hosts only; the ARM64 JIT
 # and its Dispatcher have been removed.
