@@ -35,7 +35,7 @@ against a real Cortex-A76 (Raspberry Pi 5), on both 64K and 4K page-size POWER k
 | Further performance work (ahead-of-time translation, faster cache install, compute lowerings) | 🔄 in progress |
 
 **Presented CPU:** Cortex-A76 class, with `fp asimd fphp asimdhp aes pmull sha1 sha2 crc32 cpuid`.
-There's no SVE, SME or LSE yet.
+LSE atomics are implemented but not yet advertised; there is no SVE or SME.
 
 ## Requirements
 
@@ -79,6 +79,7 @@ default for root filesystem binaries; `POWERARM_ENABLECODECACHINGWIP=0` turns it
 
 | Document | Contents |
 |---|---|
+| [`docs/powerarm/HANDOVER.md`](docs/powerarm/HANDOVER.md) | current state, working practices and the traps that cost time |
 | [`docs/powerarm/DESIGN.md`](docs/powerarm/DESIGN.md) | architecture and design decisions |
 | [`docs/powerarm/M1-PLAN.md`](docs/powerarm/M1-PLAN.md), [`M2-PLAN.md`](docs/powerarm/M2-PLAN.md) | milestones, exit criteria, results |
 | [`docs/powerarm/OPTIMIZATION-CHECKLIST.md`](docs/powerarm/OPTIMIZATION-CHECKLIST.md) | measured optimization work and queue |
