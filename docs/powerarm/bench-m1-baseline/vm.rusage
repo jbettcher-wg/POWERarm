@@ -1,0 +1,2 @@
+rusage powerarm user_s=9.914 sys_s=0.006 minflt=321 majflt=0 nvcsw=6 nivcsw=3941
+rusage native-power9 user_s=1.363 sys_s=0.003 minflt=100 majflt=0 nvcsw=1 nivcsw=570
