@@ -37,6 +37,7 @@ set(SRCS
 list(APPEND SRCS
   Interface/Core/ArchHelpers/PPC64Emitter.cpp
   Interface/Core/JIT/PPC64LE/JIT.cpp
+  Interface/Core/JIT/PPC64LE/A64FPOps.cpp
   Interface/Core/JIT/PPC64LE/ALUOps.cpp
   Interface/Core/JIT/PPC64LE/AtomicOps.cpp
   Interface/Core/JIT/PPC64LE/BranchOps.cpp

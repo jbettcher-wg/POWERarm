@@ -2719,6 +2719,28 @@
                 ],
         "DestSize": "RegisterSize",
         "ElementSize": "FEXCore::IR::OpSize::i32Bit"
+      },
+
+      "GPR = A64FloatToGPR OpSize:#DestSize, OpSize:$SrcElementSize, FPR:$Scalar, u8:$Rounding, i1:$Signed": {
+        "Desc": ["Scalar op: A64 FPToFixed of element 0 (half, single or double) to a 32- or 64-bit integer",
+                 "Rounding: 0 ties to even, 1 toward +Inf, 2 toward -Inf, 3 toward zero, 4 ties away from zero",
+                 "Out-of-range values saturate to the destination range; NaN converts to 0"
+                ],
+        "DestSize": "DestSize"
+      },
+      "FPR = A64FloatFromGPR OpSize:#DstElementSize, OpSize:$SrcSize, GPR:$Src, i1:$Signed": {
+        "Desc": ["Scalar op: A64 FixedToFP of a signed or unsigned 32- or 64-bit integer",
+                 "Rounds with the host rounding mode (FPCR.RMode)",
+                 "The result is element 0; every other bit of the vector register is zero"
+                ],
+        "DestSize": "DstElementSize"
+      },
+      "FPR = A64FToF OpSize:#DstElementSize, OpSize:$SrcElementSize, FPR:$Scalar": {
+        "Desc": ["Scalar op: A64 FCVT between half, single and double precision of element 0",
+                 "Narrowing rounds with the host rounding mode; a signalling NaN is quieted and keeps its payload",
+                 "The result is element 0; every other bit of the vector register is zero"
+                ],
+        "DestSize": "DstElementSize"
       }
     },
     "Crypto": {
