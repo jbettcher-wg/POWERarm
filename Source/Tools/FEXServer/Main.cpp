@@ -181,7 +181,7 @@ int main(int argc, char** argv, char** const envp) {
       int FEXServerPID = FEXServerClient::RequestPIDFD(ServerPipe);
       close(ServerPipe);
       if (FEXServerPID != -1) {
-        LogMan::Msg::IFmt("[FEXServer] Waiting for FEXServer to close");
+        LogMan::Msg::IFmt("[POWERarmServer] Waiting for POWERarmServer to close");
         // We can't use waitid (P_PIDFD) here because the active FEXServer isn't a child of this process.
         // Use poll instead which will return once the pidfd closes.
         pollfd PollFD;
@@ -192,7 +192,7 @@ int main(int argc, char** argv, char** const envp) {
         while (poll(&PollFD, 1, -1) == -1 && errno == EINTR)
           ;
 
-        LogMan::Msg::IFmt("[FEXServer] FEXServer shutdown");
+        LogMan::Msg::IFmt("[POWERarmServer] POWERarmServer shutdown");
       }
       PipeScanner::ClosePipes();
     }
@@ -204,7 +204,7 @@ int main(int argc, char** argv, char** const envp) {
 
     if (ServerPipe != -1) {
       FEXServerClient::RequestServerKill(ServerPipe);
-      LogMan::Msg::DFmt("[FEXServer] Sent kill packet");
+      LogMan::Msg::DFmt("[POWERarmServer] Sent kill packet");
       PipeScanner::ClosePipes();
     }
     return 0;
@@ -235,7 +235,7 @@ int main(int argc, char** argv, char** const envp) {
   // Set process as a subreaper so subprocesses can't escape
   if (::prctl(PR_SET_CHILD_SUBREAPER, 1) == -1) [[unlikely]] {
     // If subreaper failed then squashfuse/erofsfuse can escape, which isn't fatal.
-    LogMan::Msg::DFmt("[FEXServer] Couldn't set subreaper.");
+    LogMan::Msg::DFmt("[POWERarmServer] Couldn't set subreaper.");
   }
 
   bool EnableLoggingThread = Options.Foreground;
@@ -248,7 +248,7 @@ int main(int argc, char** argv, char** const envp) {
   }
 
   if (!SquashFS::InitializeSquashFS()) {
-    LogMan::Msg::DFmt("[FEXServer] Couldn't mount squashfs");
+    LogMan::Msg::DFmt("[POWERarmServer] Couldn't mount squashfs");
     return -1;
   }
 

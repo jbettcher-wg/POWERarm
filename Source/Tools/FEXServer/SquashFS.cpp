@@ -61,7 +61,7 @@ bool InitializeSquashFSPipe() {
     }
   } else if (Ret == -1) {
     // Unhandled error.
-    LogMan::Msg::EFmt("[FEXServer] Unable to create FEXServer RootFS lock file at: {} {} {}", RootFSLockFile, errno, strerror(errno));
+    LogMan::Msg::EFmt("[POWERarmServer] Unable to create POWERarmServer RootFS lock file at: {} {} {}", RootFSLockFile, errno, strerror(errno));
     return false;
   } else {
     // FIFO file was created. Try to get a write lock
@@ -95,7 +95,7 @@ bool DowngradeRootFSPipeToReadLock() {
 
   if (Ret == -1) {
     // This shouldn't occur
-    LogMan::Msg::EFmt("[FEXServer] Unable to downgrade a rootfs write lock to a read lock {} {}", errno, strerror(errno));
+    LogMan::Msg::EFmt("[POWERarmServer] Unable to downgrade a rootfs write lock to a read lock {} {}", errno, strerror(errno));
     close(ServerRootFSLockFD);
     ServerRootFSLockFD = -1;
     return false;
@@ -111,13 +111,13 @@ bool MountRootFSImagePath(const fextl::string& SquashFS, bool EroFS) {
 
   // Make the temporary mount folder
   if (mkdtemp(MountFolderStr) == nullptr) {
-    LogMan::Msg::EFmt("[FEXServer] Couldn't create temporary mount name: {}", MountFolder);
+    LogMan::Msg::EFmt("[POWERarmServer] Couldn't create temporary mount name: {}", MountFolder);
     return false;
   }
 
   // Change the permissions
   if (chmod(MountFolderStr, 0777) != 0) {
-    LogMan::Msg::EFmt("[FEXServer] Couldn't change permissions on temporary mount: {}", MountFolder);
+    LogMan::Msg::EFmt("[POWERarmServer] Couldn't change permissions on temporary mount: {}", MountFolder);
     rmdir(MountFolderStr);
     return false;
   }
@@ -139,9 +139,9 @@ bool MountRootFSImagePath(const fextl::string& SquashFS, bool EroFS) {
     // Try and execute {erofsfuse, squashfuse} to mount our rootfs
     if (execvpe(argv[0], (char* const*)argv, environ) == -1) {
       // Give a hopefully helpful error message for users
-      LogMan::Msg::EFmt("[FEXServer] '{}' Couldn't execute for some reason: {} {}\n", argv[0], errno, strerror(errno));
-      LogMan::Msg::EFmt("[FEXServer] To mount squashfs rootfs files you need {} installed\n", argv[0]);
-      LogMan::Msg::EFmt("[FEXServer] Check your FUSE setup.\n");
+      LogMan::Msg::EFmt("[POWERarmServer] '{}' Couldn't execute for some reason: {} {}\n", argv[0], errno, strerror(errno));
+      LogMan::Msg::EFmt("[POWERarmServer] To mount squashfs rootfs files you need {} installed\n", argv[0]);
+      LogMan::Msg::EFmt("[POWERarmServer] Check your FUSE setup.\n");
 
       // Let the parent know that we couldn't execute for some reason
       uint64_t error {1};
@@ -173,7 +173,7 @@ bool MountRootFSImagePath(const fextl::string& SquashFS, bool EroFS) {
       // Close the pipe now
       close(fds[0]);
 
-      LogMan::Msg::EFmt("[FEXServer] Couldn't mount squashfs\n");
+      LogMan::Msg::EFmt("[POWERarmServer] Couldn't mount squashfs\n");
       return false;
     }
 
@@ -253,18 +253,18 @@ bool InitializeSquashFS() {
   }
 
   if (!InitializeSquashFSPipe()) {
-    LogMan::Msg::EFmt("[FEXServer] Couldn't initialize SquashFSPipe");
+    LogMan::Msg::EFmt("[POWERarmServer] Couldn't initialize SquashFSPipe");
     return false;
   }
 
   // Setup rootfs here
   if (!MountRootFSImagePath(LDPath(), IsEroFS)) {
-    LogMan::Msg::EFmt("[FEXServer] Couldn't mount squashfs path");
+    LogMan::Msg::EFmt("[POWERarmServer] Couldn't mount squashfs path");
     return false;
   }
 
   if (!DowngradeRootFSPipeToReadLock()) {
-    LogMan::Msg::EFmt("[FEXServer] Couldn't downgrade read lock");
+    LogMan::Msg::EFmt("[POWERarmServer] Couldn't downgrade read lock");
     return false;
   }
 

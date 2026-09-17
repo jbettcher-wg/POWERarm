@@ -213,7 +213,7 @@ struct tcp_acceptor {
     addr.sun_family = AF_UNIX;
 
     if (Name.size() > sizeof(addr.sun_path) - 1) {
-      ERROR_AND_DIE_FMT("Invalid FEXServer socket name: {}", Name);
+      ERROR_AND_DIE_FMT("Invalid POWERarmServer socket name: {}", Name);
     }
 
     auto NameEnd = addr.sun_path;

@@ -84,7 +84,7 @@ size_t GetNumFilesOpen() {
 void GetMaxFDs() {
   // Get our kernel limit for the number of open files
   if (getrlimit(RLIMIT_NOFILE, &MaxFDs) != 0) {
-    fprintf(stderr, "[FEXMountDaemon] getrlimit(RLIMIT_NOFILE) returned error %d %s\n", errno, strerror(errno));
+    fprintf(stderr, "[POWERarmMountDaemon] getrlimit(RLIMIT_NOFILE) returned error %d %s\n", errno, strerror(errno));
   }
 
   // Walk /proc/self/fd/ to see how many open files we currently have
@@ -98,11 +98,11 @@ void CheckRaiseFDLimit() {
   }
 
   if (MaxFDs.rlim_cur == MaxFDs.rlim_max) {
-    fprintf(stderr, "[FEXMountDaemon] Our open FD limit is already set to max and we are wanting to increase it\n");
-    fprintf(stderr, "[FEXMountDaemon] FEXMountDaemon will now no longer be able to track new instances of FEX\n");
-    fprintf(stderr, "[FEXMountDaemon] Current limit is %zd(hard %zd) FDs and we are at %zd\n", MaxFDs.rlim_cur, MaxFDs.rlim_max,
+    fprintf(stderr, "[POWERarmMountDaemon] Our open FD limit is already set to max and we are wanting to increase it\n");
+    fprintf(stderr, "[POWERarmMountDaemon] POWERarmMountDaemon will now no longer be able to track new instances of POWERarm\n");
+    fprintf(stderr, "[POWERarmMountDaemon] Current limit is %zd(hard %zd) FDs and we are at %zd\n", MaxFDs.rlim_cur, MaxFDs.rlim_max,
             GetNumFilesOpen());
-    fprintf(stderr, "[FEXMountDaemon] Ask your administrator to raise your kernel's hard limit on open FDs\n");
+    fprintf(stderr, "[POWERarmMountDaemon] Ask your administrator to raise your kernel's hard limit on open FDs\n");
     return;
   }
 
@@ -115,7 +115,7 @@ void CheckRaiseFDLimit() {
   NewLimit.rlim_cur = std::min(NewLimit.rlim_cur, NewLimit.rlim_max);
 
   if (setrlimit(RLIMIT_NOFILE, &NewLimit) != 0) {
-    fprintf(stderr, "[FEXMountDaemon] Couldn't raise FD limit to %zd even though our hard limit is %zd\n", NewLimit.rlim_cur, NewLimit.rlim_max);
+    fprintf(stderr, "[POWERarmMountDaemon] Couldn't raise FD limit to %zd even though our hard limit is %zd\n", NewLimit.rlim_cur, NewLimit.rlim_max);
   } else {
     // Set the new limit
     MaxFDs = NewLimit;
@@ -180,7 +180,7 @@ bool InitializeServerPipe() {
     }
   } else if (Ret == -1) {
     // Unhandled error.
-    LogMan::Msg::EFmt("Unable to create FEXServer named lock file at: {} {} {}", ServerLockPath, errno, strerror(errno));
+    LogMan::Msg::EFmt("Unable to create POWERarmServer named lock file at: {} {} {}", ServerLockPath, errno, strerror(errno));
     return false;
   } else {
     // FIFO file was created. Try to get a write lock
@@ -237,14 +237,14 @@ bool InitializeServerSocket(bool abstract) {
   }
   auto Acceptor = fasio::tcp_acceptor::create(Reactor, abstract, ServerSocketName);
   if (!Acceptor) {
-    LogMan::Msg::EFmt("Failed to create FEXServer socket: error {} ({})", errno, strerror(errno));
+    LogMan::Msg::EFmt("Failed to create POWERarmServer socket: error {} ({})", errno, strerror(errno));
     return false;
   }
 
   Acceptor->async_accept([](fasio::error ec, std::optional<fasio::tcp_socket> Socket) {
     if (ec != fasio::error::success) {
       if (ec == fasio::error::generic_errno) {
-        LogMan::Msg::EFmt("FEXServer failed to establish client connection: error {} ({})", errno, strerror(errno));
+        LogMan::Msg::EFmt("POWERarmServer failed to establish client connection: error {} ({})", errno, strerror(errno));
       }
       // Ignore error and wait for next connection
       return fasio::post_callback::repeat;
@@ -720,7 +720,7 @@ void HandleSocketData(fasio::tcp_socket& Socket) {
     case FEXServerClient::PacketType::TYPE_ERROR:
     default:
       // Something sent us an invalid packet. Drop this client and continue
-      LogMan::Msg::EFmt("Invalid FEXServer packet received: {:02x}", fmt::join(buffer.Data, ""));
+      LogMan::Msg::EFmt("Invalid POWERarmServer packet received: {:02x}", fmt::join(buffer.Data, ""));
       close(Socket.FD);
       return;
     }
@@ -777,7 +777,7 @@ void WaitForRequests() {
     }
   }
 
-  LogMan::Msg::DFmt("[FEXServer] Shutting Down");
+  LogMan::Msg::DFmt("[POWERarmServer] Shutting Down");
 
   CloseConnections();
 }

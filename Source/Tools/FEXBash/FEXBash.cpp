@@ -87,7 +87,7 @@ int main(int argc, char** argv, char** const envp) {
     }
   }
 
-  std::string PS1 = "PS1=FEXBash-\\u@\\h:\\w> ";
+  std::string PS1 = "PS1=" POWERARM_EXE_PREFIX "Bash-\\u@\\h:\\w> ";
   if (PS1Env) {
     PS1 += &PS1Env[strlen("PS1=")];
   }
