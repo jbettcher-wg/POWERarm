@@ -120,6 +120,7 @@ directory private per series. "f470" is the M2 tree, "powerarm" is f0a9da187
 | C17 | `fork` of a large POWERarm process (`sh` subshells) | strace of zlib `configure` | kernel, allocator | 1.4 ms per fork, 218 ms of `configure` | not touched | |
 | C18 | Config id from the distinct host MIDRs (not one per CPU in the affinity mask); `/` appended to `POWERARM_APP_CACHE_LOCATION` | pinned and unpinned runs wrote separate caches | `Core/CodeCache.cpp`, `Common/Config.cpp` | cache sharing across `taskset` | done | one config id for CPU 100 and CPUs 0-87 |
 | C19 | Code cache on by default (`CodeCacheScope=rootfs`), opt-out `POWERARM_ENABLECODECACHINGWIP=0`; incompatible SMC modes turn it off | owner direction | `Config.json.in`, `FEXInterpreter.cpp`, CODE-CACHE.md | builds | done | slice with defaults (CPU 100): cold 33.02 s, warm 27.37 s, opt-out 45.01 s (no cache directory created) |
+| C20 | fastppcx86: host features missing from the code cache config id (inherited bug; ISA 3.0 and dcbz line size) | inherited cache | fastppcx86 `Core/CodeCache.cpp`, `Core.cpp` | correctness | done, patch `outgoing-patches/fastppcx86/0018-*` | builds on `fastppcx86/daedalao-wt` (9da3ccf9f); not run there |
 
 ## Follow-ups to measure
 
