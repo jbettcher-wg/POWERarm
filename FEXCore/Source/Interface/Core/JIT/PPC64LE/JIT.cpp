@@ -5276,6 +5276,14 @@ CPUBackend::CompiledCode PPC64JITCore::CompileCode(
       default: break;
       }
       ++CodeOps;
+      // Only CodeOps == 1 can mark the block, so a second counted op settles
+      // the answer: stop walking. Ordinary blocks run to tens or hundreds of
+      // ops, so this turns what was a full walk of the unit into at most two
+      // counted ops per block. ConstExit is never consulted once CodeOps != 1,
+      // so leaving it stale here is exactly equivalent to finishing the walk.
+      if (CodeOps > 1) {
+        break;
+      }
       if (IROp->Op == IR::OP_EXITFUNCTION) {
         auto Exit = IROp->C<IR::IROp_ExitFunction>();
         uint64_t Target {};
