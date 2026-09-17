@@ -61,6 +61,25 @@ the `minimal-debian` rootfs jobs).
 
 About 1090 occurrences in total.
 
+## Implementation status
+
+All of it is translated (powerarm-m2/simd-gaps), composed from existing IR ops:
+
+| Class | Entries |
+|---|---|
+| Structures | LD2/LD3/LD4 and ST2/ST3/ST4 multiple structures; LD1-4/ST1-4 single structures; LD1R-LD4R |
+| Table lookup | TBL, TBX with 1-4 tables (ISA 3.0 `vpermr` lowering, POWER8 `vperm`) |
+| Shifts | USHL/SSHL (vector and scalar), SRI, SLI, USRA, SSRA |
+| Widening | UADDLP, SADDLP, UADALP, SADALP, SSUBW, USUBW, UMULL/SMULL/UMLAL/SMLAL/UMLSL/SMLSL (and 2) |
+| Arithmetic | MUL/MLA/MLS vector, MUL by element, SMAXP/SMINP, REV16 |
+| Scalar | NEG, ABS, ADDP, UQSUB (with FPSR.QC), FABD |
+| Float lanes | FNEG, FABS, FABD, SCVTF, UCVTF (vector) |
+
+Tests: A64Frontend `simd_table` (every index value 0..255 for 1-4 tables),
+`simd_struct`, `simd_gaps`, plus `simd_struct1`/`simd_struct2` from powerarm-m2/gcc.
+With it, `cc1 -version` and `gcc -O2 -c hello.c` (object byte-identical to the Pi), the link
+and the linked program all run on the 64K host and in the 4K guest.
+
 ## Full counts
 
 Per-entry counts of what is missing, grouped by class, per binary. "Entry" is the
