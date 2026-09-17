@@ -429,6 +429,11 @@ Measured on arkamedes against `~/Development/fastppcx86` @ `4b51c0773` (branch `
 
 ### 10.1 What's shared and what's x86-only
 
+> **M0b re-measure:** after the x86 guest core was removed, see
+> [`M0-CENSUS.md`](M0-CENSUS.md). It has per-subsystem diff stats, compile-error classes,
+> the `POWERARM-M0-TODO` list and these regex counts before and after (4,794 → 595 matching
+> lines).
+
 Line counts cover `.cpp`/`.h`/`.inl`/`.json`/`.py`. The x86 references are a regex over
 `gregs`, `xmm`, `X86State`, `RFLAG_`, `x87`/`F80`, `mxcsr`, `pf_raw`/`af_raw`, `rip`,
 `CPUID`, `XGetBV`, segment state, `AVX` and `SSE`.

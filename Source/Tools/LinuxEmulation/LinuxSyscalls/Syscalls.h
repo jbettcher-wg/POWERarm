@@ -446,6 +446,7 @@ public:
     return Version & 0xFFFF;
   }
 
+  // POWERARM-M0-TODO(other): the Is64Bit parameters and the 32-bit allocator only served 32-bit x86 guests and x86-64 MAP_32BIT; AArch64 has neither, so collapse these to the 64-bit path when the arm64 mmap handlers are written (they also need asm-generic -> powerpc MAP_* translation).
   virtual FEX::HLE::MemAllocator* Get32BitAllocator() {
     return Alloc32Handler.get();
   }
