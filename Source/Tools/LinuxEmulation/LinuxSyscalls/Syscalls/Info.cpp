@@ -66,13 +66,10 @@ void RegisterInfo(FEX::HLE::SyscallHandler* Handler) {
     const char version[] = "#" GIT_DESCRIBE_STRING " SMP " __DATE__ " " __TIME__;
     strcpy(buf->version, version);
     static_assert(sizeof(version) <= sizeof(buf->version), "uname version define became too large!");
-    if (Thread->persona & PER_LINUX32) {
-      // Tell the guest that we are a 32bit kernel
-      strcpy(buf->machine, "i686");
-    } else {
-      // Tell the guest that we are a 64bit kernel
-      strcpy(buf->machine, "x86_64");
-    }
+    // An arm64 kernel reports "armv8l" under PER_LINUX32 only when the CPU
+    // runs AArch32 at EL0; the presented CPU does not, and personality()
+    // refuses PER_LINUX32, so this is always "aarch64".
+    strcpy(buf->machine, "aarch64");
     return 0;
   });
 
@@ -84,12 +81,13 @@ void RegisterInfo(FEX::HLE::SyscallHandler* Handler) {
       return Thread->persona;
     }
 
-    // Mask off `PER_LINUX32` because AArch64 doesn't support it.
-    uint32_t NewPersona = persona & ~PER_LINUX32;
+    // arm64_personality: PER_LINUX32 needs AArch32 at EL0, which the presented
+    // CPU does not have.
+    if ((persona & PER_MASK) == PER_LINUX32) {
+      return -EINVAL;
+    }
 
-    // This syscall can not physically fail with PER_LINUX32 masked off.
-    // It also can not fail on a real x86 kernel.
-    (void)::syscall(SYSCALL_DEF(personality), NewPersona);
+    (void)::syscall(SYSCALL_DEF(personality), persona);
 
     // Return the old persona while setting the new one.
     auto OldPersona = Thread->persona;
