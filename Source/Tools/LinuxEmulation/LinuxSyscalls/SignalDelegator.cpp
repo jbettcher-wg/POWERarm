@@ -50,6 +50,7 @@ $end_info$
 #endif
 
 namespace FEX::HLE {
+static void CheckForPendingSignals(const FEX::HLE::ThreadStateObject* Thread);
 #ifdef ARCHITECTURE_x86_64
 __attribute__((naked)) static void sigrestore() {
   __asm volatile("syscall;" ::"a"(0xF) : "memory");
@@ -607,7 +608,16 @@ void SignalDelegator::RestoreThreadState(FEXCore::Core::InternalThreadState* Thr
       Frame->InSyscallInfo = Context->InSyscallInfo;
     }
 
+    // rt_sigreturn restores the mask from the frame, which the handler may
+    // have changed.
+    auto* ThreadObject = FEX::HLE::ThreadManager::GetStateObjectFromFEXCoreThread(Thread);
+    const auto* GuestUContext = reinterpret_cast<const FEXCore::arm64::ucontext_t*>(Context->UContextLocation);
+    ThreadObject->SignalInfo.CurrentSignalMask.Val =
+      GuestUContext->uc_sigmask & ~((1ULL << (SIGKILL - 1)) | (1ULL << (SIGSTOP - 1)));
+
     RestoreFrame_Arm64(Thread, Context, Frame, ucontext);
+
+    CheckForPendingSignals(ThreadObject);
   }
 }
 
@@ -997,7 +1007,10 @@ bool SignalDelegator::HandleFrontendSIGSEGV(FEXCore::Core::InternalThreadState* 
   auto SigInfo = *static_cast<siginfo_t*>(Info);
 
   if (FaultSafeUserMemAccess::TryHandleSafeFault(Signal, SigInfo, UContext)) {
-    ERROR_AND_DIE_FMT("Received invalid data to syscall. Crashing now!");
+    // The arm64 guest's syscall layer copies guest memory through these
+    // helpers to return EFAULT like the kernel, so resume the helper's caller
+    // with EFAULT instead of stopping the process.
+    return true;
   }
 
 #ifdef ARCHITECTURE_arm64
@@ -1441,7 +1454,28 @@ void SignalDelegator::HandleGuestSignal(FEX::HLE::ThreadStateObject* ThreadObjec
         ++ThreadObject->SignalInfo.DeliveredGuestSignalsWithoutRestart;
       }
 
+      // The handler runs with the old mask plus sa_mask plus the signal
+      // (unless SA_NODEFER), as the guest sees it through sigprocmask; the
+      // frame's uc_sigmask (SetupFrame_Arm64) holds the old mask, which
+      // rt_sigreturn puts back. SA_RESETHAND resets the disposition as the
+      // handler is entered (kernel/signal.c handle_signal/signal_setup_done).
+      const uint64_t OldGuestMask = ThreadObject->SignalInfo.CurrentSignalMask.Val;
+      uint64_t HandlerMask = Handler.GuestAction.sa_mask.Val;
+      if (!(Handler.GuestAction.sa_flags & SA_NODEFER)) {
+        HandlerMask |= 1ULL << (Signal - 1);
+      }
+      HandlerMask &= ~((1ULL << (SIGKILL - 1)) | (1ULL << (SIGSTOP - 1)));
+      ThreadObject->SignalInfo.CurrentSignalMask.Val = OldGuestMask | HandlerMask;
+      if (Handler.GuestAction.sa_flags & SA_RESETHAND) {
+        Handler.GuestAction.sigaction_handler.handler = SIG_DFL;
+      }
+
       uint64_t NewMask = GetNewSigMask(Signal);
+      for (size_t i = 0; i < MAX_SIGNALS; ++i) {
+        if ((OldGuestMask & (1ULL << i)) && !HostHandlers[i + 1].Required.load(std::memory_order_relaxed)) {
+          NewMask |= 1ULL << i;
+        }
+      }
 
       // Update our host signal mask so we don't hit race conditions with signals
       // This allows us to maintain the expected signal mask through the guest signal handling and then all the way back again
@@ -1858,6 +1892,21 @@ SignalDelegator::SignalDelegator(FEXCore::Context::Context* _CTX, const std::str
   for (uint32_t Signal = 0; Signal <= SignalDelegator::MAX_SIGNALS; ++Signal) {
     RegisterHostSignalHandlerForGuest(Signal, GuestSignalHandler);
   }
+
+  // execve keeps ignored signals ignored (the kernel only resets caught ones
+  // to SIG_DFL), and this process is the guest's execve: seed the guest view
+  // from the dispositions it inherited. Nothing has installed a host handler
+  // for the non-required signals yet, so the host still holds exactly what the
+  // exec'ing process left.
+  for (uint32_t Signal = 1; Signal <= SignalDelegator::MAX_SIGNALS; ++Signal) {
+    if (Signal == SIGKILL || Signal == SIGSTOP || HostHandlers[Signal].Required.load(std::memory_order_relaxed)) {
+      continue;
+    }
+    GuestSigAction Inherited {};
+    if (::syscall(SYS_rt_sigaction, Signal, nullptr, &Inherited, 8) == 0 && Inherited.sigaction_handler.handler == SIG_IGN) {
+      HostHandlers[Signal].GuestAction.sigaction_handler.handler = SIG_IGN;
+    }
+  }
 }
 
 SignalDelegator::~SignalDelegator() {
@@ -2153,6 +2202,24 @@ uint64_t SignalDelegator::GuestSigSuspend(FEX::HLE::ThreadStateObject* Thread, u
   // Spin this in a loop until we aren't sigsuspended
   // This can happen in the case that the guest has sent signal that we can't block
   uint64_t Result = sigsuspend(&HostSet);
+  const int SuspendErrno = errno;
+
+  // The signal that ended the suspend was only queued: the whole syscall body
+  // is a deferred-signal section (HandleSyscallImpl), and the queue normally
+  // drains when that section ends. By then the mask below has been restored,
+  // so a signal the caller blocks outside sigsuspend (the usual pattern, e.g.
+  // busybox ash's `wait`) went back to pending and its handler did not run
+  // before sigsuspend returned, as Linux guarantees. Drain it here instead,
+  // with the suspend mask still in effect. Only the outermost section may
+  // drain, which is the case unless FEX itself is nested around this call.
+  auto* CurrentFrame = Thread->Thread->CurrentFrame;
+  if (!Thread->SignalInfo.DeferredSignalFrames.empty() && CurrentFrame->State.DeferredSignalRefCount.Load() == 1) {
+    CurrentFrame->State.DeferredSignalRefCount.Decrement(1);
+    // Faults while any deferred frame is queued; each guest handler's
+    // rt_sigreturn resumes this store, which faults again for the next frame.
+    reinterpret_cast<FEXCore::Core::NonAtomicRefCounter<uint64_t>*>(CurrentFrame->InterruptFaultPagePtr)->Store(0);
+    CurrentFrame->State.DeferredSignalRefCount.Increment(1);
+  }
 
   // Restore Previous signal mask we are emulating
   // XXX: Might be unsafe if the signal handler adjusted the thread's signal mask
@@ -2162,7 +2229,7 @@ uint64_t SignalDelegator::GuestSigSuspend(FEX::HLE::ThreadStateObject* Thread, u
 
   CheckForPendingSignals(Thread);
 
-  return Result == -1 ? -errno : Result;
+  return Result == -1 ? -SuspendErrno : Result;
 }
 
 uint64_t SignalDelegator::GuestSigTimedWait(uint64_t* set, siginfo_t* info, const struct timespec* timeout, size_t sigsetsize) {

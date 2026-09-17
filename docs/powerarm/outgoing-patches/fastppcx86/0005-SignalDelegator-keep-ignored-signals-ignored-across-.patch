@@ -1,0 +1,61 @@
+From 9ff6d4c6d6f84d6f1c08665aaaa6c38a59253dc7 Mon Sep 17 00:00:00 2001
+From: Jordan Bettcher <thebettcher@gmail.com>
+Date: Wed, 16 Sep 2026 21:23:42 -0600
+Subject: [PATCH 5/8] SignalDelegator: keep ignored signals ignored across
+ execve
+
+execve resets caught signals to SIG_DFL but leaves SIG_IGN in place, which
+is how `trap '' HUP; exec prog`, nohup and a parent's ignored SIGPIPE reach
+a child. A guest execve starts a new FEX, whose SignalDelegator began every
+GuestAction value-initialised (SIG_DFL); the inherited disposition only
+landed in OldAction when a host thunk was installed. So a program started
+with a signal ignored saw SIG_DFL from sigaction(), and lost the ignore as
+soon as it saved and restored the old action. The host disposition itself
+stayed SIG_IGN, so delivery was right until then.
+
+The constructor now reads the inherited host disposition of every signal
+it has no required handler for and records SIG_IGN in the guest action.
+
+Evidence, 64K host, FEX_HOSTPAGEMODE=force, FEX_PORTABLE=1 so the child
+runs under the same build: a static x86-64 test ignores SIGUSR2, execs
+itself, and the child queries SIGUSR2:
+  before: usr2-ignore-kept=no
+  after:  usr2-ignore-kept=yes
+Linux (the same test on an aarch64 Raspberry Pi 5): yes. With the fix,
+Ubuntu 24.04 bash started with `trap '' USR2` reports `trap -- '' SIGUSR2`
+and survives `kill -USR2 $$`.
+
+Found in POWERarm by the A64Syscalls sys_fork_exec test.
+---
+ .../LinuxSyscalls/SignalDelegator.cpp             | 15 +++++++++++++++
+ 1 file changed, 15 insertions(+)
+
+diff --git a/Source/Tools/LinuxEmulation/LinuxSyscalls/SignalDelegator.cpp b/Source/Tools/LinuxEmulation/LinuxSyscalls/SignalDelegator.cpp
+index 3cb0d2bff..7ac5c3edf 100644
+--- a/Source/Tools/LinuxEmulation/LinuxSyscalls/SignalDelegator.cpp
++++ b/Source/Tools/LinuxEmulation/LinuxSyscalls/SignalDelegator.cpp
+@@ -2155,6 +2155,21 @@ SignalDelegator::SignalDelegator(FEXCore::Context::Context* _CTX, const std::str
+   for (uint32_t Signal = 0; Signal <= SignalDelegator::MAX_SIGNALS; ++Signal) {
+     RegisterHostSignalHandlerForGuest(Signal, GuestSignalHandler);
+   }
++
++  // execve keeps ignored signals ignored (the kernel only resets caught ones
++  // to SIG_DFL), and this process is the guest's execve: seed the guest view
++  // from the dispositions it inherited. Nothing has installed a host handler
++  // for the non-required signals yet, so the host still holds exactly what the
++  // exec'ing process left.
++  for (uint32_t Signal = 1; Signal <= SignalDelegator::MAX_SIGNALS; ++Signal) {
++    if (Signal == SIGKILL || Signal == SIGSTOP || HostHandlers[Signal].Required.load(std::memory_order_relaxed)) {
++      continue;
++    }
++    GuestSigAction Inherited {};
++    if (::syscall(SYS_rt_sigaction, Signal, nullptr, &Inherited, 8) == 0 && Inherited.sigaction_handler.handler == SIG_IGN) {
++      HostHandlers[Signal].GuestAction.sigaction_handler.handler = SIG_IGN;
++    }
++  }
+ }
+ 
+ SignalDelegator::~SignalDelegator() {
+-- 
+2.55.0
+

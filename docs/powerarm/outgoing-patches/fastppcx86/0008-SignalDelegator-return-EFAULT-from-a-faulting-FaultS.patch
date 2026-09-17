@@ -1,0 +1,52 @@
+From da36461b26c5adcd7a2ad70ea6ed2d5de1d7de04 Mon Sep 17 00:00:00 2001
+From: Jordan Bettcher <thebettcher@gmail.com>
+Date: Wed, 16 Sep 2026 21:26:20 -0600
+Subject: [PATCH 8/8] SignalDelegator: return EFAULT from a faulting
+ FaultSafeUserMemAccess copy
+
+FaultSafeUserMemAccess::CopyFromUser/CopyToUser exist so a syscall can
+return EFAULT for a bad guest pointer, and their callers are written that
+way: write_ldt does `if (CopyFromUser(&ldt_info, ptr, ...) == EFAULT)
+return -EFAULT;`. TryHandleSafeFault recognises a fault at the helper's
+labelled instruction and rewrites the context to return EFAULT to the
+caller, but HandleFrontendSIGSEGV then stopped FEX with ERROR_AND_DIE
+anyway ("Received invalid data to syscall. Crashing now!"), inside the
+syscall's deferred-signal section.
+
+Resume the helper's caller instead.
+
+Trigger: any guest syscall reaching those helpers with a bad pointer, e.g.
+modify_ldt(1, (void *)8, 16) on x86-64 (read_ldt/read_default_ldt/write_ldt
+and the x32 ppoll timeout are the callers).
+
+Evidence, 64K host, FEX_HOSTPAGEMODE=force, a static x86-64 test calling
+syscall(SYS_modify_ldt, 1, (void *)8, 16):
+  before: "FEX: FATAL host fault: signal 5 ... raised in a deferred-signal
+          section", exit status 133
+  after:  ret=-1 errno=14 (EFAULT), which is what arch/x86/kernel/ldt.c
+          write_ldt returns when copy_from_user fails.
+
+Found in POWERarm, whose arm64 syscall layer copies guest structs through
+these helpers and killed the process on every bad-pointer test.
+---
+ Source/Tools/LinuxEmulation/LinuxSyscalls/SignalDelegator.cpp | 4 +++-
+ 1 file changed, 3 insertions(+), 1 deletion(-)
+
+diff --git a/Source/Tools/LinuxEmulation/LinuxSyscalls/SignalDelegator.cpp b/Source/Tools/LinuxEmulation/LinuxSyscalls/SignalDelegator.cpp
+index 7ac5c3edf..5bfd1fe4b 100644
+--- a/Source/Tools/LinuxEmulation/LinuxSyscalls/SignalDelegator.cpp
++++ b/Source/Tools/LinuxEmulation/LinuxSyscalls/SignalDelegator.cpp
+@@ -1276,7 +1276,9 @@ bool SignalDelegator::HandleFrontendSIGSEGV(FEXCore::Core::InternalThreadState*
+   auto SigInfo = *static_cast<siginfo_t*>(Info);
+ 
+   if (FaultSafeUserMemAccess::TryHandleSafeFault(Signal, SigInfo, UContext)) {
+-    ERROR_AND_DIE_FMT("Received invalid data to syscall. Crashing now!");
++    // TryHandleSafeFault has already made the copy helper return EFAULT to its
++    // caller; resume there so the syscall fails with EFAULT like the kernel.
++    return true;
+   }
+ 
+ #ifdef ARCHITECTURE_arm64
+-- 
+2.55.0
+

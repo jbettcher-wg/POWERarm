@@ -1,0 +1,130 @@
+From 0b085595fbff53e16863984a871cde0f7b40c946 Mon Sep 17 00:00:00 2001
+From: Jordan Bettcher <thebettcher@gmail.com>
+Date: Wed, 16 Sep 2026 21:22:57 -0600
+Subject: [PATCH 4/8] SignalDelegator: apply the handler mask and SA_RESETHAND
+ for guest handlers
+
+Delivering a guest signal only changed the host mask (the delivered branch
+of HandleGuestSignal writes GetNewSigMask into the host uc_sigmask). The
+guest's own mask, CurrentSignalMask, which rt_sigprocmask reports and
+HandleGuestSignal checks, was never changed, so inside a handler neither
+sa_mask nor the signal itself showed as blocked. The host mask was also
+set to sa_mask alone, dropping what the guest already had blocked for the
+duration of the handler. SA_RESETHAND was accepted and reported back but
+never reset the disposition ("We don't support one shot handlers").
+
+Delivery now sets the guest mask to old | sa_mask | the signal (not with
+SA_NODEFER), keeps the old guest mask in the host mask too, and resets a
+SA_RESETHAND disposition to SIG_DFL. The old guest mask is stashed in the
+ContextBackup (new GuestSignalMask field) by HandleDispatcherGuestSignal and
+restored by RestoreThreadState on rt_sigreturn, which also re-raises any
+pending signal that restore unblocks. The guest frames' uc_sigmask is still
+not filled or read back, so a handler that edits it keeps no effect, as
+before.
+
+Evidence, 64K host, FEX_HOSTPAGEMODE=force, a static x86-64 test: a SIGUSR1
+handler with sa_mask={SIGUSR2} reads its mask with sigprocmask, and a
+SA_RESETHAND handler for SIGUSR2 is queried after raise():
+  before: usr2-blocked=no usr1-blocked=no, reset-to-dfl=no
+  after:  usr2-blocked=yes usr1-blocked=yes, reset-to-dfl=yes
+Linux (the same test on an aarch64 Raspberry Pi 5): yes yes, yes.
+Ubuntu 24.04 bash from the RootFS still runs `(exit 4) & wait $!`, a trap
+on USR1 and a pipeline.
+
+Found in POWERarm by the A64Syscalls sys_signal_delivery test.
+---
+ .../ArchHelpers/MContext_ppc64le.h            |  2 ++
+ .../ArchHelpers/MContext_x86_64.h             |  2 ++
+ .../LinuxSyscalls/SignalDelegator.cpp         | 28 +++++++++++++++++++
+ 3 files changed, 32 insertions(+)
+
+diff --git a/Source/Tools/LinuxEmulation/ArchHelpers/MContext_ppc64le.h b/Source/Tools/LinuxEmulation/ArchHelpers/MContext_ppc64le.h
+index d3dc7070d..0210c66d4 100644
+--- a/Source/Tools/LinuxEmulation/ArchHelpers/MContext_ppc64le.h
++++ b/Source/Tools/LinuxEmulation/ArchHelpers/MContext_ppc64le.h
+@@ -183,6 +183,8 @@ struct PPC64ContextBackup {
+   uint64_t StackCookie;
+ #endif
+   uint64_t sa_mask;
++  // The guest signal mask before the delivery that built this backup.
++  uint64_t GuestSignalMask;
+   uint16_t InSyscallInfo;
+   bool FaultToTopAndGeneratedException;
+ 
+diff --git a/Source/Tools/LinuxEmulation/ArchHelpers/MContext_x86_64.h b/Source/Tools/LinuxEmulation/ArchHelpers/MContext_x86_64.h
+index 6ab361043..dd3cec99e 100644
+--- a/Source/Tools/LinuxEmulation/ArchHelpers/MContext_x86_64.h
++++ b/Source/Tools/LinuxEmulation/ArchHelpers/MContext_x86_64.h
+@@ -11,6 +11,8 @@ struct X86ContextBackup {
+   uint64_t GPRs[23];
+   FEXCore::x86_64::_libc_fpstate FPRState;
+   uint64_t sa_mask;
++  // The guest signal mask before the delivery that built this backup.
++  uint64_t GuestSignalMask;
+   uint16_t InSyscallInfo;
+   bool FaultToTopAndGeneratedException;
+ 
+diff --git a/Source/Tools/LinuxEmulation/LinuxSyscalls/SignalDelegator.cpp b/Source/Tools/LinuxEmulation/LinuxSyscalls/SignalDelegator.cpp
+index 3be680c4f..3cb0d2bff 100644
+--- a/Source/Tools/LinuxEmulation/LinuxSyscalls/SignalDelegator.cpp
++++ b/Source/Tools/LinuxEmulation/LinuxSyscalls/SignalDelegator.cpp
+@@ -49,6 +49,7 @@ $end_info$
+ #endif
+ 
+ namespace FEX::HLE {
++static void CheckForPendingSignals(const FEX::HLE::ThreadStateObject* Thread);
+ #ifdef ARCHITECTURE_x86_64
+ __attribute__((naked)) static void sigrestore() {
+   __asm volatile("syscall;" ::"a"(0xF) : "memory");
+@@ -789,6 +790,11 @@ void SignalDelegator::RestoreThreadState(FEXCore::Core::InternalThreadState* Thr
+       Frame->InSyscallInfo = Context->InSyscallInfo;
+     }
+ 
++    // rt_sigreturn restores the mask the handler was entered with.
++    auto* ThreadObject = FEX::HLE::ThreadManager::GetStateObjectFromFEXCoreThread(Thread);
++    ThreadObject->SignalInfo.CurrentSignalMask.Val = Context->GuestSignalMask;
++    CheckForPendingSignals(ThreadObject);
++
+     if (Is64BitMode) {
+       RestoreFrame_x64(Thread, Context, Frame, ucontext);
+     } else {
+@@ -804,6 +810,7 @@ void SignalDelegator::RestoreThreadState(FEXCore::Core::InternalThreadState* Thr
+ bool SignalDelegator::HandleDispatcherGuestSignal(FEXCore::Core::InternalThreadState* Thread, int Signal, void* info, void* ucontext,
+                                                   GuestSigAction* GuestAction, stack_t* GuestStack) {
+   auto ContextBackup = StoreThreadState(Thread, Signal, ucontext);
++  ContextBackup->GuestSignalMask = FEX::HLE::ThreadManager::GetStateObjectFromFEXCoreThread(Thread)->SignalInfo.CurrentSignalMask.Val;
+ 
+   auto Frame = Thread->CurrentFrame;
+ 
+@@ -1728,7 +1735,28 @@ void SignalDelegator::HandleGuestSignal(FEX::HLE::ThreadStateObject* ThreadObjec
+         ++ThreadObject->SignalInfo.DeliveredGuestSignalsWithoutRestart;
+       }
+ 
++      // The handler runs with the old mask plus sa_mask plus the signal
++      // (unless SA_NODEFER), as the guest sees it through sigprocmask. The
++      // old mask was stashed in the ContextBackup by
++      // HandleDispatcherGuestSignal; RestoreThreadState puts it back.
++      // SA_RESETHAND resets the disposition as the handler is entered.
++      const uint64_t OldGuestMask = ThreadObject->SignalInfo.CurrentSignalMask.Val;
++      uint64_t HandlerMask = Handler.GuestAction.sa_mask.Val;
++      if (!(Handler.GuestAction.sa_flags & SA_NODEFER)) {
++        HandlerMask |= 1ULL << (Signal - 1);
++      }
++      HandlerMask &= ~((1ULL << (SIGKILL - 1)) | (1ULL << (SIGSTOP - 1)));
++      ThreadObject->SignalInfo.CurrentSignalMask.Val = OldGuestMask | HandlerMask;
++      if (Handler.GuestAction.sa_flags & SA_RESETHAND) {
++        Handler.GuestAction.sigaction_handler.handler = SIG_DFL;
++      }
++
+       uint64_t NewMask = GetNewSigMask(Signal);
++      for (size_t i = 0; i < MAX_SIGNALS; ++i) {
++        if ((OldGuestMask & (1ULL << i)) && !HostHandlers[i + 1].Required.load(std::memory_order_relaxed)) {
++          NewMask |= 1ULL << i;
++        }
++      }
+ 
+       // Update our host signal mask so we don't hit race conditions with signals
+       // This allows us to maintain the expected signal mask through the guest signal handling and then all the way back again
+-- 
+2.55.0
+

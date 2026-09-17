@@ -1,0 +1,32 @@
+readlink-proc-self-exe: matches-execfn=yes
+libc-sigaction-kernel-view: ret=0 restorer-flag=no restorer-null=yes
+handler-return: count=2
+handler-preserves-state: same=yes count=55
+siginfo-handler: ok=yes
+mask-after-handlers: usr1-blocked=no
+sigchld-fork-wait: pid-ok=yes count=1 code-exited=yes status=7
+sigchld-fork-wait-status: exited=yes code=7 signaled=no
+sigsuspend-pending-before: chld=yes count=0
+sigsuspend-pending: ret=-1 errno=EINTR(4) handler-ran-before-return=yes
+sigsuspend-mask-restored: all-blocked=yes
+sigsuspend-reaped: exited=yes code=8 signaled=no
+sigsuspend-wait: ret=-1 errno=EINTR(4) handler-ran-before-return=yes
+sigsuspend-wait-reaped: exited=yes code=9 signaled=no
+sigchld-during-read-sa_restart: ret=2 errno=OK(0) data=ok handler-ran=yes
+sigchld-during-read-no-restart: ret=-1 errno=EINTR(4) data=- handler-ran=yes
+argv0-child: argc=2 argv0=custom-argv0
+execve-proc-self-exe-argv0: exited=yes code=0 signaled=no
+argv0-child: argc=3 argv0=other-name
+execve-path-argv0: exited=yes code=0 signaled=no
+argv0-child: argc=2 argv0=<self-path>
+execve-path-argv0-is-path: exited=yes code=0 signaled=no
+argv0-child: argc=1 argv0-empty=yes
+execve-empty-argv: exited=yes code=0 signaled=no
+count-child: argv0=counter lines=3 bytes=21
+pipeline-emitter: exited=yes code=0 signaled=no
+pipeline-counter: exited=yes code=4 signaled=no
+posix_spawn: ret=0 bytes=21 lines=3
+posix_spawn-status: exited=yes code=0 signaled=no
+argv0-child: argc=2 argv0=vforked
+vfork-execve: exited=yes code=0 signaled=no
+done

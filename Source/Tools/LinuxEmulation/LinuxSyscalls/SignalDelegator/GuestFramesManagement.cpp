@@ -8,6 +8,8 @@ $end_info$
 
 #include "LinuxSyscalls/SignalDelegator.h"
 #include "ArchHelpers/UContext.h"
+#include "LinuxSyscalls/Arm64/GeneratedABI.h"
+#include "LinuxSyscalls/ThreadManager.h"
 
 #include <FEXCore/Core/CoreState.h>
 #include <FEXCore/Debug/InternalThreadState.h>
@@ -22,7 +24,7 @@ namespace FEX::HLE {
 //   frame_record {fp, lr}
 //   rt_sigframe {siginfo_t, ucontext_t}
 //
-// POWERARM-M0-TODO(signals): skeleton only. __reserved[] carries no fpsimd_context/esr_context records yet, SA_RESTORER vs the guest vDSO __kernel_rt_sigreturn is not handled, and sigaltstack/redzone rules have not been checked against the arm64 kernel.
+// POWERARM-M0-TODO(signals): __reserved[] carries no fpsimd_context/esr_context records yet, and sigaltstack/redzone rules have not been checked against the arm64 kernel.
 uint64_t SignalDelegator::SetupFrame_Arm64(FEXCore::Core::InternalThreadState* Thread, ArchHelpers::Context::ContextBackup* ContextBackup,
                                            FEXCore::Core::CpuStateFrame* Frame, int Signal, siginfo_t* HostSigInfo, void* ucontext,
                                            GuestSigAction* GuestAction, stack_t* GuestStack, uint64_t NewGuestSP) {
@@ -67,6 +69,9 @@ uint64_t SignalDelegator::SetupFrame_Arm64(FEXCore::Core::InternalThreadState* T
   uc->uc_mcontext.pc = ContextBackup->OriginalRIP;
   uc->uc_mcontext.pstate = State.nzcv;
 
+  // The mask rt_sigreturn restores: the one in effect before this delivery.
+  uc->uc_sigmask = FEX::HLE::ThreadManager::GetStateObjectFromFEXCoreThread(Thread)->SignalInfo.CurrentSignalMask.Val;
+
   uc->uc_stack.ss_sp = GuestStack->ss_sp;
   uc->uc_stack.ss_flags = GuestStack->ss_flags;
   uc->uc_stack.ss_size = GuestStack->ss_size;
@@ -80,7 +85,13 @@ uint64_t SignalDelegator::SetupFrame_Arm64(FEXCore::Core::InternalThreadState* T
   State.x[1] = SigInfoLocation;
   State.x[2] = UContextLocation;
   State.x[29] = FrameRecordLocation;
-  State.x[30] = reinterpret_cast<uint64_t>(GuestAction->restorer);
+  // Like arch/arm64/kernel/signal.c setup_return(): SA_RESTORER wins,
+  // otherwise the handler returns to the vDSO sigreturn trampoline.
+  if (GuestAction->sa_flags & FEX::HLE::Arm64::ABI::GUEST_SA_RESTORER) {
+    State.x[30] = reinterpret_cast<uint64_t>(GuestAction->restorer);
+  } else {
+    State.x[30] = reinterpret_cast<uint64_t>(VDSOPointers.VDSO_kernel_rt_sigreturn);
+  }
 
   return NewGuestSP;
 }
