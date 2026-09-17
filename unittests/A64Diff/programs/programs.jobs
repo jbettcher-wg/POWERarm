@@ -1,0 +1,27 @@
+# A64Diff program-level jobs.  TAB-separated: id class required stdin argv...
+# stdin '-' means /dev/null.  @ROOT@ is the bundle root.  Each job runs in a fresh empty cwd.
+hello.glibc	hello	1	-	@ROOT@/programs/bin/hello-glibc
+hello.glibc-args	hello	1	-	@ROOT@/programs/bin/hello-glibc	one	two words	
+hello.musl	hello	1	-	@ROOT@/programs/bin/hello-musl
+hello.musl-args	hello	1	-	@ROOT@/programs/bin/hello-musl	one	two words	
+busybox.version	busybox	1	-	@ROOT@/programs/bin/busybox
+busybox.echo	busybox	1	-	@ROOT@/programs/bin/busybox	echo	hello	world
+busybox.echo-e	busybox	1	-	@ROOT@/programs/bin/busybox	echo	-e	a\tb\n\x41
+busybox.cat	busybox	1	-	@ROOT@/programs/bin/busybox	cat	@ROOT@/programs/corpus/lorem.txt
+busybox.cat-stdin	busybox	1	@ROOT@/programs/corpus/tree/b.txt	@ROOT@/programs/bin/busybox	cat
+busybox.cat-missing	busybox	1	-	@ROOT@/programs/bin/busybox	cat	does-not-exist
+busybox.ls	busybox	1	-	@ROOT@/programs/bin/busybox	sh	-c	cd @ROOT@/programs/corpus/tree && @ROOT@/programs/bin/busybox ls -1 && @ROOT@/programs/bin/busybox ls -1a sub/deep
+busybox.wc	busybox	1	@ROOT@/programs/corpus/lorem.txt	@ROOT@/programs/bin/busybox	wc
+busybox.sort	busybox	1	@ROOT@/programs/corpus/words.txt	@ROOT@/programs/bin/busybox	sort
+busybox.sort-nr	busybox	1	@ROOT@/programs/corpus/numbers.txt	@ROOT@/programs/bin/busybox	sort	-k2,2nr
+busybox.sha256sum	busybox	1	@ROOT@/programs/corpus/lorem.txt	@ROOT@/programs/bin/busybox	sha256sum
+busybox.md5sum	busybox	1	@ROOT@/programs/corpus/tree/sub/deep/d.dat	@ROOT@/programs/bin/busybox	md5sum
+busybox.grep	busybox	1	@ROOT@/programs/corpus/lorem.txt	@ROOT@/programs/bin/busybox	grep	-n	-E	^(alpha|bravo) 
+busybox.grep-nomatch	busybox	1	@ROOT@/programs/corpus/lorem.txt	@ROOT@/programs/bin/busybox	grep	nomatch-xyz
+busybox.sed	busybox	1	@ROOT@/programs/corpus/lorem.txt	@ROOT@/programs/bin/busybox	sed	-n	s/ echo / ECHO /p
+busybox.awk	busybox	1	@ROOT@/programs/corpus/numbers.txt	@ROOT@/programs/bin/busybox	awk	{ s += $2 } END { print NR, s }
+busybox.find	busybox	1	-	@ROOT@/programs/bin/busybox	sh	-c	cd @ROOT@/programs/corpus && @ROOT@/programs/bin/busybox find tree | @ROOT@/programs/bin/busybox sort
+busybox.tar	busybox	1	-	@ROOT@/programs/bin/busybox	sh	-c	@ROOT@/programs/bin/busybox tar -C @ROOT@/programs/corpus -cf - tree | @ROOT@/programs/bin/busybox tar -tf - | @ROOT@/programs/bin/busybox sort
+busybox.gzip	busybox	1	@ROOT@/programs/corpus/lorem.txt	@ROOT@/programs/bin/busybox	sh	-c	@ROOT@/programs/bin/busybox gzip -c | @ROOT@/programs/bin/busybox gzip -dc | @ROOT@/programs/bin/busybox md5sum
+busybox.sh-c	busybox	1	-	@ROOT@/programs/bin/busybox	sh	-c	i=0; while [ $i -lt 3 ]; do echo $i; i=$((i+1)); done; exit 3
+busybox.applets	busybox	1	-	@ROOT@/programs/bin/busybox	sh	@ROOT@/programs/applets.sh	@ROOT@/programs/bin/busybox	@ROOT@/programs/corpus
