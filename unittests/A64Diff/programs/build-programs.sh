@@ -5,7 +5,7 @@
 #   build-programs.sh BUNDLE_ROOT
 #
 # Produces BUNDLE_ROOT/programs/{bin/hello-glibc,bin/hello-musl,bin/busybox,
-# corpus/,applets.sh,programs.jobs,SOURCES.txt}.  No root needed: third-party
+# corpus/,applets.sh,*.jobs,SOURCES.txt}.  No root needed: third-party
 # binaries come from pinned Debian packages, verified by sha256 and unpacked
 # with dpkg-deb -x.  Downloads are cached in $A64DIFF_CACHE (default
 # ~/.cache/a64diff).
@@ -68,7 +68,7 @@ nm "$out/bin/hello-glibc" | grep -q ' __init_libc$' && { echo "build-programs: h
 
 rm -rf "$out/corpus"
 cp -R "$here/corpus" "$out/corpus"
-cp "$here/applets.sh" "$here/programs.jobs" "$out/"
+cp "$here/applets.sh" "$here/hello.c" "$here/"*.jobs "$out/"
 
 {
   echo "busybox: Debian busybox-static 1:1.37.0-6+b9 arm64"

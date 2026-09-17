@@ -3,6 +3,7 @@
 # A64Diff golden side.  Run on the aarch64 reference machine (Raspberry Pi 5).
 #
 #   a64diff-golden.sh [--seed N] [--scale N] [--out DIR] [-j N] [--selftest] [--push USER@HOST:DIR]
+#                     [--rootfs NAME=DIR]...
 #
 # Generates the instruction tests, builds them, runs them natively, builds the
 # program corpus, captures all goldens, checks them, re-runs everything
@@ -15,7 +16,17 @@
 # <hash> covers the generator, the tool and the program corpus sources, so a
 # bundle name identifies exactly what produced it.  --selftest additionally
 # runs the negative controls (a64diff-selftest.sh).  --push scps the tarball.
+#
+# Rootfs jobs (programs/*.jobs blocks with "rootfs NAME") run natively through
+# rootfs/run-in-sysroot.sh in /tmp/a64diff-work/<bundle>/<suite>/<id>, the same
+# absolute path the compare side uses.  The prototype rootfs "minimal-debian"
+# is assembled here and shipped inside the bundle.  Any other rootfs a jobs
+# file names (e.g. ArchLinuxARM-m2) is external: it is looked up in
+# ${XDG_DATA_HOME:-~/.local/share}/powerarm/RootFS/NAME or given with
+# --rootfs NAME=DIR, is not copied, and only its content hash is recorded; the
+# compare side must find the same tree.
 set -eu
+umask 022
 
 here=$(cd "$(dirname "$0")" && pwd)
 src=$(cd "$here/../../unittests/A64Diff" && pwd)
@@ -25,6 +36,7 @@ out=${A64DIFF_OUT:-$HOME/a64diff}
 jobs=$(nproc)
 selftest=0
 push=
+extra_rootfs=
 
 while [ $# -gt 0 ]; do
   case $1 in
@@ -34,6 +46,7 @@ while [ $# -gt 0 ]; do
     -j) jobs=$2; shift 2 ;;
     --selftest) selftest=1; shift ;;
     --push) push=$2; shift 2 ;;
+    --rootfs) extra_rootfs="$extra_rootfs $2"; shift 2 ;;
     *) echo "usage: $0 [--seed N] [--scale N] [--out DIR] [-j N] [--selftest] [--push USER@HOST:DIR]" >&2; exit 2 ;;
   esac
 done
@@ -44,7 +57,7 @@ t0=$(date +%s)
 step() { echo "[$(( $(date +%s) - t0 ))s] $*"; }
 
 format=$(sed -n 's/^FORMAT_VERSION = //p' "$src/gen/a64gen.py")
-hash=$(cd "$src" && find gen tool programs -type f ! -name '*.pyc' | LC_ALL=C sort | xargs sha256sum | sha256sum | cut -c1-12)
+hash=$(cd "$src" && find gen tool programs rootfs -type f ! -name '*.pyc' | LC_ALL=C sort | xargs sha256sum | sha256sum | cut -c1-12)
 name=a64diff-v$format-s$seed-x$scale-$hash
 root=$out/$name
 work=$out/work-$name
@@ -57,6 +70,7 @@ cc -O2 -Wall -o "$work/a64diff" "$src/tool/a64diff.c"
 tool=$work/a64diff
 cp "$src/tool/a64diff.c" "$src/tool/a64diff.h" "$src/tool/broken-runner.sh" "$root/src/"
 cp -R "$src/vm" "$root/src/vm"
+cp "$src/rootfs/a64diff-rootfs.py" "$root/src/"
 
 step "generate (seed $seed, scale $scale)"
 python3 "$src/gen/a64gen.py" gen --seed "$seed" --scale "$scale" --out "$work"
@@ -83,8 +97,48 @@ step "golden run (native)"
 
 step "program corpus"
 sh "$src/programs/build-programs.sh" "$root"
-"$tool" run --jobs "$root/programs/programs.jobs" --root "$root" --out "$root/golden-programs" -j "$jobs" --timeout 60
-rm -rf "$root/golden-programs/"*.cwd
+
+step "rootfs"
+mkdir -p "$root/rootfs"
+record_rootfs() { # NAME DIR LOCATION
+  python3 "$src/rootfs/a64diff-rootfs.py" hash "$2" --contents-out "$root/rootfs/$1.contents" > "$work/rootfs-$1.hash"
+  { echo "name $1"; cat "$work/rootfs-$1.hash"; echo "location $3"; } > "$root/rootfs/$1.id"
+  echo "  $1: $(grep content-hash "$root/rootfs/$1.id") ($3)"
+}
+runner=$here/rootfs/run-in-sysroot.sh
+A64DIFF_BUSYBOX=$root/programs/bin/busybox sh "$src/rootfs/mkrootfs-minimal.sh" "$root/rootfs/minimal-debian"
+record_rootfs minimal-debian "$root/rootfs/minimal-debian" bundle
+# Isolation check: through the native runner, the rootfs's multiarch directory
+# must hold exactly what the builder put there (the golden machine's own
+# /usr/lib/aarch64-linux-gnu has hundreds of files).  A runner that leaked the
+# host tree would make every rootfs golden meaningless.
+iso=$(mktemp -d)
+seen=$("$runner" "$root/rootfs/minimal-debian" "$iso" -- /usr/bin/busybox ls /usr/lib/aarch64-linux-gnu | tr '\n' ' ')
+rm -rf "$iso"
+[ "$seen" = "ld-linux-aarch64.so.1 libc.so.6 " ] ||
+  { echo "a64diff-golden: rootfs runner is not isolated: sees '$seen'" >&2; exit 1; }
+echo "  isolation: runner sees only the rootfs ($seen)"
+rootfs_args="--rootfs minimal-debian=$root/rootfs/minimal-debian"
+for n in $(sed -n 's/^[[:space:]]*rootfs[[:space:]]\{1,\}\([^[:space:]]*\).*/\1/p' "$root"/programs/*.jobs | sort -u); do
+  [ "$n" != minimal-debian ] || continue
+  d=${XDG_DATA_HOME:-$HOME/.local/share}/powerarm/RootFS/$n
+  for spec in $extra_rootfs; do [ "${spec%%=*}" = "$n" ] && d=${spec#*=}; done
+  [ -d "$d" ] || { echo "a64diff-golden: jobs need rootfs $n, not found at $d (use --rootfs $n=DIR)" >&2; exit 1; }
+  d=$(cd "$d" && pwd -P)
+  record_rootfs "$n" "$d" external
+  rootfs_args="$rootfs_args --rootfs $n=$d"
+done
+rootfs_args="$rootfs_args --rootfs-exec $runner"
+workroot=/tmp/a64diff-work/$name
+
+suites=$(cd "$root/programs" && ls *.jobs | sed 's/\.jobs$//')
+for suite in $suites; do
+  step "golden run: $suite"
+  # shellcheck disable=SC2086
+  "$tool" run --jobs "$root/programs/$suite.jobs" --root "$root" --out "$root/golden-$suite" -j "$jobs" --timeout 600 $rootfs_args \
+    --workroot "$workroot/$suite"
+  rm -rf "$root/golden-$suite/"*.cwd "$workroot/$suite"
+done
 
 step "determinism: second native run must match the goldens"
 rm -rf "$work/native"
@@ -93,11 +147,16 @@ rm -rf "$work/native"
   --report "$work/native/insn.report" --max-detail 5 > "$work/native/insn.log" || true
 grep -v '^CONTROL-FIRED' "$work/native/insn.log"
 grep -q 'RESULT=PASS$' "$work/native/insn.log" || { echo "a64diff-golden: native re-run does not match the goldens" >&2; exit 1; }
-"$tool" run --jobs "$root/programs/programs.jobs" --root "$root" --out "$work/native/programs" -j "$jobs" --timeout 60 >/dev/null
-"$tool" pcompare --jobs "$root/programs/programs.jobs" --golden "$root/golden-programs" --actual "$work/native/programs" \
-  --report "$work/native/programs.report" --max-detail 5 > "$work/native/programs.log" || true
-grep -v '^CONTROL-FIRED' "$work/native/programs.log"
-grep -q 'RESULT=PASS$' "$work/native/programs.log" || { echo "a64diff-golden: native program re-run does not match the goldens" >&2; exit 1; }
+for suite in $suites; do
+  # shellcheck disable=SC2086
+  "$tool" run --jobs "$root/programs/$suite.jobs" --root "$root" --out "$work/native/$suite" -j "$jobs" --timeout 600 $rootfs_args \
+    --workroot "$workroot/$suite" >/dev/null
+  rm -rf "$workroot/$suite"
+  "$tool" pcompare --jobs "$root/programs/$suite.jobs" --golden "$root/golden-$suite" --actual "$work/native/$suite" \
+    --report "$work/native/$suite.report" --max-detail 5 > "$work/native/$suite.log" || true
+  grep -v '^CONTROL-FIRED' "$work/native/$suite.log"
+  grep -q 'RESULT=PASS$' "$work/native/$suite.log" || { echo "a64diff-golden: native $suite re-run does not match the goldens" >&2; exit 1; }
+done
 
 {
   echo "name $name"
@@ -111,6 +170,8 @@ grep -q 'RESULT=PASS$' "$work/native/programs.log" || { echo "a64diff-golden: na
   echo "golden-pagesize $(getconf PAGESIZE)"
   echo "tests $(grep -vc '^#' "$root/manifest.tsv")"
   echo "program-jobs $(grep -vc '^#' "$root/programs/programs.jobs")"
+  echo "job-suites $(echo $suites)"
+  for f in "$root"/rootfs/*.id; do echo "rootfs $(sed -n 's/^name //p' "$f") $(sed -n 's/^content-hash //p' "$f") $(sed -n 's/^location //p' "$f")"; done
 } > "$root/VERSION"
 
 if [ "$selftest" = 1 ]; then
