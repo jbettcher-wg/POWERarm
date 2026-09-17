@@ -22,13 +22,13 @@ bool IRBuilder::B_uncond(uint32_t Word) {
 
 bool IRBuilder::BL(uint32_t Word) {
   const uint64_t Target = CurrentPC + SignExtend(Bits(Word, 25, 0), 26) * 4;
-  Ref ReturnAddress = PCValue(CurrentPC + INSTRUCTION_SIZE);
-  StoreX(30, ReturnAddress);
+  StoreX(30, PCValue(CurrentPC + INSTRUCTION_SIZE));
   if (JumpTargets.contains(Target)) {
     // A call to this unit's own entry stays an in-unit jump.
     ExitToPC(Target);
   } else {
-    ExitCall(_InlineEntrypointOffset(OpSize::i64Bit, Target - Entry), ReturnAddress);
+    ExitCall(_InlineEntrypointOffset(OpSize::i64Bit, Target - Entry),
+             _InlineEntrypointOffset(OpSize::i64Bit, CurrentPC + INSTRUCTION_SIZE - Entry));
     BlockSetPC = true;
   }
   return true;
@@ -87,9 +87,8 @@ bool IRBuilder::BranchRegister(uint32_t Word, BranchHint Hint) {
   // value, whatever the pairing predicted (see DEF_OP(ExitFunction)).
   Ref Target = LoadX(Bits(Word, 9, 5));
   if (Hint == BranchHint::Call) {
-    Ref ReturnAddress = PCValue(CurrentPC + INSTRUCTION_SIZE);
-    StoreX(30, ReturnAddress);
-    ExitCall(Target, ReturnAddress);
+    StoreX(30, PCValue(CurrentPC + INSTRUCTION_SIZE));
+    ExitCall(Target, _InlineEntrypointOffset(OpSize::i64Bit, CurrentPC + INSTRUCTION_SIZE - Entry));
   } else {
     ExitFunction(Target, Hint);
   }

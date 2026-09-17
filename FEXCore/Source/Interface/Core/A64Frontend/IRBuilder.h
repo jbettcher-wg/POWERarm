@@ -77,7 +77,8 @@ public:
   IRPair<FEXCore::IR::IROp_ExitFunction> ExitFunction(Ref NewPC, FEXCore::IR::BranchHint Hint = FEXCore::IR::BranchHint::None) {
     return _ExitFunction(FEXCore::IR::OpSize::i64Bit, NewPC, Hint, InvalidNode, InvalidNode);
   }
-  // A guest call (BL/BLR): ReturnAddress is the value just stored to X30.
+  // A guest call (BL/BLR): ReturnAddress is the X30 value as an inline
+  // EntrypointOffset, so the backend can read it after register allocation.
   IRPair<FEXCore::IR::IROp_ExitFunction> ExitCall(Ref NewPC, Ref ReturnAddress) {
     return _ExitFunction(FEXCore::IR::OpSize::i64Bit, NewPC, FEXCore::IR::BranchHint::Call, ReturnAddress, InvalidNode);
   }

@@ -1802,6 +1802,10 @@ uint64_t PPC64JITCore::ExitFunctionLinkWithRecord(FEXCore::Core::CpuStateFrame* 
   // first, so by the time A flips the linked leg is complete; a delink
   // restores A alone and Final goes stale but unreachable.
   const bool ShadowCall = Record->FinalOffset != 0;
+  // A64 paired call (EmitA64PairedCall): the caller word is itself the call.
+  // It becomes `bl HostCode` / `bl Thunk` in place, and the word after it is
+  // the return trampoline the call pushed.
+  const bool CallInPlace = ShadowCall && Record->FinalOffset == Record->CallerOffset;
   const uintptr_t FinalAddress = ShadowCall ? reinterpret_cast<uintptr_t>(Record) + Record->FinalOffset : CallerAddress;
   const uintptr_t LinkedEntry = ShadowCall ? reinterpret_cast<uintptr_t>(Record) + Record->LinkedEntryOffset : 0;
   const int64_t DirectDelta = static_cast<int64_t>(HostCode) - static_cast<int64_t>(FinalAddress);
@@ -1824,13 +1828,15 @@ uint64_t PPC64JITCore::ExitFunctionLinkWithRecord(FEXCore::Core::CpuStateFrame* 
       Imm(4, GuestRIP);
       FEXCore::ArchHelpers::PPC64::FlushICacheRange(Guard, 5 * 4);
       PPC64PatchInstructionIf(CallerAddress, Record->OrigCallerWord, 0x60000000u); // nop
+    } else if (CallInPlace) {
+      // Already written as the Final word.
     } else if (ShadowCall) {
       PPC64PatchInstruction(CallerAddress, PPC64EncodeBranch(LinkedEntryDelta));
     } else {
       PPC64PatchInstruction(CallerAddress, PlainWord);
     }
   };
-  const bool CallerReachable = !ShadowCall || Indirect || PPC64BranchDisplacementInRange(LinkedEntryDelta);
+  const bool CallerReachable = !ShadowCall || Indirect || CallInPlace || PPC64BranchDisplacementInRange(LinkedEntryDelta);
 
   if (PPC64BranchDisplacementInRange(DirectDelta) && CallerReachable) {
     // Registration BEFORE patch, under the same locks: once the patched word
