@@ -122,14 +122,18 @@ bool IRBuilder::DUP_elt_2(uint32_t Word) {
 }
 
 bool IRBuilder::DUP_elt_1(uint32_t Word) {
-  // Scalar DUP (MOV Dd, Vn.d[i]): only 64-bit elements are allocated.
+  // Scalar DUP (MOV Bd/Hd/Sd/Dd, Vn.<T>[i]): the element, zero-extended to
+  // the register. The ARMv8.0 decode allocated only D; later revisions allow
+  // every element size, and GCC 16 emits the S form (mov s13, v14.s[1] in
+  // cc1's SLP pass) for -march=armv8-a.
   const uint32_t Imm5 = Bits(Word, 20, 16);
-  if (CopyElementSize(Imm5) != 3) {
+  const int Size = CopyElementSize(Imm5);
+  if (Size < 0) {
     return false;
   }
-  const uint8_t Index = Imm5 >> 4;
-  Ref Result = _VDupElement(OpSize::i128Bit, OpSize::i64Bit, LoadV(Bits(Word, 9, 5)), Index);
-  StoreVSized(Bits(Word, 4, 0), OpSize::i64Bit, Result);
+  const uint8_t Index = Imm5 >> (Size + 1);
+  Ref Result = _VDupElement(OpSize::i128Bit, ElementSizeFor(Size), LoadV(Bits(Word, 9, 5)), Index);
+  StoreVSized(Bits(Word, 4, 0), ElementSizeFor(Size), Result);
   return true;
 }
 
