@@ -5717,6 +5717,31 @@ CPUBackend::CompiledCode PPC64JITCore::CompileCode(
     // branch), the thunk word is the b +0x14 emitted just above.
     const uint32_t OrigCallerWord = *reinterpret_cast<const uint32_t*>(Thunk.CallerAddress);
     const uint32_t OrigThunkWord = *reinterpret_cast<const uint32_t*>(ThunkStart);
+    if (ExitRIPFixedWidth) {
+      // Code cache relocations for the record (see RELOC_LINK_RECORD). Same
+      // retention predicate as every other relocation this backend records.
+      const uint64_t RecordOffset = BlockBufferOffset + static_cast<uint64_t>(GetOffset());
+      Relocation Link {};
+      Link.LinkRecord.Header = {.Offset = RecordOffset, .Type = FEXCore::CPU::RelocationTypes::RELOC_LINK_RECORD};
+      Link.LinkRecord.CallerDelta = static_cast<int32_t>(static_cast<int64_t>(Thunk.CallerAddress - RecordAddress));
+      Link.LinkRecord.ThunkDelta = static_cast<int32_t>(-static_cast<int64_t>(PPC64LinkRecordFromThunkStart));
+      Link.LinkRecord.OrigCallerWord = OrigCallerWord;
+      Link.LinkRecord.OrigThunkWord = OrigThunkWord;
+      Relocations.emplace_back(Link);
+      if (Thunk.GuestRIP != 0) {
+        // GuestRIP == 0 marks an inline-cache record and must stay 0.
+        Relocation Rip {};
+        Rip.GuestRIP.Header = {.Offset = RecordOffset + offsetof(PPC64BlockLinkRecord, GuestRIP),
+                               .Type = FEXCore::CPU::RelocationTypes::RELOC_GUEST_RIP_LITERAL};
+        Rip.GuestRIP.GuestRIP = Thunk.GuestRIP;
+        Relocations.emplace_back(Rip);
+      }
+      Relocation Stub {};
+      Stub.NamedSymbolLiteral.Header = {.Offset = RecordOffset + offsetof(PPC64BlockLinkRecord, StubAddr),
+                                        .Type = FEXCore::CPU::RelocationTypes::RELOC_NAMED_SYMBOL_LITERAL};
+      Stub.NamedSymbolLiteral.Symbol = FEXCore::CPU::RelocNamedSymbolLiteral::NamedSymbol::SYMBOL_LITERAL_EXITFUNCTION_LINKER_WITH_RECORD;
+      Relocations.emplace_back(Stub);
+    }
     dc64(0);                                                          // HostCode
     dc64(Thunk.GuestRIP);                                             // GuestRIP
     dc64(static_cast<uint64_t>(Thunk.CallerAddress - RecordAddress)); // CallerOffset
@@ -5972,6 +5997,8 @@ uint64_t GetNamedSymbolLiteral(FEXCore::Context::ContextImpl& CTX, FEXCore::CPU:
   switch (Op) {
   case FEXCore::CPU::RelocNamedSymbolLiteral::NamedSymbol::SYMBOL_LITERAL_EXITFUNCTION_LINKER:
     return CTX.Dispatcher->GetExitFunctionLinkerAddress();
+  case FEXCore::CPU::RelocNamedSymbolLiteral::NamedSymbol::SYMBOL_LITERAL_EXITFUNCTION_LINKER_WITH_RECORD:
+    return CTX.Dispatcher->GetExitFunctionLinkerWithRecordAddress();
   default: ERROR_AND_DIE_FMT("Unknown named symbol literal: {}", static_cast<uint32_t>(Op));
   }
 }

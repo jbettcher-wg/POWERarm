@@ -25,6 +25,13 @@ enum class RelocationTypes : uint32_t {
   // 4 instruction constant generation
   // Aligned to struct RelocGuestRIP
   RELOC_GUEST_RIP_MOVE,
+
+  // A block-link record (PPC64BlockLinkRecord) and the two instruction words
+  // its linker patches. Nothing is written on load: the stored bytes are the
+  // unlinked form. On storage the copy is returned to that form, because the
+  // live buffer being serialized may already be linked (the patched words are
+  // PC-relative branches into other blocks of this process).
+  RELOC_LINK_RECORD,
 };
 
 struct FEX_PACKED RelocationHeader final {
@@ -39,6 +46,9 @@ struct RelocNamedSymbolLiteral final {
     ///< Thread specific relocations
     // JIT Literal pointers
     SYMBOL_LITERAL_EXITFUNCTION_LINKER,
+    // The dispatcher stub a link thunk's unlinked leg reaches through its
+    // record (PPC64BlockLinkRecord::StubAddr).
+    SYMBOL_LITERAL_EXITFUNCTION_LINKER_WITH_RECORD,
   };
 
   RelocationHeader Header {};
@@ -73,6 +83,19 @@ struct RelocGuestRIP final {
   uint32_t pad2[6] {};
 };
 
+struct RelocLinkRecord final {
+  RelocationHeader Header {};
+
+  // Offsets of the patched words from the record (Header.Offset), and the
+  // words they hold while unlinked.
+  int32_t CallerDelta;
+  int32_t ThunkDelta;
+  uint32_t OrigCallerWord;
+  uint32_t OrigThunkWord;
+
+  uint32_t Pad[5] {};
+};
+
 union Relocation {
   // Clang 16 Can't default-initialize this union
   static Relocation Default() {
@@ -93,6 +116,7 @@ union Relocation {
   RelocNamedThunkMove NamedThunkMove;
 
   RelocGuestRIP GuestRIP;
+  RelocLinkRecord LinkRecord;
 };
 
 uint64_t GetNamedSymbolLiteral(FEXCore::Context::ContextImpl&, RelocNamedSymbolLiteral::NamedSymbol);
