@@ -773,6 +773,212 @@ def gen_fp_round(p):
         p.vcase([f"{p.rng.choice(ops)} {r}{p.vreg()}, {r}{n}"], {n: p.fp(is64)}, fpcr=p.rng.choice(RMODES))
 
 
+def reg_list(first, count, width):
+    return ", ".join(f"v{(first + i) % 32}.{width}" for i in range(count))
+
+
+def gen_simd_table(p):
+    # TBL/TBX with 1-4 tables. Every index value 0..255 appears in every
+    # table count, table registers wrap past V31, and Q=0 checks that the
+    # upper half is cleared.
+    for tables in (1, 2, 3, 4):
+        for op in ("tbl", "tbx"):
+            values = list(range(256))
+            p.rng.shuffle(values)
+            for start in range(0, 256, 16):
+                idx = values[start:start + 16]
+                lo = sum(b << (8 * i) for i, b in enumerate(idx[:8]))
+                hi = sum(b << (8 * i) for i, b in enumerate(idx[8:]))
+                first = p.rng.choice([1, 14, 29, 30, 31])
+                d = p.rng.choice([r for r in VREGS if all(r != (first + i) % 32 for i in range(tables))])
+                m = p.rng.choice([r for r in VREGS if r != d])
+                v = {(first + i) % 32: p.vec() for i in range(tables)}
+                v[d] = p.vec()
+                v[m] = (lo, hi)
+                q = p.rng.random() < 0.5
+                w = "16b" if q else "8b"
+                p.vcase([f"{op} v{d}.{w}, {{{reg_list(first, tables, '16b')}}}, v{m}.{w}"], v)
+    # Index register aliasing a table register and the destination.
+    for tables in (1, 2, 3, 4):
+        p.vcase([f"tbx v1.16b, {{{reg_list(0, tables, '16b')}}}, v1.16b"], {i: p.vec() for i in range(tables)} | {1: (0x0F1E2D3C4B5A6978, 0x8796A5B4C3D2E1F0)})
+        p.vcase([f"tbl v0.16b, {{{reg_list(0, tables, '16b')}}}, v0.16b"], {i: p.vec() for i in range(tables)} | {0: (0x0706050403020100, 0x3F2F1F0F302010FF)})
+
+
+def gen_simd_struct(p):
+    # Multiple and single structures at every width and lane, loads and
+    # stores, offset and post-index (immediate and register), registers
+    # wrapping past V31. X19 = buf+64 leaves room for 64 bytes either side.
+    p.emit("        adrp    x19, buf")
+    p.emit("        add     x19, x19, :lo12:buf")
+    p.emit("        add     x19, x19, #64")
+    widths_q = [("16b", 1), ("8h", 2), ("4s", 4), ("2d", 8)]
+    widths_d = [("8b", 1), ("4h", 2), ("2s", 4)]
+    for _ in range(260):
+        n = p.rng.randrange(1, 5)
+        interleave = p.rng.random() < 0.7
+        q = p.rng.random() < 0.6
+        width, eb = p.rng.choice(widths_q if q else widths_d + ([("1d", 8)] if not interleave or n == 1 else []))
+        first = p.rng.choice([0, 3, 15, 16, 29, 30, 31])
+        regs = {(first + i) % 32: p.vec() for i in range(n)}
+        is_load = p.rng.random() < 0.5
+        base = f"{'ld' if is_load else 'st'}{n if interleave else 1}"
+        lst = reg_list(first, n, width)
+        total = n * (16 if q else 8)
+        mode = p.rng.randrange(3)
+        body = ["mov x20, x19"]
+        if mode == 0:
+            body.append(f"{base} {{{lst}}}, [x20]")
+        elif mode == 1:
+            body.append(f"{base} {{{lst}}}, [x20], #{total}")
+        else:
+            body.append(f"{base} {{{lst}}}, [x20], x9")
+        p.vcase(body, regs, {9: p.rng.choice([0, 5, 0xFFFFFFFFFFFFFFF0])}, dumpbuf=not is_load)
+    lanes = [("b", 1, 16), ("h", 2, 8), ("s", 4, 4), ("d", 8, 2)]
+    for _ in range(260):
+        n = p.rng.randrange(1, 5)
+        e, eb, count = p.rng.choice(lanes)
+        idx = p.rng.randrange(count)
+        first = p.rng.choice([0, 3, 15, 16, 29, 30, 31])
+        regs = {(first + i) % 32: p.vec() for i in range(n)}
+        is_load = p.rng.random() < 0.5
+        lst = reg_list(first, n, e)
+        mode = p.rng.randrange(3)
+        op = f"{'ld' if is_load else 'st'}{n}"
+        body = ["mov x20, x19"]
+        if mode == 0:
+            body.append(f"{op} {{{lst}}}[{idx}], [x20]")
+        elif mode == 1:
+            body.append(f"{op} {{{lst}}}[{idx}], [x20], #{n * eb}")
+        else:
+            body.append(f"{op} {{{lst}}}[{idx}], [x20], x9")
+        p.vcase(body, regs, {9: p.rng.choice([0, 3, 0xFFFFFFFFFFFFFFF8])}, dumpbuf=not is_load)
+    # Every lane of every width, one register.
+    for e, eb, count in lanes:
+        for idx in range(count):
+            p.vcase(["mov x20, x19", f"ld1 {{v17.{e}}}[{idx}], [x20]", "add x21, x19, #16", f"st1 {{v2.{e}}}[{idx}], [x21]"],
+                    {17: p.vec(), 2: p.vec()}, dumpbuf=True)
+    # Replicated loads.
+    for _ in range(80):
+        n = p.rng.randrange(1, 5)
+        q = p.rng.random() < 0.5
+        width = p.rng.choice(["16b", "8h", "4s", "2d"] if q else ["8b", "4h", "2s"])
+        eb = {"b": 1, "h": 2, "s": 4, "d": 8}[width[-1]]
+        first = p.rng.choice([0, 15, 16, 30, 31])
+        regs = {(first + i) % 32: p.vec() for i in range(n)}
+        mode = p.rng.randrange(3)
+        body = ["mov x20, x19"]
+        lst = reg_list(first, n, width)
+        if mode == 0:
+            body.append(f"ld{n}r {{{lst}}}, [x20]")
+        elif mode == 1:
+            body.append(f"ld{n}r {{{lst}}}, [x20], #{n * eb}")
+        else:
+            body.append(f"ld{n}r {{{lst}}}, [x20], x9")
+        p.vcase(body, regs, {9: p.rng.choice([0, 7])})
+    # The Debian rtld instruction.
+    p.vcase(["mov x2, x19", "ld1 {v31.d}[1], [x2]"], {31: p.vec()})
+
+
+def gen_simd_gaps(p):
+    counts = [0, 1, 7, 8, 15, 16, 31, 32, 63, 64, 65, 127, 0x80, 0x81, 0xF9, 0xF8, 0xF1, 0xF0, 0xE1, 0xE0, 0xC1, 0xC0, 0xFF, 0xFE]
+
+    def count_vec(bits):
+        lanes = 128 // bits
+        vals = [p.rng.choice(counts) if p.rng.random() < 0.8 else p.rng.getrandbits(bits) for _ in range(lanes)]
+        # The count is the low byte; fill the rest of each lane with junk.
+        full = 0
+        for i, c in enumerate(vals):
+            lane = (p.rng.getrandbits(bits) & ~0xFF) | c if bits > 8 else c
+            full |= lane << (bits * i)
+        return (full & M64, full >> 64)
+
+    for _ in range(1000):
+        d, n, m = p.vreg(), p.vreg(), p.vreg()
+        v = {d: p.vec(), n: p.vec(), m: p.vec()}
+        kind = p.rng.randrange(14)
+        fpcr = p.rng.choice(RMODES)
+        if kind <= 1:
+            op = p.rng.choice(["ushl", "sshl"])
+            if p.rng.random() < 0.2:
+                v[m] = count_vec(64)
+                p.vcase([f"{op} d{d}, d{n}, d{m}"], v)
+            else:
+                vt, bits, q = vtypes(p)
+                v[m] = count_vec(bits)
+                p.vcase([f"{op} v{d}.{vt}, v{n}.{vt}, v{m}.{vt}"], v)
+        elif kind == 2:
+            op = p.rng.choice(["sri", "sli", "usra", "ssra"])
+            vt, bits, q = vtypes(p)
+            if op == "sli":
+                sh = p.rng.choice([0, 1, bits - 1, p.rng.randrange(bits)])
+            else:
+                sh = p.rng.choice([1, bits, bits - 1, p.rng.randrange(1, bits + 1)])
+            p.vcase([f"{op} v{d}.{vt}, v{n}.{vt}, #{sh}"], v)
+        elif kind == 3:
+            op = p.rng.choice(["uaddlp", "saddlp", "uadalp", "sadalp"])
+            src, dst = p.rng.choice([("8b", "4h"), ("16b", "8h"), ("4h", "2s"), ("8h", "4s"), ("2s", "1d"), ("4s", "2d")])
+            p.vcase([f"{op} v{d}.{dst}, v{n}.{src}"], v)
+        elif kind == 4:
+            op = p.rng.choice(["ssubw", "usubw"])
+            nt, wt, nt2, bits = narrow_wide(p)
+            two = p.rng.random() < 0.5
+            p.vcase([f"{op}{'2' if two else ''} v{d}.{wt}, v{n}.{wt}, v{m}.{nt2 if two else nt}"], v)
+        elif kind == 5:
+            op = p.rng.choice(["umull", "smull", "umlal", "smlal", "umlsl", "smlsl"])
+            nt, wt, nt2, bits = narrow_wide(p)
+            two = p.rng.random() < 0.5
+            p.vcase([f"{op}{'2' if two else ''} v{d}.{wt}, v{n}.{nt2 if two else nt}, v{m}.{nt2 if two else nt}"], v)
+        elif kind == 6:
+            op = p.rng.choice(["mul", "mla", "mls"])
+            vt, bits, q = vtypes(p, False)
+            p.vcase([f"{op} v{d}.{vt}, v{n}.{vt}, v{m}.{vt}"], v)
+        elif kind == 7:
+            q = p.rng.random() < 0.5
+            if p.rng.random() < 0.5:
+                vt, lane, count = ("8h" if q else "4h"), "h", 8
+                mreg = p.rng.choice([r for r in VREGS if r < 16])
+            else:
+                vt, lane, count = ("4s" if q else "2s"), "s", 4
+                mreg = p.rng.choice(VREGS)
+            v[mreg] = p.vec()
+            p.vcase([f"mul v{d}.{vt}, v{n}.{vt}, v{mreg}.{lane}[{p.rng.randrange(count)}]"], v)
+        elif kind == 8:
+            op = p.rng.choice(["smaxp", "sminp"])
+            vt, bits, q = vtypes(p, False)
+            p.vcase([f"{op} v{d}.{vt}, v{n}.{vt}, v{m}.{vt}"], v)
+        elif kind == 9:
+            vt = p.rng.choice(["8b", "16b"])
+            p.vcase([f"rev16 v{d}.{vt}, v{n}.{vt}"], v)
+        elif kind == 10:
+            op = p.rng.choice(["neg d{d}, d{n}", "abs d{d}, d{n}", "addp d{d}, v{n}.2d", "uqsub d{d}, d{n}, d{m}"])
+            if op.startswith("uqsub") and p.rng.random() < 0.5:
+                v[m] = (v[n][0] + p.rng.choice([0, 1, -1]) & M64, v[m][1])
+            p.vcase([op.format(d=d, n=n, m=m)], v)
+        elif kind == 11:
+            is64 = p.rng.random() < 0.5
+            vn, vm = fp_pair(p, is64)
+            v[n], v[m] = vn, vm
+            if p.rng.random() < 0.5:
+                p.vcase([f"fabd {'d' if is64 else 's'}{d}, {'d' if is64 else 's'}{n}, {'d' if is64 else 's'}{m}"], v, fpcr=fpcr)
+            else:
+                vt = "2d" if is64 else p.rng.choice(["2s", "4s"])
+                v[n] = (p.f64() if is64 else (p.f32() << 32) | p.f32(), p.f64() if is64 else (p.f32() << 32) | p.f32())
+                p.vcase([f"fabd v{d}.{vt}, v{n}.{vt}, v{m}.{vt}"], v, fpcr=fpcr)
+        elif kind == 12:
+            op = p.rng.choice(["fneg", "fabs"])
+            vt = p.rng.choice(["2s", "4s", "2d"])
+            is64 = vt == "2d"
+            v[n] = (p.f64() if is64 else (p.f32() << 32) | p.f32(), p.f64() if is64 else (p.f32() << 32) | p.f32())
+            p.vcase([f"{op} v{d}.{vt}, v{n}.{vt}"], v)
+        else:
+            op = p.rng.choice(["scvtf", "ucvtf"])
+            vt = p.rng.choice(["2s", "4s", "2d"])
+            ints = [0, 1, M64, 0x8000000000000000, 0x7FFFFFFFFFFFFFFF, 0x20000000000001, 0x7FFFFFFF, 0x80000000, 0xFFFFFFFF, 0x1000001]
+            if vt == "2d":
+                v[n] = (p.rng.choice(ints + [p.rng.getrandbits(64)]), p.rng.choice(ints + [p.rng.getrandbits(64)]))
+            p.vcase([f"{op} v{d}.{vt}, v{n}.{vt}"], v, fpcr=fpcr)
+
+
 GROUPS = {
     "simd_loadstore": gen_simd_loadstore,
     "simd_copy": gen_simd_copy,
@@ -784,6 +990,9 @@ GROUPS = {
     "fp_half": gen_fp_half,
     "fp_round": gen_fp_round,
     "exclusive": gen_exclusive,
+    "simd_table": gen_simd_table,
+    "simd_struct": gen_simd_struct,
+    "simd_gaps": gen_simd_gaps,
 }
 
 
