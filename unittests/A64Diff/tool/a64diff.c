@@ -772,7 +772,7 @@ static void where_stopped(FILE* f, const struct row* r, const char* err) {
   if (!p || !r->addr || !r->enc) return;
   uint64_t pc = strtoull(p + 6, NULL, 16), insn = strtoull(r->addr, NULL, 16);
   uint64_t n = !strcmp(r->enc, "-") ? 0 : (strlen(r->enc) + 1) / 9;
-  const char* where = pc < insn ? "in the harness prologue, before the instruction under test"
+  const char* where = pc < insn ? "before the instruction under test (harness prologue, or the backward landing pad)"
                       : pc < insn + 4 * n ? "at the instruction under test"
                                           : "after the instruction under test (landing pads / dump stub)";
   fprintf(f, "    stopped at pc 0x%" PRIx64 ": %s\n", pc, where);
