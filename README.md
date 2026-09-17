@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="docs/powerarm/assets/powerarm-logo.png" alt="POWERarm: AArch64 on POWER" width="640">
+</p>
+
 # POWERarm
 
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
