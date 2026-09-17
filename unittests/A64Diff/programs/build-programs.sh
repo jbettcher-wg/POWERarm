@@ -66,9 +66,19 @@ nm "$out/bin/hello-musl" | grep -q ' __init_libc$' || { echo "build-programs: he
 nm "$out/bin/hello-glibc" | grep -q ' __libc_start_main$' || { echo "build-programs: hello-glibc is not glibc" >&2; exit 1; }
 nm "$out/bin/hello-glibc" | grep -q ' __init_libc$' && { echo "build-programs: hello-glibc contains musl" >&2; exit 1; }
 
-rm -rf "$out/corpus"
+rm -rf "$out/corpus" "$out/lua-scripts" "$out/sources"
 cp -R "$here/corpus" "$out/corpus"
+cp -R "$here/lua-scripts" "$out/lua-scripts"
 cp "$here/applets.sh" "$here/hello.c" "$here/"*.jobs "$out/"
+
+# M2 project sources (projects.jobs): the pinned zlib and Lua tarballs, checked
+# against the sha256 pins in alarm-m2.manifest.
+mkdir -p "$out/sources"
+"$here/../../../Scripts/powerarm/rootfs/fetch-m2-projects.sh" | while read -r pname pversion ppath; do
+  cp "$ppath" "$out/sources/"
+  echo "$pname $pversion $(basename "$ppath")" >> "$x/projects.txt"
+done
+[ -s "$x/projects.txt" ] || { echo "build-programs: no M2 project sources" >&2; exit 1; }
 
 {
   echo "busybox: Debian busybox-static 1:1.37.0-6+b9 arm64"
@@ -76,6 +86,8 @@ cp "$here/applets.sh" "$here/hello.c" "$here/"*.jobs "$out/"
   echo "$PKGS" | while IFS='|' read -r name url snap sum; do
     if [ -n "$name" ]; then printf '  %s\n    %s\n    %s\n    sha256 %s\n' "$name" "$url" "$snap" "$sum"; fi
   done
+  echo "M2 project sources (sha256 pinned in Scripts/powerarm/rootfs/alarm-m2.manifest):"
+  (cd "$out/sources" && sha256sum *) | sed 's/^/  /'
   echo "glibc:   $(ldd --version | head -n 1)"
   echo "gcc:     $(gcc --version | head -n 1)"
   (cd "$out/bin" && sha256sum *)

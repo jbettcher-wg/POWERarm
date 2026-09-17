@@ -1,0 +1,134 @@
+# A64Diff M2 project builds in the Arch Linux ARM sysroot: zlib and Lua built
+# with the sysroot's own toolchain and make, every build output byte-compared
+# with the Pi, then the built programs run.  Block form: see README.  The
+# pinned tarballs are copied into the bundle by build-programs.sh
+# (Scripts/powerarm/rootfs/fetch-m2-projects.sh).
+#
+# Builds use the packages' own flags (zlib -O3, Lua -O2, no -g), so no
+# absolute path is embedded; the work directory has the same absolute path on
+# every side anyway.
+job	projects.zlib	zlib	1
+	rootfs	ArchLinuxARM-m2
+	input	@ROOT@/programs/sources/zlib-1.3.2.tar.gz
+	env	SOURCE_DATE_EPOCH=0
+	env	LC_ALL=C
+	env	TZ=UTC
+	timeout	5400
+	run	-	/usr/bin/tar	xzf	zlib-1.3.2.tar.gz
+	run	-	/usr/bin/sh	-c	cd zlib-1.3.2 && exec ./configure
+	run	-	/usr/bin/sh	-c	cd zlib-1.3.2 && exec make
+	run	-	/usr/bin/sh	-c	cd zlib-1.3.2 && exec make test
+	run	-	/usr/bin/sh	-c	cd zlib-1.3.2 && ./minigzip < zlib.h > ../zlib.h.gz && ./minigzip -d < ../zlib.h.gz > ../zlib.h.out && cmp zlib.h ../zlib.h.out && echo static round trip ok
+	run	-	/usr/bin/sh	-c	cp zlib-1.3.2/ChangeLog cl && LD_LIBRARY_PATH=zlib-1.3.2 zlib-1.3.2/minigzipsh -9 cl && cp cl.gz ChangeLog.9.gz && LD_LIBRARY_PATH=zlib-1.3.2 zlib-1.3.2/minigzipsh -d cl.gz && cmp zlib-1.3.2/ChangeLog cl && echo shared round trip ok
+	run	-	/usr/bin/sh	-c	zlib-1.3.2/minigzip64 -1 < zlib-1.3.2/deflate.c > deflate.c.1.gz && /usr/bin/gzip -dc deflate.c.1.gz | cmp - zlib-1.3.2/deflate.c && echo gzip reads it
+	output	zlib-1.3.2/Makefile
+	output	zlib-1.3.2/zconf.h
+	output	zlib-1.3.2/zlib.pc
+	output	zlib-1.3.2/adler32.o
+	output	zlib-1.3.2/adler32.lo
+	output	zlib-1.3.2/crc32.o
+	output	zlib-1.3.2/crc32.lo
+	output	zlib-1.3.2/deflate.o
+	output	zlib-1.3.2/deflate.lo
+	output	zlib-1.3.2/infback.o
+	output	zlib-1.3.2/infback.lo
+	output	zlib-1.3.2/inffast.o
+	output	zlib-1.3.2/inffast.lo
+	output	zlib-1.3.2/inflate.o
+	output	zlib-1.3.2/inflate.lo
+	output	zlib-1.3.2/inftrees.o
+	output	zlib-1.3.2/inftrees.lo
+	output	zlib-1.3.2/trees.o
+	output	zlib-1.3.2/trees.lo
+	output	zlib-1.3.2/zutil.o
+	output	zlib-1.3.2/zutil.lo
+	output	zlib-1.3.2/compress.o
+	output	zlib-1.3.2/compress.lo
+	output	zlib-1.3.2/uncompr.o
+	output	zlib-1.3.2/uncompr.lo
+	output	zlib-1.3.2/gzclose.o
+	output	zlib-1.3.2/gzclose.lo
+	output	zlib-1.3.2/gzlib.o
+	output	zlib-1.3.2/gzlib.lo
+	output	zlib-1.3.2/gzread.o
+	output	zlib-1.3.2/gzread.lo
+	output	zlib-1.3.2/gzwrite.o
+	output	zlib-1.3.2/gzwrite.lo
+	output	zlib-1.3.2/example.o
+	output	zlib-1.3.2/minigzip.o
+	output	zlib-1.3.2/example64.o
+	output	zlib-1.3.2/minigzip64.o
+	output	zlib-1.3.2/libz.a
+	output	zlib-1.3.2/libz.so.1.3.2
+	output	zlib-1.3.2/libz.so.1
+	output	zlib-1.3.2/libz.so
+	output	zlib-1.3.2/example
+	output	zlib-1.3.2/minigzip
+	output	zlib-1.3.2/examplesh
+	output	zlib-1.3.2/minigzipsh
+	output	zlib-1.3.2/example64
+	output	zlib-1.3.2/minigzip64
+	output	zlib.h.gz
+	output	ChangeLog.9.gz
+	output	deflate.c.1.gz
+end
+job	projects.lua	lua	1
+	rootfs	ArchLinuxARM-m2
+	input	@ROOT@/programs/sources/lua-5.4.9.tar.gz
+	input	@ROOT@/programs/lua-scripts
+	env	SOURCE_DATE_EPOCH=0
+	env	LC_ALL=C
+	env	TZ=UTC
+	timeout	5400
+	run	-	/usr/bin/tar	xzf	lua-5.4.9.tar.gz
+	run	-	/usr/bin/sh	-c	cd lua-5.4.9 && exec make linux
+	run	-	/usr/bin/sh	-c	cd lua-5.4.9 && exec make test
+	run	-	lua-5.4.9/src/lua	numbers.lua
+	run	-	lua-5.4.9/src/lua	strings.lua
+	run	-	lua-5.4.9/src/lua	tables_gc.lua
+	run	-	lua-5.4.9/src/lua	errors.lua
+	run	-	lua-5.4.9/src/luac	-s	-o	numbers.luac	numbers.lua
+	run	-	lua-5.4.9/src/luac	-o	errors.luac	errors.lua
+	run	-	lua-5.4.9/src/lua	numbers.luac
+	run	-	/usr/bin/sh	-c	lua-5.4.9/src/luac -l -l strings.lua | sed 's/0x[0-9a-f]*/ADDR/g' | cksum
+	run	-	/usr/bin/sh	-c	echo 'print((...), select("#", ...)); os.exit(3)' | lua-5.4.9/src/lua - one two; echo status $?
+	output	lua-5.4.9/src/lapi.o
+	output	lua-5.4.9/src/lcode.o
+	output	lua-5.4.9/src/lctype.o
+	output	lua-5.4.9/src/ldebug.o
+	output	lua-5.4.9/src/ldo.o
+	output	lua-5.4.9/src/ldump.o
+	output	lua-5.4.9/src/lfunc.o
+	output	lua-5.4.9/src/lgc.o
+	output	lua-5.4.9/src/llex.o
+	output	lua-5.4.9/src/lmem.o
+	output	lua-5.4.9/src/lobject.o
+	output	lua-5.4.9/src/lopcodes.o
+	output	lua-5.4.9/src/lparser.o
+	output	lua-5.4.9/src/lstate.o
+	output	lua-5.4.9/src/lstring.o
+	output	lua-5.4.9/src/ltable.o
+	output	lua-5.4.9/src/ltm.o
+	output	lua-5.4.9/src/lundump.o
+	output	lua-5.4.9/src/lvm.o
+	output	lua-5.4.9/src/lzio.o
+	output	lua-5.4.9/src/lauxlib.o
+	output	lua-5.4.9/src/lbaselib.o
+	output	lua-5.4.9/src/lcorolib.o
+	output	lua-5.4.9/src/ldblib.o
+	output	lua-5.4.9/src/liolib.o
+	output	lua-5.4.9/src/lmathlib.o
+	output	lua-5.4.9/src/loadlib.o
+	output	lua-5.4.9/src/loslib.o
+	output	lua-5.4.9/src/lstrlib.o
+	output	lua-5.4.9/src/ltablib.o
+	output	lua-5.4.9/src/lutf8lib.o
+	output	lua-5.4.9/src/linit.o
+	output	lua-5.4.9/src/lua.o
+	output	lua-5.4.9/src/luac.o
+	output	lua-5.4.9/src/liblua.a
+	output	lua-5.4.9/src/lua
+	output	lua-5.4.9/src/luac
+	output	numbers.luac
+	output	errors.luac
+end
