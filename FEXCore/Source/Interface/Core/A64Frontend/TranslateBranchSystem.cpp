@@ -102,18 +102,26 @@ bool IRBuilder::SVC(uint32_t Word) {
   // The W1/W3 seam: syscall number in X8, arguments in X0-X5, result in X0.
   // Linux ignores the SVC immediate.
   //
-  // State.pc is published as the address after the SVC, which is what the
-  // arm64 kernel records in ELR_EL1: a clone child resumes there, and a signal
-  // frame built while the handler runs names the return address.
+  // Before the handler runs, State.pc holds the address after the SVC, which
+  // is what the arm64 kernel records in ELR_EL1: a clone child resumes there,
+  // and execve and signal frames built during the call read it.
   const uint64_t NextPC = CurrentPC + INSTRUCTION_SIZE;
   _StoreContext(OpSize::i64Bit, RegClass::GPR, PCValue(NextPC), offsetof(FEXCore::Core::CPUState, pc));
 
-  Ref Result = _Syscall(LoadX(8), LoadX(0), LoadX(1), LoadX(2), LoadX(3), LoadX(4), LoadX(5));
-  StoreX(0, Result);
+  // The Syscall lowering spills every static register (and NZCV) into
+  // CPUState before calling the handler and stores the result in State.x[0].
+  _Syscall(LoadX(8), LoadX(0), LoadX(1), LoadX(2), LoadX(3), LoadX(4), LoadX(5));
 
-  // The handler may have changed guest state behind the JIT (execve, sigreturn,
-  // a clone child), so leave the block and let the dispatcher resume at pc.
-  ExitToPC(NextPC);
+  // CPUState is authoritative after the handler: it may have rewritten any
+  // register or pc. The lowering's refill skips the static registers held in
+  // non-volatile host registers unless a signal intervened, so reload every
+  // static register here, then resume at State.pc rather than a constant.
+  // (rt_sigreturn does not return here at all.)
+  for (uint32_t Reg : FEXCore::Core::StaticGPRGuestReg) {
+    StoreXSP(Reg, _LoadContext(OpSize::i64Bit, RegClass::GPR, FEXCore::Core::CPUState::GPROffset(Reg)));
+  }
+  ExitFunction(_LoadContext(OpSize::i64Bit, RegClass::GPR, offsetof(FEXCore::Core::CPUState, pc)));
+  BlockSetPC = true;
   return true;
 }
 
