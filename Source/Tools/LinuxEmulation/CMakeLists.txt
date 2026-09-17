@@ -28,6 +28,9 @@ add_library(LinuxEmulation STATIC
   LinuxSyscalls/SignalDelegator/GuestFramesManagement.cpp
   LinuxSyscalls/Utils/Threads.cpp
   LinuxSyscalls/Arm64/Syscalls.cpp
+  LinuxSyscalls/Arm64/FD.cpp
+  LinuxSyscalls/Arm64/Memory.cpp
+  LinuxSyscalls/Arm64/Thread.cpp
   LinuxSyscalls/Syscalls/EPoll.cpp
   LinuxSyscalls/Syscalls/FD.cpp
   LinuxSyscalls/Syscalls/FS.cpp
