@@ -40,6 +40,9 @@ if [ -n "${MUSL_ROOT:-}" ]; then
   done
   corpus="$corpus musl_hello musl_printf_float musl_strmem musl_fpmath"
 fi
+# glibc only (ucontext): guest call/return shapes for the link-stack pairing.
+gcc -static -O2 -o callret "$here/callret.c"
+corpus="$corpus callret"
 
 run_golden() {
   set +e
