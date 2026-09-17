@@ -1,0 +1,121 @@
+From 48e187f831b20e0b12f02b8f262dbe7b9fc5ab6b Mon Sep 17 00:00:00 2001
+From: Jordan Bettcher <thebettcher@gmail.com>
+Date: Thu, 17 Sep 2026 10:56:57 -0600
+Subject: [PATCH] PPC64LE JIT: skip the FPR live-mask scan in units without FPR
+ values
+
+CompileCode walked every block backwards to build per-op live masks of
+the dynamic FPR pool and to find FMA splat candidates: 12% of its self
+time on the Lua slice. Integer-only compile units, most of them, have
+an all-zero mask at every op and no candidates.
+
+The shared elision walk now records whether any op has an FPR or
+FPRFixed destination or is a VF*ML*ScalarInsert. Without one, the masks
+are filled with zeros and the backward scan is skipped. When the walk
+is disabled by its kill switches the scan runs as before.
+
+Generated code is unchanged. In POWERarm, which shares this backend, the scan
+was 12% of CompileCode self time on a Lua build slice, and the change took
+the slice from 42.80 s to 41.66 s (A/B back to back on one core). Checked
+here: builds; a static x86-64 program runs.
+
+Depends on the previous patch (the shared high-zero/mask walk).
+
+Ported from POWERarm 7c821da56.
+---
+ .../Source/Interface/Core/JIT/PPC64LE/JIT.cpp | 31 ++++++++++++++++---
+ .../Interface/Core/JIT/PPC64LE/JITClass.h     |  5 +++
+ 2 files changed, 32 insertions(+), 4 deletions(-)
+
+diff --git a/FEXCore/Source/Interface/Core/JIT/PPC64LE/JIT.cpp b/FEXCore/Source/Interface/Core/JIT/PPC64LE/JIT.cpp
+index 67afdbe21..fdbf49c18 100644
+--- a/FEXCore/Source/Interface/Core/JIT/PPC64LE/JIT.cpp
++++ b/FEXCore/Source/Interface/Core/JIT/PPC64LE/JIT.cpp
+@@ -4038,9 +4038,12 @@ void PPC64JITCore::ComputeHighZeroElision() {
+   HighZeroElideSet.assign(IR->GetSSACount(), false);
+   const bool ConsumerOff = ZExtConsumerOff();
+   const bool PairOff = TSOPairElideOff();
++  // See UnitHasFPRWork in JITClass.h. Conservative unless the walk runs.
++  UnitHasFPRWork = true;
+   if (ZExtOff && ConsumerOff && PairOff) {
+     return;
+   }
++  UnitHasFPRWork = false;
+ 
+   // Bit i == "host GPR r(i) has bits 63:32 == 0".
+   uint32_t HighZeroRegs = 0;
+@@ -4691,6 +4694,21 @@ void PPC64JITCore::ComputeHighZeroElision() {
+       default: break;
+       }
+ 
++      if (!UnitHasFPRWork) {
++        switch (IROp->Op) {
++        case IR::OP_VFMLASCALARINSERT:
++        case IR::OP_VFMLSSCALARINSERT:
++        case IR::OP_VFNMLASCALARINSERT:
++        case IR::OP_VFNMLSSCALARINSERT: UnitHasFPRWork = true; break;
++        default:
++          if (IR::GetHasDest(IROp->Op)) {
++            const auto C = IR::PhysicalRegister(CodeNode).AsRegClass();
++            UnitHasFPRWork = C == IR::RegClass::FPR || C == IR::RegClass::FPRFixed;
++          }
++          break;
++        }
++      }
++
+       const IR::Ref DefNode = PrevNode;
+       const IR::IROp_Header* DefOp = PrevOp;
+       PrevNode = CodeNode;
+@@ -5817,9 +5835,6 @@ CPUBackend::CompiledCode PPC64JITCore::CompileCode(
+   // a local this assign() was a malloc + free on every compiled block.
+   auto& DynVRLiveIn = DynVRLiveInStorage;
+   DynVRLiveIn.clear();
+-  if (!DisableABILiveMask) {
+-    DynVRLiveIn.assign(IRView->GetSSACount(), ~0u);
+-  }
+ 
+   Compute32MaskElision();
+   // Producer-side half, OR'd into the same set. Must run AFTER the consumer
+@@ -5829,6 +5844,14 @@ CPUBackend::CompiledCode PPC64JITCore::CompileCode(
+   ComputeHighZeroElision();
+   // ComputeTSOPairElision's walk is folded into Compute32MaskElision above.
+ 
++  // A unit without FPR-class values or FMA ops (UnitHasFPRWork, set by the
++  // walk above) has an all-zero FPR live mask at every op and no splat
++  // candidates, so its per-block backward scan below is skipped and the masks
++  // are filled with the zeros it would have computed.
++  if (!DisableABILiveMask) {
++    DynVRLiveIn.assign(IRView->GetSSACount(), UnitHasFPRWork ? ~0u : 0u);
++  }
++
+   // Emission-order prepass for fallthrough elision: {CodeBlock ID, EntryPoint}
+   // per block, in the exact order the loop below emits them. See the
+   // FallthroughBlockID comment in JITClass.h for why EntryPoint successors
+@@ -5878,7 +5901,7 @@ CPUBackend::CompiledCode PPC64JITCore::CompileCode(
+     // discovers its candidates in reverse order, and every consumer of
+     // SplatCandidateLoads is a membership test (IdInVec), never an index.
+     const bool WantLiveMask = !DynVRLiveIn.empty();
+-    if (WantLiveMask || !DisableSplatFusion) {
++    if (UnitHasFPRWork && (WantLiveMask || !DisableSplatFusion)) {
+       // Backward scan: Live holds the live-after set of the op under the
+       // cursor; live-before = (live-after − def) ∪ uses. Args of inline
+       // constants and other non-RA'd references carry an Invalid class byte
+diff --git a/FEXCore/Source/Interface/Core/JIT/PPC64LE/JITClass.h b/FEXCore/Source/Interface/Core/JIT/PPC64LE/JITClass.h
+index e8f165394..0e4773d9b 100644
+--- a/FEXCore/Source/Interface/Core/JIT/PPC64LE/JITClass.h
++++ b/FEXCore/Source/Interface/Core/JIT/PPC64LE/JITClass.h
+@@ -584,6 +584,11 @@ private:
+   // was a guaranteed malloc/free of 4 * GetSSACount() bytes per compiled
+   // block, on the default path.
+   fextl::vector<uint32_t> DynVRLiveInStorage;
++  // Set by the shared elision walk (ComputeHighZeroElision): some op in the
++  // compile unit has an FPR or FPRFixed destination or is a VF*ML*ScalarInsert.
++  // Without one, CompileCode's per-block FPR liveness and splat scan has
++  // nothing to find. True whenever the walk does not run.
++  bool UnitHasFPRWork {true};
+ 
+   // -------------------------------------------------------------------------
+   // FEX_MEMCPYDCBZ=1 (opt-in): cache-line store tier for the forward REP MOVSB
+-- 
+2.55.0
+

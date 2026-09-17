@@ -1,0 +1,59 @@
+From 7aaec04c24bb783f0cc3c354c92125ec0b3a2fff Mon Sep 17 00:00:00 2001
+From: Jordan Bettcher <thebettcher@gmail.com>
+Date: Thu, 17 Sep 2026 10:54:55 -0600
+Subject: [PATCH] FEXInterpreter: write code maps only when server cache
+ generation is requested
+
+With FEX_ENABLECODECACHINGWIP=1 every process asked FEXServer for a code map
+file descriptor and appended an entry per compiled block. The only reader is
+server-side offline generation, which is opt-in (FEX_SERVERCODECACHE=1) and
+whose output the runtime cache never loads. The maps also went to the
+server's cache directory rather than FEX_APP_CACHE_LOCATION.
+
+Create the writer only when that opt-in is set.
+
+Evidence (static x86-64 program, FEX_ENABLECODECACHINGWIP=1
+FEX_CODECACHESCOPE=all, private FEX_APP_CACHE_LOCATION): before, the run
+leaves codemap/new/hello-<id>.0.bin behind; after, no code map is written.
+
+Ported from POWERarm c481ea16a.
+---
+ Source/Tools/FEXInterpreter/FEXInterpreter.cpp | 15 +++++++++------
+ 1 file changed, 9 insertions(+), 6 deletions(-)
+
+diff --git a/Source/Tools/FEXInterpreter/FEXInterpreter.cpp b/Source/Tools/FEXInterpreter/FEXInterpreter.cpp
+index 5107c2460..fc8d0df10 100644
+--- a/Source/Tools/FEXInterpreter/FEXInterpreter.cpp
++++ b/Source/Tools/FEXInterpreter/FEXInterpreter.cpp
+@@ -672,7 +672,14 @@ int main(int argc, char** argv, char** const envp) {
+   CTX->SetSyscallHandler(SyscallHandler.get());
+   CTX->SetThunkHandler(ThunkHandler.get());
+ 
+-  if (FEXCore::Config::Get_ENABLECODECACHINGWIP()) {
++  // The code map only feeds server-side offline generation (FEX_SERVERCODECACHE,
++  // below). Without it the writer is a server round trip plus a write per
++  // compiled block that nothing reads.
++  const bool ServerCodeCache = FEXCore::Config::Get_ENABLECODECACHINGWIP() && [] {
++    const char* Env = getenv("FEX_SERVERCODECACHE");
++    return Env && *Env && *Env != '0';
++  }();
++  if (ServerCodeCache) {
+     CTX->SetCodeMapWriter(fextl::make_unique<FEXCore::CodeMapWriter>(*SyscallHandler));
+   }
+ 
+@@ -750,11 +757,7 @@ int main(int argc, char** argv, char** const envp) {
+   // launch was spawning offline compiles (seconds of a core each) whose
+   // output nobody loaded. The runtime writer (SaveCodeCaches, FEX_CODECACHESCOPE) is the
+   // generator whose id matches its reader, and it needs no server help.
+-  if (FEXCore::Config::Get_ENABLECODECACHINGWIP()) {
+-    static const bool ServerCodeCache = [] {
+-      const char* Env = getenv("FEX_SERVERCODECACHE");
+-      return Env && *Env && *Env != '0';
+-    }();
++  {
+     if (ServerCodeCache) {
+       FEXServerClient::PopulateCodeCache(FEXServerClient::GetServerFD(), Loader.GetMainElfFD(), FEXCore::Config::Get_MULTIBLOCK());
+     }
+-- 
+2.55.0
+

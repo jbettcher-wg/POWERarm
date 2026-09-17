@@ -1,0 +1,54 @@
+From 79c67bf9d2c99ef62a1d5d38c20e6b7babe36147 Mon Sep 17 00:00:00 2001
+From: Jordan Bettcher <thebettcher@gmail.com>
+Date: Thu, 17 Sep 2026 10:56:32 -0600
+Subject: [PATCH] Telemetry: write the exit counters with one write and no
+ fsync
+
+Every emulated process writes its telemetry counters at exit. The file was
+written with one write(2) per counter line and then fsync(2)ed. In a build,
+which is hundreds of short processes, that is paid per process: in POWERarm,
+which inherited this code, the fsync alone measured 6-16 ms per process on a
+disk-backed data directory, and removing it took warm `gcc -c empty.c` from
+121.1 to 96.2 ms per invocation.
+
+Format the counters into one buffer, write it once and do not sync. A counter
+file lost to a host crash is not worth the cost; the rename still keeps one
+backup.
+
+Checked here: 50 runs of a static x86-64 exit_group program, one loop each,
+FEX_APP_DATA_LOCATION on tmpfs (where fsync is nearly free):
+114.5 -> 112.7 ms per run. The telemetry file is still written in full. The
+per-process saving is larger with the default data directory on disk.
+
+Ported from POWERarm abaed2ac0.
+---
+ FEXCore/Source/Utils/Telemetry.cpp | 9 +++++++--
+ 1 file changed, 7 insertions(+), 2 deletions(-)
+
+diff --git a/FEXCore/Source/Utils/Telemetry.cpp b/FEXCore/Source/Utils/Telemetry.cpp
+index af827a3bb..9b7a0a946 100644
+--- a/FEXCore/Source/Utils/Telemetry.cpp
++++ b/FEXCore/Source/Utils/Telemetry.cpp
+@@ -95,12 +95,17 @@ void Shutdown(const fextl::string& ApplicationName) {
+                                   FEXCore::File::FileModes::WRITE | FEXCore::File::FileModes::CREATE | FEXCore::File::FileModes::TRUNCATE);
+ 
+   if (File.IsValid()) {
++    // One write and no fsync. Every emulated process ends here, and in a build
++    // that is hundreds of short processes: the fsync alone measured 6-16 ms per
++    // process and one write per line 29 syscalls. A counter file lost to a host
++    // crash is not worth that; the rename above still keeps one backup.
++    fextl::string Text;
+     for (size_t i = 0; i < TelemetryType::TYPE_LAST; ++i) {
+       auto& Name = TelemetryNames.at(i);
+       auto& Data = TelemetryValues.at(i);
+-      fextl::fmt::print(File, "{}: {}\n", Name, Data.load());
++      Text += fextl::fmt::format("{}: {}\n", Name, Data.load());
+     }
+-    File.Flush();
++    File.Write(Text);
+   }
+ }
+ 
+-- 
+2.55.0
+

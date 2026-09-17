@@ -1,0 +1,63 @@
+From 33cf0e5cf29581599ef4220cc5b5a19422ad11bb Mon Sep 17 00:00:00 2001
+From: Jordan Bettcher <thebettcher@gmail.com>
+Date: Thu, 17 Sep 2026 10:53:16 -0600
+Subject: [PATCH] FEXInterpreter: turn the code cache off when SMC store
+ backpatching is on
+
+CodeBufferManager::TryAllocateAuxMemory refuses every backpatch stub while
+EnableCodeCachingWIP is set, because the cache replays the code buffer and
+stubs do not survive that. The syscall handler only refuses backpatching when
+the cache also *writes* (CodeCacheWriteEnabled). With the cache enabled in its
+load-only scope (CodeCacheScope=off, the default scope), backpatching was
+reported as enabled and then silently placed no stub at all.
+
+Resolve the conflict once, right after the config is loaded: an explicit
+FEX_SMCSTOREBACKPATCH wins and EnableCodeCachingWIP is forced off before
+anything reads it. The syscall handler's "incompatible with code cache
+writing" refusal is left in place; it is no longer reachable from the
+interpreter.
+
+Evidence (static x86-64 program, FEX_SMCSTOREBACKPATCH=1
+FEX_SMCSTOREEMULATION=1 FEX_SMCCHECKS=mtrack FEX_ENABLECODECACHINGWIP=1,
+log to stderr):
+  before: "SMC store backpatching enabled" together with
+          "exit-RIP constants are FIXED width ... (code caching on ...)",
+          i.e. a backpatcher whose every stub allocation is refused;
+  after:  "SMC store backpatching enabled" with "(code caching off ...)".
+
+Only SMCStoreBackpatch is gated here. POWERarm also turns the cache off for
+SMCSemanticPatch, SMCLazyInval, SMCCheapTier and SMCStoreEmulation, whose
+per-block state its cache format does not store; whether that holds for this
+tree's cache format is left to review.
+
+Ported from POWERarm 60bc2ddbc (SMC part only).
+---
+ Source/Tools/FEXInterpreter/FEXInterpreter.cpp | 12 ++++++++++++
+ 1 file changed, 12 insertions(+)
+
+diff --git a/Source/Tools/FEXInterpreter/FEXInterpreter.cpp b/Source/Tools/FEXInterpreter/FEXInterpreter.cpp
+index e013bbac1..5107c2460 100644
+--- a/Source/Tools/FEXInterpreter/FEXInterpreter.cpp
++++ b/Source/Tools/FEXInterpreter/FEXInterpreter.cpp
+@@ -485,6 +485,18 @@ int main(int argc, char** argv, char** const envp) {
+   FEXCore::Config::ReloadMetaLayer();
+   FEXCore::Config::Set(FEXCore::Config::CONFIG_INTERPRETER_INSTALLED, InterpreterInstalled ? "1" : "0");
+ 
++  // SMC store backpatching and the code cache do not mix: the cache replays the
++  // code buffer, and backpatch stubs (absolute helper addresses, PC-relative
++  // branches to store sites) do not survive that, so
++  // CodeBufferManager::TryAllocateAuxMemory refuses every stub while
++  // EnableCodeCachingWIP is set. With the cache only loading (CodeCacheScope
++  // off) the syscall handler still enabled backpatching, which then silently
++  // placed no stub at all. The explicit SMC mode wins: turn the cache off here,
++  // before anything has read the option.
++  if (FEXCore::Config::Get_SMCSTOREBACKPATCH() && FEXCore::Config::Get_ENABLECODECACHINGWIP()) {
++    FEXCore::Config::Set(FEXCore::Config::CONFIG_ENABLECODECACHINGWIP, "0");
++  }
++
+   // Host-page-size gate (64K port). Config is loaded and merged, and nothing
+   // downstream exists yet: no context (CreateNewContext below caches SMCChecks
+   // at construction, which is why degrade-mode forcing has to happen HERE), no
+-- 
+2.55.0
+
