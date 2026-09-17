@@ -1,0 +1,6 @@
+    64.61%  [JIT] tid 4127734   [.] /home/jbettcher/tmp/sfp/fmix32+0x9e0 (0x800045479bf0)
+    30.78%  [JIT] tid 4127734   [.] /home/jbettcher/tmp/sfp/fmix32+0xa98 (0x800045479740)
+     0.74%  POWERarm            [.] FEXCore::A64::(anonymous namespace)::BuildTable() [clone .llvm.4614511505888916236]
+     0.57%  POWERarm            [.] FEXCore::CPU::PPC64JITCore::CompileCode(unsigned long, unsigned long, bool, FEXCore::IR::IRListView const*, FEXCore::Core::DebugData*, bool)
+
+

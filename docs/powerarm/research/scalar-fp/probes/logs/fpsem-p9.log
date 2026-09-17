@@ -1,0 +1,481 @@
+== ppc: 65 corpus doubles, 56 floats, 4000 random per axis
+ppc.fadd_d.xs_raw_ctl              n=2756672  bad=72      FAIL(expected, control)
+    rm0 7ff8000000000000 7ff0000000000001 exp 7ff8000000000001 got 7ff8000000000000
+    rm0 7ff8000000000000 fff0000000000001 exp fff8000000000001 got 7ff8000000000000
+    rm0 7ff8000000000000 7ff4000000123456 exp 7ffc000000123456 got 7ff8000000000000
+    rm0 7ff8000000000000 fff7ffffffffffff exp ffffffffffffffff got 7ff8000000000000
+    rm0 fff8000000000000 7ff0000000000001 exp 7ff8000000000001 got fff8000000000000
+    rm0 fff8000000000000 fff0000000000001 exp fff8000000000001 got fff8000000000000
+ppc.fadd_d.precheck_branch         n=2756672  bad=0       PASS
+ppc.fadd_d.branchfree_sel          n=2756672  bad=0       PASS
+ppc.fsub_d.xs_raw_ctl              n=2756672  bad=72      FAIL(expected, control)
+    rm0 7ff8000000000000 7ff0000000000001 exp 7ff8000000000001 got 7ff8000000000000
+    rm0 7ff8000000000000 fff0000000000001 exp fff8000000000001 got 7ff8000000000000
+    rm0 7ff8000000000000 7ff4000000123456 exp 7ffc000000123456 got 7ff8000000000000
+    rm0 7ff8000000000000 fff7ffffffffffff exp ffffffffffffffff got 7ff8000000000000
+    rm0 fff8000000000000 7ff0000000000001 exp 7ff8000000000001 got fff8000000000000
+    rm0 fff8000000000000 fff0000000000001 exp fff8000000000001 got fff8000000000000
+ppc.fsub_d.precheck_branch         n=2756672  bad=0       PASS
+ppc.fsub_d.branchfree_sel          n=2756672  bad=0       PASS
+ppc.fmul_d.xs_raw_ctl              n=2756672  bad=72      FAIL(expected, control)
+    rm0 7ff8000000000000 7ff0000000000001 exp 7ff8000000000001 got 7ff8000000000000
+    rm0 7ff8000000000000 fff0000000000001 exp fff8000000000001 got 7ff8000000000000
+    rm0 7ff8000000000000 7ff4000000123456 exp 7ffc000000123456 got 7ff8000000000000
+    rm0 7ff8000000000000 fff7ffffffffffff exp ffffffffffffffff got 7ff8000000000000
+    rm0 fff8000000000000 7ff0000000000001 exp 7ff8000000000001 got fff8000000000000
+    rm0 fff8000000000000 fff0000000000001 exp fff8000000000001 got fff8000000000000
+ppc.fmul_d.precheck_branch         n=2756672  bad=0       PASS
+ppc.fmul_d.branchfree_sel          n=2756672  bad=0       PASS
+ppc.fdiv_d.xs_raw_ctl              n=2756672  bad=72      FAIL(expected, control)
+    rm0 7ff8000000000000 7ff0000000000001 exp 7ff8000000000001 got 7ff8000000000000
+    rm0 7ff8000000000000 fff0000000000001 exp fff8000000000001 got 7ff8000000000000
+    rm0 7ff8000000000000 7ff4000000123456 exp 7ffc000000123456 got 7ff8000000000000
+    rm0 7ff8000000000000 fff7ffffffffffff exp ffffffffffffffff got 7ff8000000000000
+    rm0 fff8000000000000 7ff0000000000001 exp 7ff8000000000001 got fff8000000000000
+    rm0 fff8000000000000 fff0000000000001 exp fff8000000000001 got fff8000000000000
+ppc.fdiv_d.precheck_branch         n=2756672  bad=0       PASS
+ppc.fdiv_d.branchfree_sel          n=2756672  bad=0       PASS
+ppc.fadd_s.xv_raw_ctl              n=2464316  bad=136     FAIL(expected, control)
+    rm0 7fc00000 7f800001 exp 7fc00001 got 7fc00000
+    rm0 7fc00000 ff800001 exp ffc00001 got 7fc00000
+    rm0 7fc00000 7fa12345 exp 7fe12345 got 7fc00000
+    rm0 7fc00000 ffbfffff exp ffffffff got 7fc00000
+    rm0 7fc00000 7fa695f4 exp 7fe695f4 got 7fc00000
+    rm0 7fc00000 7f877dcc exp 7fc77dcc got 7fc00000
+ppc.fadd_s.precheck_branch         n=2464316  bad=0       PASS
+ppc.fsub_s.xv_raw_ctl              n=2464316  bad=136     FAIL(expected, control)
+    rm0 7fc00000 7f800001 exp 7fc00001 got 7fc00000
+    rm0 7fc00000 ff800001 exp ffc00001 got 7fc00000
+    rm0 7fc00000 7fa12345 exp 7fe12345 got 7fc00000
+    rm0 7fc00000 ffbfffff exp ffffffff got 7fc00000
+    rm0 7fc00000 7fa695f4 exp 7fe695f4 got 7fc00000
+    rm0 7fc00000 7f877dcc exp 7fc77dcc got 7fc00000
+ppc.fsub_s.precheck_branch         n=2464316  bad=0       PASS
+ppc.fmul_s.xv_raw_ctl              n=2464316  bad=136     FAIL(expected, control)
+    rm0 7fc00000 7f800001 exp 7fc00001 got 7fc00000
+    rm0 7fc00000 ff800001 exp ffc00001 got 7fc00000
+    rm0 7fc00000 7fa12345 exp 7fe12345 got 7fc00000
+    rm0 7fc00000 ffbfffff exp ffffffff got 7fc00000
+    rm0 7fc00000 7fa695f4 exp 7fe695f4 got 7fc00000
+    rm0 7fc00000 7f877dcc exp 7fc77dcc got 7fc00000
+ppc.fmul_s.precheck_branch         n=2464316  bad=0       PASS
+ppc.fdiv_s.xv_raw_ctl              n=2464316  bad=136     FAIL(expected, control)
+    rm0 7fc00000 7f800001 exp 7fc00001 got 7fc00000
+    rm0 7fc00000 ff800001 exp ffc00001 got 7fc00000
+    rm0 7fc00000 7fa12345 exp 7fe12345 got 7fc00000
+    rm0 7fc00000 ffbfffff exp ffffffff got 7fc00000
+    rm0 7fc00000 7fa695f4 exp 7fe695f4 got 7fc00000
+    rm0 7fc00000 7f877dcc exp 7fc77dcc got 7fc00000
+ppc.fdiv_s.precheck_branch         n=2464316  bad=0       PASS
+ppc.fmin_d.xsmaxdp_ctl             n=166481   bad=8475    FAIL(expected, control)
+    0000000000000000 7ff8000000000000 exp 7ff8000000000000 got 0000000000000000
+    0000000000000000 fff8000000000000 exp fff8000000000000 got 0000000000000000
+    0000000000000000 7ff8000000abcdef exp 7ff8000000abcdef got 0000000000000000
+    0000000000000000 fff8000000abcdef exp fff8000000abcdef got 0000000000000000
+    8000000000000000 7ff8000000000000 exp 7ff8000000000000 got 8000000000000000
+    8000000000000000 fff8000000000000 exp fff8000000000000 got 8000000000000000
+ppc.fmin_d.xsmaxdp_precheck        n=166481   bad=0       PASS
+ppc.fmin_d.xsmaxjdp_ctl            n=166481   bad=8506    FAIL(expected, control)
+    0000000000000000 7ff0000000000001 exp 7ff8000000000001 got 7ff0000000000001
+    0000000000000000 fff0000000000001 exp fff8000000000001 got fff0000000000001
+    0000000000000000 7ff4000000123456 exp 7ffc000000123456 got 7ff4000000123456
+    0000000000000000 fff7ffffffffffff exp ffffffffffffffff got fff7ffffffffffff
+    8000000000000000 7ff0000000000001 exp 7ff8000000000001 got 7ff0000000000001
+    8000000000000000 fff0000000000001 exp fff8000000000001 got fff0000000000001
+ppc.fmin_d.xsmaxcdp_ctl            n=166481   bad=12749   FAIL(expected, control)
+    0000000000000000 7ff0000000000001 exp 7ff8000000000001 got 7ff0000000000001
+    0000000000000000 fff0000000000001 exp fff8000000000001 got fff0000000000001
+    0000000000000000 7ff4000000123456 exp 7ffc000000123456 got 7ff4000000123456
+    0000000000000000 fff7ffffffffffff exp ffffffffffffffff got fff7ffffffffffff
+    8000000000000000 0000000000000000 exp 8000000000000000 got 0000000000000000
+    8000000000000000 7ff0000000000001 exp 7ff8000000000001 got 7ff0000000000001
+ppc.fmax_d.xsmaxdp_ctl             n=166481   bad=8475    FAIL(expected, control)
+    0000000000000000 7ff8000000000000 exp 7ff8000000000000 got 0000000000000000
+    0000000000000000 fff8000000000000 exp fff8000000000000 got 0000000000000000
+    0000000000000000 7ff8000000abcdef exp 7ff8000000abcdef got 0000000000000000
+    0000000000000000 fff8000000abcdef exp fff8000000abcdef got 0000000000000000
+    8000000000000000 7ff8000000000000 exp 7ff8000000000000 got 8000000000000000
+    8000000000000000 fff8000000000000 exp fff8000000000000 got 8000000000000000
+ppc.fmax_d.xsmaxdp_precheck        n=166481   bad=0       PASS
+ppc.fmax_d.xsmaxjdp_ctl            n=166481   bad=8506    FAIL(expected, control)
+    0000000000000000 7ff0000000000001 exp 7ff8000000000001 got 7ff0000000000001
+    0000000000000000 fff0000000000001 exp fff8000000000001 got fff0000000000001
+    0000000000000000 7ff4000000123456 exp 7ffc000000123456 got 7ff4000000123456
+    0000000000000000 fff7ffffffffffff exp ffffffffffffffff got fff7ffffffffffff
+    8000000000000000 7ff0000000000001 exp 7ff8000000000001 got 7ff0000000000001
+    8000000000000000 fff0000000000001 exp fff8000000000001 got fff0000000000001
+ppc.fmax_d.xsmaxcdp_ctl            n=166481   bad=12749   FAIL(expected, control)
+    0000000000000000 8000000000000000 exp 0000000000000000 got 8000000000000000
+    0000000000000000 7ff0000000000001 exp 7ff8000000000001 got 7ff0000000000001
+    0000000000000000 fff0000000000001 exp fff8000000000001 got fff0000000000001
+    0000000000000000 7ff4000000123456 exp 7ffc000000123456 got 7ff4000000123456
+    0000000000000000 fff7ffffffffffff exp ffffffffffffffff got fff7ffffffffffff
+    8000000000000000 7ff0000000000001 exp 7ff8000000000001 got 7ff0000000000001
+ppc.fminnm_d.xsmaxdp_ctl           n=166481   bad=16      FAIL(expected, control)
+    7ff8000000000000 7ff0000000000001 exp 7ff8000000000001 got 7ff8000000000000
+    7ff8000000000000 fff0000000000001 exp fff8000000000001 got 7ff8000000000000
+    7ff8000000000000 7ff4000000123456 exp 7ffc000000123456 got 7ff8000000000000
+    7ff8000000000000 fff7ffffffffffff exp ffffffffffffffff got 7ff8000000000000
+    fff8000000000000 7ff0000000000001 exp 7ff8000000000001 got fff8000000000000
+    fff8000000000000 fff0000000000001 exp fff8000000000001 got fff8000000000000
+ppc.fminnm_d.xsmaxdp_precheck      n=166481   bad=0       PASS
+ppc.fminnm_d.xsmaxjdp_ctl          n=166481   bad=16965   FAIL(expected, control)
+    0000000000000000 7ff8000000000000 exp 0000000000000000 got 7ff8000000000000
+    0000000000000000 fff8000000000000 exp 0000000000000000 got fff8000000000000
+    0000000000000000 7ff8000000abcdef exp 0000000000000000 got 7ff8000000abcdef
+    0000000000000000 fff8000000abcdef exp 0000000000000000 got fff8000000abcdef
+    0000000000000000 7ff0000000000001 exp 7ff8000000000001 got 7ff0000000000001
+    0000000000000000 fff0000000000001 exp fff8000000000001 got fff0000000000001
+ppc.fminnm_d.xsmaxcdp_ctl          n=166481   bad=12748   FAIL(expected, control)
+    0000000000000000 7ff8000000000000 exp 0000000000000000 got 7ff8000000000000
+    0000000000000000 fff8000000000000 exp 0000000000000000 got fff8000000000000
+    0000000000000000 7ff8000000abcdef exp 0000000000000000 got 7ff8000000abcdef
+    0000000000000000 fff8000000abcdef exp 0000000000000000 got fff8000000abcdef
+    0000000000000000 7ff0000000000001 exp 7ff8000000000001 got 7ff0000000000001
+    0000000000000000 fff0000000000001 exp fff8000000000001 got fff0000000000001
+ppc.fmaxnm_d.xsmaxdp_ctl           n=166481   bad=16      FAIL(expected, control)
+    7ff8000000000000 7ff0000000000001 exp 7ff8000000000001 got 7ff8000000000000
+    7ff8000000000000 fff0000000000001 exp fff8000000000001 got 7ff8000000000000
+    7ff8000000000000 7ff4000000123456 exp 7ffc000000123456 got 7ff8000000000000
+    7ff8000000000000 fff7ffffffffffff exp ffffffffffffffff got 7ff8000000000000
+    fff8000000000000 7ff0000000000001 exp 7ff8000000000001 got fff8000000000000
+    fff8000000000000 fff0000000000001 exp fff8000000000001 got fff8000000000000
+ppc.fmaxnm_d.xsmaxdp_precheck      n=166481   bad=0       PASS
+ppc.fmaxnm_d.xsmaxjdp_ctl          n=166481   bad=16965   FAIL(expected, control)
+    0000000000000000 7ff8000000000000 exp 0000000000000000 got 7ff8000000000000
+    0000000000000000 fff8000000000000 exp 0000000000000000 got fff8000000000000
+    0000000000000000 7ff8000000abcdef exp 0000000000000000 got 7ff8000000abcdef
+    0000000000000000 fff8000000abcdef exp 0000000000000000 got fff8000000abcdef
+    0000000000000000 7ff0000000000001 exp 7ff8000000000001 got 7ff0000000000001
+    0000000000000000 fff0000000000001 exp fff8000000000001 got fff0000000000001
+ppc.fmaxnm_d.xsmaxcdp_ctl          n=166481   bad=12748   FAIL(expected, control)
+    0000000000000000 8000000000000000 exp 0000000000000000 got 8000000000000000
+    0000000000000000 7ff8000000000000 exp 0000000000000000 got 7ff8000000000000
+    0000000000000000 fff8000000000000 exp 0000000000000000 got fff8000000000000
+    0000000000000000 7ff8000000abcdef exp 0000000000000000 got 7ff8000000abcdef
+    0000000000000000 fff8000000abcdef exp 0000000000000000 got fff8000000abcdef
+    0000000000000000 7ff0000000000001 exp 7ff8000000000001 got 7ff0000000000001
+ppc.fmin_s.xvmaxsp_ctl             n=3136     bad=400     FAIL(expected, control)
+    00000000 7fc00000 exp 7fc00000 got 00000000
+    00000000 ffc00000 exp ffc00000 got 00000000
+    00000000 7fc12345 exp 7fc12345 got 00000000
+    00000000 ffc12345 exp ffc12345 got 00000000
+    80000000 7fc00000 exp 7fc00000 got 80000000
+    80000000 ffc00000 exp ffc00000 got 80000000
+ppc.fmax_s.xvmaxsp_ctl             n=3136     bad=400     FAIL(expected, control)
+    00000000 7fc00000 exp 7fc00000 got 00000000
+    00000000 ffc00000 exp ffc00000 got 00000000
+    00000000 7fc12345 exp 7fc12345 got 00000000
+    00000000 ffc12345 exp ffc12345 got 00000000
+    80000000 7fc00000 exp 7fc00000 got 80000000
+    80000000 ffc00000 exp ffc00000 got 80000000
+ppc.fminnm_s.xvmaxsp_ctl           n=3136     bad=16      FAIL(expected, control)
+    7fc00000 7f800001 exp 7fc00001 got 7fc00000
+    7fc00000 ff800001 exp ffc00001 got 7fc00000
+    7fc00000 7fa12345 exp 7fe12345 got 7fc00000
+    7fc00000 ffbfffff exp ffffffff got 7fc00000
+    ffc00000 7f800001 exp 7fc00001 got ffc00000
+    ffc00000 ff800001 exp ffc00001 got ffc00000
+ppc.fmaxnm_s.xvmaxsp_ctl           n=3136     bad=16      FAIL(expected, control)
+    7fc00000 7f800001 exp 7fc00001 got 7fc00000
+    7fc00000 ff800001 exp ffc00001 got 7fc00000
+    7fc00000 7fa12345 exp 7fe12345 got 7fc00000
+    7fc00000 ffbfffff exp ffffffff got 7fc00000
+    ffc00000 7f800001 exp 7fc00001 got ffc00000
+    ffc00000 ff800001 exp ffc00001 got ffc00000
+ppc.fmadd_d.fused_raw_ctl          n=1000188  bad=17245   FAIL(expected, control)
+    rm0 n=0000000000000000 m=fff0000000000000 a=fff8000000000000 exp 7ff8000000000000 got fff8000000000000
+    rm0 n=0000000000000000 m=fff0000000000000 a=7ff8000000abcdef exp 7ff8000000000000 got 7ff8000000abcdef
+    rm0 n=0000000000000000 m=fff0000000000000 a=fff8000000abcdef exp 7ff8000000000000 got fff8000000abcdef
+    rm0 n=0000000000000000 m=7ff0000000000001 a=7ff8000000000000 exp 7ff8000000000001 got 7ff8000000000000
+    rm0 n=0000000000000000 m=7ff0000000000001 a=fff8000000000000 exp 7ff8000000000001 got fff8000000000000
+    rm0 n=0000000000000000 m=7ff0000000000001 a=7ff8000000abcdef exp 7ff8000000000001 got 7ff8000000abcdef
+ppc.fmadd_d.fused_postcheck        n=1000188  bad=0       PASS
+ppc.fnmsub_d.fused_raw_ctl         n=1000188  bad=125067  FAIL(expected, control)
+    rm0 n=0000000000000000 m=0000000000000000 a=7ff8000000000000 exp fff8000000000000 got 7ff8000000000000
+    rm0 n=0000000000000000 m=0000000000000000 a=fff8000000000000 exp 7ff8000000000000 got fff8000000000000
+    rm0 n=0000000000000000 m=0000000000000000 a=7ff8000000abcdef exp fff8000000abcdef got 7ff8000000abcdef
+    rm0 n=0000000000000000 m=0000000000000000 a=fff8000000abcdef exp 7ff8000000abcdef got fff8000000abcdef
+    rm0 n=0000000000000000 m=0000000000000000 a=7ff0000000000001 exp fff8000000000001 got 7ff8000000000001
+    rm0 n=0000000000000000 m=0000000000000000 a=fff0000000000001 exp 7ff8000000000001 got fff8000000000001
+ppc.fnmsub_d.fused_postcheck       n=1000188  bad=0       PASS
+ppc.fmsub_d.fused_raw_ctl          n=1000188  bad=17749   FAIL(expected, control)
+    rm0 n=0000000000000000 m=fff0000000000000 a=fff8000000000000 exp 7ff8000000000000 got fff8000000000000
+    rm0 n=0000000000000000 m=fff0000000000000 a=7ff8000000abcdef exp 7ff8000000000000 got 7ff8000000abcdef
+    rm0 n=0000000000000000 m=fff0000000000000 a=fff8000000abcdef exp 7ff8000000000000 got fff8000000abcdef
+    rm0 n=0000000000000000 m=7ff0000000000001 a=7ff8000000000000 exp 7ff8000000000001 got 7ff8000000000000
+    rm0 n=0000000000000000 m=7ff0000000000001 a=fff8000000000000 exp 7ff8000000000001 got fff8000000000000
+    rm0 n=0000000000000000 m=7ff0000000000001 a=7ff8000000abcdef exp 7ff8000000000001 got 7ff8000000abcdef
+ppc.fmsub_d.fused_postcheck        n=1000188  bad=0       PASS
+ppc.fmsub_d.xsnmsubadp_ctl         n=1000188  bad=412979  FAIL(expected, control)
+    rm0 n=0000000000000000 m=0000000000000000 a=0000000000000000 exp 0000000000000000 got 8000000000000000
+    rm0 n=0000000000000000 m=8000000000000000 a=8000000000000000 exp 0000000000000000 got 8000000000000000
+    rm0 n=0000000000000000 m=0000000000000001 a=0000000000000000 exp 0000000000000000 got 8000000000000000
+    rm0 n=0000000000000000 m=0010000000000000 a=0000000000000000 exp 0000000000000000 got 8000000000000000
+    rm0 n=0000000000000000 m=3ff0000000000000 a=0000000000000000 exp 0000000000000000 got 8000000000000000
+    rm0 n=0000000000000000 m=bff0000000000000 a=8000000000000000 exp 0000000000000000 got 8000000000000000
+ppc.fnmadd_d.fused_raw_ctl         n=1000188  bad=124563  FAIL(expected, control)
+    rm0 n=0000000000000000 m=0000000000000000 a=7ff8000000000000 exp fff8000000000000 got 7ff8000000000000
+    rm0 n=0000000000000000 m=0000000000000000 a=fff8000000000000 exp 7ff8000000000000 got fff8000000000000
+    rm0 n=0000000000000000 m=0000000000000000 a=7ff8000000abcdef exp fff8000000abcdef got 7ff8000000abcdef
+    rm0 n=0000000000000000 m=0000000000000000 a=fff8000000abcdef exp 7ff8000000abcdef got fff8000000abcdef
+    rm0 n=0000000000000000 m=0000000000000000 a=7ff0000000000001 exp fff8000000000001 got 7ff8000000000001
+    rm0 n=0000000000000000 m=0000000000000000 a=fff0000000000001 exp 7ff8000000000001 got fff8000000000001
+ppc.fnmadd_d.fused_postcheck       n=1000188  bad=0       PASS
+ppc.fnmadd_d.xsnmaddadp_ctl        n=1000188  bad=520932  FAIL(expected, control)
+    rm0 n=0000000000000000 m=0000000000000000 a=8000000000000000 exp 0000000000000000 got 8000000000000000
+    rm0 n=0000000000000000 m=0000000000000000 a=7ff8000000000000 exp fff8000000000000 got 7ff8000000000000
+    rm0 n=0000000000000000 m=0000000000000000 a=fff8000000000000 exp 7ff8000000000000 got fff8000000000000
+    rm0 n=0000000000000000 m=0000000000000000 a=7ff8000000abcdef exp fff8000000abcdef got 7ff8000000abcdef
+    rm0 n=0000000000000000 m=0000000000000000 a=fff8000000abcdef exp 7ff8000000abcdef got fff8000000abcdef
+    rm0 n=0000000000000000 m=0000000000000000 a=7ff0000000000001 exp fff8000000000001 got 7ff8000000000001
+ppc.fmadd_s.fused_raw_ctl          n=21952    bad=424     FAIL(expected, control)
+    n=00000000 m=ff800000 a=ffc00000 exp 7fc00000 got ffc00000
+    n=00000000 m=ff800000 a=ffc12345 exp 7fc00000 got ffc12345
+    n=00000000 m=ff800001 a=ffc00000 exp ffc00001 got ffc00000
+    n=00000000 m=ff800001 a=ffc12345 exp ffc00001 got ffc12345
+    n=00000000 m=ffbfffff a=ffc00000 exp ffffffff got ffc00000
+    n=00000000 m=ffbfffff a=ffc12345 exp ffffffff got ffc12345
+ppc.fnmsub_s.fused_raw_ctl         n=21952    bad=3120    FAIL(expected, control)
+    n=00000000 m=00000000 a=ffc00000 exp 7fc00000 got ffc00000
+    n=00000000 m=00000000 a=ffc12345 exp 7fc12345 got ffc12345
+    n=00000000 m=00000000 a=ff800001 exp 7fc00001 got ffc00001
+    n=00000000 m=00000000 a=ffbfffff exp 7fffffff got ffffffff
+    n=00000000 m=00000001 a=ffc00000 exp 7fc00000 got ffc00000
+    n=00000000 m=00000001 a=ffc12345 exp 7fc12345 got ffc12345
+ppc.fmsub_s.fused_raw_ctl          n=21952    bad=532     FAIL(expected, control)
+    n=00000000 m=ff800000 a=ffc00000 exp 7fc00000 got ffc00000
+    n=00000000 m=ff800000 a=ffc12345 exp 7fc00000 got ffc12345
+    n=00000000 m=ff800001 a=ffc00000 exp ffc00001 got ffc00000
+    n=00000000 m=ff800001 a=ffc12345 exp ffc00001 got ffc12345
+    n=00000000 m=ffbfffff a=ffc00000 exp ffffffff got ffc00000
+    n=00000000 m=ffbfffff a=ffc12345 exp ffffffff got ffc12345
+ppc.fmsub_s.xvnmsubasp_ctl         n=21952    bad=3225    FAIL(expected, control)
+    n=00000000 m=00000000 a=00000000 exp 00000000 got 80000000
+    n=00000000 m=00000001 a=00000000 exp 00000000 got 80000000
+    n=00000000 m=007fffff a=00000000 exp 00000000 got 80000000
+    n=00000000 m=00800000 a=00000000 exp 00000000 got 80000000
+    n=00000000 m=3f800000 a=00000000 exp 00000000 got 80000000
+    n=00000000 m=3f000000 a=00000000 exp 00000000 got 80000000
+ppc.fnmadd_s.fused_raw_ctl         n=21952    bad=3012    FAIL(expected, control)
+    n=00000000 m=00000000 a=ffc00000 exp 7fc00000 got ffc00000
+    n=00000000 m=00000000 a=ffc12345 exp 7fc12345 got ffc12345
+    n=00000000 m=00000000 a=ff800001 exp 7fc00001 got ffc00001
+    n=00000000 m=00000000 a=ffbfffff exp 7fffffff got ffffffff
+    n=00000000 m=00000001 a=ffc00000 exp 7fc00000 got ffc00000
+    n=00000000 m=00000001 a=ffc12345 exp 7fc12345 got ffc12345
+ppc.fnmadd_s.xvnmaddasp_ctl        n=21952    bad=5832    FAIL(expected, control)
+    n=00000000 m=00000000 a=ffc00000 exp 7fc00000 got ffc00000
+    n=00000000 m=00000000 a=ffc12345 exp 7fc12345 got ffc12345
+    n=00000000 m=00000000 a=ff800001 exp 7fc00001 got ffc00001
+    n=00000000 m=00000000 a=ffbfffff exp 7fffffff got ffffffff
+    n=00000000 m=00000001 a=ffc00000 exp 7fc00000 got ffc00000
+    n=00000000 m=00000001 a=ffc12345 exp 7fc12345 got ffc12345
+ppc.fsqrt_d.xssqrtdp               n=16260    bad=0       PASS
+ppc.fsqrt_d.xvsqrtdp               n=16260    bad=0       PASS
+ppc.fcvt_sd.xscvdpsp               n=16260    bad=0       PASS
+ppc.fcvt_hd.xscvdphp               n=16260    bad=0       PASS
+ppc.fsqrt_s.xvsqrtsp               n=16224    bad=0       PASS
+ppc.fcvt_ds.xscvspdp               n=16224    bad=0       PASS
+ppc.fcvt_ds.xscvspdpn_ctl          n=16224    bad=19      FAIL(expected, control)
+    rm0 7f800001 exp 7ff8000020000000 got 7ff0000020000000
+    rm0 ff800001 exp fff8000020000000 got fff0000020000000
+    rm0 7fa12345 exp 7ffc2468a0000000 got 7ff42468a0000000
+    rm0 ffbfffff exp ffffffffe0000000 got fff7ffffe0000000
+    rm0 7f8f4458 exp 7ff9e88b00000000 got 7ff1e88b00000000
+    rm1 7f800001 exp 7ff8000020000000 got 7ff0000020000000
+ppc.fcvt_dh.xscvhpdp               n=65536    bad=0       PASS
+ppc.fcmp_d.xscmpudp_nzcv           n=4225     bad=0       PASS
+ppc.fcmp_d.fcmpu_nzcv              n=4225     bad=0       PASS
+ppc.fcmp_s.xscvspdp_xscmpudp       n=3136     bad=0       PASS
+ppc.fcvtns_xd.p8sandwich.isel      n=64260    bad=0       PASS
+ppc.fcvtns_xd.p8sandwich.branch    n=64260    bad=0       PASS
+ppc.fcvtns_xd.p8sandwich.mask      n=64260    bad=0       PASS
+ppc.fcvtns_xd.p8sandwich.fctidz_isel n=64260    bad=0       PASS
+ppc.fcvtns_xd.p8sandwich.noNaNfix_ctl n=64260    bad=37      FAIL(expected, control)
+    rm0 7ff8000000000000 exp 0000000000000000 got 8000000000000000
+    rm0 fff8000000000000 exp 0000000000000000 got 8000000000000000
+    rm0 7ff8000000abcdef exp 0000000000000000 got 8000000000000000
+    rm0 fff8000000abcdef exp 0000000000000000 got 8000000000000000
+    rm0 7ff0000000000001 exp 0000000000000000 got 8000000000000000
+    rm0 fff0000000000001 exp 0000000000000000 got 8000000000000000
+ppc.fcvtns_xd.p9mffscrn.isel       n=64260    bad=0       PASS
+ppc.fcvtns_xd.p9mffscrn.branch     n=64260    bad=0       PASS
+ppc.fcvtns_xd.p9mffscrn.mask       n=64260    bad=0       PASS
+ppc.fcvtns_xd.p9mffscrn.fctidz_isel n=64260    bad=0       PASS
+ppc.fcvtns_xd.p9mffscrn.noNaNfix_ctl n=64260    bad=37      FAIL(expected, control)
+    rm0 7ff8000000000000 exp 0000000000000000 got 8000000000000000
+    rm0 fff8000000000000 exp 0000000000000000 got 8000000000000000
+    rm0 7ff8000000abcdef exp 0000000000000000 got 8000000000000000
+    rm0 fff8000000abcdef exp 0000000000000000 got 8000000000000000
+    rm0 7ff0000000000001 exp 0000000000000000 got 8000000000000000
+    rm0 fff0000000000001 exp 0000000000000000 got 8000000000000000
+ppc.fcvtns_xd.assumeRN.isel        n=16065    bad=0       PASS
+ppc.fcvtns_xd.fctid_assumeRN       n=16065    bad=0       PASS
+ppc.fcvtns_wd.p8sandwich.isel      n=64260    bad=0       PASS
+ppc.fcvtns_wd.p8sandwich.noNaNfix_ctl n=64260    bad=37      FAIL(expected, control)
+    rm0 7ff8000000000000 exp 0000000000000000 got 0000000080000000
+    rm0 fff8000000000000 exp 0000000000000000 got 0000000080000000
+    rm0 7ff8000000abcdef exp 0000000000000000 got 0000000080000000
+    rm0 fff8000000abcdef exp 0000000000000000 got 0000000080000000
+    rm0 7ff0000000000001 exp 0000000000000000 got 0000000080000000
+    rm0 fff0000000000001 exp 0000000000000000 got 0000000080000000
+ppc.fcvtns_wd.p9mffscrn.isel       n=64260    bad=0       PASS
+ppc.fcvtns_wd.p9mffscrn.noNaNfix_ctl n=64260    bad=37      FAIL(expected, control)
+    rm0 7ff8000000000000 exp 0000000000000000 got 0000000080000000
+    rm0 fff8000000000000 exp 0000000000000000 got 0000000080000000
+    rm0 7ff8000000abcdef exp 0000000000000000 got 0000000080000000
+    rm0 fff8000000abcdef exp 0000000000000000 got 0000000080000000
+    rm0 7ff0000000000001 exp 0000000000000000 got 0000000080000000
+    rm0 fff0000000000001 exp 0000000000000000 got 0000000080000000
+ppc.fcvtns_wd.assumeRN.isel        n=16065    bad=0       PASS
+ppc.fcvtnu_xd.p8sandwich.xscvdpuxds n=64260    bad=0       PASS
+ppc.fcvtnu_xd.p8sandwich.fctiduz   n=64260    bad=0       PASS
+ppc.fcvtnu_xd.p9mffscrn.xscvdpuxds n=64260    bad=0       PASS
+ppc.fcvtnu_xd.p9mffscrn.fctiduz    n=64260    bad=0       PASS
+ppc.fcvtnu_xd.assumeRN.xscvdpuxds  n=16065    bad=0       PASS
+ppc.fcvtnu_wd.p8sandwich.xscvdpuxws n=64260    bad=0       PASS
+ppc.fcvtnu_wd.p9mffscrn.xscvdpuxws n=64260    bad=0       PASS
+ppc.fcvtnu_wd.assumeRN.xscvdpuxws  n=16065    bad=0       PASS
+ppc.fcvtps_xd.isel                 n=64260    bad=0       PASS
+ppc.fcvtps_xd.branch               n=64260    bad=0       PASS
+ppc.fcvtps_xd.mask                 n=64260    bad=0       PASS
+ppc.fcvtps_xd.fctidz_isel          n=64260    bad=0       PASS
+ppc.fcvtps_xd.noNaNfix_ctl         n=64260    bad=37      FAIL(expected, control)
+    rm0 7ff8000000000000 exp 0000000000000000 got 8000000000000000
+    rm0 fff8000000000000 exp 0000000000000000 got 8000000000000000
+    rm0 7ff8000000abcdef exp 0000000000000000 got 8000000000000000
+    rm0 fff8000000abcdef exp 0000000000000000 got 8000000000000000
+    rm0 7ff0000000000001 exp 0000000000000000 got 8000000000000000
+    rm0 fff0000000000001 exp 0000000000000000 got 8000000000000000
+ppc.fcvtps_wd.isel                 n=64260    bad=0       PASS
+ppc.fcvtps_wd.noNaNfix_ctl         n=64260    bad=37      FAIL(expected, control)
+    rm0 7ff8000000000000 exp 0000000000000000 got 0000000080000000
+    rm0 fff8000000000000 exp 0000000000000000 got 0000000080000000
+    rm0 7ff8000000abcdef exp 0000000000000000 got 0000000080000000
+    rm0 fff8000000abcdef exp 0000000000000000 got 0000000080000000
+    rm0 7ff0000000000001 exp 0000000000000000 got 0000000080000000
+    rm0 fff0000000000001 exp 0000000000000000 got 0000000080000000
+ppc.fcvtpu_xd.xscvdpuxds           n=64260    bad=0       PASS
+ppc.fcvtpu_xd.fctiduz              n=64260    bad=0       PASS
+ppc.fcvtpu_wd.xscvdpuxws           n=64260    bad=0       PASS
+ppc.fcvtms_xd.isel                 n=64260    bad=0       PASS
+ppc.fcvtms_xd.branch               n=64260    bad=0       PASS
+ppc.fcvtms_xd.mask                 n=64260    bad=0       PASS
+ppc.fcvtms_xd.fctidz_isel          n=64260    bad=0       PASS
+ppc.fcvtms_xd.noNaNfix_ctl         n=64260    bad=37      FAIL(expected, control)
+    rm0 7ff8000000000000 exp 0000000000000000 got 8000000000000000
+    rm0 fff8000000000000 exp 0000000000000000 got 8000000000000000
+    rm0 7ff8000000abcdef exp 0000000000000000 got 8000000000000000
+    rm0 fff8000000abcdef exp 0000000000000000 got 8000000000000000
+    rm0 7ff0000000000001 exp 0000000000000000 got 8000000000000000
+    rm0 fff0000000000001 exp 0000000000000000 got 8000000000000000
+ppc.fcvtms_wd.isel                 n=64260    bad=0       PASS
+ppc.fcvtms_wd.noNaNfix_ctl         n=64260    bad=37      FAIL(expected, control)
+    rm0 7ff8000000000000 exp 0000000000000000 got 0000000080000000
+    rm0 fff8000000000000 exp 0000000000000000 got 0000000080000000
+    rm0 7ff8000000abcdef exp 0000000000000000 got 0000000080000000
+    rm0 fff8000000abcdef exp 0000000000000000 got 0000000080000000
+    rm0 7ff0000000000001 exp 0000000000000000 got 0000000080000000
+    rm0 fff0000000000001 exp 0000000000000000 got 0000000080000000
+ppc.fcvtmu_xd.xscvdpuxds           n=64260    bad=0       PASS
+ppc.fcvtmu_xd.fctiduz              n=64260    bad=0       PASS
+ppc.fcvtmu_wd.xscvdpuxws           n=64260    bad=0       PASS
+ppc.fcvtzs_xd.isel                 n=64260    bad=0       PASS
+ppc.fcvtzs_xd.branch               n=64260    bad=0       PASS
+ppc.fcvtzs_xd.mask                 n=64260    bad=0       PASS
+ppc.fcvtzs_xd.fctidz_isel          n=64260    bad=0       PASS
+ppc.fcvtzs_xd.noNaNfix_ctl         n=64260    bad=37      FAIL(expected, control)
+    rm0 7ff8000000000000 exp 0000000000000000 got 8000000000000000
+    rm0 fff8000000000000 exp 0000000000000000 got 8000000000000000
+    rm0 7ff8000000abcdef exp 0000000000000000 got 8000000000000000
+    rm0 fff8000000abcdef exp 0000000000000000 got 8000000000000000
+    rm0 7ff0000000000001 exp 0000000000000000 got 8000000000000000
+    rm0 fff0000000000001 exp 0000000000000000 got 8000000000000000
+ppc.fcvtzs_wd.isel                 n=64260    bad=0       PASS
+ppc.fcvtzs_wd.noNaNfix_ctl         n=64260    bad=37      FAIL(expected, control)
+    rm0 7ff8000000000000 exp 0000000000000000 got 0000000080000000
+    rm0 fff8000000000000 exp 0000000000000000 got 0000000080000000
+    rm0 7ff8000000abcdef exp 0000000000000000 got 0000000080000000
+    rm0 fff8000000abcdef exp 0000000000000000 got 0000000080000000
+    rm0 7ff0000000000001 exp 0000000000000000 got 0000000080000000
+    rm0 fff0000000000001 exp 0000000000000000 got 0000000080000000
+ppc.fcvtzu_xd.xscvdpuxds           n=64260    bad=0       PASS
+ppc.fcvtzu_xd.fctiduz              n=64260    bad=0       PASS
+ppc.fcvtzu_wd.xscvdpuxws           n=64260    bad=0       PASS
+ppc.fcvtas_xd.isel                 n=64260    bad=0       PASS
+ppc.fcvtas_xd.branch               n=64260    bad=0       PASS
+ppc.fcvtas_xd.mask                 n=64260    bad=0       PASS
+ppc.fcvtas_xd.fctidz_isel          n=64260    bad=0       PASS
+ppc.fcvtas_xd.noNaNfix_ctl         n=64260    bad=37      FAIL(expected, control)
+    rm0 7ff8000000000000 exp 0000000000000000 got 8000000000000000
+    rm0 fff8000000000000 exp 0000000000000000 got 8000000000000000
+    rm0 7ff8000000abcdef exp 0000000000000000 got 8000000000000000
+    rm0 fff8000000abcdef exp 0000000000000000 got 8000000000000000
+    rm0 7ff0000000000001 exp 0000000000000000 got 8000000000000000
+    rm0 fff0000000000001 exp 0000000000000000 got 8000000000000000
+ppc.fcvtas_wd.isel                 n=64260    bad=0       PASS
+ppc.fcvtas_wd.noNaNfix_ctl         n=64260    bad=37      FAIL(expected, control)
+    rm0 7ff8000000000000 exp 0000000000000000 got 0000000080000000
+    rm0 fff8000000000000 exp 0000000000000000 got 0000000080000000
+    rm0 7ff8000000abcdef exp 0000000000000000 got 0000000080000000
+    rm0 fff8000000abcdef exp 0000000000000000 got 0000000080000000
+    rm0 7ff0000000000001 exp 0000000000000000 got 0000000080000000
+    rm0 fff0000000000001 exp 0000000000000000 got 0000000080000000
+ppc.fcvtau_xd.xscvdpuxds           n=64260    bad=0       PASS
+ppc.fcvtau_xd.fctiduz              n=64260    bad=0       PASS
+ppc.fcvtau_wd.xscvdpuxws           n=64260    bad=0       PASS
+ppc.fcvtzs_fix_xd.xsmuldp_isel     n=192780   bad=0       PASS
+ppc.fcvtzu_fix_xd.xsmuldp_xscvdpuxds n=192780   bad=0       PASS
+ppc.fcvtzs_xs.widen_isel           n=16224    bad=0       PASS
+ppc.fcvtzu_xs.widen_xscvdpuxds     n=16224    bad=0       PASS
+ppc.fcvtas_xs.widen_xsrdpi_isel    n=16224    bad=0       PASS
+ppc.fcvtzs_ws.widen_isel           n=16224    bad=0       PASS
+ppc.fcvtzu_ws.widen_xscvdpuxws     n=16224    bad=0       PASS
+ppc.fcvtau_ws.widen_xsrdpi         n=16224    bad=0       PASS
+ppc.fcvtns_xd.assumeRN.isel_ctl    n=48195    bad=15317   FAIL(expected, control)
+    rm1 0000000000000001 exp 0000000000000000 got 0000000000000001
+    rm1 000fffffffffffff exp 0000000000000000 got 0000000000000001
+    rm1 0010000000000000 exp 0000000000000000 got 0000000000000001
+    rm1 3fe0000000000000 exp 0000000000000000 got 0000000000000001
+    rm1 bff8000000000000 exp fffffffffffffffe got ffffffffffffffff
+    rm1 4004000000000000 exp 0000000000000002 got 0000000000000003
+ppc.fcvtns_xd.fctid_assumeRN_ctl   n=48195    bad=15317   FAIL(expected, control)
+    rm1 0000000000000001 exp 0000000000000000 got 0000000000000001
+    rm1 000fffffffffffff exp 0000000000000000 got 0000000000000001
+    rm1 0010000000000000 exp 0000000000000000 got 0000000000000001
+    rm1 3fe0000000000000 exp 0000000000000000 got 0000000000000001
+    rm1 bff8000000000000 exp fffffffffffffffe got ffffffffffffffff
+    rm1 4004000000000000 exp 0000000000000002 got 0000000000000003
+ppc.fcvtns_wd.assumeRN.isel_ctl    n=48195    bad=13984   FAIL(expected, control)
+    rm1 0000000000000001 exp 0000000000000000 got 0000000000000001
+    rm1 000fffffffffffff exp 0000000000000000 got 0000000000000001
+    rm1 0010000000000000 exp 0000000000000000 got 0000000000000001
+    rm1 3fe0000000000000 exp 0000000000000000 got 0000000000000001
+    rm1 bff8000000000000 exp 00000000fffffffe got 00000000ffffffff
+    rm1 4004000000000000 exp 0000000000000002 got 0000000000000003
+ppc.fcvtnu_xd.assumeRN.xscvdpuxds_ctl n=48195    bad=7624    FAIL(expected, control)
+    rm1 0000000000000001 exp 0000000000000000 got 0000000000000001
+    rm1 000fffffffffffff exp 0000000000000000 got 0000000000000001
+    rm1 0010000000000000 exp 0000000000000000 got 0000000000000001
+    rm1 3fe0000000000000 exp 0000000000000000 got 0000000000000001
+    rm1 4004000000000000 exp 0000000000000002 got 0000000000000003
+    rm1 3ff0000000000001 exp 0000000000000001 got 0000000000000002
+ppc.fcvtnu_wd.assumeRN.xscvdpuxws_ctl n=48195    bad=7304    FAIL(expected, control)
+    rm1 0000000000000001 exp 0000000000000000 got 0000000000000001
+    rm1 000fffffffffffff exp 0000000000000000 got 0000000000000001
+    rm1 0010000000000000 exp 0000000000000000 got 0000000000000001
+    rm1 3fe0000000000000 exp 0000000000000000 got 0000000000000001
+    rm1 4004000000000000 exp 0000000000000002 got 0000000000000003
+    rm1 3ff0000000000001 exp 0000000000000001 got 0000000000000002
+ppc.scvtf_dx.xscvsxddp             n=80120    bad=0       PASS
+ppc.ucvtf_dx.xscvuxddp             n=80120    bad=0       PASS
+ppc.scvtf_sx.xscvsxdsp             n=80120    bad=0       PASS
+ppc.ucvtf_sx.xscvuxdsp             n=80120    bad=0       PASS
+ppc.scvtf_sx.fcfids                n=80120    bad=0       PASS
+ppc.scvtf_sx.fcfid_frsp_ctl        n=80120    bad=1       FAIL(expected, control)
+    rm0 8000004000000001 exp deffffff got df000000
+ppc.scvtf_dw.mtvsrwa_xscvsxddp     n=80120    bad=0       PASS
+ppc.ucvtf_dw.mtvsrwz_xscvuxddp     n=80120    bad=0       PASS
+ppc.scvtf_sw.mtvsrwa_xscvsxdsp     n=80120    bad=0       PASS
+== verdict: PASS (0 candidate(s) wrong or control(s) silent)

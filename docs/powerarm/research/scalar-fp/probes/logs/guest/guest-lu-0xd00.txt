@@ -1,0 +1,19 @@
+add	x30, x16, x7
+ldr	d2, [x30]
+add	x22, x4, x7
+ldp	d3, d4, [x22]
+fmadd	d2, d1, d2, d3
+str	d2, [x22]
+ldr	d2, [x30, #8]
+fmadd	d2, d1, d2, d4
+str	d2, [x22, #8]
+ldr	d2, [x30, #16]
+ldp	d3, d4, [x22, #16]
+fmadd	d2, d1, d2, d3
+str	d2, [x22, #16]
+ldr	d2, [x30, #24]
+fmadd	d2, d1, d2, d4
+add	x7, x7, #0x20
+cmp	x7, #0x300
+str	d2, [x22, #24]
+b.ne	400d00 <main+0x5a0>  // b.any

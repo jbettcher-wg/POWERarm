@@ -1,0 +1,36 @@
+ldp	d28, d29, [x13, #-48]
+ldur	d30, [x13, #-32]
+fsub	d28, d24, d28
+fsub	d29, d25, d29
+fsub	d30, d26, d30
+fmul	d31, d29, d29
+fmadd	d31, d28, d28, d31
+fmadd	d31, d30, d30, d31
+fsqrt	d14, d31
+ldr	d15, [x28, #776]
+fmul	d31, d31, d14
+fdiv	d31, d15, d31
+ldr	d14, [x13]
+ldp	d15, d9, [x12, #24]
+fnmul	d10, d28, d14
+fmadd	d10, d10, d31, d15
+fnmul	d15, d29, d14
+fmadd	d9, d15, d31, d9
+ldr	d15, [x12, #40]
+fnmul	d14, d30, d14
+fmadd	d14, d14, d31, d15
+stp	d10, d9, [x12, #24]
+str	d14, [x12, #40]
+fmul	d28, d27, d28
+fmul	d29, d27, d29
+fmul	d30, d27, d30
+ldp	d9, d10, [x13, #-24]
+ldur	d14, [x13, #-8]
+fmadd	d28, d28, d31, d9
+fmadd	d29, d29, d31, d10
+fmadd	d30, d30, d31, d14
+stp	d28, d29, [x13, #-24]
+stur	d30, [x13, #-8]
+subs	x14, x14, #0x1
+add	x13, x13, #0x38
+b.ne	400be0 <main+0x480>  // b.any

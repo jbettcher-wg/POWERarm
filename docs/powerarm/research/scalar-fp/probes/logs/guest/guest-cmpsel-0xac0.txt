@@ -1,0 +1,41 @@
+ldp	d7, d16, [x11, #-16]
+ldp	d17, d18, [x12, #-8]
+fsub	d7, d7, d1
+fsub	d17, d17, d1
+fmul	d7, d4, d7
+fmul	d17, d4, d17
+fminnm	d19, d7, d17
+fmaxnm	d7, d7, d17
+fcmp	d19, #0.0
+fsub	d16, d16, d2
+fcsel	d17, d11, d19, mi	// mi = first
+fmul	d16, d5, d16
+fsub	d18, d18, d2
+fcmp	d7, d12
+fmul	d18, d5, d18
+fminnm	d19, d16, d18
+fcsel	d7, d12, d7, gt
+fmaxnm	d16, d16, d18
+ldr	d18, [x11], #24
+fcmp	d17, d19
+fsub	d18, d18, d3
+fmul	d18, d6, d18
+fcsel	d17, d17, d19, gt
+ldr	d19, [x12, #8]
+fsub	d19, d19, d3
+fcmp	d7, d16
+fmul	d19, d6, d19
+fminnm	d20, d18, d19
+fcsel	d7, d7, d16, mi	// mi = first
+fmaxnm	d16, d18, d19
+fcmp	d17, d20
+fcsel	d17, d17, d20, gt
+fcmp	d7, d16
+fcsel	d7, d7, d16, mi	// mi = first
+fadd	d16, d0, d17
+fcmp	d7, d17
+fcsel	d0, d16, d0, ge	// ge = tcont
+cinc	x8, x8, ge	// ge = tcont
+subs	x13, x13, #0x1
+add	x12, x12, #0x18
+b.ne	400ac0 <main+0x360>  // b.any

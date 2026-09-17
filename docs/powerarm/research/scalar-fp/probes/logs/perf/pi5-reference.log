@@ -1,0 +1,27 @@
+== nbody
+rep=0 ns=224492305 sum=187f777e4bd5c1d6
+rep=1 ns=225186715 sum=187f777e4bd5c1d6
+rep=2 ns=224522027 sum=187f777e4bd5c1d6
+parity=ok
+== lu
+rep=0 ns=8307748 sum=10b49252510929ad
+rep=1 ns=8347322 sum=10b49252510929ad
+rep=2 ns=8251969 sum=10b49252510929ad
+parity=ok
+== fmix32
+rep=0 ns=13598202 sum=d5e4d58422dc8ab3
+rep=1 ns=13531628 sum=d5e4d58422dc8ab3
+rep=2 ns=13526424 sum=d5e4d58422dc8ab3
+parity=ok
+== cvtmix
+rep=0 ns=11271634 sum=3d14be285e31b32d
+rep=1 ns=11238985 sum=3d14be285e31b32d
+rep=2 ns=11232949 sum=3d14be285e31b32d
+parity=ok
+== cmpsel
+rep=0 ns=73601910 sum=e5c9d00345e21fc6
+rep=1 ns=73526391 sum=e5c9d00345e21fc6
+rep=2 ns=74108375 sum=e5c9d00345e21fc6
+parity=ok
+rep=2 ns=11810828 sum=7d103584ef4fd7c1
+parity=ok

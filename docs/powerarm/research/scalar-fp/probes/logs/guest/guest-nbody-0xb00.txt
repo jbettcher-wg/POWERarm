@@ -1,0 +1,39 @@
+ldr	d27, [x28, #776]
+ldp	d26, d28, [sp, #120]
+ldr	d24, [sp, #136]
+ldp	d29, d30, [sp, #176]
+ldr	d25, [sp, #192]
+fmadd	d1, d26, d27, d1
+fmadd	d23, d28, d27, d23
+ldp	d28, d31, [sp, #232]
+fmadd	d7, d29, d27, d7
+fmadd	d22, d30, d27, d22
+ldr	d26, [sp, #248]
+ldp	d30, d29, [sp, #288]
+fmadd	d2, d28, d27, d2
+fmadd	d20, d31, d27, d20
+fmadd	d3, d30, d27, d3
+ldr	d28, [sp, #304]
+fmadd	d18, d29, d27, d18
+ldp	d29, d30, [sp, #344]
+fmadd	d4, d29, d27, d4
+fmadd	d6, d24, d27, d6
+fmadd	d21, d25, d27, d21
+fmadd	d19, d26, d27, d19
+fmadd	d17, d28, d27, d17
+fmadd	d16, d30, d27, d16
+stp	d1, d23, [sp, #96]
+str	d6, [sp, #112]
+stp	d7, d22, [sp, #152]
+str	d21, [sp, #168]
+stp	d2, d20, [sp, #208]
+str	d19, [sp, #224]
+stp	d3, d18, [sp, #264]
+str	d17, [sp, #280]
+stp	d4, d16, [sp, #320]
+ldr	d29, [sp, #360]
+fmadd	d5, d29, d27, d5
+str	d5, [sp, #336]
+add	x8, x8, #0x1
+cmp	x8, x19
+b.eq	400c80 <main+0x520>  // b.none
