@@ -1,0 +1,39 @@
+From a5e7fb2eec318b711d0f7864e78875fa54dac3d1 Mon Sep 17 00:00:00 2001
+From: Jordan Bettcher <thebettcher@gmail.com>
+Date: Wed, 16 Sep 2026 19:11:13 -0600
+Subject: [PATCH] Allocator: probe 46-bit VA so 4K ppc64le kernels are not
+ detected as 42-bit
+
+DetermineVASize() tried 57, 52, 48, 47, 42, 39 and 36 bits. A 4K-page ppc64le
+kernel caps user VA at 2^46 (arch/powerpc/include/asm/task_size_64.h), so the
+probe fell through to 42. The guest stack hint (~4 TiB) and ELF interpreter hint
+(~2.9 TiB) then land inside the emulator's own [1 TiB, 32 TiB) allocation window.
+64K kernels (2^52 ceiling) are unaffected.
+
+Measured with the host's 4K and 64K kernels in KVM guests: a C port of the probe
+reports 42 on 4K before this change.
+---
+ FEXCore/Source/Utils/Allocator.cpp | 7 +++++--
+ 1 file changed, 5 insertions(+), 2 deletions(-)
+
+diff --git a/FEXCore/Source/Utils/Allocator.cpp b/FEXCore/Source/Utils/Allocator.cpp
+index 7051ab80a..6c0b47deb 100644
+--- a/FEXCore/Source/Utils/Allocator.cpp
++++ b/FEXCore/Source/Utils/Allocator.cpp
+@@ -123,8 +123,11 @@ FEX_DEFAULT_VISIBILITY size_t DetermineVASize() {
+     return HostVASize;
+   }
+ 
+-  static constexpr std::array<uintptr_t, 7> TLBSizes = {
+-    57, 52, 48, 47, 42, 39, 36,
++  // 46 is the ppc64 4K-page user VA ceiling (arch/powerpc/include/asm/task_size_64.h).
++  // Without it a 4K ppc64le kernel probes as 42 bits, which puts the guest stack and
++  // interpreter hints inside the emulator's own allocation window.
++  static constexpr std::array<uintptr_t, 8> TLBSizes = {
++    57, 52, 48, 47, 46, 42, 39, 36,
+   };
+ 
+   for (auto Bits : TLBSizes) {
+-- 
+2.55.0
+
