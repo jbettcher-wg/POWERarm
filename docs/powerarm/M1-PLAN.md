@@ -2,6 +2,21 @@
 
 Written 2026-09-16, after M0 (`bface9d0d`). Scope, work split and exit criteria for M1.
 
+## Status: complete (2026-09-16)
+
+All exit criteria pass on the bare-metal 64K host and on the 4K kernel in KVM:
+
+| Check | Result (both kernels) |
+|---|---|
+| A64Frontend (default, `POWERARM_MAXINST=1`, ISA 3.0 off) | 39/39 in each mode |
+| a64diff instruction suite | 3713/3731, required-fail=0, controls 30/30 (the 18 optional failures are top-byte-ignore, signal delivery and 2 ID-register fields) |
+| a64diff programs (glibc/musl hello, busybox applets incl. `sh -c` pipelines) | 25/25 |
+| A64Syscalls programs + static `tcc` byte-compare | 23/23 bundle jobs; A64Syscalls 11/11 on the host |
+
+Known limitation carried into M2: glibc `posix_spawn` of a missing program returns 0 (the child
+exits 127) because CLONE_VM children run as forks (`POWERARM-M1-TODO(syscalls)`). Local tag
+`m1`.
+
 ## Decision: no separate interpreter
 
 DESIGN.md §8 originally had M1 as an "A64 interpreter". **That's dropped.** FEX has been
