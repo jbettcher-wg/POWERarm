@@ -492,6 +492,17 @@ with the stub. If the host library then fails to load, `Thunks.cpp:334-357` call
    ```
    Libraries opened later with `dlopen` (Vulkan ICDs, GL via libglvnd) are decided when opened.
    If a TTY is present they get a one-line follow-up; they're always logged.
+5a. **Load lines.** Once a library is decided as thunked (from the cache or a fresh
+    preflight), the moment its host half actually loads prints one live line on the TTY:
+    ```
+    Loading thunks -> vulkan (host radv 26.2) ... done 212 ms
+    Loading thunks -> GL ... done 48 ms
+    ```
+    This is real work: the host `dlopen` of a GPU driver can take hundreds of milliseconds.
+    The line shows `...` while the host `dlopen` runs and is completed in place (`\r`) with
+    the timing. The same rules apply: TTY only, `POWERARM_QUIET` silences it, and it's always
+    logged. Libraries that fell back are named once in the banner's `emulated:` row and don't
+    get a load line.
 6. **Progress bars only for work that actually takes time:**
    - fetching or unpacking a rootfs image
    - mounting and indexing a new base image
