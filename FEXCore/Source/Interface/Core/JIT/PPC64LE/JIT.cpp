@@ -1801,12 +1801,16 @@ uint64_t PPC64JITCore::ExitFunctionLinkWithRecord(FEXCore::Core::CpuStateFrame* 
   // unreachable until that patch lands -- takes the `bl`. Final is written
   // first, so by the time A flips the linked leg is complete; a delink
   // restores A alone and Final goes stale but unreachable.
-  const bool ShadowCall = Record->FinalOffset != 0;
+  // FinalOffset bit 0 marks a Final word that takes a plain `b` (a BR inline-
+  // cache slot) rather than the shadow call's `bl`; offsets are multiples of 4.
+  const int64_t FinalOffset = Record->FinalOffset & ~int64_t {3};
+  const bool FinalPlainBranch = (Record->FinalOffset & 1) != 0;
+  const bool ShadowCall = FinalOffset != 0;
   // A64 paired call (EmitA64PairedCall): the caller word is itself the call.
   // It becomes `bl HostCode` / `bl Thunk` in place, and the word after it is
   // the return trampoline the call pushed.
-  const bool CallInPlace = ShadowCall && Record->FinalOffset == Record->CallerOffset;
-  const uintptr_t FinalAddress = ShadowCall ? reinterpret_cast<uintptr_t>(Record) + Record->FinalOffset : CallerAddress;
+  const bool CallInPlace = ShadowCall && FinalOffset == Record->CallerOffset;
+  const uintptr_t FinalAddress = ShadowCall ? reinterpret_cast<uintptr_t>(Record) + FinalOffset : CallerAddress;
   const uintptr_t LinkedEntry = ShadowCall ? reinterpret_cast<uintptr_t>(Record) + Record->LinkedEntryOffset : 0;
   const int64_t DirectDelta = static_cast<int64_t>(HostCode) - static_cast<int64_t>(FinalAddress);
   const int64_t ThunkDelta = static_cast<int64_t>(ThunkStart) - static_cast<int64_t>(FinalAddress);
@@ -1845,7 +1849,7 @@ uint64_t PPC64JITCore::ExitFunctionLinkWithRecord(FEXCore::Core::CpuStateFrame* 
     // registered undo if this thread stalled between the two.
     Thread->LookupCache->AddBlockLink(GuestRIP, Link, PPC64DirectBlockDelinker, lk);
     if (ShadowCall) {
-      PPC64PatchInstruction(FinalAddress, PPC64EncodeBranchLink(DirectDelta));
+      PPC64PatchInstruction(FinalAddress, FinalPlainBranch ? PPC64EncodeBranch(DirectDelta) : PPC64EncodeBranchLink(DirectDelta));
     }
     PatchCaller(PPC64EncodeBranch(DirectDelta));
     LinkOutcomeDirect.fetch_add(1, std::memory_order_relaxed);
@@ -1869,7 +1873,7 @@ uint64_t PPC64JITCore::ExitFunctionLinkWithRecord(FEXCore::Core::CpuStateFrame* 
 #endif
     PPC64PatchInstruction(ThunkStart, PPC64_BCL_20_31_PLUS4);
     if (ShadowCall) {
-      PPC64PatchInstruction(FinalAddress, PPC64EncodeBranchLink(ThunkDelta));
+      PPC64PatchInstruction(FinalAddress, FinalPlainBranch ? PPC64EncodeBranch(ThunkDelta) : PPC64EncodeBranchLink(ThunkDelta));
     }
     PatchCaller(PPC64EncodeBranch(ThunkDelta));
   } else {
@@ -5731,7 +5735,7 @@ CPUBackend::CompiledCode PPC64JITCore::CompileCode(
     dc64(StubAddr);                                                   // StubAddr — dispatcher
                                                                       // stub cached per record
     dc64(Thunk.LinkedEntryAddress ? static_cast<uint64_t>(Thunk.LinkedEntryAddress - RecordAddress) : 0); // LinkedEntryOffset
-    dc64(Thunk.FinalAddress ? static_cast<uint64_t>(Thunk.FinalAddress - RecordAddress) : 0);             // FinalOffset
+    dc64(Thunk.FinalAddress ? (static_cast<uint64_t>(Thunk.FinalAddress - RecordAddress) | (Thunk.FinalPlainBranch ? 1u : 0u)) : 0); // FinalOffset (bit 0: plain b)
   }
 
   // -------------------------------------------------------------------------

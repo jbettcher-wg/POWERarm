@@ -168,6 +168,11 @@ static void coroutine(void) {
 __attribute__((noinline)) static uint64_t smc_callee(uint64_t x) {
   return rec(x % 30) ^ x;
 }
+// A register-target tail call (`br x1`): its branch site stays in this binary
+// while its targets in the rewritten page are invalidated under it.
+__attribute__((noinline)) static uint64_t tail_to(uint64_t x, fn_t f) {
+  return f(x);
+}
 
 int main(void) {
   uint64_t h;
@@ -257,8 +262,16 @@ int main(void) {
     code[3] = 0xa8c17bfd;
     code[4] = 0xd65f03c0;
     __builtin___clear_cache((char*)code, (char*)code + 20);
+    // add x0,x0,#K2 ; ret        sub x0,x0,#K2 ; ret
+    const uint32_t k2 = (uint32_t)(i / 5) & 0xfff;
+    code[8] = 0x91000000 | (k2 << 10);
+    code[9] = 0xd65f03c0;
+    code[12] = 0xd1000000 | (k2 << 10);
+    code[13] = 0xd65f03c0;
+    __builtin___clear_cache((char*)code, (char*)code + 56);
     uint64_t (*fn)(uint64_t, uint64_t (*)(uint64_t)) = (void*)code;
     h = mix(h, fn(i, smc_callee));
+    h = mix(h, tail_to(i, (fn_t)(void*)(code + ((i & 1) ? 8 : 12))));
   }
   printf("smc %016llx\n", (unsigned long long)h);
   fflush(stdout);

@@ -882,6 +882,68 @@ DEF_OP(ExitFunction) {
     Thunk.LinkedEntryAddress = GetCursorAddress<uint64_t>();
   }
 
+  // ---------------------------------------------------------------------
+  // P2: inline compare cache for a guest BR (POWER9 pipeline research Rule 2,
+  // §4.5). The count cache predicts the LAST target of a bctr site, so an
+  // interpreter's dispatch `br` mispredicts on every change of opcode, while
+  // the direction predictor learns patterned sequences perfectly through a
+  // chain of compares (period-8 dispatch: 35.3 cycles through bctr, 16.5
+  // through a compare chain). Each slot is the indirect-call inline cache's
+  // guarded direct branch, chained:
+  //
+  //   A0: b MISS0      <- unlinked: to the record linker (sampled, below),
+  //                       which fills slot 0 with the target it observed,
+  //                       then A0 becomes nop
+  //       lis/ori/sldi/oris/ori TMP2 ; cmpd cr7, target, TMP2
+  //       bne A1                        (the last slot: bne PROBE)
+  //       std rip ; [li r0,0]
+  //   F0: trap         <- linker: b HostCode / b Thunk
+  //   A1: b MISS1 ...
+  //   PROBE: the L1 probe, as before (hit: bctr; miss: dispatcher)
+  //   MISSi: 1 in 64: std rip ; b LinkPath_i   otherwise: b PROBE
+  //
+  // Sampled targets win their slots, a slot whose target block is
+  // erased is relinked by the next target to reach it, and a target the
+  // linker refuses points its slot's A at PROBE for good. Unfilled slots cost
+  // nothing past the first; filled non-matching slots cost two issue slots
+  // each for the compare and branch (the constants have no dependency).
+  // POWERARM_BRCACHESLOTS=N (0-8, default 8) sets the chain length.
+  // ---------------------------------------------------------------------
+  static const uint32_t BRCacheSlots = [] {
+    const char* Env = getenv("POWERARM_BRCACHESLOTS");
+    return Env ? std::min<uint32_t>(static_cast<uint32_t>(strtoul(Env, nullptr, 10)), 8u) : 8u;
+  }();
+  const bool BRCache = Op->Hint == IR::BranchHint::None && !ConstRIP && CallLinkingEnabled && BRCacheSlots != 0;
+  std::array<PPC64Emitter::Label, 8> BRSlotMiss {};
+  std::array<PPC64Emitter::Label, 8> BRSlotNext {};
+  std::array<PendingJumpThunk*, 8> BRSlotThunk {};
+  if (BRCache) {
+    for (uint32_t i = 0; i < BRCacheSlots; ++i) {
+      if (i != 0) {
+        Bind(&BRSlotNext[i - 1]);
+      }
+      PendingJumpThunks.push_back({GetCursorAddress<uint64_t>(), 0 /* indirect */, {}});
+      auto* Slot = &PendingJumpThunks.back();
+      BRSlotThunk[i] = Slot;
+      b(&BRSlotMiss[i]);                // A_i
+      lis(TMP2, 0);
+      ori(TMP2, TMP2, 0);
+      sldi(TMP2, TMP2, 32);
+      oris(TMP2, TMP2, 0);
+      ori(TMP2, TMP2, 0);
+      cmpd(cr(7), RIPReg, TMP2);
+      bc({4, 30}, i + 1 < BRCacheSlots ? &BRSlotNext[i] : &InlineCacheProbe);
+      std(RIPReg, rip_off, STATE);
+      EmitExitR0Zero(UnitR0Dirty);
+      Slot->FinalAddress = GetCursorAddress<uint64_t>();
+      Slot->FinalPlainBranch = true;
+      Emit32(0x7FE00008u);              // F_i: trap until linked
+    }
+    Bind(&InlineCacheProbe);
+    for (uint32_t i = 0; i < BRCacheSlots; ++i) {
+      BRSlotThunk[i]->LinkedEntryAddress = GetCursorAddress<uint64_t>();
+    }
+  }
 
   // Shadow CALL push. For a Linkable exit this `bcl` IS the patch site A:
   // the registration above deliberately emits nothing after itself in that
@@ -1049,6 +1111,25 @@ DEF_OP(ExitFunction) {
     // instructions per exit with this one branch; see SharedSpillExitLabel.
     SharedSpillExitUsed = true;
     b(&SharedSpillExitLabel);
+  }
+  if (BRCache) {
+    // An empty slot is filled by a sampled arrival, not the first one: only
+    // when the time base's low 6 bits are zero (about 1 in 64 arrivals) does
+    // the miss leg go to the linker; the rest take the probe. A slot then
+    // holds a target in proportion to how often it arrives, instead of
+    // whichever targets a start-up path happened to dispatch first (vm filled
+    // all eight slots with its setup opcodes that way), and a cold site pays
+    // the C++ linker on ~2% of its executions rather than on each of its
+    // first few. mftb is a user-readable SPR; no CR0 or XER bits are touched.
+    for (uint32_t i = 0; i < BRCacheSlots; ++i) {
+      Bind(&BRSlotMiss[i]);
+      mftb(TMP2);
+      rldicl(TMP2, TMP2, 0, 58);
+      cmpldi(cr(7), TMP2, 0);
+      bc({4, 30}, &InlineCacheProbe);   // bne cr7: not sampled, probe
+      std(RIPReg, rip_off, STATE);      // the record linker reads the target here
+      b(&BRSlotThunk[i]->LinkPath);
+    }
   }
 
   // Linked shadow call: its own push (return word = Tramp2), the Final word
