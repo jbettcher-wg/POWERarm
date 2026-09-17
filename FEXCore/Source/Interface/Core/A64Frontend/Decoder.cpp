@@ -8,6 +8,7 @@
 #include <FEXCore/Utils/Profiler.h>
 #include <FEXCore/Utils/TypeDefines.h>
 
+#include <algorithm>
 #include <cstring>
 
 namespace FEXCore::A64 {
@@ -72,6 +73,35 @@ static bool EndsBlock(uint32_t Word) {
   return false;
 }
 
+// Direct successors of a block-ending instruction that the decoder may follow
+// when it grows a compile unit. Calls (BL) are not followed (their continuation
+// is reached through a return), and neither are register branches or
+// exception-generating instructions.
+struct DirectSuccessors {
+  uint64_t Target[2];
+  uint32_t Count;
+};
+static DirectSuccessors GetDirectSuccessors(uint32_t Word, uint64_t PC) {
+  DirectSuccessors S {{}, 0};
+  auto SignExtendImm = [](uint64_t Value, unsigned Width) {
+    return static_cast<int64_t>(Value << (64 - Width)) >> (64 - Width);
+  };
+  if ((Word & 0xFC000000) == 0x14000000) { // B
+    S.Target[S.Count++] = PC + SignExtendImm(Word & 0x03FFFFFF, 26) * 4;
+  } else if ((Word & 0x7E000000) == 0x34000000 || (Word & 0x7E000000) == 0x36000000) {
+    // CBZ/CBNZ (imm19) and TBZ/TBNZ (imm14).
+    const bool IsTest = (Word & 0x7E000000) == 0x36000000;
+    S.Target[S.Count++] = PC + (IsTest ? SignExtendImm((Word >> 5) & 0x3FFF, 14) : SignExtendImm((Word >> 5) & 0x7FFFF, 19)) * 4;
+    S.Target[S.Count++] = PC + INSTRUCTION_SIZE;
+  } else if ((Word & 0xFE000000) == 0x54000000) { // B.cond, BC.cond
+    S.Target[S.Count++] = PC + SignExtendImm((Word >> 5) & 0x7FFFF, 19) * 4;
+    if ((Word & 0xF) < 0xE) {
+      S.Target[S.Count++] = PC + INSTRUCTION_SIZE;
+    }
+  }
+  return S;
+}
+
 void Decoder::DecodeInstructionsAtEntry(FEXCore::Core::InternalThreadState*, uint64_t PC, uint64_t MaxInst) {
   FEXCORE_PROFILE_SCOPED("DecodeInstructions");
 
@@ -91,47 +121,170 @@ void Decoder::DecodeInstructionsAtEntry(FEXCore::Core::InternalThreadState*, uin
     DecodedBuffer.resize(Cap);
   }
 
-  DecodedBlocks Block {
-    .Entry = PC,
-    .Size = 0,
-    .NumInstructions = 0,
-    .DecodedInstructions = DecodedBuffer.data(),
-    .BlockStatus = DecodedBlockStatus::SUCCESS,
-    .IsEntryPoint = true,
-  };
-
   if (!CheckRangeExecutable(PC, INSTRUCTION_SIZE)) {
     // Emitted as a guest SIGSEGV at PC by the IR builder, exactly like the x86 decoder's NOEXEC_INST.
     DecodedBuffer[0] = {.PC = PC, .Word = 0};
-    Block.BlockStatus = DecodedBlockStatus::NOEXEC_INST;
-    Block.NumInstructions = 1;
-  } else {
-    uint64_t InstPC = PC;
-    while (Block.NumInstructions < Cap) {
-      if (Block.NumInstructions != 0 && !CheckRangeExecutable(InstPC, INSTRUCTION_SIZE)) {
-        // The next word is not executable; it becomes the entry of its own block.
+    BlockInfo.Blocks.push_back(DecodedBlocks {
+      .Entry = PC,
+      .Size = 0,
+      .NumInstructions = 1,
+      .DecodedInstructions = DecodedBuffer.data(),
+      .BlockStatus = DecodedBlockStatus::NOEXEC_INST,
+      .IsEntryPoint = true,
+    });
+    BlockInfo.TotalInstructionCount = 1;
+    return;
+  }
+
+  // Region discovery. Decode linearly from the entry to the first block-ending
+  // instruction; when that instruction is a direct branch with targets inside
+  // the region window, decode those as well. The entry and every followed
+  // target are block leaders. A leader inside an already decoded run splits
+  // it in the layout pass below.
+  //
+  // The window is small on purpose: every instruction in a region is translated
+  // whether it runs or not, and a block that is also entered from outside the
+  // region is translated again under its own entry. Measured on the M2 zlib and
+  // Lua builds (cc1 lvm.c / gcc -c empty.c / zlib / Lua, seconds):
+  //   single block             12.2 / 0.40 / 134.6 / 118.7
+  //   16 KiB, 64 leaders       10.1 / 0.55 /     - /     -
+  //   256 bytes, 16 leaders     9.2 / 0.42 / 124.3 / 107.5
+  //   128 bytes, 8 leaders      9.4 / 0.40 / 123.3 / 106.7
+  //   64 bytes, 8 leaders       9.4 / 0.39 / 121.8 / 106.4
+  // The window bounds the distance from the branch to its target.
+  constexpr uint64_t RegionWindow = 128;
+  constexpr size_t MaxLeaders = 8;
+  const bool FollowBranches = CTX->Config.Multiblock() && Cap > 1 && MaxLeaders > 1;
+  // Slot range: a region may reach RegionWindow below the entry, and a linear
+  // run from the entry is never cut short by the window (it is bounded by Cap).
+  const uint64_t WindowLow = PC >= RegionWindow ? PC - RegionWindow : 0;
+  const uint64_t WindowHigh = PC + Cap * INSTRUCTION_SIZE + RegionWindow;
+
+  // Per-slot state for the window, indexed by (PC - WindowLow) / 4. A slot is
+  // valid when its stamp equals the current generation, so nothing needs
+  // clearing between compiles.
+  const size_t NumSlots = (WindowHigh - WindowLow) / INSTRUCTION_SIZE + 1;
+  if (SlotStamp.size() < NumSlots) {
+    SlotStamp.assign(NumSlots, 0);
+    SlotWord.resize(NumSlots);
+    Generation = 0;
+  }
+  if (++Generation == 0) {
+    std::fill(SlotStamp.begin(), SlotStamp.end(), 0);
+    Generation = 1;
+  }
+  const uint32_t DecodedBit = 1u << 31;
+  const uint32_t LeaderBit = 1u << 30;
+  const uint32_t GenMask = LeaderBit - 1;
+  const uint32_t Gen = Generation & GenMask;
+  auto SlotOf = [&](uint64_t Addr) -> size_t {
+    return (Addr - WindowLow) / INSTRUCTION_SIZE;
+  };
+  auto InWindow = [&](uint64_t Addr) {
+    return Addr >= WindowLow && Addr <= WindowHigh && (Addr & (INSTRUCTION_SIZE - 1)) == 0;
+  };
+  auto Flags = [&](uint64_t Addr) -> uint32_t {
+    const uint32_t S = SlotStamp[SlotOf(Addr)];
+    return (S & GenMask) == Gen ? (S & ~GenMask) : 0;
+  };
+  auto SetFlag = [&](uint64_t Addr, uint32_t Flag) {
+    auto& S = SlotStamp[SlotOf(Addr)];
+    S = ((S & GenMask) == Gen ? S : Gen) | Flag;
+  };
+
+  Leaders.clear();
+  Worklist.clear();
+  Leaders.push_back(PC);
+  SetFlag(PC, LeaderBit);
+  Worklist.push_back(PC);
+  uint64_t Decoded = 0;
+
+  while (!Worklist.empty() && Decoded < Cap) {
+    uint64_t InstPC = Worklist.back();
+    Worklist.pop_back();
+
+    while (Decoded < Cap) {
+      // A run that leaves the slot range, or reaches decoded code, stops here:
+      // the layout pass exits to (or falls into) whatever follows.
+      if (!InWindow(InstPC) || (Flags(InstPC) & DecodedBit)) {
         break;
       }
+      if (InstPC != PC && !CheckRangeExecutable(InstPC, INSTRUCTION_SIZE)) {
+        break;
+      }
+      uint32_t Word;
+      std::memcpy(&Word, reinterpret_cast<const void*>(InstPC), sizeof(Word));
+      SlotWord[SlotOf(InstPC)] = Word;
+      SetFlag(InstPC, DecodedBit);
+      ++Decoded;
 
-      auto& Inst = DecodedBuffer[Block.NumInstructions];
-      Inst.PC = InstPC;
-      std::memcpy(&Inst.Word, reinterpret_cast<const void*>(InstPC), sizeof(Inst.Word));
+      const auto* Matcher = DecodeInstruction(Word);
+      if (!Matcher || !Matcher->Handler) {
+        break;
+      }
+      if (EndsBlock(Word)) {
+        if (FollowBranches) {
+          const auto Succ = GetDirectSuccessors(Word, InstPC);
+          for (uint32_t i = 0; i < Succ.Count; ++i) {
+            const uint64_t T = Succ.Target[i];
+            const uint64_t Distance = T > InstPC ? T - InstPC : InstPC - T;
+            if (Distance > RegionWindow || !InWindow(T) || (Flags(T) & LeaderBit) || Leaders.size() >= MaxLeaders) {
+              continue;
+            }
+            Leaders.push_back(T);
+            SetFlag(T, LeaderBit);
+            Worklist.push_back(T);
+          }
+        }
+        break;
+      }
+      InstPC += INSTRUCTION_SIZE;
+    }
+  }
+
+  // Layout: the entry block first (the IR header points at it), then the other
+  // leaders in address order, so that a block's fallthrough successor is usually
+  // the next block emitted. A leader whose first word was never decoded (cap
+  // reached, or not executable) gets no block, and branches to it exit.
+  if (DecodedBuffer.size() < Decoded) {
+    DecodedBuffer.resize(Decoded);
+  }
+  std::sort(Leaders.begin() + 1, Leaders.end());
+  size_t Used = 0;
+  for (uint64_t Leader : Leaders) {
+    if (!(Flags(Leader) & DecodedBit)) {
+      continue;
+    }
+    DecodedBlocks Block {
+      .Entry = Leader,
+      .Size = 0,
+      .NumInstructions = 0,
+      .DecodedInstructions = DecodedBuffer.data() + Used,
+      .BlockStatus = DecodedBlockStatus::SUCCESS,
+      .IsEntryPoint = Leader == PC,
+    };
+    uint64_t InstPC = Leader;
+    while (InWindow(InstPC)) {
+      const uint32_t F = Flags(InstPC);
+      if (!(F & DecodedBit) || (InstPC != Leader && (F & LeaderBit))) {
+        break;
+      }
+      const uint32_t Word = SlotWord[SlotOf(InstPC)];
+      DecodedBuffer[Used++] = {.PC = InstPC, .Word = Word};
       ++Block.NumInstructions;
       Block.Size += INSTRUCTION_SIZE;
-
       BlockInfo.CodePages.insert(InstPC & FEXCore::Utils::FEX_GUEST_PAGE_MASK);
       InstPC += INSTRUCTION_SIZE;
-
-      const auto* Matcher = DecodeInstruction(Inst.Word);
-      if (!Matcher || !Matcher->Handler || EndsBlock(Inst.Word)) {
+      const auto* Matcher = DecodeInstruction(Word);
+      if (!Matcher || !Matcher->Handler || EndsBlock(Word)) {
         break;
       }
     }
-    DecodedMaxAddress = InstPC;
+    DecodedMinAddress = std::min(DecodedMinAddress, Leader);
+    DecodedMaxAddress = std::max(DecodedMaxAddress, InstPC);
+    BlockInfo.TotalInstructionCount += Block.NumInstructions;
+    BlockInfo.Blocks.push_back(Block);
   }
-
-  BlockInfo.Blocks.push_back(Block);
-  BlockInfo.TotalInstructionCount = Block.NumInstructions;
 }
 
 } // namespace FEXCore::A64
