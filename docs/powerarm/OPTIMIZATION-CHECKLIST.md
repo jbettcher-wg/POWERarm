@@ -163,13 +163,13 @@ CPU 100, wall time per invocation; one run per change. Before this series: 121.1
 | S4 | Per-thread L1 (16 MiB at `MAX_L1_ENTRIES`, indexed by RIP) faulted and zeroed page by page: about 500 read plus write faults of 64 KiB pages per `cc1`, 30% of all faults | `Core/LookupCache.*` | not done | `POWERARM_THP=lookup` tried: `true` sys 2 -> 10 ms. Candidates: a smaller L1 for short processes (DynamicL1Cache costs a mask load per probe), or avoid the zero-page read fault before the write |
 | S5 | Q2: `GuestToHostMap::AddBlockLink` walked the destination's whole inbound chain for a duplicate on every link (quadratic in fan-in, 4.8% of warm cycles). `ExitFunctionLinkWithRecord` now refuses any site whose caller word is no longer the unlinked word (under the write lock), so no duplicate can reach it | `Core/LookupCache.h`, `JIT/PPC64LE/JIT.cpp` | done | CPU 108, 50 x warm `gcc -c empty.c`, `POWERARM_PORTABLE=1`: 96.8 -> 93.2 ms |
 | S6 | Q2: `FlushICacheRange` does `sync; isync` only when AT_HWCAP has `PPC_FEATURE_ICACHE_COHERENT` (as the kernel and vDSO do), not a dcbst/icbi pair per 128 bytes (2.7% of warm cycles: every installed block and patched link word) | `include/FEXCore/Utils/ArchHelpers/PPC64CacheFlush.h` | done | 93.2 -> 90.7 ms. Shared code: applies to fastppcx86 |
+| S7 | Q2: interpolation search of the segment block index instead of `lower_bound` (index probes were 3% of warm cycles, mostly cache misses) | `Core/CodeCache.cpp` | reverted | 90.7 -> 92.0 ms, no win |
+
 Q2 gates at S6 (CPU 108, private cache /tmp/q2-cache, POWERARM_PORTABLE=1): slice 23.76 s cold, 21.36 s warm;
 A64Frontend claude-simd default mode passed 52, failed 0; check-code-cache.sh passes (parallel, ISA 3.0, replace,
 forged, corrupt, SMC). Profile of 20 warm gcc runs at the baseline: link/install dominates -- ExitFunctionLinkWithRecord
 8.9%, AddBlockLink 4.8%, FindBlock 4.3% (mostly lock atomics), ApplyCodeRelocations 4.2%, AddBlockMapping 3.5%,
 segment index probe 3.0%, FlushICacheRange 2.7%, memcpy 2.6%, AddBlockExecutableRange 2.1%.
-
-| S7 | Q2: interpolation search of the segment block index instead of `lower_bound` (index probes were 3% of warm cycles, mostly cache misses) | `Core/CodeCache.cpp` | reverted | 90.7 -> 92.0 ms, no win |
 
 Measurement note: at 09:41 on 2026-09-17 a binfmt_misc handler `POWERarm-aarch64` was registered
 (interpreter `~/Development/POWERarm/build-powerarm/Bin/POWERarm`, flags POCF). From then on every
