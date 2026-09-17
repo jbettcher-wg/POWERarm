@@ -66,6 +66,16 @@ Same method as the baseline (`m2time.sh`, CPU 100, one run each; cache off via
 - JIT alone (cache off): 1.45× / 1.50× faster than the baseline.
 - Default configuration (cache on, warm): 2.9× faster than the baseline on both projects.
 
+**After optimization rounds 2–3** (code cache default-on, translation speed, code shape,
+startup, AOT option, cheaper linking; commit `c4948204c`, same method, CPU 100, one run each):
+
+| Build | Pi 5 native | Baseline | Cache off | Cache cold | **Cache warm** |
+|---|---|---|---|---|---|
+| zlib | 12.6 s | 133.6 s (10.6x) | 88.0 s (7.0x) | 45.4 s (3.6x) | **42.3 s (3.4x)** |
+| Lua | 12.6 s | 118.3 s (9.4x) | 76.1 s (6.0x) | 39.5 s (3.1x) | **38.7 s (3.1x)** |
+
+Warm builds are 3.2x (zlib) and 3.1x (Lua) faster than the M2 baseline.
+
 Remaining costs and next targets are in `OPTIMIZATION-CHECKLIST.md`:
 - merging the register allocator, flag elimination and compare-branch fusion IR walks (translation);
 - scalar FP F1–F8;
