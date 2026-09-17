@@ -1,0 +1,90 @@
+From 6fbfd9ae3853e988a04036b210f4ce88d6b9cfb8 Mon Sep 17 00:00:00 2001
+From: Jordan Bettcher <thebettcher@gmail.com>
+Date: Wed, 16 Sep 2026 21:24:33 -0600
+Subject: [PATCH 6/8] ExecveHandler: return the kernel's errnos for files that
+ can't be executed
+
+ExecveHandler only asked whether the path existed (access(F_OK), else
+ENOENT) and then whether it was an ELF or a script with an interpreter that
+exists (else ENOEXEC). No S_ISREG or execute-permission check happens before
+ENOEXEC, so:
+
+  regular file without execute permission  ENOEXEC, Linux EACCES
+  directory                                ENOEXEC, Linux EACCES
+  "file/x" (a regular file as a directory) ENOENT,  Linux ENOTDIR
+  "#!/nonexistent/interp" script           ENOEXEC, Linux ENOENT
+
+ENOEXEC is not a harmless substitute: POSIX shells and execvp() fall back to
+running a file that fails with ENOEXEC as a shell script, and a shell's
+"not found" (127) and "cannot execute" (126) exit codes depend on the
+distinction.
+
+ExecveHandler now follows do_open_execat's order: the stat errno for a
+failed lookup, EACCES for anything but a regular file or without execute
+permission (faccessat AT_EACCESS), and ENOENT for a "#!" file whose
+interpreter can't be found (binfmt_script's open of the interpreter), before
+ENOEXEC. The FD exec path is unchanged.
+
+Evidence, 64K host, FEX_HOSTPAGEMODE=force, a static x86-64 test calling
+execve on each case:
+  before: notexec ENOEXEC, adir ENOEXEC, notexec/x ENOENT, script ENOEXEC
+  after:  notexec EACCES,  adir EACCES,  notexec/x ENOTDIR, script ENOENT
+Linux (the same test on an aarch64 Raspberry Pi 5): EACCES, EACCES,
+ENOTDIR, ENOENT. Ubuntu 24.04 bash from the RootFS still runs /usr/bin/true
+through the RootFS path.
+
+Found in POWERarm by the A64Syscalls sys_fork_exec test.
+---
+ .../LinuxEmulation/LinuxSyscalls/Syscalls.cpp | 29 +++++++++++++++++--
+ 1 file changed, 26 insertions(+), 3 deletions(-)
+
+diff --git a/Source/Tools/LinuxEmulation/LinuxSyscalls/Syscalls.cpp b/Source/Tools/LinuxEmulation/LinuxSyscalls/Syscalls.cpp
+index fdd3d16fb..7d82ae664 100644
+--- a/Source/Tools/LinuxEmulation/LinuxSyscalls/Syscalls.cpp
++++ b/Source/Tools/LinuxEmulation/LinuxSyscalls/Syscalls.cpp
+@@ -485,9 +485,18 @@ uint64_t ExecveHandler(FEXCore::Core::CpuStateFrame* Frame, const char* pathname
+       Filename = pathname;
+     }
+ 
+-    bool exists = FHU::Filesystem::Exists(Filename);
+-    if (!exists) {
+-      return -ENOENT;
++    // The kernel's order (do_open_execat): lookup errors (ENOENT, ENOTDIR,
++    // ELOOP, ...), then EACCES for anything but a regular file or without
++    // execute permission. Only after that does the format matter (ENOEXEC).
++    struct stat ExecStat {};
++    if (stat(Filename.c_str(), &ExecStat) == -1) {
++      return -errno;
++    }
++    if (!S_ISREG(ExecStat.st_mode)) {
++      return -EACCES;
++    }
++    if (faccessat(AT_FDCWD, Filename.c_str(), X_OK, AT_EACCESS) == -1) {
++      return -errno;
+     }
+ 
+     int pid = getpid();
+@@ -513,6 +522,20 @@ uint64_t ExecveHandler(FEXCore::Core::CpuStateFrame* Frame, const char* pathname
+     InterpreterType = ELFLoader::ELFContainer::GetELFType(ShebangInterpreter);
+   }
+ 
++  if (!IsShebang && Type == ELFLoader::ELFContainer::ELFType::TYPE_NONE && !IsFDExec) {
++    // A script whose interpreter can't be found: binfmt_script fails to open
++    // the interpreter, which is ENOENT, not ENOEXEC.
++    char Magic[2] {};
++    int FD = open(Filename.c_str(), O_RDONLY | O_CLOEXEC);
++    if (FD != -1) {
++      const bool IsScript = pread(FD, Magic, sizeof(Magic), 0) == sizeof(Magic) && Magic[0] == '#' && Magic[1] == '!';
++      close(FD);
++      if (IsScript) {
++        return -ENOENT;
++      }
++    }
++  }
++
+   if (!IsShebang && Type == ELFLoader::ELFContainer::ELFType::TYPE_NONE) {
+     // If our interpeter doesn't support this file format AND ELF format is NONE then ENOEXEC
+     // binfmt_misc could end up handling this case but we can't know that without parsing binfmt_misc ourselves
+-- 
+2.55.0
+
