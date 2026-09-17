@@ -2272,46 +2272,29 @@ DEF_OP(TestZ) {
 DEF_OP(Adc) {
   auto Op  = IROp->C<IR::IROp_Adc>();
   auto Dst = GetReg(Node);
-  auto S1  = GetReg(Op->Src1);
+  // Src1 is Inline:"Zero" in IR.json: an inline zero has no register, so
+  // GetZeroableReg maps it to r0 (pinned 0).
+  auto S1  = GetZeroableReg(Op->Src1);
   auto S2  = GetReg(Op->Src2);
-  // CFInverted=true: stored XER.CA = !x86_CF. PPC `adde` would inject !x86_CF
-  // as the carry-in, producing a result that is off by one. Materialise the
-  // carry instead, without disturbing XER.
+  // Dst = S1 + S2 + CA. XER.CA holds the carry directly: the frontend's ADC and
+  // DeadFlagCalculationElimination's AdcWithFlags -> Adc rewrite both feed an
+  // un-inverted carry.
   //
-  // `subfe rT, r0, r0` = ~r0 + r0 + CA. With the JIT's r0 == 0 invariant that
-  // is 0xFFFF_FFFF_FFFF_FFFF + 0 + CA, i.e.
-  //     CA = 1  ->  rT =  0
-  //     CA = 0  ->  rT = -1
-  // so rT == -(!CA) == -x86_CF for this op's CFInverted=true convention.
-  // (The identity actually holds for any r0 value: ~x + x is all-ones.)
-  // Its carry-out is 1 iff CA was 1, so XER.CA is left exactly as found;
-  // OE = 0 and Rc = 0, so OV/SO/CR0 are untouched too — which matters here
-  // because _Adc is a value-only op that must not perturb flags.
+  // Adc is a value-only op (no HasSideEffects, and DFCE models it as reading C
+  // and writing nothing), so it must leave XER.CA/OV/SO and CR0 untouched. A
+  // bare `adde` writes the carry-out into XER.CA: an A64 `adc x0, x1, x2`
+  // followed by `b.cs` then branched on the carry-out of the ADC rather than
+  // the guest's C.
   //
-  // Dst = S1 + S2 + x86_CF = (S1 + S2) - (-x86_CF), so the third addend
-  // folds into a subf instead of an add.
-  // CARRY POLARITY: this op consumes a DIRECT carry (XER.CA == x86_CF), not an
-  // inverted one. Its only producer is DeadFlagCalculationElimination rewriting
-  // AdcWithFlags -> Adc, and CalculateFlags_ADC (OpcodeDispatcher/Flags.cpp:276)
-  // does RectifyCarryInvert(false) + sets CFInverted=false immediately before
-  // emitting _AdcWithFlags. The ADX path likewise. So `adde` -- which computes
-  // RA + RB + XER.CA -- IS the operation, exactly.
-  //
-  // The previous sequence here (subfe TMP2,r0,r0; add; subf) assumed the
-  // INVERTED convention: subfe r0,r0 yields CA-1 == -(!CA), and subtracting it
-  // adds !CA. Under a direct carry that computes S1 + S2 + !x86_CF -- off by
-  // one in BOTH carry states. It was never caught because OP_ADC has no other
-  // producer, so this handler has never executed with the pass disabled.
-  //
-  // adde writes XER.CA (carry-out). That is safe here and not a new hazard: the
-  // Replacement rewrite only fires when the flag writes are dead, and the
-  // AdcWithFlags this replaced wrote CA itself, so nothing can observe the
-  // difference. (Sbb/AdcZero keep their subfe forms -- their producers DO
-  // rectify to inverted; see the note in each. The three deliberately differ.)
-  adde(Dst, S1, S2);          // Dst = S1 + S2 + x86_CF
+  // `subfe TMP1, r0, r0` = ~r0 + r0 + CA = all-ones + CA, i.e. CA - 1. Its
+  // carry-out equals its carry-in, so XER.CA survives, and OE = Rc = 0 leaves
+  // OV/SO/CR0 alone. ~(CA - 1) = -CA, and S1 + S2 - (-CA) = S1 + S2 + CA.
+  subfe(TMP1, r0, r0);        // TMP1 = CA - 1
+  nor(TMP1, TMP1, TMP1);      // TMP1 = -CA
+  add(TMP2, S1, S2);
+  subf(Dst, TMP1, TMP2);      // Dst = S1 + S2 + CA
   if (IROp->Size == IR::OpSize::i32Bit) {
-    // x86-64 zero-extends 32-bit writebacks; sources arrive AllowUpperGarbage
-    // and the dispatcher stores the raw host register. Matches Add/Sub/And/...
+    // Sources arrive AllowUpperGarbage; zero-extend the 32-bit writeback.
     rldicl(Dst, Dst, 0, 32);
   }
 }
@@ -2319,11 +2302,16 @@ DEF_OP(Adc) {
 DEF_OP(Sbb) {
   auto Op  = IROp->C<IR::IROp_Sbb>();
   auto Dst = GetReg(Node);
-  // Carry stays as-is: SBB's producer DOES rectify to the inverted convention
-  // (CalculateFlags_SBB), so XER.CA == !x86_CF here and the bare subfe computes
-  // S1 + ~S2 + CA == S1 - S2 - x86_CF, which is exactly SBB. Deliberately the
-  // opposite polarity from DEF_OP(Adc) above -- do not "uniformize" them.
-  subfe(Dst, GetReg(Op->Src2), GetReg(Op->Src1));
+  // Dst = S1 + ~S2 + CA = S1 - S2 - !CA, with XER.CA holding the no-borrow
+  // carry directly (ARM C; the x86 producer rectifies CF to the same stored
+  // polarity before SbbWithFlags).
+  //
+  // Value-only, like Adc: a bare `subfe` would write the borrow into XER.CA.
+  // `subfe TMP1, r0, r0` gives CA - 1 and preserves CA (see Adc), and
+  // S1 - S2 + (CA - 1) is the result.
+  subfe(TMP1, r0, r0);                          // TMP1 = CA - 1
+  subf(TMP2, GetReg(Op->Src2), GetReg(Op->Src1)); // TMP2 = S1 - S2
+  add(Dst, TMP2, TMP1);
   if (IROp->Size == IR::OpSize::i32Bit) {
     rldicl(Dst, Dst, 0, 32);  // zero-extend the 32-bit writeback (see Adc)
   }
