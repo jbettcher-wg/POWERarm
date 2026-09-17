@@ -11,20 +11,37 @@ $end_info$
 
 #include <FEXCore/fextl/vector.h>
 
+#include <fcntl.h>
 #include <sched.h>
+#include <unistd.h>
 #include <signal.h>
 
 namespace FEX::HLE::Arm64 {
 namespace {
-  // Copies a NULL-terminated guest pointer array into a host vector.
-  void CopyStringArray(char* const* Array, fextl::vector<const char*>& Out) {
+  // Copies a NULL-terminated guest pointer array into a host vector. The
+  // strings stay guest pointers; the host execveat faults on a bad one.
+  // Returns false (EFAULT) if the array itself can't be read.
+  bool CopyStringArray(char* const* Array, fextl::vector<const char*>& Out) {
     if (!Array) {
-      return;
+      return true;
     }
-    for (size_t i = 0; Array[i]; ++i) {
-      Out.push_back(Array[i]);
+    for (size_t i = 0;; ++i) {
+      const char* Entry {};
+      if (FaultSafeUserMemAccess::CopyFromUser(&Entry, &Array[i], sizeof(Entry)) != 0) {
+        return false;
+      }
+      if (!Entry) {
+        break;
+      }
+      Out.push_back(Entry);
     }
     Out.push_back(nullptr);
+    return true;
+  }
+
+  // ExecveHandler dereferences the path before the host kernel sees it.
+  bool IsPathReadable(int dirfd, const char* pathname) {
+    return !(faccessat(dirfd, pathname, F_OK, AT_SYMLINK_NOFOLLOW) == -1 && errno == EFAULT);
   }
 } // namespace
 
@@ -56,8 +73,9 @@ void RegisterThread(FEX::HLE::SyscallHandler* Handler) {
   REGISTER_SYSCALL_IMPL(execve, [](FEXCore::Core::CpuStateFrame* Frame, const char* pathname, char* const argv[], char* const envp[]) -> uint64_t {
     fextl::vector<const char*> Args;
     fextl::vector<const char*> Envp;
-    CopyStringArray(argv, Args);
-    CopyStringArray(envp, Envp);
+    if (!IsPathReadable(AT_FDCWD, pathname) || !CopyStringArray(argv, Args) || !CopyStringArray(envp, Envp)) {
+      return -EFAULT;
+    }
     auto* const* ArgsPtr = argv ? const_cast<char* const*>(Args.data()) : nullptr;
     auto* const* EnvpPtr = envp ? const_cast<char* const*>(Envp.data()) : nullptr;
     return FEX::HLE::ExecveHandler(Frame, pathname, ArgsPtr, EnvpPtr, FEX::HLE::ExecveAtArgs::Empty());
@@ -67,8 +85,9 @@ void RegisterThread(FEX::HLE::SyscallHandler* Handler) {
                                       char* const envp[], int flags) -> uint64_t {
                           fextl::vector<const char*> Args;
                           fextl::vector<const char*> Envp;
-                          CopyStringArray(argv, Args);
-                          CopyStringArray(envp, Envp);
+                          if (!IsPathReadable(dirfd, pathname) || !CopyStringArray(argv, Args) || !CopyStringArray(envp, Envp)) {
+                            return -EFAULT;
+                          }
                           auto* const* ArgsPtr = argv ? const_cast<char* const*>(Args.data()) : nullptr;
                           auto* const* EnvpPtr = envp ? const_cast<char* const*>(Envp.data()) : nullptr;
                           FEX::HLE::ExecveAtArgs AtArgs {
