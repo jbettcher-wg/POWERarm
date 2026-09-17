@@ -157,6 +157,7 @@ CPU 100, wall time per invocation; one run per change. Before this series: 121.1
 | ID | Item | Touches | Status | Result |
 |---|---|---|---|---|
 | S0 | Env-gated phase timer `POWERARM_STARTUPTIMES=1`: CPU used before `main`, config, server, loader, core init, map, guest, cache save, teardown | `FEXInterpreter.cpp`, `LinuxSyscalls/StartupTimes.h`, `Syscalls/Thread.cpp` | done | warm, per process (ms): premain CPU 2-3, config 0.25, server 0.05, loader 0.05, core 1.0, map 0.2-0.6, guest `cc1` 59 / `as` 12.5 / driver 11 (own), save 0, teardown 6.1-6.8 (every process, `true` included: 6 of its 11 ms) |
+| S1 | Telemetry file at exit: one write, no `fsync` (was a `write` per line and an `fsync` that took 6-16 ms in every process) | `FEXCore/Source/Utils/Telemetry.cpp` | done | 121.1 -> 96.2 ms; teardown 6.1-6.8 -> 0.15-0.3 ms per process. Shared code: applies to fastppcx86 |
 
 ## Follow-ups to measure
 
