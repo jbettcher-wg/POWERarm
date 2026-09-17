@@ -1232,6 +1232,11 @@ void RegisterPassthrough(FEX::HLE::SyscallHandler* Handler) {
                           SYSCALL_ERRNO();
                         });
   REGISTER_SYSCALL_IMPL(wait4, SyscallPassthrough4<SYSCALL_DEF(wait4)>);
+  // struct epoll_event is 16 bytes (u32 events, padding, u64 data) on both
+  // arm64 and powerpc64; only x86 packs it.
+  REGISTER_SYSCALL_IMPL(epoll_ctl, SyscallPassthrough4<SYSCALL_DEF(epoll_ctl)>);
+  REGISTER_SYSCALL_IMPL(epoll_pwait, SyscallPassthrough6<SYSCALL_DEF(epoll_pwait)>);
+  REGISTER_SYSCALL_IMPL(epoll_pwait2, SyscallPassthrough6<SYSCALL_DEF(epoll_pwait2)>);
 #ifdef ARCHITECTURE_ppc64le
   REGISTER_SYSCALL_IMPL(semop, UnimplementedSyscallSafe);
 #else

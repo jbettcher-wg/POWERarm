@@ -2,7 +2,8 @@
  * return through the default (vDSO) restorer, SIGCHLD delivery around fork
  * and wait, sigsuspend running the handler before it returns, SA_RESTART on
  * a blocking read, execve preserving argv[0] (multi-call binaries dispatch on
- * it), fork+pipe+dup2+execve pipelines, posix_spawn and vfork+execve, and
+ * it), fork+pipe+dup2+execve pipelines, posix_spawn (including its exec errno)
+ * and vfork (a child's write seen by the parent, vfork+execve), and
  * /proc/self/exe naming the program rather than the emulator. */
 #include "a64sys.h"
 #include <fcntl.h>
@@ -367,10 +368,28 @@ static void test_pipeline(void)
 	pr_status("posix_spawn-status", ss);
 	posix_spawn_file_actions_destroy(&fa);
 
-	/* Not checked: posix_spawn of a missing program. glibc reports the exec
-	 * errno through memory shared by clone(CLONE_VM|CLONE_VFORK); POWERarm
-	 * runs a CLONE_VM child without CLONE_THREAD as a fork, so it returns 0
-	 * and the child exits 127 instead. */
+	/* posix_spawn of a missing program reports the errno: glibc's child
+	 * stores it in memory the vfork-style clone(CLONE_VM|CLONE_VFORK)
+	 * shares with the parent */
+	char *mv[] = { "missing", NULL };
+	r = posix_spawn(&s, "/nonexistent/a64sys-missing", NULL, NULL, mv, environ);
+	printf("posix_spawn-missing: ret=%s\n", errstr(r));
+	if (r == 0)
+		waitpid(s, NULL, 0);
+
+	/* a vfork child's writes before _exit reach the parent (shared memory) */
+	static volatile int vfork_shared;
+	vfork_shared = 1;
+	fflush(stdout);
+	pid_t w = vfork();
+	if (w == 0) {
+		vfork_shared = 42;
+		_exit(3);
+	}
+	int sw;
+	waitpid(w, &sw, 0);
+	printf("vfork-child-write: seen-by-parent=%s\n", YN(vfork_shared == 42));
+	pr_status("vfork-exit3", sw);
 
 	/* vfork + execve */
 	fflush(stdout);

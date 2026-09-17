@@ -5,7 +5,6 @@
 
 #include <FEXCore/Core/CoreState.h>
 #include <FEXCore/Core/SignalDelegator.h>
-#include <FEXCore/Utils/LogManager.h>
 
 #include <array>
 
@@ -111,6 +110,8 @@ const IRBuilder::HandlerEntry IRBuilder::HandlerTable[] = {
   {"STR_reg_fpsimd", &IRBuilder::STR_LDR_reg_fpsimd}, {"LDR_reg_fpsimd", &IRBuilder::STR_LDR_reg_fpsimd},
   {"STx_mult_1", &IRBuilder::LDx_STx_mult}, {"STx_mult_2", &IRBuilder::LDx_STx_mult},
   {"LDx_mult_1", &IRBuilder::LDx_STx_mult}, {"LDx_mult_2", &IRBuilder::LDx_STx_mult},
+  {"ST1_sngl_1", &IRBuilder::LDx_STx_sngl}, {"ST1_sngl_2", &IRBuilder::LDx_STx_sngl},
+  {"LD1_sngl_1", &IRBuilder::LDx_STx_sngl}, {"LD1_sngl_2", &IRBuilder::LDx_STx_sngl},
   // Advanced SIMD. The translated set is the subset measured in
   // docs/powerarm/M1b-SIMD-SUBSET.md plus its cheap neighbours.
   // POWERARM-M1-TODO(simd): no translator yet for saturating arithmetic and narrowing (SQADD, UQSUB, SQXTN, SQSHRN, ...), MUL/PMUL/PMULL, the multiply-accumulate and doubling families, TBL/TBX, register and rounding shifts (SSHL, URSHR, RSHRN, ...), SLI/SRI, CLS/CLZ/RBIT vector, ABD/ABA, pairwise-long adds, vector FP arithmetic, compares and conversions (FADD vector, FCMEQ, FCVTZS vector, ...), FRECPE/FRSQRTE, FMOV of a half-precision vector immediate, and the AES/SHA/SHA512/SHA3 entries; none is in the measured subset.
@@ -311,6 +312,10 @@ bool IRBuilder::TranslateInstruction(const Decoder::DecodedInst& Inst) {
 }
 
 void IRBuilder::UnimplementedInstruction(const Decoder::DecodedInst& Inst) {
+  // A guest that installs a SIGILL handler (cc1 does) never reaches the
+  // emulator's own "unimplemented A64 instruction" line, so name the word
+  // here for POWERARM_SILENTLOG=0 runs.
+  LogMan::Msg::IFmt("Unimplemented A64 instruction 0x{:08x} at pc 0x{:x}", Inst.Word, Inst.PC);
   RaiseGuestSignal(Inst.PC, BreakDefinition {
                               .ErrorRegister = 0,
                               .Signal = FEXCore::Core::FAULT_SIGILL,

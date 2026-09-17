@@ -594,6 +594,7 @@ uint64_t ExecveHandler(FEXCore::Core::CpuStateFrame* Frame, const char* pathname
   }
 
   if (IsBinfmtCompatible || IsOtherELF || IsForeignShebang) {
+    FEX::HLE::VForkChildSync();
     Result = ::syscall(SYS_execveat, Args.dirfd, Filename.c_str(), argv, EnvpPtr, Args.flags);
     CloseSeccompFD();
     CloseFDExecFD();
@@ -667,6 +668,7 @@ uint64_t ExecveHandler(FEXCore::Core::CpuStateFrame* Frame, const char* pathname
     EnvpPtr = const_cast<char* const*>(EnvpArgs.data());
   }
 
+  FEX::HLE::VForkChildSync();
   Result = ::syscall(SYS_execveat, Args.dirfd, "/proc/self/exe", const_cast<char* const*>(ExecveArgs.data()), EnvpPtr, Args.flags);
   CloseSeccompFD();
   CloseFDExecFD();
