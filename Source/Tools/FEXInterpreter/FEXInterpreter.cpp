@@ -24,6 +24,7 @@ $end_info$
 #include "LinuxSyscalls/LinuxAllocator.h"
 #include "LinuxSyscalls/Syscalls.h"
 #include "LinuxSyscalls/Utils/Threads.h"
+#include "LinuxSyscalls/StartupTimes.h"
 #include "LinuxSyscalls/Arm64/Syscalls.h"
 #include "LinuxSyscalls/SignalDelegator.h"
 #include "Linux/Utils/ELFContainer.h"
@@ -505,6 +506,7 @@ static int StealFEXFDFromEnv(const char* Env) {
 int main(int argc, char** argv, char** const envp) {
   // Host page size is a runtime quantity (64K port). Latch it before anything maps
   // memory; every accessor self-initialises too, so a missed call cannot return 0.
+  FEX::HLE::StartupTimer.Init();
   FEXCore::HostPage::Initialize();
   auto SBRKPointer = FEX::SBRKAllocations::DisableSBRKAllocations();
   FEXCore::Allocator::GLIBCScopedFault GLIBFaultScope;
@@ -534,10 +536,12 @@ int main(int argc, char** argv, char** const envp) {
 
   FEX::Kernel::GCS::CheckForGCS();
 
+  FEX::HLE::StartupTimer.Name = Program.ProgramName;
   FEX::Config::LoadConfig(Program.ProgramName, envp, PortableInfo);
 
   // Reload the meta layer
   FEXCore::Config::ReloadMetaLayer();
+  FEX::HLE::StartupTimer.Mark(FEX::HLE::StartupTimes::CONFIG);
   FEXCore::Config::Set(FEXCore::Config::CONFIG_INTERPRETER_INSTALLED, InterpreterInstalled ? "1" : "0");
 
   // The code cache is on by default. These SMC modes attach per-block state the
@@ -602,6 +606,7 @@ int main(int argc, char** argv, char** const envp) {
   FEX_CONFIG_OPT(HostEnvironment, HOSTENV);
 
   FEX::Logging::Init();
+  FEX::HLE::StartupTimer.Mark(FEX::HLE::StartupTimes::SERVER);
 
   if (StartupSleep() && (StartupSleepProcName().empty() || Program.ProgramName == StartupSleepProcName())) {
     LogMan::Msg::IFmt("[{}][{}] Sleeping for {} seconds", ::getpid(), Program.ProgramName, StartupSleep());
@@ -693,6 +698,8 @@ int main(int argc, char** argv, char** const envp) {
     FEXCore::Config::Set(FEXCore::Config::CONFIG_APP_CONFIG_NAME, Program.ProgramName);
   }
 
+  FEX::HLE::StartupTimer.Mark(FEX::HLE::StartupTimes::LOADER);
+
   // Setup Thread handlers, so FEXCore can create threads.
   auto StackTracker = FEX::LinuxEmulation::Threads::SetupThreadHandlers();
 
@@ -781,6 +788,8 @@ int main(int argc, char** argv, char** const envp) {
 
   SyscallHandler->DeserializeSeccompFD(ParentThread, FEXSeccompFD);
 
+  FEX::HLE::StartupTimer.Mark(FEX::HLE::StartupTimes::CORE);
+
   // Load VDSO in to memory prior to mapping our ELFs.
   auto VDSOMapping = FEX::VDSO::LoadVDSOThunks(ParentThread->Thread, SyscallHandler.get());
 
@@ -834,7 +843,9 @@ int main(int argc, char** argv, char** const envp) {
   // FEX_COREISOLATE is set.
   FEX::HLE::CoreIsolation::Start(SyscallHandler.get());
 
+  FEX::HLE::StartupTimer.Mark(FEX::HLE::StartupTimes::MAP);
   CTX->ExecuteThread(ParentThread->Thread);
+  FEX::HLE::StartupTimer.Mark(FEX::HLE::StartupTimes::GUEST);
 
   DebugServer.reset();
   // The JIT thread (current thread) has already exited — sending SIGRTMIN to
@@ -847,6 +858,7 @@ int main(int argc, char** argv, char** const envp) {
   // memory-management syscalls, and a guest that exits shortly after its last
   // mmap would otherwise throw away everything compiled since.
   SyscallHandler->SaveCodeCaches(ParentThread->Thread, true);
+  FEX::HLE::StartupTimer.Mark(FEX::HLE::StartupTimes::SAVE);
 
   auto ProgramStatus = ParentThread->StatusCode;
   if (ProgramStatus & 0xff) {
@@ -879,5 +891,6 @@ int main(int argc, char** argv, char** const envp) {
 
   FEX::SBRKAllocations::ReenableSBRKAllocations(SBRKPointer);
 
+  FEX::HLE::StartupTimer.Report();
   return ProgramStatus;
 }

@@ -147,6 +147,17 @@ Gates at 7c821da56: A64Frontend 45/45 in default, `POWERARM_MAXINST=1` and
 insn required-fail 0 (optional-fail 18), alarm 3/3, programs 25/25, projects 2/2, rootfs 6/6;
 `check-user-strings.sh` and `check-rootfs-server.sh` pass.
 
+## S: process startup (OPT3-STARTUP)
+
+Workload: 50 x `gcc -c empty.c` (driver, `cc1`, `as`) under POWERarm, warm private cache,
+CPU 100, wall time per invocation; one run per change. Before this series: 121.1 ms
+(0.078 s user, 0.025 s sys per invocation), native POWER9 12 ms, Pi 5 43 ms.
+`POWERARM_STARTUPTIMES=1` prints each process's phases to stderr.
+
+| ID | Item | Touches | Status | Result |
+|---|---|---|---|---|
+| S0 | Env-gated phase timer `POWERARM_STARTUPTIMES=1`: CPU used before `main`, config, server, loader, core init, map, guest, cache save, teardown | `FEXInterpreter.cpp`, `LinuxSyscalls/StartupTimes.h`, `Syscalls/Thread.cpp` | done | warm, per process (ms): premain CPU 2-3, config 0.25, server 0.05, loader 0.05, core 1.0, map 0.2-0.6, guest `cc1` 59 / `as` 12.5 / driver 11 (own), save 0, teardown 6.1-6.8 (every process, `true` included: 6 of its 11 ms) |
+
 ## Follow-ups to measure
 
 - Done f4aa730da (test 0442316d6): abandoning a guest signal handler (`siglongjmp`/`longjmp` out

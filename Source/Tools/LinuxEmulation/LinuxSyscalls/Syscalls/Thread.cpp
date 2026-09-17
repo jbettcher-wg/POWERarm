@@ -8,6 +8,7 @@ $end_info$
 #include "CodeLoader.h"
 
 #include "LinuxSyscalls/SignalDelegator.h"
+#include "LinuxSyscalls/StartupTimes.h"
 #include "LinuxSyscalls/Syscalls.h"
 #include "LinuxSyscalls/Syscalls/Thread.h"
 #include "LinuxSyscalls/ThreadCensus.h"
@@ -862,12 +863,14 @@ void RegisterThread(FEX::HLE::SyscallHandler* Handler) {
   });
 
   REGISTER_SYSCALL_IMPL(exit_group, [](FEXCore::Core::CpuStateFrame* Frame, int status) -> uint64_t {
+    FEX::HLE::StartupTimer.Mark(FEX::HLE::StartupTimes::GUEST);
     FEX::HLE::VForkChildSync();
     if ((status & 0xff) != 0 && FEX::HLE::GuestErrorExitHook) {
       FEX::HLE::GuestErrorExitHook();
     }
     // Keep what this process compiled (a no-op unless it writes code caches).
     FEX::HLE::_SyscallHandler->CodeCacheImageExit(Frame->Thread);
+    FEX::HLE::StartupTimer.Mark(FEX::HLE::StartupTimes::SAVE);
     // Release this thread's shared-lock holdings before the kernel kills it
     // and every sibling thread.  Sibling threads can't sweep their own TLS
     // from here, but if this thread happened to be the one holding the
@@ -882,6 +885,7 @@ void RegisterThread(FEX::HLE::SyscallHandler* Handler) {
     FEX::HLE::_SyscallHandler->TM.CleanupForExit();
     // FEX_THPLOG: the guest's exit_group never runs the host's atexit chain.
     FEXCore::Allocator::THP::Report("exit_group");
+    FEX::HLE::StartupTimer.Report();
 
     syscall(SYSCALL_DEF(exit_group), status);
     // This will never be reached
