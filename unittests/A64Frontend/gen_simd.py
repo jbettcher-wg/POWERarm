@@ -749,6 +749,30 @@ def gen_exclusive(p):
         p.case([f"add x20, x19, #{off}", f"{op}{suffix} {r}1, [x20]"], {1: p.value()}, dumpbuf=op == "stlr")
 
 
+def gen_fp_round(p):
+    """FRINT{N,P,M,Z,A,X,I} on half, single and double, across rounding modes."""
+    ops = ["frintn", "frintp", "frintm", "frintz", "frinta", "frintx", "frinti"]
+    ties64 = [0x3FDFFFFFFFFFFFFF, 0xBFDFFFFFFFFFFFFF, 0x4330000000000000, 0x432FFFFFFFFFFFFF,  # 0.49999999999999994, 2^52, 2^52-0.5
+              0xC32FFFFFFFFFFFFF, 0x4012000000000000, 0xC012000000000000, 0x3FB999999999999A,  # 4.5, -4.5, 0.1
+              0xBFD3333333333333, 0x4341C37937E08000, 0x3FF0000000000001, 0xC00C000000000000]  # -0.3, 1e16, 1+ulp, -3.5
+    ties32 = [0x3EFFFFFF, 0xBEFFFFFF, 0x4B000000, 0x4AFFFFFF, 0xCAFFFFFF, 0x41100000, 0xC1100000,
+              0x3DCCCCCD, 0xBE99999A, 0xC0600000, 0x3F800001]
+    ties16 = [0x3800, 0xB800, 0x3E00, 0xBE00, 0x4100, 0xC120, 0x4480, 0x3BFF, 0xB7FF, 0x6000, 0x0001]
+    for rm in RMODES:
+        for op in ops:
+            for val in F64_EDGE + ties64:
+                p.vcase([f"{op} d{p.vreg()}, d20"], {20: (val, p.rng.getrandbits(64))}, fpcr=rm)
+            for val in F32_EDGE + ties32:
+                p.vcase([f"{op} s{p.vreg()}, s21"], {21: ((p.rng.getrandbits(32) << 32) | val, p.rng.getrandbits(64))}, fpcr=rm)
+            for val in F16_EDGE + ties16:
+                p.vcase([f"{op} h{p.vreg()}, h22"], {22: ((p.rng.getrandbits(48) << 16) | val, p.rng.getrandbits(64))}, fpcr=rm)
+    for _ in range(300):
+        is64 = p.rng.random() < 0.5
+        r = "d" if is64 else "s"
+        n = p.vreg()
+        p.vcase([f"{p.rng.choice(ops)} {r}{p.vreg()}, {r}{n}"], {n: p.fp(is64)}, fpcr=p.rng.choice(RMODES))
+
+
 GROUPS = {
     "simd_loadstore": gen_simd_loadstore,
     "simd_copy": gen_simd_copy,
@@ -758,6 +782,7 @@ GROUPS = {
     "fp_convert": gen_fp_convert,
     "fp_fpcr": gen_fp_fpcr,
     "fp_half": gen_fp_half,
+    "fp_round": gen_fp_round,
     "exclusive": gen_exclusive,
 }
 
