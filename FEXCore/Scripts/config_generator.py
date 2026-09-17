@@ -159,11 +159,11 @@ def print_man_environment_tail():
     print_man_env_option(
     "APP_CONFIG_LOCATION",
     [
-    "Allows the user to override where FEX looks for configuration files",
-    "By default FEX will look in ${XDG_CONFIG_HOME, $HOME/.config}/powerarm/",
+    "Allows the user to override where POWERarm looks for configuration files",
+    "By default POWERarm will look in ${XDG_CONFIG_HOME, $HOME/.config}/powerarm/",
     "This will override the full path",
     "If POWERARM_PORTABLE is declared then relative paths are also supported",
-    "For FEX: Relative to the FEX binary",
+    "For POWERarm: Relative to the POWERarm binary",
     "For WINE: Relative to %LOCALAPPDATA%"
     ],
     "''", True)
@@ -171,13 +171,13 @@ def print_man_environment_tail():
     print_man_env_option(
     "APP_CONFIG",
     [
-    "Allows the user to override where FEX looks for only the application config file",
-    "By default FEX will look in ${XDG_CONFIG_HOME, $HOME/.config}/powerarm/Config.json",
+    "Allows the user to override where POWERarm looks for only the application config file",
+    "By default POWERarm will look in ${XDG_CONFIG_HOME, $HOME/.config}/powerarm/Config.json",
     "This will override this file location",
     "One must be careful with this option as it will override any applications that load with execve as well"
     "If you need to support applications that execve then use POWERARM_APP_CONFIG_LOCATION instead"
     "If POWERARM_PORTABLE is declared then relative paths are also supported",
-    "For FEX: Relative to the FEX binary",
+    "For POWERarm: Relative to the POWERarm binary",
     "For WINE: Relative to %LOCALAPPDATA%"
     ],
     "''", True)
@@ -185,18 +185,18 @@ def print_man_environment_tail():
     print_man_env_option(
     "APP_DATA_LOCATION",
     [
-    "Allows the user to override where FEX looks for data files",
-    "By default FEX will look in {$XDG_DATA_HOME, $HOME/.local/share}/powerarm/",
+    "Allows the user to override where POWERarm looks for data files",
+    "By default POWERarm will look in {$XDG_DATA_HOME, $HOME/.local/share}/powerarm/",
     "This will override the full path",
-    "This is the folder where FEX stores generated files like IR cache"
+    "This is the folder where POWERarm stores generated files like IR cache"
     ],
     "''", True)
 
     print_man_env_option(
     "PORTABLE",
     [
-    "Allows FEX to run without installation. Global locations for configuration and binfmt_misc are ignored.",
-    "For FEX on Linux:",
+    "Allows POWERarm to run without installation. Global locations for configuration and binfmt_misc are ignored.",
+    "For POWERarm on Linux:",
     "These files are instead read from <POWERarmPath>/powerarm/ by default.",
     "For Arm64ec/Wow64 WINE builds:",
     "These files are instead read from $LOCALAPPDATA/powerarm/ by default.",
@@ -207,8 +207,8 @@ def print_man_environment_tail():
     print_man_env_option(
     "APP_CACHE_LOCATION",
     [
-    "Allows the user to override where FEX stores and loads cache files",
-    "By default FEX will look in ${XDG_CACHE_HOME, $HOME/.cache}/powerarm/",
+    "Allows the user to override where POWERarm stores and loads cache files",
+    "By default POWERarm will look in ${XDG_CACHE_HOME, $HOME/.cache}/powerarm/",
     "This will override the full path, trailing forward-slash is expected to exist",
     ],
     "''", True)
@@ -220,7 +220,7 @@ def print_man_header():
 .Sh NAME
 .Nm POWERarm
 .Nm POWERarmBash
-.Nd Fast x86-64 and x86 emulation.
+.Nd AArch64 Linux user-mode emulation on ppc64le POWER hosts.
 .Sh SYNOPSIS
 .Nm
 .Ar <args> ...
@@ -228,10 +228,9 @@ def print_man_header():
 .Nm POWERarmBash
 .Ar <args> ...
 .Sh DESCRIPTION
-FEX allows you to run x86 and x86-64 binaries on an AArch64 host, similar to qemu-user and box86.
-It has native support for a rootfs overlay, so you don't need to chroot, as well as some thunklibs so it can forward things like GL to the host.
-FEX presents a Linux 5.0 interface to the guest, and supports both AArch64 and x86-64 as hosts.
-FEX is very much work in progress, so expect things to change.
+POWERarm runs AArch64 Linux binaries on a ppc64le POWER host, similar to qemu-user.
+It has native support for a rootfs overlay, so you don't need to chroot.
+POWERarm is very much work in progress, so expect things to change.
 '''
     output_man.write(header.format(datetime.datetime.now().strftime("%d-%m-%Y")))
 

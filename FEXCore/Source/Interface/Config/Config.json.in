@@ -61,7 +61,7 @@
           "runtime. EnableCodeCachingWIP remains the master switch: with it off",
           "nothing is loaded or written regardless of this value.",
           "\toff (default): legacy behaviour. Caches are LOADED for any file, but",
-          "\t     never written by the running process -- only FEXOfflineCompiler",
+          "\t     never written by the running process -- only POWERarmOfflineCompiler",
           "\t     produces them.",
           "\trootfs: load and write caches only for files whose resolved path lies",
           "\t     under the configured RootFS. These are system libraries: immutable",
@@ -69,12 +69,12 @@
           "\t     the ones worth keeping across runs.",
           "\tall: additionally load and write caches for game-side native libraries",
           "\t     and the main executable.",
-          "Any value other than off makes the process a cache *generator*: FEX",
-          "keeps FEX relocations and decodes section-bounded for every block, which",
+          "Any value other than off makes the process a cache *generator*: POWERarm",
+          "keeps POWERarm relocations and decodes section-bounded for every block, which",
           "costs memory and forbids cross-file multiblock. Unrecognised values are",
           "treated as off.",
           "NOTE: EnableCodeCacheValidation only applies to caches produced by",
-          "FEXOfflineCompiler. It recompiles in ascending guest order, while a",
+          "POWERarmOfflineCompiler. It recompiles in ascending guest order, while a",
           "runtime-generated cache is laid out in execution order, so the two",
           "legitimately differ and validation will report a mismatch."
         ]
@@ -82,6 +82,7 @@
       "HostFeatures": {
         "Type": "strenum",
         "Default": "FEXCore::Config::HostFeatures::OFF",
+        "TextDefault": "off",
         "Enums": {
           "ENABLEISA30": "enableisa30",
           "DISABLEISA30": "disableisa30",
@@ -189,7 +190,7 @@
           "This can be a filesystem path",
           "\teg: ~/RootFS/Debian_x86_64",
           "Or this can be a name of a rootfs",
-          "If the named rootfs exists in the FEX data folder then it will use that one",
+          "If the named rootfs exists in the POWERarm data folder then it will use that one",
           "\teg: $XDG_DATA_HOME/powerarm/RootFS/<RootFS name>/",
           "If XDG_DATA_HOME is unset, ~/.local/share will be used in its place.",
           "\teg: $HOME/.local/share/powerarm/RootFS/<RootFS name>/"
@@ -217,7 +218,7 @@
           "This can be a filesystem path",
           "\teg: ~/MyThunkConfig.json",
           "Or this can be a named of a Thunk config file",
-          "If the named config file exists in the FEX data folder folder the it will use that one",
+          "If the named config file exists in the POWERarm data folder then it will use that one",
           "\teg: $XDG_DATA_HOME/powerarm/ThunkConfigs/<ThunkConfig name>",
           "If XDG_DATA_HOME is unset, ~/.local/share will be used in its place.",
           "\teg: $HOME/.local/share/powerarm/ThunkConfigs/<ThunkConfig name>"
@@ -250,7 +251,7 @@
         "Type": "bool",
         "Default": "true",
         "Desc": [
-          "Disables FEXCore's JIT L2 cache lookup. Saving memory.",
+          "Disables the JIT's L2 cache lookup. Saving memory.",
           "Can potentially introduce more stutters."
         ]
       },
@@ -258,7 +259,7 @@
         "Type": "bool",
         "Default": "false",
         "Desc": [
-          "Switches FEXCore's JIT L1 cache to be dynamically sized. Saving memory.",
+          "Switches the JIT's L1 cache to be dynamically sized. Saving memory.",
           "Can potentially introduce more stutters.",
           "Default OFF on this ppc64le port (2026-08-05): an L1 miss costs a",
           "~62-insn spill + 2 locks + ~63-insn fill here, every resize flushes",
@@ -319,6 +320,7 @@
       "PassManagerDumpIR": {
         "Type": "strenum",
         "Default": "FEXCore::Config::PassManagerDumpIR::OFF",
+        "TextDefault": "off",
         "Enums": {
           "BEFOREOPT": "beforeopt",
           "AFTEROPT": "afteropt",
@@ -326,7 +328,7 @@
           "AFTERPASS": "afterpass"
         },
         "Desc": [
-          "Allows controlling when FEX dumps its IR.",
+          "Allows controlling when POWERarm dumps its IR.",
           "\toff: IR dumping will be disabled",
           "\tbeforeopt: Dump IR before any optimizations",
           "\tafteropt: Dump IR after all optimizations",
@@ -354,7 +356,7 @@
         "Desc": [
           "Uses JITSymbols to name all JIT state as one symbol",
           "Useful for querying how much time is spent inside of the JIT",
-          "Profiling tools will show JIT time as FEXJIT"
+          "Profiling tools will show JIT time as POWERarmJIT"
         ]
       },
       "LibraryJITNaming": {
@@ -410,6 +412,7 @@
       "Disassemble": {
         "Type": "strenum",
         "Default": "FEXCore::Config::Disassemble::OFF",
+        "TextDefault": "off",
         "Enums": {
           "DISPATCHER": "dispatcher",
           "BLOCKS": "blocks",
@@ -452,7 +455,7 @@
         "Type": "str",
         "Default": "server",
         "Desc": [
-          "File to write FEX output to.",
+          "File to write POWERarm output to.",
           "[stderr, server, <Filename>]"
         ]
       },
@@ -460,7 +463,7 @@
         "Type": "str",
         "Default": "",
         "Desc": [
-          "Redirects the telemetry folder that FEX usually writes to.",
+          "Redirects the telemetry folder that POWERarm usually writes to.",
           "By default telemetry data is stored in {$POWERARM_APP_DATA_LOCATION,{$XDG_DATA_HOME,$HOME}/powerarm/Telemetry/}"
         ]
       },
@@ -468,7 +471,7 @@
         "Type": "bool",
         "Default": "false",
         "Desc": [
-          "Enables FEX's low-overhead sampling profile statistics.",
+          "Enables POWERarm's low-overhead sampling profile statistics.",
           "Requires a supported version of Mangohud to see the results"
         ]
       },
@@ -476,7 +479,7 @@
         "Type": "bool",
         "Default": "false",
         "Desc": [
-          "Enables profiling when FEX was built with the gpuvis profiler backend."
+          "Enables profiling when POWERarm was built with the gpuvis profiler backend."
         ]
       },
       "ThreadCensus": {
@@ -489,7 +492,7 @@
           "Events: thread_create (guest/host TID, parent TID, raw guest RIP of",
           "the clone caller, clone flags), set_name (prctl PR_SET_NAME),",
           "sched_setscheduler / sched_setattr / sched_setparam (policy,",
-          "priority and what FEX did with the request),  sched_setaffinity",
+          "priority and what POWERarm did with the request),  sched_setaffinity",
           "(mask popcount plus lowest/highest set CPU), and sched_boost (the",
           "SchedPassthrough ladder). Observation only -- never changes what a",
           "guest syscall returns. Unset: the file is never opened and every",
@@ -500,7 +503,7 @@
         "Type": "bool",
         "Default": "false",
         "Desc": [
-          "Opt-in. FEX forwards guest sched_setscheduler/sched_setattr to the",
+          "Opt-in. POWERarm forwards guest sched_setscheduler/sched_setattr to the",
           "host verbatim, so an unprivileged host with no RLIMIT_RTPRIO",
           "budget refuses every guest SCHED_FIFO/SCHED_RR request with EPERM",
           "and the guest's audio/render threads run at plain SCHED_OTHER.",
@@ -542,7 +545,7 @@
           "\t     mode whose correctness does not depend on host protection granularity",
           "\t     matching the guest's. Relaxed-correctness contract, logged once.",
           "\tabort: explain the granule emulation's limits and refuse to start.",
-          "FEX_ALLOW_UNSUPPORTED_PAGE_SIZE=1 is kept as an alias for force.",
+          "POWERARM_ALLOW_UNSUPPORTED_PAGE_SIZE=1 is kept as an alias for force.",
           "No effect at all on a 4K host."
         ]
       },
@@ -550,13 +553,13 @@
         "Type": "str",
         "Default": "",
         "Desc": [
-          "Which of FEX's own large anonymous reservations carry MADV_HUGEPAGE",
+          "Which of POWERarm's own large anonymous reservations carry MADV_HUGEPAGE",
           "(and are placed on a huge-page boundary so the hint can take). Only",
           "live on a kernel with transparent huge pages -- the 64K POWER8 kernel",
           "(16 MiB huge page); a no-op on the 4K hash kernel. See",
-          "FEXCore/Utils/THP.h and the audit in docs/PAGE_SIZE_64K_EXECUTION.md.",
+          "the THP policy header and the audit in docs/PAGE_SIZE_64K_EXECUTION.md.",
           "Comma-separated names or a numeric mask:",
-          "\tcode      JIT code buffers (FEXMemJIT)",
+          "\tcode      JIT code buffers (POWERarmMemJIT)",
           "\tlookup    per-thread L1 lookup table + L2 page-pointer table",
           "\talloc64   the 64-bit guest allocator's 64 MiB object arena",
           "\trpmalloc  the bundled allocator's 256 MiB spans",
@@ -785,7 +788,7 @@
           "that fires ~1.2%/round on plain POWER8 pages showed 0 violations",
           "in 16.3M rounds on SAO pages (notes/tools/sao_litmus.c,",
           "2026-08-13). If the kernel rejects PROT_SAO (radix MMU, missing",
-          "CPU feature) FEX warns once and falls back to barrier emulation.",
+          "CPU feature) POWERarm warns once and falls back to barrier emulation.",
           "Inert when off or when TSOEnabled is false."
         ]
       },
@@ -808,7 +811,7 @@
           "barriers, so lock-free or volatile-based guest code can silently",
           "compute wrong results.  glibc futex / PLT lazy resolve are backed",
           "by LOCK CMPXCHG and stay correct, which is the limit of what is",
-          "safe here.  FEX warns once at startup when this is enabled.",
+          "safe here.  POWERarm warns once at startup when this is enabled.",
           "Inert (no effect) when TSOEnabled is false."
         ]
       },
@@ -831,7 +834,7 @@
         "Type": "bool",
         "Default": "false",
         "Desc": [
-          "Opt-in: enable the FEX SyscallObserver. Wraps the bare-passthrough",
+          "Opt-in: enable the POWERarm SyscallObserver. Wraps the bare-passthrough",
           "implementations of pathology-prone syscalls (futex, tgkill) with",
           "per-thread state tracking and structured log emission. Zero perf",
           "cost when disabled; runtime-toggleable.  Currently provides:",
@@ -900,27 +903,27 @@
           "PPC64LE: backpatch constant-target JUMP block exits into direct branches to the destination block (block linking), skipping the inlined L1 probe on subsequent executions.",
           "Call, return and register-indirect exits keep the inlined L1 probe regardless. Ignored (forced off) while EnableCodeCachingWIP is set:",
           "link thunk records embed absolute host addresses as data inside the code stream, which would be serialized by the code cache and reloaded stale at a different base.",
-          "Default on: cleared by the 2026-08-03 real-workload regression set (probe_thread_spawn 0/30 + 0/30, ctest 7024/7024, Factorio oil-refinery ×5, FTL, stress-ng, OpenSSL 128-thread 162/162, Dex, Steam-in-Proton), all run with FEX_BLOCKLINKING=1 for the entire cycle."
+          "Default on: cleared by the 2026-08-03 real-workload regression set (probe_thread_spawn 0/30 + 0/30, ctest 7024/7024, Factorio oil-refinery ×5, FTL, stress-ng, OpenSSL 128-thread 162/162, Dex, Steam-in-Proton), all run with POWERARM_BLOCKLINKING=1 for the entire cycle."
         ]
       },
       "DisableDFCE": {
         "Type": "bool",
         "Default": "false",
         "Desc": [
-          "Kill switch for the DeadFlagCalculationElimination IR pass (FEX_DISABLEDFCE=1 turns the pass OFF).",
+          "Kill switch for the DeadFlagCalculationElimination IR pass (POWERARM_DISABLEDFCE=1 turns the pass OFF).",
           "The pass rewrites flag-producing IR ops in place (e.g. AdcWithFlags -> Adc) when their flag writes are provably dead, and folds",
           "SubNZCV/AXFlag compares into the following CondJump. It was disabled on PPC64LE from 2026-05-11 to 2026-08-05 because of two",
           "reproducers (32-bit ld.so _dl_sort_maps_dfs 'rpo_head == rpo'; bash setup_variables SEGV on a stale base register) that were later",
           "traced to a missing !HasSideEffects() guard at the pass's Remove site. Because a wrong flag elimination shows up as a wrong",
           "conditional branch -- silent and data-dependent -- this knob exists so the pass can be turned off in the field without a rebuild.",
-          "Unlike FEX_O0 this affects only this one pass; X87StackOptimization and the rest of the default pass set stay enabled."
+          "Unlike POWERARM_O0 this affects only this one pass; X87StackOptimization and the rest of the default pass set stay enabled."
         ]
       },
       "SMCMarkMemo": {
         "Type": "bool",
         "Default": "true",
         "Desc": [
-          "Memoise the no-op case of MarkGuestExecutableRange (FEX_SMCMARKMEMO=0 disables).",
+          "Memoise the no-op case of MarkGuestExecutableRange (POWERARM_SMCMARKMEMO=0 disables).",
           "A 16.5-minute Witcher 3 SMC audit measured 114K of 120K mark calls as pure no-ops that still took the VMA mutex on the compile path.",
           "The memo answers those lock-free, invalidated wholesale by a VMA-map generation counter bumped in every mutating funnel.",
           "Throughput effect is small (0.4% hit rate on W3); the knob exists because the mark path contends the VMA mutex with the syscall side,",
@@ -931,7 +934,7 @@
         "Type": "bool",
         "Default": "false",
         "Desc": [
-          "Kill switch for the Remove arm of DeadFlagCalculationElimination (FEX_DISABLEDFCESTOREELIM=1 turns it OFF; the rest of the pass stays on).",
+          "Kill switch for the Remove arm of DeadFlagCalculationElimination (POWERARM_DISABLEDFCESTOREELIM=1 turns it OFF; the rest of the pass stays on).",
           "HISTORY: briefly default-off on 2026-08-12 after a differential probe (alias_probe.c, native checksum 7a09edb86a169f26) showed wrong",
           "seto output after adc r,r. Root cause was NOT this arm: it was the Adc/Sbb/AdcZero-WithFlags i32 lowerings reading their sources for",
           "the OF computation AFTER writing Dst -- the arm's store elimination merely let the RA coalesce Dst onto a source (adc eax,eax ->",
@@ -947,7 +950,7 @@
         "Type": "bool",
         "Default": "false",
         "Desc": [
-          "Kill switch for spin-loop SMT priority hints in the PPC64LE JIT (FEX_DISABLESPINLOOPHINT=1 turns them OFF).",
+          "Kill switch for spin-loop SMT priority hints in the PPC64LE JIT (POWERARM_DISABLESPINLOOPHINT=1 turns them OFF).",
           "The backend detects tiny memory-polling loops (<=3 blocks, no stores/atomics/syscalls, at least one memory load) and emits POWER",
           "thread-priority nops: `or r31,r31,r31` (very low) on the spin backedge, `or r2,r2,r2` (medium, the default) on every loop-exit edge",
           "plus a safety net at the dispatcher loop top. A spinning guest thread then donates its SMT sibling's dispatch bandwidth instead of",
@@ -967,7 +970,7 @@
           "put the core in effective-ST mode, which is direct single-thread throughput for the render/main thread.",
           "Purely advisory host scheduling: guest-visible affinity/getcpu semantics are untouched, and any thread the guest ever",
           "sched_setaffinity'd is never overridden. Requires at least two fully-owned cores in the allowed mask; otherwise disables itself.",
-          "Decisions are logged to the ThreadCensus file (event=isolate) when FEX_THREADCENSUS is set."
+          "Decisions are logged to the ThreadCensus file (event=isolate) when POWERARM_THREADCENSUS is set."
         ]
       },
       "SpinCollapse": {
@@ -979,7 +982,7 @@
           "K corrects the EMULATION INFLATION of a spin iteration rather than minimizing spinning: the engine tuned its budget for native",
           "iteration cost, and an emulated iteration runs several times slower, so retiring K units per iteration restores the intended spin",
           "duration and lets worker threads park on time.",
-          "MEASURED 2026-08-15, Cyberpunk 2077 benchmark scene under FEX_HWTSO=1, benchmark-scene frames only: p50 frametime 51.64 -> 32.66ms",
+          "MEASURED 2026-08-15, Cyberpunk 2077 benchmark scene under POWERARM_HWTSO=1, benchmark-scene frames only: p50 frametime 51.64 -> 32.66ms",
           "(-36.8%), mean -37.5%, p99 ~156 -> 75ms (-52%), scene fps 17.43 -> 27.94 (+60.3%). Seven off laps against three K=32 laps with no",
           "overlap on any metric; an off lap run between two K=32 laps landed on the historical off baseline, so drift is excluded. Pacing",
           "improves MORE than the average, which is the opposite of the failure mode this was held opt-in for.",
@@ -992,7 +995,7 @@
         "Type": "bool",
         "Default": "false",
         "Desc": [
-          "Kill switch for the CompareBranchFusion IR pass (FEX_DISABLECMPBRANCHFUSION=1 turns the pass OFF).",
+          "Kill switch for the CompareBranchFusion IR pass (POWERARM_DISABLECMPBRANCHFUSION=1 turns the pass OFF).",
           "x86 'cmp a,b; jcc' arrives as SubWithFlags + a FromNZCV CondJump, and the PPC64LE lowering of that branch has to rebuild C/V out of",
           "XER (mfxer + rlwinm + mtocrf + a cr-logical composite before the bc); mfxer serialises on POWER8 and this sits on every hot loop",
           "backedge. The pass rewrites the branch into the backend's existing direct-compare form (cmp into cr7 + bc) when the NZCV it reads",
@@ -1006,7 +1009,7 @@
         "Type": "bool",
         "Default": "false",
         "Desc": [
-          "Kill switch for the ScalarSplatChain IR pass (FEX_DISABLESCALARSPLATCHAIN=1 turns it OFF; ON by default).",
+          "Kill switch for the ScalarSplatChain IR pass (POWERARM_DISABLESCALARSPLATCHAIN=1 turns it OFF; ON by default).",
           "DEFAULT ON 2026-09-01 after the sound rework: the pass no longer lets splat-form values become architectural guest",
           "state. Each marked op keeps its splat result as a separate SSA value and an explicit VInsElement rebuilds the exact",
           "merged value for every StoreRegister, so guest XMM state is exact at every instruction boundary and mid-block fault",
@@ -1031,13 +1034,13 @@
         "Type": "bool",
         "Default": "false",
         "Desc": [
-          "Kill switch for the PPC64LE aligned 128-bit vector load/store lowering (FEX_DISABLEALIGNEDVECTORLDST=1 turns it OFF).",
+          "Kill switch for the PPC64LE aligned 128-bit vector load/store lowering (POWERARM_DISABLEALIGNEDVECTORLDST=1 turns it OFF).",
           "HISTORY, so the next scare is triaged faster: the default was flipped off for a few hours on 2026-08-16 when native-guest",
-          "vkcube SEGV'd tier-on. FEX_ALIGNTRAP then proved the tier was the DETECTOR, not the defect: guest callbacks entered via",
+          "vkcube SEGV'd tier-on. POWERARM_ALIGNTRAP then proved the tier was the DETECTOR, not the defect: guest callbacks entered via",
           "the thunk layer ran on a stack violating the psABI's 16-byte call alignment (GuestStackBumpAllocator aligned only to",
           "alignof(T)), so compiler-correct movaps to stack locals -- which real x86 #GPs on -- was silently mis-masked. With the",
           "callback stack fixed (common/Host.h) the full vkcube run is ALIGNTRAP-clean and the default is back ON. If a title",
-          "misbehaves only with this tier enabled, run FEX_ALIGNTRAP=1 FIRST: a trap means a misaligned pointer reached an",
+          "misbehaves only with this tier enabled, run POWERARM_ALIGNTRAP=1 FIRST: a trap means a misaligned pointer reached an",
           "alignment-certified encoding, and the tier is exposing that defect, not causing it.",
           "When a 128-bit LoadMem/StoreMem (and their TSO forms) carries an IR $Align that certifies a 16-byte boundary -- movaps/movapd/movdqa",
           "and every legacy-SSE m128 operand, i.e. exactly the encodings x86 #GPs on when misaligned -- the backend emits a single lvx/stvx.",
@@ -1056,8 +1059,8 @@
         "Type": "bool",
         "Default": "false",
         "Desc": [
-          "PPC64LE (default OFF): maintain a per-thread shadow return-address stack. A guest CALL exit ends in an LK=1 branch and pushes {guest-return-RIP, the host word after that branch}; a guest RET exit pops it and, when the popped guest RIP matches the RET target, restores that word into LR and returns with blr -- which the hardware link stack predicts. On the POWER8 this port targets the count cache predicts nothing (every bcctr to a constant target mispredicts, ~20 cycles), so this is the only predictable form a return can take. An indirect CALL exit additionally carries an inline cache: a guarded direct bl to the first target the block linker observed, filled on the first execution and undone when that target's block is erased (needs CallLinkingEnabled, i.e. not under FEX_SMCLAZYINVAL's lazy linking). A mismatch, an empty/overflowed stack, or any invalidation falls back to the L1 probe, which is the correctness net. Measured 2026-09-06 on the native-wine COM crossing: 71 -> 50 ns per call.",
-          "Reuses the existing frontend-owned call-ret stack allocation and CPUState.callret_sp. Every code-buffer rotation/invalidation zeroes the stack (VirtualDontNeed), so a stale host trampoline can never be reached. Forced OFF under FEX_SMCLAZYINVAL unless FEX_SMCLAZYLINK is also set (same same-thread stale-hole reasoning as BlockLinking): the RET fast path skips ExitFunctionLink's drain, and only the LAZYLINK InterruptFaultPage poke at the return block's entry re-closes that window."
+          "PPC64LE (default OFF): maintain a per-thread shadow return-address stack. A guest CALL exit ends in an LK=1 branch and pushes {guest-return-RIP, the host word after that branch}; a guest RET exit pops it and, when the popped guest RIP matches the RET target, restores that word into LR and returns with blr -- which the hardware link stack predicts. On the POWER8 this port targets the count cache predicts nothing (every bcctr to a constant target mispredicts, ~20 cycles), so this is the only predictable form a return can take. An indirect CALL exit additionally carries an inline cache: a guarded direct bl to the first target the block linker observed, filled on the first execution and undone when that target's block is erased (needs CallLinkingEnabled, i.e. not under POWERARM_SMCLAZYINVAL's lazy linking). A mismatch, an empty/overflowed stack, or any invalidation falls back to the L1 probe, which is the correctness net. Measured 2026-09-06 on the native-wine COM crossing: 71 -> 50 ns per call.",
+          "Reuses the existing frontend-owned call-ret stack allocation and CPUState.callret_sp. Every code-buffer rotation/invalidation zeroes the stack (VirtualDontNeed), so a stale host trampoline can never be reached. Forced OFF under POWERARM_SMCLAZYINVAL unless POWERARM_SMCLAZYLINK is also set (same same-thread stale-hole reasoning as BlockLinking): the RET fast path skips ExitFunctionLink's drain, and only the LAZYLINK InterruptFaultPage poke at the return block's entry re-closes that window."
         ]
       },
       "KernelUnalignedAtomicBackpatching": {
@@ -1119,7 +1122,7 @@
         "Type": "str",
         "Default": "",
         "Desc": [
-          "Override for a FEXServer socket path. Only useful for chroots."
+          "Override for a POWERarmServer socket path. Only useful for chroots."
         ]
       },
       "NeedsSeccomp": {
@@ -1177,7 +1180,7 @@
         "Desc": [
           "This is the application config name that has been loaded.",
           "This differs from APP_FILENAME in two ways",
-          "Where APP_FILENAME always points to the executable path that FEX-Emu is executing.",
+          "Where APP_FILENAME always points to the executable path that POWERarm is executing.",
           "This matches what is used to load the AppLayer configuration name.",
           "When running through a compatibility layer like wine, this will only be the exe name, instead of wine full path."
         ]
