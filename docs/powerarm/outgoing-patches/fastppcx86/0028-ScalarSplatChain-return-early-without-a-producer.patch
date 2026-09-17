@@ -1,0 +1,57 @@
+From 8fb33452d64563926a29171e70d255595361d360 Mon Sep 17 00:00:00 2001
+From: Jordan Bettcher <thebettcher@gmail.com>
+Date: Thu, 17 Sep 2026 10:56:56 -0600
+Subject: [PATCH] ScalarSplatChain: return early without a producer
+
+The pass sized an SSA-count map and walked every block with operand
+classification for every compile unit. Nothing in it can mark, forward or
+retarget anything without an eligible VF*ScalarInsert producer, and most
+compile units (all integer code) contain none.
+
+Scan the opcodes for a producer first and return when there is none.
+Integer-only units now pay one opcode scan. Generated code is unchanged: with
+no producer the pass marks and rewrites nothing.
+
+Checked: builds; a static x86-64 program runs. No timing was taken in this
+tree; in POWERarm, which shares this pass, it was part of a translation-time
+series measured on a compile workload.
+
+Ported from POWERarm 0831edf57.
+---
+ .../Interface/IR/Passes/ScalarSplatChain.cpp  | 20 +++++++++++++++++++
+ 1 file changed, 20 insertions(+)
+
+diff --git a/FEXCore/Source/Interface/IR/Passes/ScalarSplatChain.cpp b/FEXCore/Source/Interface/IR/Passes/ScalarSplatChain.cpp
+index c561d8641..0cbd463a8 100644
+--- a/FEXCore/Source/Interface/IR/Passes/ScalarSplatChain.cpp
++++ b/FEXCore/Source/Interface/IR/Passes/ScalarSplatChain.cpp
+@@ -312,6 +312,26 @@ void ScalarSplatChain::Run(IREmitter* IREmit) {
+ 
+   auto CurrentIR = IREmit->ViewIR();
+ 
++  // Most compile units (all integer code) hold no eligible producer. Without
++  // one nothing below can mark, forward or retarget anything, so a scan of
++  // opcodes alone decides it, before the per-block walks and the SSA-sized
++  // map.
++  bool AnyEligible = false;
++  for (auto [BlockNode, BlockHeader] : CurrentIR.GetBlocks()) {
++    for (auto [CodeNode, IROp] : CurrentIR.GetCode(BlockNode)) {
++      if (IsSplattableProducer(IROp->Op)) {
++        AnyEligible = true;
++        break;
++      }
++    }
++    if (AnyEligible) {
++      break;
++    }
++  }
++  if (!AnyEligible) {
++    return;
++  }
++
+   TrackedOf.clear();
+   TrackedOf.resize(CurrentIR.GetSSACount(), kNone);
+ 
+-- 
+2.55.0
+

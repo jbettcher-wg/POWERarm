@@ -1,0 +1,46 @@
+From 7c41b014d343796bd85a713d1d256410e7579929 Mon Sep 17 00:00:00 2001
+From: Jordan Bettcher <thebettcher@gmail.com>
+Date: Thu, 17 Sep 2026 10:50:45 -0600
+Subject: [PATCH] Config: add the missing separator after
+ FEX_APP_CACHE_LOCATION
+
+GetCacheDirectory returned FEX_APP_CACHE_LOCATION verbatim, and its callers
+append a subdirectory name (`cache/`, `codemap/`, ...). A location given
+without a trailing slash, e.g. FEX_APP_CACHE_LOCATION=/tmp/x, put the code
+cache in the sibling directory /tmp/xcache/ instead of /tmp/x/cache/.
+
+Append the separator when it is missing.
+
+Evidence: FEX_ENABLECODECACHINGWIP=1 FEX_CODECACHESCOPE=all
+FEX_APP_CACHE_LOCATION=/tmp/fxpp-cache/x running a static x86-64 program
+creates /tmp/fxpp-cache/xcodemap/ before this change and
+/tmp/fxpp-cache/x/codemap/ after it (the code cache directory moves the
+same way).
+
+Ported from POWERarm d298034e5 (separator part only).
+---
+ Source/Common/Config.cpp | 8 +++++++-
+ 1 file changed, 7 insertions(+), 1 deletion(-)
+
+diff --git a/Source/Common/Config.cpp b/Source/Common/Config.cpp
+index 62bea17cd..9c07bf00e 100644
+--- a/Source/Common/Config.cpp
++++ b/Source/Common/Config.cpp
+@@ -704,7 +704,13 @@ fextl::string GetConfigDirectory(bool Global, const PortableInformation& Portabl
+ fextl::string GetCacheDirectory() {
+   const char* CacheOverride = getenv("FEX_APP_CACHE_LOCATION");
+   if (CacheOverride) {
+-    return CacheOverride;
++    // Callers append names (`cache/`, `codemap/`): without the separator a
++    // location of /tmp/x would put the code cache in /tmp/xcache/.
++    fextl::string Dir {CacheOverride};
++    if (!Dir.empty() && Dir.back() != '/') {
++      Dir += '/';
++    }
++    return Dir;
+   }
+ 
+ #ifndef _WIN32
+-- 
+2.55.0
+

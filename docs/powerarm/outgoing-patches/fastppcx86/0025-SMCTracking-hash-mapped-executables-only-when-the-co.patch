@@ -1,0 +1,51 @@
+From eb9a3f4382c0624a44aeef79cd4bb362ab17a534 Mon Sep 17 00:00:00 2001
+From: Jordan Bettcher <thebettcher@gmail.com>
+Date: Thu, 17 Sep 2026 10:54:34 -0600
+Subject: [PATCH] SMCTracking: hash mapped executables only when the code cache
+ is enabled
+
+TrackMmap computed CodeCache::ComputeCodeMapId for every executable file
+mapping in every process, cache on or off. The id streams the whole file
+through XXH3, so every shared library, and a compiler binary of tens of MB,
+is read and hashed again in every emulated process. In POWERarm, which
+inherited this code, it was 2% of cc1's CPU time in `gcc -c empty.c`.
+
+The id only names code cache and code map files; nothing reads it with
+EnableCodeCachingWIP off. Skip the hash then and leave the id invalid.
+
+This is a reduced port. POWERarm replaced the content hash with a stat
+(dev, inode, size, mtime, ctime) hash, which is safe there because its cache
+checks each block against the guest bytes it is installed over. This tree's
+cache relies on the content hash for validity, so with the cache enabled the
+id is unchanged.
+
+Checked: a static x86-64 program runs with the cache off, and with
+FEX_ENABLECODECACHINGWIP=1 the code map file carries the same id as before
+(hello-5f2b88f93d485c2f).
+
+Ported from POWERarm 78e3583bf (cache-off part only).
+---
+ .../LinuxEmulation/LinuxSyscalls/SyscallsSMCTracking.cpp   | 7 ++++++-
+ 1 file changed, 6 insertions(+), 1 deletion(-)
+
+diff --git a/Source/Tools/LinuxEmulation/LinuxSyscalls/SyscallsSMCTracking.cpp b/Source/Tools/LinuxEmulation/LinuxSyscalls/SyscallsSMCTracking.cpp
+index a7dedba6b..6e35c8191 100644
+--- a/Source/Tools/LinuxEmulation/LinuxSyscalls/SyscallsSMCTracking.cpp
++++ b/Source/Tools/LinuxEmulation/LinuxSyscalls/SyscallsSMCTracking.cpp
+@@ -2817,7 +2817,12 @@ SyscallHandler::TrackMmap(FEXCore::Core::InternalThreadState* Thread, uint64_t a
+       if ((prot & PROT_READ) && Inserted) {
+         Resource->MappedFile = fextl::make_shared<FEXCore::ExecutableFileInfo>();
+         Resource->MappedFile->Filename = fextl::string(Tmp, PathLength);
+-        Resource->MappedFile->FileId = CTX->GetCodeCache().ComputeCodeMapId(Resource->MappedFile->Filename, fd);
++        // The id names code cache and code map files only, and it streams the
++        // whole file through XXH3 (tens of MB for a compiler binary, repeated
++        // for every shared library in every process). Without the code cache
++        // nothing reads it.
++        Resource->MappedFile->FileId =
++          EnableCodeCaching() ? CTX->GetCodeCache().ComputeCodeMapId(Resource->MappedFile->Filename, fd) : 0xffff'ffff'ffff'ffffULL;
+ 
+         // Read ELF headers if applicable and needed for code caching.
+         // For performance, skip ELF checks if we're not mapping the file header
+-- 
+2.55.0
+
