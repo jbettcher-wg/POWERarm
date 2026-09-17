@@ -137,7 +137,7 @@ public:
   bool LDR_lit_fpsimd(uint32_t Word); bool STP_LDP_fpsimd(uint32_t Word);
   bool STUR_LDUR_fpsimd(uint32_t Word); bool STR_LDR_imm_fpsimd_1(uint32_t Word); bool STR_LDR_imm_fpsimd_2(uint32_t Word);
   bool STR_LDR_reg_fpsimd(uint32_t Word);
-  bool LDx_STx_mult(uint32_t Word);
+  bool LDx_STx_mult(uint32_t Word); bool LDx_STx_sngl(uint32_t Word);
   // Advanced SIMD integer.
   bool DUP_gen(uint32_t Word); bool DUP_elt_1(uint32_t Word); bool DUP_elt_2(uint32_t Word);
   bool UMOV(uint32_t Word); bool SMOV(uint32_t Word); bool INS_gen(uint32_t Word); bool INS_elt(uint32_t Word);

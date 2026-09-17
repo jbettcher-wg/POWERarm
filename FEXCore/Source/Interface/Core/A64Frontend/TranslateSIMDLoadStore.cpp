@@ -204,4 +204,69 @@ bool IRBuilder::LDx_STx_mult(uint32_t Word) {
   return true;
 }
 
+bool IRBuilder::LDx_STx_sngl(uint32_t Word) {
+  // ARM ARM "AdvSIMD load/store single structure": one lane of each of
+  // selem registers, at element index `index`. Only selem == 1 (LD1/ST1) is
+  // translated.
+  const bool Q = Bit(Word, 30);
+  const bool PostIndex = Bit(Word, 23);
+  const bool IsLoad = Bit(Word, 22);
+  const bool R = Bit(Word, 21);
+  const uint32_t Rm = Bits(Word, 20, 16);
+  const uint32_t Opcode = Bits(Word, 15, 13);
+  const bool S = Bit(Word, 12);
+  const uint32_t SizeBits = Bits(Word, 11, 10);
+  const uint32_t Rn = Bits(Word, 9, 5);
+  const uint32_t Rt = Bits(Word, 4, 0);
+
+  uint32_t Scale = Opcode >> 1;
+  const uint32_t Selem = (((Opcode & 1) << 1) | R) + 1;
+  uint32_t Index {};
+  switch (Scale) {
+  case 0: Index = (Q << 3) | (S << 2) | SizeBits; break;
+  case 1:
+    if (SizeBits & 1) {
+      return false;
+    }
+    Index = (Q << 2) | (S << 1) | (SizeBits >> 1);
+    break;
+  case 2:
+    if (SizeBits & 2) {
+      return false;
+    }
+    if (!(SizeBits & 1)) {
+      Index = (Q << 1) | S;
+    } else {
+      if (S) {
+        return false;
+      }
+      Index = Q;
+      Scale = 3;
+    }
+    break;
+  default: return false;
+  }
+  // POWERARM-M2-TODO(simd): LD2/LD3/LD4 and ST2/ST3/ST4 single structures (selem > 1) are not translated.
+  if (Selem != 1) {
+    return false;
+  }
+
+  const auto ElementSize = static_cast<OpSize>(1U << Scale);
+  Ref Base = LoadXSP(Rn);
+  if (IsLoad) {
+    Ref Value = _LoadMem(RegClass::GPR, ElementSize, Base, Invalid(), OpSize::i8Bit, MemOffsetType::SXTX, 1);
+    if (PostIndex) {
+      StoreXSP(Rn, _Add(OpSize::i64Bit, Base, Rm == 31 ? Constant(Selem << Scale) : LoadX(Rm)));
+    }
+    StoreV(Rt, _VInsGPR(OpSize::i128Bit, ElementSize, Index, LoadV(Rt), Value));
+    return true;
+  }
+  _StoreMem(RegClass::GPR, ElementSize, _VExtractToGPR(OpSize::i128Bit, ElementSize, LoadV(Rt), Index), Base, Invalid(), OpSize::i8Bit,
+            MemOffsetType::SXTX, 1);
+  if (PostIndex) {
+    StoreXSP(Rn, _Add(OpSize::i64Bit, Base, Rm == 31 ? Constant(Selem << Scale) : LoadX(Rm)));
+  }
+  return true;
+}
+
 } // namespace FEXCore::A64
