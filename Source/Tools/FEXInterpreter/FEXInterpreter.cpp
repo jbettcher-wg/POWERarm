@@ -18,6 +18,7 @@ $end_info$
 #include "VDSO_Emulation.h"
 #include "LinuxSyscalls/CoreIsolation.h"
 #include "LinuxSyscalls/GdbServer.h"
+#include "LinuxSyscalls/GranuleTable.h"
 #include "LinuxSyscalls/HostOwnedRanges.h"
 #include "LinuxSyscalls/LinuxAllocator.h"
 #include "LinuxSyscalls/Syscalls.h"
@@ -430,7 +431,8 @@ int main(int argc, char** argv, char** const envp) {
   // downstream exists yet: no context (CreateNewContext below caches SMCChecks
   // at construction, which is why degrade-mode forcing has to happen HERE), no
   // thread state, no guest mapping, no compiled code. Refusing is still clean.
-  FEX::HostPageGate::CheckHostPageSize(true);
+  // HostPageMode=auto is decided below, once the ELF headers have been read.
+  const auto HostPageMode = FEX::HostPageGate::CheckHostPageSize(true);
 
   // THP policy (FEX_THP / FEX_THPLOG, FEXCore/Utils/THP.h). The merged config
   // layer wins over the raw environment the header falls back to, so a
@@ -526,6 +528,17 @@ int main(int argc, char** argv, char** const envp) {
                       Program.ProgramPath);
     // POWERARM-M0-TODO(loader): an unloadable PT_INTERP lands here too; report the interpreter/RootFS separately once dynamic binaries are supported.
     return -ENOEXEC;
+  }
+
+  // Granule emulation, or not, for this process. Nothing has been mapped for
+  // the guest yet: the loader has only read the ELF headers.
+  if (HostPageMode == FEX::HostPageGate::Mode::Native) {
+    FEX::HLE::VMATracking::GranuleTable::DisableEmulation();
+  } else if (HostPageMode == FEX::HostPageGate::Mode::Auto) {
+    const auto [SmallestAlign, AlignFile] = Loader.SmallestLoadAlignment();
+    if (!FEX::HostPageGate::ResolveAuto(SmallestAlign, AlignFile.empty() ? std::string_view {Program.ProgramPath} : std::string_view {AlignFile})) {
+      FEX::HLE::VMATracking::GranuleTable::DisableEmulation();
+    }
   }
 
   if (ExecutedWithFD) {

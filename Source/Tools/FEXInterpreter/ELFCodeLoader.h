@@ -62,6 +62,7 @@
 class ELFCodeLoader final : public FEX::CodeLoader {
   ELFParser MainElf {};
   ELFParser InterpElf {};
+  fextl::string MainElfPath {};
 
   bool ElfValid {false};
   bool ExecutableStack {false};
@@ -446,6 +447,7 @@ public:
                 const fextl::vector<fextl::string>& ParsedArgs, char** const envp = nullptr,
                 FEXCore::Config::Value<FEXCore::Config::StringArrayType>* AdditionalEnvp = nullptr, bool SkipInterpreter = false) {
     ApplicationArgs = args;
+    MainElfPath = Filename;
 
     bool LoadedWithFD = false;
     int FD = getauxval(AT_EXECFD);
@@ -538,6 +540,24 @@ public:
     for (const auto& Arg : ParsedArgs) {
       LoaderArgs.emplace_back(Arg.c_str());
     }
+  }
+
+  // The smallest PT_LOAD p_align of the program and, when there is one, its
+  // interpreter, with the path of the ELF it came from (HostPageMode auto).
+  std::pair<uint64_t, fextl::string> SmallestLoadAlignment() const {
+    std::pair<uint64_t, fextl::string> Result {~0ULL, {}};
+    const auto Scan = [&Result](const ELFParser& Elf, const fextl::string& Path) {
+      for (const auto& Header : Elf.phdrs) {
+        if (Header.p_type == PT_LOAD && Header.p_align < Result.first) {
+          Result = {Header.p_align, Path};
+        }
+      }
+    };
+    Scan(MainElf, MainElfPath);
+    if (InterpElf.type != ::ELFLoader::ELFContainer::TYPE_NONE) {
+      Scan(InterpElf, MainElf.InterpreterElf);
+    }
+    return Result;
   }
 
   void FreeSections() {

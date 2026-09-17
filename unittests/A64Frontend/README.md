@@ -25,8 +25,10 @@ shared mount):
 unittests/A64Frontend/run.sh "$PWD/build-frontend/Bin/POWERarm" OUTDIR
 ```
 
-`run.sh` sets `POWERARM_HOSTPAGEMODE=force` unless it is already set. Any
-POWERarm configuration variable passes through, for example
+`run.sh` leaves `POWERARM_HOSTPAGEMODE` at its default, `auto`: on a 64K host
+every test runs natively except `loader_bss4k`, which is linked for 4K pages
+and runs with the granule emulation. Any POWERarm configuration variable
+passes through, for example `POWERARM_HOSTPAGEMODE=force`,
 `POWERARM_MAXINST=1` (one instruction per block), `POWERARM_SMCCHECKS=full`
 or `POWERARM_DISABLEDFCE=1`.
 
