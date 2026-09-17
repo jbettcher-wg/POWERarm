@@ -3,6 +3,47 @@
 Written 2026-09-16, after M1 (tag `m1`). This milestone is goal-driven: the failures the toolchain
 hits decide what gets built.
 
+## Status: complete (2026-09-17)
+
+All exit criteria pass on the bare-metal 64K host and on the 4K kernel in KVM (commit `7c2bca629`,
+bundle `a64diff-v1-s1-x2-41c1f1e4dd1e`):
+
+| Suite | 64K host | 4K KVM |
+|---|---|---|
+| a64diff instruction suite | 3713/3731, required-fail=0 | same |
+| programs (static glibc/musl, busybox) | 25/25 | 25/25 |
+| alarm (Arch toolchain `--version`, `gcc -c`, link) | 3/3 | 3/3 |
+| **projects: zlib 1.3.2 and Lua 5.4.9 built with Arch gcc/make, every output byte-identical to the Pi, tests and scripts run** | **2/2** | **2/2** |
+| rootfs (Debian minimal rootfs: dynamic hello, libm, dlopen/TLS) | 6/6 | 6/6 |
+| A64Frontend (default, `POWERARM_MAXINST=1`, ISA 3.0 off) | 45/45 each | n/a |
+| `check-user-strings.sh`, `check-rootfs-server.sh` | OK | n/a |
+
+**Compile baseline**, measured before any optimization (single pinned core, code cache off,
+2 runs each, spread under 0.5%). The script is kept on the shared mount as
+`.powerarm-golden/m2time.sh`:
+
+| Build | Pi 5 native | POWERarm, POWER9 64K | Ratio |
+|---|---|---|---|
+| zlib (tar + configure + make) | 12.6 s | 133.6 s | 10.6× |
+| Lua (tar + make linux) | 12.6 s | 118.3 s | 9.4× |
+
+**Breakdown:**
+| Step | Pi | POWERarm | Ratio |
+|---|---|---|---|
+| `cc1 -O2 lvm.c` (steady-state translated code) | 2.29 s | 12.3 s | 5.4× |
+| `gcc -c empty.c` (cold translation) | 0.043 s | 0.388 s | 9× |
+| zlib `configure` alone (hundreds of short processes) | 0.55 s | 14.0 s | 25× |
+
+Roughly 75–80% of the build time is steady-state compute, and 20–25% is re-translating cold
+code in every new process.
+
+**Known limitations carried forward:**
+- vfork copy-back is skipped for multithreaded parents (`POWERARM-M2-TODO`).
+- The code cache (`POWERARM_ENABLECODECACHINGWIP`) stalled during a timing run and is untested.
+- fastppcx86 shares the client rootfs-from-server bug fixed in `eaa81b2ae`; no patch was made.
+
+Local tag `m2`.
+
 ## Exit criteria
 
 All must hold on **both** the 64K host and the 4K kernel in KVM:
