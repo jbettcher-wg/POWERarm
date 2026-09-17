@@ -78,7 +78,7 @@ LookupCache::LookupCache(FEXCore::Context::ContextImpl* CTX)
   // 2 MiB granularity. The two randomly-indexed tables re-enable it below.
   FEXCore::Allocator::VirtualTHPControl(reinterpret_cast<const void*>(PagePointer), TotalCacheSize, FEXCore::Allocator::THPControl::Disable);
 
-  FEXCore::Allocator::VirtualName("FEXMem_Lookup", reinterpret_cast<void*>(PagePointer), L2TableSpan + CODE_SIZE);
+  FEXCore::Allocator::VirtualName("POWERarmMem_Lookup", reinterpret_cast<void*>(PagePointer), L2TableSpan + CODE_SIZE);
   CTX->SyscallHandler->MarkOvercommitRange(PagePointer, TotalCacheSize);
 
   // Allocate our memory backing our pages
@@ -90,7 +90,7 @@ LookupCache::LookupCache(FEXCore::Context::ContextImpl* CTX)
 
   // L1 Cache
   L1Pointer = PageMemory + CODE_SIZE;
-  FEXCore::Allocator::VirtualName("FEXMem_Lookup_L1", reinterpret_cast<void*>(L1Pointer), MAX_L1_SIZE);
+  FEXCore::Allocator::VirtualName("POWERarmMem_Lookup_L1", reinterpret_cast<void*>(L1Pointer), MAX_L1_SIZE);
 
   // THP hints for the two tables that are indexed by a *hash of the guest RIP*
   // rather than walked, so every lookup is an independent dTLB miss candidate.

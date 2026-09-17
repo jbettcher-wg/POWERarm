@@ -56,7 +56,7 @@ enum class UIOverrideOption {
 UIOverrideOption UIOption {UIOverrideOption::Default};
 
 void ParseArguments(int argc, char** argv) {
-  optparse::OptionParser Parser = optparse::OptionParser().description("Tool for fetching RootFS from FEXServers").add_help_option(true);
+  optparse::OptionParser Parser = optparse::OptionParser().description("Tool for fetching RootFS images from the rootfs download server").add_help_option(true);
 
   Parser.add_option("-y", "--assume-yes").action("store_true").help("Assume yes to prompts");
 
@@ -1158,7 +1158,7 @@ int main(int argc, char** argv, char** const envp) {
   if (AskForConfirmation(Question)) {
     auto TargetReturn = WebFileFetcher::GetRootFSLinks();
     if (!TargetReturn.has_value()) {
-      ExecWithInfo("Couldn't download rootfs list from the server. Try again in a minute or report on the fex-emu issue tracker.");
+      ExecWithInfo("Couldn't download rootfs list from the server. Try again in a minute.");
       return -1;
     }
 

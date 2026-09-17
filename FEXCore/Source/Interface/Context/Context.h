@@ -468,9 +468,9 @@ public:
 
   FEXCore::JITSymbols Symbols;
 
-  FEXCore::Utils::PooledAllocatorVirtual OpDispatcherAllocator {"FEXMem_OpDispatcher"};
-  FEXCore::Utils::PooledAllocatorVirtual FrontendAllocator {"FEXMem_Frontend"};
-  FEXCore::Utils::PooledAllocatorVirtualWithGuard CPUBackendAllocator {"FEXMem_CPUBackend"};
+  FEXCore::Utils::PooledAllocatorVirtual OpDispatcherAllocator {"POWERarmMem_OpDispatcher"};
+  FEXCore::Utils::PooledAllocatorVirtual FrontendAllocator {"POWERarmMem_Frontend"};
+  FEXCore::Utils::PooledAllocatorVirtualWithGuard CPUBackendAllocator {"POWERarmMem_CPUBackend"};
 
   // THE FOUR TSO FLAGS BELOW ARE NOT WRITE-ONCE.
   //

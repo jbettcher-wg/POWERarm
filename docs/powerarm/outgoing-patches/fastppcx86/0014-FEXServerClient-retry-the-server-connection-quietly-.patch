@@ -1,0 +1,78 @@
+From 8ead7cb2500a0fcc22cd703e994b09e37b9064dd Mon Sep 17 00:00:00 2001
+From: Jordan Bettcher <thebettcher@gmail.com>
+Date: Thu, 17 Sep 2026 00:26:10 -0600
+Subject: [PATCH 14/16] FEXServerClient: retry the server connection quietly
+ after starting it
+
+StartServer waits for the new FEXServer to close its wait pipe, then
+tries to connect five times, one second apart, logging every miss. The
+pipe also closes when the new server loses the lock to a server another
+client started at the same moment, and that server may not be listening
+yet. The first attempts then fail with ECONNREFUSED/ENOENT and log
+"Couldn't connect to FEXServer socket ... 111", which lands in the
+guest's stderr (the handler writes there before the log is set up) and
+costs a second of start-up per miss.
+
+Retry with NoPrintConnectionError, starting at 1 ms and doubling up to
+100 ms, for about 5 s in total. The final "after launching the process"
+message still reports a real failure.
+
+Reproducer: hold $HOME/.local/share/fex-emu/Server/Server.lock with a
+write lock (a server that won the lock but isn't listening yet), start
+FEX on a static x86-64 hello with a private FEX_SERVERSOCKETPATH,
+release the lock after 1.5 s and start FEXServer. 64K host,
+FEX_HOSTPAGEMODE=force:
+  before: 4 "Couldn't connect to FEXServer socket" lines on stderr
+  after:  none, and the client starts as soon as the server listens
+
+Found in POWERarm, where it broke a byte-compared stderr in one of three
+4K KVM runs.
+---
+ Source/Common/FEXServerClient.cpp | 20 ++++++++++++++++----
+ 1 file changed, 16 insertions(+), 4 deletions(-)
+
+diff --git a/Source/Common/FEXServerClient.cpp b/Source/Common/FEXServerClient.cpp
+index d924f2e7d..8b87efb91 100644
+--- a/Source/Common/FEXServerClient.cpp
++++ b/Source/Common/FEXServerClient.cpp
+@@ -13,6 +13,8 @@
+ #include <FEXHeaderUtils/Filesystem.h>
+ #include <FEXHeaderUtils/Syscalls.h>
+ 
++#include <algorithm>
++#include <chrono>
+ #include <cstdlib>
+ #include <fcntl.h>
+ #include <linux/limits.h>
+@@ -336,14 +338,24 @@ int StartServer(std::string_view InterpreterPath, int watch_fd) {
+       return -1;
+     }
+ 
+-    for (size_t i = 0; i < 5; ++i) {
+-      LocalServerFD = ConnectToServer(ConnectionOption::Default);
++    // The pipe also closes when the child loses the lock to a server another
++    // client started at the same moment; that server may not be listening yet.
++    // Refused and missing sockets are expected until it is, so retry quietly
++    // with a short backoff (up to about 5 s in total) instead of logging each
++    // miss and sleeping a whole second.
++    auto Delay = std::chrono::milliseconds(1);
++    auto Waited = std::chrono::milliseconds(0);
++    const auto Limit = std::chrono::milliseconds(5000);
++    for (;;) {
++      LocalServerFD = ConnectToServer(ConnectionOption::NoPrintConnectionError);
+ 
+-      if (LocalServerFD != -1) {
++      if (LocalServerFD != -1 || Waited >= Limit) {
+         break;
+       }
+ 
+-      std::this_thread::sleep_for(std::chrono::seconds(1));
++      std::this_thread::sleep_for(Delay);
++      Waited += Delay;
++      Delay = std::min(Delay * 2, std::chrono::milliseconds(100));
+     }
+ 
+     if (LocalServerFD == -1) {
+-- 
+2.55.0
+

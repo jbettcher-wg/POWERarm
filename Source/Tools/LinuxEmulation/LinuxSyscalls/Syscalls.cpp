@@ -89,7 +89,7 @@ namespace HardwareTSO {
       }
     }
 
-    fprintf(stderr, "FEX: HWTSO: %s(addr=%p len=%zx fd=%d) refused PROT_SAO; %s — this range is not hardware-TSO%s\n", Site, Addr, Length,
+    fprintf(stderr, "POWERarm: HWTSO: %s(addr=%p len=%zx fd=%d) refused PROT_SAO; %s — this range is not hardware-TSO%s\n", Site, Addr, Length,
             fd, "mapped WITHOUT it", DeviceMapping ? " (device mapping: expected, x86 makes no TSO promise for WC memory)" : "");
 
     if (DeviceMapping) {
@@ -98,8 +98,8 @@ namespace HardwareTSO {
 
     if (Strict) {
       ERROR_AND_DIE_FMT(
-        "FEX_HWTSO_STRICT: {}(addr={}, len={:#x}) refused PROT_SAO on ORDINARY memory. "
-        "Without FEX_HWTSO_STRICT this would have revoked hardware TSO and carried on with emitted "
+        "POWERARM_HWTSO_STRICT: {}(addr={}, len={:#x}) refused PROT_SAO on ORDINARY memory. "
+        "Without POWERARM_HWTSO_STRICT this would have revoked hardware TSO and carried on with emitted "
         "barriers; the abort is here so the refusing range can be identified.",
         Site, Addr, Length);
     }
@@ -122,7 +122,7 @@ namespace HardwareTSO {
       ::mmap(nullptr, FEXCore::HostPage::Size(), PROT_READ | PROT_WRITE | PROT_SAO_BIT, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
     if (Probe == MAP_FAILED) {
       fprintf(stderr,
-              "FEX: FEX_HWTSO requested but this kernel/CPU rejected PROT_SAO (errno=%d). "
+              "POWERarm: POWERARM_HWTSO requested but this kernel/CPU rejected PROT_SAO (errno=%d). "
               "Falling back to atomic/barrier TSO emulation.\n",
               errno);
       return false;
@@ -141,7 +141,7 @@ namespace HardwareTSO {
       const char* StrictEnv = getenv("FEX_HWTSO_STRICT");
       Strict = StrictEnv && StrictEnv[0] == '1';
       if (Strict) {
-        fprintf(stderr, "FEX: HWTSO_STRICT: a refused-SAO range on ordinary memory will abort instead of revoking.\n");
+        fprintf(stderr, "POWERarm: HWTSO_STRICT: a refused-SAO range on ordinary memory will abort instead of revoking.\n");
       }
     }
     return true;
@@ -260,9 +260,9 @@ void SyscallHandler::RevokeHardwareTSO(FEXCore::Core::InternalThreadState* Threa
   // stderr rather than LogMan: FEX logging is off by default, and this is a
   // silent multi-x performance change that the user must be able to see.
   fprintf(stderr,
-          "FEX: HWTSO: REVOKED at %s(addr=%p len=%zx). Hardware TSO is off for the rest of this process: "
+          "POWERarm: HWTSO: REVOKED at %s(addr=%p len=%zx). Hardware TSO is off for the rest of this process: "
           "all compiled code was invalidated and every block from here on emits TSO barriers. "
-          "Run with FEX_HWTSO_STRICT=1 to abort at the refusing range instead.\n",
+          "Run with POWERARM_HWTSO_STRICT=1 to abort at the refusing range instead.\n",
           Site, Addr, Length);
 }
 
@@ -1110,11 +1110,11 @@ SyscallHandler::SyscallHandler(FEXCore::Context::Context* _CTX, FEX::HLE::Signal
   // than silently doing nothing.
   if (SMCFileImmutable()) {
     if (SMCChecks == FEXCore::Config::CONFIG_SMC_MTRACK) {
-      LogMan::Msg::IFmt("FEX_SMCFILEIMMUTABLE: private file-backed code is assumed immutable and will NOT be "
+      LogMan::Msg::IFmt("POWERARM_SMCFILEIMMUTABLE: private file-backed code is assumed immutable and will NOT be "
                         "write-protected. Relaxed correctness: in-place patching of file-backed .text through an "
                         "already-writable mapping will go undetected.");
     } else {
-      LogMan::Msg::EFmt("FEX_SMCFILEIMMUTABLE needs FEX_SMCCHECKS=mtrack; ignoring it.");
+      LogMan::Msg::EFmt("POWERARM_SMCFILEIMMUTABLE needs POWERARM_SMCCHECKS=mtrack; ignoring it.");
     }
   }
 
@@ -1150,10 +1150,10 @@ SyscallHandler::SyscallHandler(FEXCore::Context::Context* _CTX, FEX::HLE::Signal
       const bool CrossPoke = CrossPokeEnv && CrossPokeEnv[0] == '1';
       SMCLazyCrossPokeEnabled.store(CrossPoke, std::memory_order_relaxed);
       if (CrossPoke) {
-        LogMan::Msg::IFmt("FEX_SMCLAZYCROSSPOKE armed: a lazy SMC fault that opens a dirty epoch arms EVERY "
+        LogMan::Msg::IFmt("POWERARM_SMCLAZYCROSSPOKE armed: a lazy SMC fault that opens a dirty epoch arms EVERY "
                           "thread's InterruptFaultPage, so every thread drains at its next block entry. "
                           "This narrows but does NOT close the lazy cross-thread hole; JVM-class guests "
-                          "should run with FEX_SMCLAZYINVAL=0 instead.");
+                          "should run with POWERARM_SMCLAZYINVAL=0 instead.");
       }
     }
     // FEX_SMCLAZYLINK: fault-page-armed drains for linked chains. Only arms if
@@ -1163,24 +1163,24 @@ SyscallHandler::SyscallHandler(FEXCore::Context::Context* _CTX, FEX::HLE::Signal
     // decision from the same three options; keep the predicates in sync.
     if (SMCLazyLink() && SMCLazyScrub() && !SMCSemanticPatch()) {
       SMCLazyLinkEnabled.store(true, std::memory_order_relaxed);
-      LogMan::Msg::IFmt("FEX_SMCLAZYLINK armed: SMC faults will arm the writer's InterruptFaultPage so "
+      LogMan::Msg::IFmt("POWERARM_SMCLAZYLINK armed: SMC faults will arm the writer's InterruptFaultPage so "
                         "linked block chains drain at their next block entry.");
     } else if (SMCLazyLink()) {
-      LogMan::Msg::EFmt("FEX_SMCLAZYLINK needs FEX_SMCLAZYSCRUB=1 and no FEX_SMCSEMANTICPATCH; staying off.");
+      LogMan::Msg::EFmt("POWERARM_SMCLAZYLINK needs POWERARM_SMCLAZYSCRUB=1 and no POWERARM_SMCSEMANTICPATCH; staying off.");
     }
     if (SMCLazyScrub()) {
-      LogMan::Msg::IFmt("FEX_SMCLAZYINVAL is ON: SMC invalidation is deferred to drain points. Same-thread "
-                        "self-modifying code stays correct via FEX_SMCLAZYSCRUB; cross-thread modification "
+      LogMan::Msg::IFmt("POWERARM_SMCLAZYINVAL is ON: SMC invalidation is deferred to drain points. Same-thread "
+                        "self-modifying code stays correct via POWERARM_SMCLAZYSCRUB; cross-thread modification "
                         "without a serializing event on the reader can still observe STALE translations, as "
                         "x86 already permits.");
     } else {
-      LogMan::Msg::EFmt("FEX_SMCLAZYINVAL is ON with FEX_SMCLAZYSCRUB=0: SMC invalidation is deferred to drain "
+      LogMan::Msg::EFmt("POWERARM_SMCLAZYINVAL is ON with POWERARM_SMCLAZYSCRUB=0: SMC invalidation is deferred to drain "
                         "points and guest code can execute STALE translations, including code the SAME thread "
                         "just wrote. This is deliberately unsound -- expect self-modifying guests (runtime "
                         "codegen, JITs) to miscompute or crash.");
     }
   } else if (SMCLazyInval()) {
-    LogMan::Msg::EFmt("FEX_SMCLAZYINVAL needs FEX_SMCSOFTINVALIDATE=1 and FEX_SMCCHECKS=mtrack; staying off.");
+    LogMan::Msg::EFmt("POWERARM_SMCLAZYINVAL needs POWERARM_SMCSOFTINVALIDATE=1 and POWERARM_SMCCHECKS=mtrack; staying off.");
   }
 
 #ifdef ARCHITECTURE_ppc64le
@@ -1196,12 +1196,12 @@ SyscallHandler::SyscallHandler(FEXCore::Context::Context* _CTX, FEX::HLE::Signal
     // serializes — so a patched block would be written to disk with a relative
     // branch to bytes the cache file does not contain. Refuse the combination
     // rather than emit a cache that jumps into whatever follows on load.
-    LogMan::Msg::EFmt("FEX_SMCSTOREBACKPATCH is incompatible with code cache writing; staying off.");
+    LogMan::Msg::EFmt("POWERARM_SMCSTOREBACKPATCH is incompatible with code cache writing; staying off.");
   } else if (SMCStoreBackpatch() && SMCStoreEmulation() && SMCChecks == FEXCore::Config::CONFIG_SMC_MTRACK) {
     FEX::HLE::SMCBackpatch::SetEnabled(true);
-    LogMan::Msg::IFmt("SMC store backpatching enabled (FEX_SMCSTOREBACKPATCH).");
+    LogMan::Msg::IFmt("SMC store backpatching enabled (POWERARM_SMCSTOREBACKPATCH).");
   } else if (SMCStoreBackpatch()) {
-    LogMan::Msg::EFmt("FEX_SMCSTOREBACKPATCH needs FEX_SMCSTOREEMULATION=1 and FEX_SMCCHECKS=mtrack; staying off.");
+    LogMan::Msg::EFmt("POWERARM_SMCSTOREBACKPATCH needs POWERARM_SMCSTOREEMULATION=1 and POWERARM_SMCCHECKS=mtrack; staying off.");
   }
 #endif
 }
@@ -2079,7 +2079,7 @@ void SyscallHandler::MaybeForceMonoDetect() {
   if (!ForceMonoDetectRequested()) {
     return;
   }
-  ArmMonoFallbackRange("FEX_FORCE_MONO_DETECT", "main executable");
+  ArmMonoFallbackRange("POWERARM_FORCE_MONO_DETECT", "main executable");
 }
 
 void SyscallHandler::MaybeDetectMonoFallbackFromPath(std::string_view pathname) {

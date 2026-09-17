@@ -612,7 +612,7 @@ void LoadFEXGeneratedCode(FEXCore::Core::InternalThreadState* Thread, VDSOMappin
     return;
   }
 
-  FEXCore::Allocator::VirtualName("FEXMem_Misc", Mapping->X86GeneratedCodePtr, Mapping->X86GeneratedCodeSize);
+  FEXCore::Allocator::VirtualName("POWERarmMem_Misc", Mapping->X86GeneratedCodePtr, Mapping->X86GeneratedCodeSize);
 
   // POWERARM-M0-TODO(signals): VDSO_FEX_CallbackRET is still the x86 FEX CALLBACKRET instruction bytes; the A64 guest needs a callback-return encoding the A64 frontend decodes (thunks are outside M1).
   size_t CurrentCodeOffset {};

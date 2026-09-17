@@ -3,9 +3,9 @@ import QtQuick 2.15
 import QtQuick.Controls 2.15
 import QtQuick.Layouts 1.15
 
-import FEX.ConfigModel 1.0
-import FEX.HostLibsModel 1.0
-import FEX.RootFSModel 1.0
+import POWERarm.ConfigModel 1.0
+import POWERarm.HostLibsModel 1.0
+import POWERarm.RootFSModel 1.0
 
 // Qt 6 changed the API of the Dialogs module slightly.
 // The differences are abstracted away in this import:
@@ -19,7 +19,7 @@ ApplicationWindow {
     height: 585
     minimumWidth: 500
     minimumHeight: 450
-    title: configDirty ? qsTr("FEX configuration *") : qsTr("FEX configuration")
+    title: configDirty ? qsTr("POWERarm configuration *") : qsTr("POWERarm configuration")
 
     property url configFilename
 
@@ -60,7 +60,7 @@ ApplicationWindow {
         id: openFileDialog
         property bool isSaving: false
 
-        title: isSaving ? qsTr("Save FEX configuration") : qsTr("Open FEX configuration")
+        title: isSaving ? qsTr("Save POWERarm configuration") : qsTr("Open POWERarm configuration")
         nameFilters: [ qsTr("Config files(*.json)"), qsTr("All files(*)") ]
 
         selectExisting: !isSaving
@@ -461,7 +461,7 @@ ApplicationWindow {
                             }
 
                             model: ListModel {
-                                ListElement { text: "FEXServer" }
+                                ListElement { text: "POWERarmServer" }
                                 ListElement { text: "stderr" }
                                 ListElement { text: qsTr("File...") }
                             }

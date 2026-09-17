@@ -357,7 +357,7 @@ fextl::unique_ptr<FEXCore::Threads::Thread> UsdThread;
 pid_t UsdThreadPid = 0;
 
 void* UsdRefreshThread(void*) {
-  FEX::HLE::ThreadManager::SetThreadName("FEX:usdrefresh");
+  FEX::HLE::ThreadManager::SetThreadName("POWERarmUsdRfsh");
   const pid_t Self = ::getpid();
   for (;;) {
     {

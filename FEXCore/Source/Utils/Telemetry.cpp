@@ -48,7 +48,7 @@ const std::array TelemetryNames = std::to_array<std::string_view>({
   "PPC64 Split Lock - container LL/SC retry high-water",
   "PPC64 Split Lock - crossing CAS tear (reported to guest as CAS failure)",
   "PPC64 Split Lock - crossing RMW tear (half-applied; pre-op value returned)",
-  "CodeBuffer allocations (growth curve lives in the FEX_BUFSTATS timeline)",
+  "CodeBuffer allocations (growth curve lives in the POWERARM_BUFSTATS timeline)",
   "CodeBuffer rotations (at MAX_CODE_SIZE; each one discards all translated code)",
   "CodeBuffer peak size in bytes (134217728 means MAX_CODE_SIZE was hit)",
   "CodeBuffer total bytes of host code emitted across the session",

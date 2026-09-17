@@ -81,7 +81,45 @@ static int OutputFD {STDERR_FILENO};
 // Set an empty style to disable coloring when FEXServer output is e.g. piped to a file
 static bool DisableOutputColors {};
 
+// Messages logged before Init() has read SilentLog and OutputLog. Until then
+// the destination isn't known, and stderr belongs to the guest: writing there
+// breaks programs that capture or compare it (a server start race once put
+// "Couldn't connect to ...Server socket" into a compiler's stderr). Init()
+// replays these to the configured log, or drops them when logging is silent.
+// A fixed buffer: this runs before the allocator is set up.
+static bool Initialized {};
+static char EarlyMessages[8192];
+static size_t EarlyMessagesUsed {};
+
+static void HoldEarlyMessage(LogMan::DebugLevels Level, const char* Message) {
+  // Entry: level byte, message, NUL. Messages that don't fit are dropped.
+  const size_t Len = strlen(Message);
+  if (EarlyMessagesUsed + Len + 2 > sizeof(EarlyMessages)) {
+    return;
+  }
+  EarlyMessages[EarlyMessagesUsed++] = static_cast<char>(Level);
+  memcpy(EarlyMessages + EarlyMessagesUsed, Message, Len + 1);
+  EarlyMessagesUsed += Len + 1;
+}
+
+static void ReplayEarlyMessages(void (*Handler)(LogMan::DebugLevels, const char*)) {
+  for (size_t Offset = 0; Offset < EarlyMessagesUsed;) {
+    const auto Level = static_cast<LogMan::DebugLevels>(EarlyMessages[Offset]);
+    const char* Message = EarlyMessages + Offset + 1;
+    if (Handler) {
+      Handler(Level, Message);
+    }
+    Offset += strlen(Message) + 2;
+  }
+  EarlyMessagesUsed = 0;
+}
+
 void MsgHandler(LogMan::DebugLevels Level, const char* Message) {
+  if (!Initialized) {
+    HoldEarlyMessage(Level, Message);
+    return;
+  }
+
   if (SilentLog) {
     return;
   }
@@ -93,7 +131,23 @@ void MsgHandler(LogMan::DebugLevels Level, const char* Message) {
 }
 
 void AssertHandler(const char* Message) {
+  if (!Initialized) {
+    // The process is about to trap: say why, wherever it goes.
+    const auto Output = fextl::fmt::format("{} {}\n", LogMan::DebugLevelStr(LogMan::ASSERT), Message);
+    write(STDERR_FILENO, Output.c_str(), Output.size());
+    return;
+  }
   return MsgHandler(LogMan::ASSERT, Message);
+}
+
+// For a start-up failure before Init(): the guest never ran, so the held
+// messages are the only explanation the user gets.
+void FlushEarlyMessagesToStderr() {
+  Initialized = true;
+  SilentLog = false;
+  OutputFD = STDERR_FILENO;
+  DisableOutputColors = !isatty(OutputFD);
+  ReplayEarlyMessages(MsgHandler);
 }
 
 namespace FEXServer {
@@ -133,6 +187,9 @@ void Init() {
       if (FEXServer::FEXServerFD != -1) {
         LogMan::Throw::InstallHandler(Logging::FEXServer::AssertHandler);
         LogMan::Msg::InstallHandler(Logging::FEXServer::MsgHandler);
+      } else {
+        // No server log: go silent rather than fall back to the guest's stderr.
+        LogFD = -1;
       }
     } else if (!LogFile.empty()) {
       constexpr int USER_PERMS = S_IRUSR | S_IWUSR | S_IRGRP | S_IROTH;
@@ -151,6 +208,15 @@ void Init() {
     }
   }
   DisableOutputColors = !isatty(OutputFD);
+  Initialized = true;
+
+  if (SilentLog) {
+    ReplayEarlyMessages(nullptr);
+  } else if (FEXServer::FEXServerFD != -1) {
+    ReplayEarlyMessages(FEXServer::MsgHandler);
+  } else {
+    ReplayEarlyMessages(MsgHandler);
+  }
 }
 
 } // namespace FEX::Logging
@@ -330,7 +396,7 @@ namespace GCS {
     // Kernel supports shadow stack.
     if (ShadowStackWord & PR_SHADOW_STACK_ENABLE) {
       // Welp.
-      ERROR_AND_DIE_FMT("Shadow stack is enabled which FEX is incompatible with!");
+      ERROR_AND_DIE_FMT("Shadow stack is enabled which POWERarm is incompatible with!");
     }
 
     // Disable if we've gotten this far, to ensure guest can't try.
@@ -474,7 +540,8 @@ int main(int argc, char** argv, char** const envp) {
   // Ensure FEXServer is setup before config options try to pull CONFIG_ROOTFS
   auto SelfPath = FEX::GetSelfPath();
   if (!FEXServerClient::SetupClient(SelfPath.value_or(argv[0]))) {
-    LogMan::Msg::EFmt("FEXServerClient: Failure to setup client");
+    LogMan::Msg::EFmt("POWERarmServerClient: Failure to setup client");
+    FEX::Logging::FlushEarlyMessagesToStderr();
     return -1;
   }
 
@@ -514,7 +581,7 @@ int main(int argc, char** argv, char** const envp) {
 
   uint32_t KernelVersion = FEX::HLE::SyscallHandler::CalculateHostKernelVersion();
   if (KernelVersion < FEX::HLE::SyscallHandler::KernelVersion(5, 15)) {
-    LogMan::Msg::EFmt("FEX requires kernel 5.15 minimum. Expect problems.");
+    LogMan::Msg::EFmt("POWERarm requires kernel 5.15 minimum. Expect problems.");
   }
 
   // Before we go any further, set all of our host environment variables that the config has provided

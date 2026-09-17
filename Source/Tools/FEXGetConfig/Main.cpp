@@ -202,22 +202,22 @@ int main(int argc, char** argv, char** envp) {
   FEXCore::Config::AddLayer(FEX::Config::CreateEnvironmentLayer(envp));
 
   // Load the arguments
-  optparse::OptionParser Parser = optparse::OptionParser().description("Simple application to get a couple of FEX options");
+  optparse::OptionParser Parser = optparse::OptionParser().description("Simple application to get a couple of POWERarm options");
 
-  Parser.add_option("--install-prefix").action("store_true").help("Print the FEX install prefix");
+  Parser.add_option("--install-prefix").action("store_true").help("Print the POWERarm install prefix");
 
   Parser.add_option("--app").help("Load an application profile for this application if it exists");
 
-  Parser.add_option("--current-rootfs").action("store_true").help("Print the directory that contains the FEX rootfs. Mounted in the case of squashfs");
+  Parser.add_option("--current-rootfs").action("store_true").help("Print the directory that contains the POWERarm rootfs. Mounted in the case of squashfs");
 
-  Parser.add_option("--tso-emulation-info").action("store_true").help("Print how FEX is emulating the x86-TSO memory model.");
+  Parser.add_option("--tso-emulation-info").action("store_true").help("Print how POWERarm is emulating the x86-TSO memory model.");
 
 #ifdef ARCHITECTURE_arm64
   Parser.add_option("--test-fault-granularity").action("store_true").help("Show SIGBUS fault granularity");
   Parser.add_option("--identification-reg-info").action("store_true").help("Print identification registers");
 #endif
 
-  Parser.add_option("--version").action("store_true").help("Print the installed FEX-Emu version");
+  Parser.add_option("--version").action("store_true").help("Print the installed POWERarm version");
 
   optparse::Values Options = Parser.parse_args(argc, argv);
 

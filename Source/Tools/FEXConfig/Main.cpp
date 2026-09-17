@@ -396,9 +396,9 @@ static bool OpenFile(fextl::string Filename) {
 ConfigRuntime::ConfigRuntime(const QString& ConfigFilename) {
   HostLibs.Reload(ConfigFilename.toStdString().c_str());
 
-  qmlRegisterSingletonInstance<ConfigModel>("FEX.ConfigModel", 1, 0, "ConfigModel", &ConfigModelInst);
-  qmlRegisterSingletonInstance<HostLibsModel>("FEX.HostLibsModel", 1, 0, "HostLibsModel", &HostLibs);
-  qmlRegisterSingletonInstance<RootFSModel>("FEX.RootFSModel", 1, 0, "RootFSModel", &RootFSList);
+  qmlRegisterSingletonInstance<ConfigModel>("POWERarm.ConfigModel", 1, 0, "ConfigModel", &ConfigModelInst);
+  qmlRegisterSingletonInstance<HostLibsModel>("POWERarm.HostLibsModel", 1, 0, "HostLibsModel", &HostLibs);
+  qmlRegisterSingletonInstance<RootFSModel>("POWERarm.RootFSModel", 1, 0, "RootFSModel", &RootFSList);
   Engine.load(QUrl("qrc:/main.qml"));
 
   Window = qobject_cast<QQuickWindow*>(Engine.rootObjects().first());

@@ -1028,6 +1028,17 @@ def gen_simd_struct2(p):
             p.vcase(pre + [f"{op} {{{lst}}}, [x20], x10"], v, {10: p.rng.choice([0, 7, 0xFFFFFFFFFFFFFFE0])}, dumpbuf=not is_load)
 
 
+def gen_simd_projects(p):
+    """Instructions the M2 project builds (zlib, Lua) reached that the groups
+    above don't cover: scalar DUP of every element size."""
+    elems = [("b", 16), ("h", 8), ("s", 4), ("d", 2)]
+    for _ in range(200):
+        d, n = p.vreg(), p.vreg()
+        v = {d: p.vec(), n: p.vec()}
+        e, count = p.rng.choice(elems)
+        p.vcase([f"mov {e}{d}, v{n}.{e}[{p.rng.randrange(count)}]"], v)
+
+
 GROUPS = {
     "simd_loadstore": gen_simd_loadstore,
     "simd_copy": gen_simd_copy,
@@ -1044,6 +1055,7 @@ GROUPS = {
     "simd_table": gen_simd_table,
     "simd_struct": gen_simd_struct,
     "simd_gaps": gen_simd_gaps,
+    "simd_projects": gen_simd_projects,
 }
 
 

@@ -109,8 +109,8 @@ static rpmalloc_config_t global_config {
   // THP causes crashes for some reason.
   .enable_huge_pages = 0,
   .disable_decommit = 0,
-  .page_name = "FEXAllocator",
-  .huge_page_name = "FEXAllocator",
+  .page_name = "POWERarmAllocator",
+  .huge_page_name = "POWERarmAllocator",
   .unmap_on_finalize = 0,
 };
 

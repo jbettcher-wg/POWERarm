@@ -53,7 +53,7 @@ void RegisterInfo(FEX::HLE::SyscallHandler* Handler) {
       memcpy(buf->domainname, Local.domainname, sizeof(Local.domainname));
       static_assert(sizeof(Local.domainname) <= sizeof(buf->domainname));
     } else {
-      strcpy(buf->nodename, "FEXCore");
+      strcpy(buf->nodename, "POWERarm");
       LogMan::Msg::EFmt("Couldn't determine host nodename. Defaulting to '{}'", buf->nodename);
     }
     strcpy(buf->sysname, "Linux");

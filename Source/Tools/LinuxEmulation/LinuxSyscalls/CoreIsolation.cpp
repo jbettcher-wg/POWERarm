@@ -482,7 +482,7 @@ namespace {
   }
 
   void* ManagerThread(void*) {
-    pthread_setname_np(pthread_self(), "FEX:CoreIsolate");
+    pthread_setname_np(pthread_self(), "POWERarmIsolate");
     sigset_t All;
     sigfillset(&All);
     pthread_sigmask(SIG_BLOCK, &All, nullptr);

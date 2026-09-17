@@ -24,11 +24,13 @@ $end_info$
 
 #include <git_version.h>
 
+#include <climits>
 #include <cstring>
 #include <fcntl.h>
 #include <filesystem>
 #include <ostream>
 #include <stdio.h>
+#include <string_view>
 #include <system_error>
 #include <unistd.h>
 #include <utility>
@@ -118,7 +120,7 @@ EmulatedFDManager::EmulatedFDManager(FEXCore::Context::Context* ctx)
     int FD = GenTmpFD(pathname, flags);
     // UTS version NEEDS to be in a format that can pass to `date -d`
     // Format of this is Linux version <Release> (<Compile By>@<Compile Host>) (<Linux Compiler>) #<version> {SMP, PREEMPT, PREEMPT_RT} <UTS version>\n"
-    const char kernel_version[] = "Linux version %d.%d.%d (FEX@FEX) (clang) #" GIT_DESCRIBE_STRING " SMP " __DATE__ " " __TIME__ "\n";
+    const char kernel_version[] = "Linux version %d.%d.%d (POWERarm@POWERarm) (clang) #" GIT_DESCRIBE_STRING " SMP " __DATE__ " " __TIME__ "\n";
     uint32_t GuestVersion = FEX::HLE::_SyscallHandler->GetGuestKernelVersion();
     char Tmp[sizeof(kernel_version) + 64] {};
     snprintf(Tmp, sizeof(Tmp), kernel_version, FEX::HLE::SyscallHandler::KernelMajor(GuestVersion),
@@ -195,6 +197,14 @@ EmulatedFDManager::EmulatedFDManager(FEXCore::Context::Context* ctx)
   FDReadCreators[procAuxv] = &EmulatedFDManager::ProcAuxv;
   FDReadCreators["/proc/self/auxv"] = &EmulatedFDManager::ProcAuxv;
 
+  // /proc/self/cmdline shows the emulator's own command line (its path, the
+  // guest's resolved path, then the guest arguments) unless the loader could
+  // point the kernel at the guest's argument strings, which needs
+  // CONFIG_CHECKPOINT_RESTORE. Without it, serve the guest's strings, read
+  // live so later changes to argv[0] show as they would natively.
+  FDReadCreators["/proc/self/cmdline"] = &EmulatedFDManager::ProcCmdline;
+  FDReadCreators["/proc/thread-self/cmdline"] = &EmulatedFDManager::ProcCmdline;
+
   if (ThreadsConfig > 1) {
     cpus_online = fextl::fmt::format("0-{}", ThreadsConfig - 1);
   } else {
@@ -204,10 +214,39 @@ EmulatedFDManager::EmulatedFDManager(FEXCore::Context::Context* ctx)
 
 EmulatedFDManager::~EmulatedFDManager() {}
 
+// "/proc/<our pid>/<rest>" as "/proc/self/<rest>" in Buffer, or nullptr. An
+// opened /proc/self file reads back as /proc/<pid>/..., and after a fork the
+// pid differs from the one the table was built with.
+static const char* ProcSelfPath(const char* pathname, char* Buffer, size_t BufferSize) {
+  constexpr std::string_view Proc {"/proc/"};
+  std::string_view Path {pathname};
+  if (!Path.starts_with(Proc)) {
+    return nullptr;
+  }
+  Path.remove_prefix(Proc.size());
+  const auto Slash = Path.find('/');
+  if (Slash == std::string_view::npos || Slash == 0) {
+    return nullptr;
+  }
+  const auto Pid = Path.substr(0, Slash);
+  if (Pid.find_first_not_of("0123456789") != std::string_view::npos || Pid != fextl::fmt::format("{}", ::getpid())) {
+    return nullptr;
+  }
+  const auto Rest = Path.substr(Slash);
+  const int Len = snprintf(Buffer, BufferSize, "/proc/self%.*s", static_cast<int>(Rest.size()), Rest.data());
+  return Len > 0 && static_cast<size_t>(Len) < BufferSize ? Buffer : nullptr;
+}
+
 int32_t EmulatedFDManager::Open(const char* pathname, int flags, uint32_t mode) {
   auto Creator = FDReadCreators.end();
   if (pathname) {
     Creator = FDReadCreators.find(pathname);
+    if (Creator == FDReadCreators.end()) {
+      char Buffer[PATH_MAX];
+      if (const char* SelfPath = ProcSelfPath(pathname, Buffer, sizeof(Buffer))) {
+        Creator = FDReadCreators.find(SelfPath);
+      }
+    }
   }
 
   if (Creator == FDReadCreators.end()) {
@@ -215,6 +254,20 @@ int32_t EmulatedFDManager::Open(const char* pathname, int flags, uint32_t mode) 
   }
 
   return Creator->second(CTX, AT_FDCWD, pathname, flags, mode);
+}
+
+int32_t EmulatedFDManager::ProcCmdline(FEXCore::Context::Context* ctx, int32_t fd, const char* pathname, int32_t flags, mode_t mode) {
+  const auto Args = FEX::HLE::_SyscallHandler->GetCodeLoader()->GetArgumentData();
+  if (Args.KernelRemapped || Args.address == 0) {
+    // The kernel's own file is right.
+    return -1;
+  }
+
+  int FD = GenTmpFD(pathname, flags);
+  write(FD, reinterpret_cast<void*>(Args.address), Args.size);
+  lseek(FD, 0, SEEK_SET);
+  SealTmpFD(FD);
+  return FD;
 }
 
 int32_t EmulatedFDManager::ProcAuxv(FEXCore::Context::Context* ctx, int32_t fd, const char* pathname, int32_t flags, mode_t mode) {

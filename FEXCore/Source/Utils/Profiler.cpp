@@ -143,7 +143,7 @@ void PostForkAction(bool IsChild) {
   if (Enable) {
     // Tracy does not support multiprocess profiling
     LogMan::Msg::EFmt("Warning: Profiling a process with forks is not supported. Set the environment variable "
-                      "FEX_PROFILE_WAIT_FOR_FORK=<n> to start profiling after the n-th fork.");
+                      "POWERARM_PROFILE_WAIT_FOR_FORK=<n> to start profiling after the n-th fork.");
   }
 
   if (IsChild) {

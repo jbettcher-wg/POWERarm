@@ -404,7 +404,7 @@ namespace CPU {
       LogMan::Msg::EFmt("Failed to mprotect last page of code buffer.");
     }
 
-    FEXCore::Allocator::VirtualName("FEXMemJIT", reinterpret_cast<void*>(Ptr), Size);
+    FEXCore::Allocator::VirtualName("POWERarmMemJIT", reinterpret_cast<void*>(Ptr), Size);
 
     // Huge-pages reduce the amount of iTLB misses dramatically when it works.
     // Knob-gated (FEX_THP=code, on by default); see FEXCore/Utils/THP.h.
@@ -422,7 +422,7 @@ namespace CPU {
     if (!BlockOffsets) {
       ERROR_AND_DIE_FMT("Couldn't allocate the {} byte code buffer block index", BlockIndexBytes());
     }
-    FEXCore::Allocator::VirtualName("FEXBlockIndex", reinterpret_cast<void*>(BlockOffsets), BlockIndexBytes());
+    FEXCore::Allocator::VirtualName("POWERarmBlockIndex", reinterpret_cast<void*>(BlockOffsets), BlockIndexBytes());
   }
 
   CodeBuffer::~CodeBuffer() {
@@ -666,7 +666,7 @@ namespace CPU {
 #endif
     int MDWE = ::prctl(PR_GET_MDWE, 0, 0, 0, 0);
     if (MDWE != -1 && MDWE != 0) {
-      LogMan::Msg::EFmt("MDWE was set to 0x{:x} which means FEX can't allocate executable memory", MDWE);
+      LogMan::Msg::EFmt("MDWE was set to 0x{:x} which means POWERarm can't allocate executable memory", MDWE);
     }
 #endif
 

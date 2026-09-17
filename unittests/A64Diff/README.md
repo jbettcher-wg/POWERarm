@@ -219,6 +219,16 @@ A block job is compared on these parts:
 - the final status
 - the declared outputs
 
+**Emulator text.** The emulator must never write to a guest's stdout or stderr: its diagnostics go
+to its log. `pcompare` scans every step's stdout and stderr, in both job forms, for lines that look
+like emulator output and aren't lines of the golden stream: a product or component name
+(`POWERarm`, `FEXServer`, `FEXCore`, `FEX:`), the log's colour escapes, `unimplemented A64
+instruction`, or the log's `<level> message` shape (`A`, `E`, `D` or `I` and a space). Such a line
+fails the job even when everything else matches, is printed as `EMULATOR-TEXT <id> step <k>
+<stream>: <line>` and counted in `emulator text in guest output: N jobs`. Before comparing, the
+scanner is checked against known emulator messages and ordinary compiler output; if it misses one,
+the run exits 2 with `CONTROL-FAIL`.
+
 Each output is recorded as `sha256 size path` in `<id>.outputs`, with a copy kept in
 `<id>.files/`, so a mismatch report gives the first differing byte. A missing output is recorded
 as `missing`, and a symlink as `link TARGET`.
@@ -316,6 +326,22 @@ libc6 and gcc versions. `programs/rootfs.jobs` runs the following against it:
 - `gcc --version`
 - a build sequence: `gcc -O2 -c hello.c`, `gcc -o hello hello.o`, then running `./hello`,
   with `hello.o`, `hello` and the run output byte-compared
+
+`programs/projects.jobs` is the M2 exit test. It builds zlib 1.3.2 and Lua 5.4.9 from the pinned
+tarballs (`fetch-m2-projects.sh`; `build-programs.sh` copies them into the bundle's
+`programs/sources/`) with the sysroot's own toolchain, `make -j1` and the packages' own flags (no
+`-g`), with `SOURCE_DATE_EPOCH=0`, `LC_ALL=C` and `TZ=UTC`:
+
+| Job | Steps | Byte-compared outputs |
+|---|---|---|
+| `projects.zlib` | unpack with `tar`; `./configure`; `make` (static, shared and 64-bit offset variants); `make test` (the `example` and `minigzip` round trips, static and shared); `minigzip` round trips of `zlib.h` (static, stdin to stdout), `ChangeLog` (shared library through `LD_LIBRARY_PATH`, `-9`, file mode) and `deflate.c` (`minigzip64 -1`, decompressed by the sysroot's `gzip`) | the generated `Makefile`, `zconf.h` and `zlib.pc`; every `.o` and `.lo`; `libz.a`, `libz.so.1.3.2` and its two links; `example`, `minigzip`, `examplesh`, `minigzipsh`, `example64`, `minigzip64`; the three compressed files |
+| `projects.lua` | unpack; `make linux` (`-ldl`, `-Wl,-E`); `make test` (`lua -v`); the four scripts in `programs/lua-scripts/`; `luac` on two of them, one stripped; the stripped bytecode run; a `luac -l -l` listing checksum; a script from stdin with arguments and `os.exit(3)` | every `.o`, `liblua.a`, `lua`, `luac`, both bytecode files |
+
+The Lua scripts cover number and float formatting (`%g`, `%a`, `%.17g`, NaN signs, integer
+wrap-around, a seeded `math.random`), strings (patterns, `gsub`, `%q`, `string.pack`, UTF-8),
+tables, metatables, closures, coroutines and the collector (finalizers, weak tables), and errors
+(`pcall`/`xpcall`, error objects, tracebacks, stack overflow, `<close>` variables, `load`
+errors, file I/O errors). They print nothing that depends on addresses, time or `pairs` order.
 
 ## Classes
 

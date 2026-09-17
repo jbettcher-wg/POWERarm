@@ -194,7 +194,7 @@ private:
                         ReservedRegion->Base, SizePlusManagedData, errno, strerror(errno), FEXCore::HostPage::Size());
     }
 
-    FEXCore::Allocator::VirtualName("FEXMem_Misc", reinterpret_cast<void*>(ReservedRegion->Base), SizePlusManagedData);
+    FEXCore::Allocator::VirtualName("POWERarmMem_Misc", reinterpret_cast<void*>(ReservedRegion->Base), SizePlusManagedData);
     LiveVMARegion* LiveRange = new (reinterpret_cast<void*>(ReservedRegion->Base)) LiveVMARegion();
 
     // Copy over the reserved data
@@ -561,7 +561,7 @@ void OSAllocator_64Bit::AllocateMemoryRegions(fextl::vector<FEXCore::Allocator::
     // This enables the kernel to use transparent large pages in the allocator which can reduce memory pressure
     FEXCore::Allocator::THP::Hint(ArenaPtr, ObjectAllocSize, FEXCore::Allocator::THP::Alloc64);
 
-    FEXCore::Allocator::VirtualName("FEXMem_Misc", ArenaPtr, ObjectAllocSize);
+    FEXCore::Allocator::VirtualName("POWERarmMem_Misc", ArenaPtr, ObjectAllocSize);
 
     ObjectAlloc = new (ArenaPtr) Alloc::ForwardOnlyIntrusiveArenaAllocator(ArenaPtr, ObjectAllocSize);
     ReservedRegions = ObjectAlloc->new_construct(ReservedRegions, ObjectAlloc);
@@ -663,7 +663,7 @@ fextl::unique_ptr<T> make_alloc_unique(FEXCore::Allocator::MemoryRegion& Base, A
     ERROR_AND_DIE_FMT("Couldn't allocate memory region");
   }
 
-  FEXCore::Allocator::VirtualName("FEXMem_Misc", reinterpret_cast<void*>(ptr), MinPage);
+  FEXCore::Allocator::VirtualName("POWERarmMem_Misc", reinterpret_cast<void*>(ptr), MinPage);
 
   // Remove the page from the base region.
   // Could be zero after this.

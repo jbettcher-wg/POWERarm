@@ -34,7 +34,7 @@ namespace FEXCore {
 inline void ReportUnownedLockAssertion(const char* Where) {
   void* Frames[32];
   const int Count = ::backtrace(Frames, 32);
-  const char Msg[] = "FEX: lock-ownership assertion failed (caller does not hold the write lock); backtrace follows:\n";
+  const char Msg[] = "POWERarm: lock-ownership assertion failed (caller does not hold the write lock); backtrace follows:\n";
   ::write(STDERR_FILENO, Msg, sizeof(Msg) - 1);
   ::write(STDERR_FILENO, Where, strlen(Where));
   ::write(STDERR_FILENO, "\n", 1);

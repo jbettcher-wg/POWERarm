@@ -71,7 +71,7 @@ void ThreadManager::StatAlloc::Initialize() {
     goto err;
   }
 
-  FEXCore::Allocator::VirtualName("FEXMem_Misc", reinterpret_cast<void*>(Base), MAX_STATS_SIZE);
+  FEXCore::Allocator::VirtualName("POWERarmMem_Misc", reinterpret_cast<void*>(Base), MAX_STATS_SIZE);
 
   // Allocate a small working shared space for now, grow as necessary.
   {
@@ -167,7 +167,7 @@ void ThreadManager::StatAlloc::CleanupForExit() {
     const double Wall = std::chrono::duration<double>(Now - P5_1_ProcessStart).count();
     const double Pct = Wall > 0.0 ? Seconds / Wall * 100.0 : 0.0;
 
-    std::fprintf(stderr, "[FEX JIT] blocks=%lu ticks=%lu seconds=%.6f wall=%.6f pct=%.3f freq=%luHz\n",
+    std::fprintf(stderr, "[POWERarm JIT] blocks=%lu ticks=%lu seconds=%.6f wall=%.6f pct=%.3f freq=%luHz\n",
                  static_cast<unsigned long>(TotalJITCount), static_cast<unsigned long>(TotalJITTime), Seconds, Wall, Pct,
                  static_cast<unsigned long>(Freq));
   }
@@ -248,7 +248,7 @@ FEX::HLE::ThreadStateObject* ThreadManager::CreateThread(uint64_t InitialRIP, ui
   auto AllocBase =
     reinterpret_cast<uint64_t>(FEXCore::Allocator::mmap(nullptr, CallRetAllocSize, PROT_NONE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0));
 
-  FEXCore::Allocator::VirtualName("FEXMem_CallRetStacks", reinterpret_cast<void*>(AllocBase), CallRetAllocSize);
+  FEXCore::Allocator::VirtualName("POWERarmMem_CallRetStacks", reinterpret_cast<void*>(AllocBase), CallRetAllocSize);
 
   // Disable HUGEPAGE on callret stacks.
   FEXCore::Allocator::VirtualTHPControl(reinterpret_cast<void*>(AllocBase), CallRetAllocSize, FEXCore::Allocator::THPControl::Disable);

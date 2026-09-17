@@ -13,6 +13,8 @@
 #include <FEXHeaderUtils/Filesystem.h>
 #include <FEXHeaderUtils/Syscalls.h>
 
+#include <algorithm>
+#include <chrono>
 #include <cstdlib>
 #include <fcntl.h>
 #include <linux/limits.h>
@@ -187,7 +189,7 @@ int ConnectToServer(ConnectionOption ConnectionOption) {
 
   if (connect(SocketFD, reinterpret_cast<struct sockaddr*>(&addr), SizeOfAddr) == -1) {
     if (ConnectionOption == ConnectionOption::Default || errno != ECONNREFUSED) {
-      LogMan::Msg::EFmt("Couldn't connect to FEXServer socket {} {}", ServerSocketName, errno);
+      LogMan::Msg::EFmt("Couldn't connect to POWERarmServer socket {} {}", ServerSocketName, errno);
     }
   } else {
     return FEX::MoveFDOutOfGuestRange(SocketFD);
@@ -203,7 +205,7 @@ int ConnectToServer(ConnectionOption ConnectionOption) {
   SizeOfAddr = sizeof(addr.sun_family) + SizeOfSocketString;
   if (connect(SocketFD, reinterpret_cast<struct sockaddr*>(&addr), SizeOfAddr) == -1) {
     if (ConnectionOption == ConnectionOption::Default || (errno != ECONNREFUSED && errno != ENOENT)) {
-      LogMan::Msg::EFmt("Couldn't connect to FEXServer socket {} {}", ServerSocketPath, errno);
+      LogMan::Msg::EFmt("Couldn't connect to POWERarmServer socket {} {}", ServerSocketPath, errno);
     }
   } else {
     return FEX::MoveFDOutOfGuestRange(SocketFD);
@@ -328,19 +330,29 @@ int StartServer(std::string_view InterpreterPath, int watch_fd) {
       return -1;
     }
 
-    for (size_t i = 0; i < 5; ++i) {
-      LocalServerFD = ConnectToServer(ConnectionOption::Default);
+    // The pipe also closes when the child loses the lock to a server another
+    // client started at the same moment; that server may not be listening yet.
+    // Refused and missing sockets are expected until it is, so retry quietly
+    // with a short backoff (up to about 5 s in total) instead of logging each
+    // miss and sleeping a whole second.
+    auto Delay = std::chrono::milliseconds(1);
+    auto Waited = std::chrono::milliseconds(0);
+    const auto Limit = std::chrono::milliseconds(5000);
+    for (;;) {
+      LocalServerFD = ConnectToServer(ConnectionOption::NoPrintConnectionError);
 
-      if (LocalServerFD != -1) {
+      if (LocalServerFD != -1 || Waited >= Limit) {
         break;
       }
 
-      std::this_thread::sleep_for(std::chrono::seconds(1));
+      std::this_thread::sleep_for(Delay);
+      Waited += Delay;
+      Delay = std::min(Delay * 2, std::chrono::milliseconds(100));
     }
 
     if (LocalServerFD == -1) {
       // Still couldn't connect to the socket.
-      LogMan::Msg::EFmt("Couldn't connect to FEXServer socket after launching the process");
+      LogMan::Msg::EFmt("Couldn't connect to POWERarmServer socket after launching the process");
     }
   }
 

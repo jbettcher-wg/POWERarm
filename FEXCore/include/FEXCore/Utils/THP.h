@@ -468,7 +468,7 @@ inline void ReportPerName(int FD) {
       continue; // noise: small and not huge
     }
     char Line[160];
-    const int L = std::snprintf(Line, sizeof(Line), "[FEX THP]   %-28s AnonHugePages=%9llu kB  Rss=%9llu kB\n", Rows[i].Name,
+    const int L = std::snprintf(Line, sizeof(Line), "[POWERarm THP]   %-28s AnonHugePages=%9llu kB  Rss=%9llu kB\n", Rows[i].Name,
                                 static_cast<unsigned long long>(Rows[i].AnonHuge), static_cast<unsigned long long>(Rows[i].Rss));
     if (L > 0) {
       [[maybe_unused]] auto _ = ::write(2, Line, static_cast<size_t>(L));
@@ -513,7 +513,7 @@ inline void Report(const char* Tag) {
   char MaskBuf[64];
   char Line[320];
   const int L = std::snprintf(Line, sizeof(Line),
-                              "[FEX THP] pid=%d exit=%s mask=%s(0x%x) pmd=%zu enabled=%s AnonHugePages=%llu kB Rss=%llu kB\n",
+                              "[POWERarm THP] pid=%d exit=%s mask=%s(0x%x) pmd=%zu enabled=%s AnonHugePages=%llu kB Rss=%llu kB\n",
                               static_cast<int>(::getpid()), Tag ? Tag : "?", MaskToString(Mask(), MaskBuf, sizeof(MaskBuf)), Mask(),
                               PMDSize(), EnabledBuf, static_cast<unsigned long long>(AnonHuge), static_cast<unsigned long long>(Rss));
   if (L > 0) {
