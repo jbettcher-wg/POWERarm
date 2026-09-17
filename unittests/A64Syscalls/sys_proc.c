@@ -2,6 +2,7 @@
  * set_tid_address, set_robust_list, rseq, getrandom, sysinfo, uname.
  * Ids and sysinfo values are printed only as relations. */
 #include "a64sys.h"
+#include <sys/auxv.h>
 #include <sys/resource.h>
 #include <sys/sysinfo.h>
 #include <sys/utsname.h>
@@ -235,6 +236,15 @@ static void t_uname(void)
 	printf("gethostname: ret=%ld matches-uname=%s\n", r, YN(!strcmp(host, u.nodename)));
 }
 
+/* auxv details a dynamic loader relies on. */
+static void t_auxv(void)
+{
+	const char *plat = (const char *)getauxval(AT_PLATFORM);
+	printf("auxv: platform=%s execfn-set=%s random-set=%s pagesz-pow2=%s\n", plat ? plat : "(null)",
+	       YN(getauxval(AT_EXECFN) != 0), YN(getauxval(AT_RANDOM) != 0),
+	       YN(getauxval(AT_PAGESZ) && !(getauxval(AT_PAGESZ) & (getauxval(AT_PAGESZ) - 1))));
+}
+
 int main(void)
 {
 	t_ids();
@@ -244,6 +254,7 @@ int main(void)
 	t_random();
 	t_sysinfo();
 	t_uname();
+	t_auxv();
 	done();
 	return 0;
 }
