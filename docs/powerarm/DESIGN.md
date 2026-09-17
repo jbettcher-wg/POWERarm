@@ -476,6 +476,8 @@ The house rule applies: **parity before timing, with controls that fire.**
 
 ## 8. Milestones
 
+**Update 2026-09-16:** M1 no longer includes a separate interpreter. M1 and M2 are re-split in [`M1-PLAN.md`](M1-PLAN.md): the frontend goes straight to the JIT, and correctness comes from differential testing against the Pi.
+
 | # | Deliverable | Exit criterion |
 |---|---|---|
 | **M0** | Fork fastppcx86 with history, rename the product, delete the x86 guest, add an empty A64 frontend and arm64 `CPUState` (§10.4) | The tree builds. The list of fixes it took is the coupling census |
