@@ -29,6 +29,7 @@
 #include "LinuxSyscalls/Syscalls.h"
 #include "LinuxSyscalls/Arm64/GeneratedABI.h"
 #include "LinuxSyscalls/Arm64/GuestVA.h"
+#include "LinuxSyscalls/GranuleTable.h"
 #include "VDSO_Emulation.h"
 #include "Linux/Utils/ELFParser.h"
 
@@ -822,9 +823,14 @@ public:
     AuxVariables.emplace_back(auxv_t {13, getauxval(AT_GID)});            // AT_GID
     AuxVariables.emplace_back(auxv_t {14, getauxval(AT_EGID)});           // AT_EGID
     AuxVariables.emplace_back(auxv_t {17, getauxval(AT_CLKTCK)});         // AT_CLKTIK
-    // AT_PAGESZ is the HOST page size: guest mappings are made with host-granular mmap, so a guest libc must round to it.
-    // POWERARM-M0-TODO(loader): fallback to 4K granule emulation for binaries whose PT_LOAD p_align < host page
-    AuxVariables.emplace_back(auxv_t {6, FEXCore::HostPage::Size()}); // AT_PAGESIZE
+    // AT_PAGESZ is whatever granularity the guest's memory syscalls actually
+    // accept. With no granule emulation that is the host page, because guest
+    // mappings are made with host-granular mmap and a guest libc has to round
+    // to it. Under the emulation it is the 4K guest page: mmap then takes 4K
+    // offsets and lengths, and a guest told 64K would round away from
+    // mappings the emulation would have served.
+    AuxVariables.emplace_back(
+      auxv_t {6, FEX::HLE::VMATracking::GranuleTable::Active() ? FEXCore::Utils::FEX_GUEST_PAGE_SIZE : FEXCore::HostPage::Size()}); // AT_PAGESIZE
     AuxRandom = &AuxVariables.emplace_back(auxv_t {25, ~0ULL});           // AT_RANDOM
     AuxVariables.emplace_back(auxv_t {23, getauxval(AT_SECURE)});         // AT_SECURE
     AuxVariables.emplace_back(auxv_t {8, 0});                             // AT_FLAGS
