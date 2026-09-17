@@ -187,7 +187,7 @@ for n in os.listdir(d):
     p = os.path.join(d, n)
     b = bytearray(open(p, "rb").read())
     struct.pack_into("<Q", b, 16, new)
-    struct.pack_into("<Q", b, 88, xxh.XXH3_64bits(bytes(b[:88]), 88))
+    struct.pack_into("<Q", b, 104, xxh.XXH3_64bits(bytes(b[:104]), 104))
     open(p, "wb").write(b)
 EOF
   if [ $? = 0 ]; then
@@ -210,15 +210,16 @@ for p in sys.argv[1:]:
         continue
     b = bytearray(open(p, "rb").read())
     nblocks, = struct.unpack_from("<I", b, 44)
-    index, = struct.unpack_from("<Q", b, 56)
-    code, = struct.unpack_from("<Q", b, 72)
+    index, = struct.unpack_from("<Q", b, 72)
+    code, = struct.unpack_from("<Q", b, 88)
     for i in range(nblocks):
         code_offset, = struct.unpack_from("<Q", b, index + i * 56 + 16)
         b[code + code_offset + 64] ^= 0xff
     open(p, "wb").write(b)
 EOF
 mkdir -p "$w/corrupt"
-for i in $(seq 1 16); do run "$w/cache" -- /usr/bin/gcc -O2 -c "u$i.c" -o "$w/corrupt/u$i.o" 2> "$w/corrupt/u$i.log"; done
+# Entry hashes are only checked for another boot's files unless forced.
+for i in $(seq 1 16); do run "$w/cache" POWERARM_CODECACHEVERIFY=1 -- /usr/bin/gcc -O2 -c "u$i.c" -o "$w/corrupt/u$i.o" 2> "$w/corrupt/u$i.log"; done
 same=1
 for i in $(seq 1 16); do cmp -s "$w/ref/u$i.o" "$w/corrupt/u$i.o" || same=0; done
 be=$(counter bad-entry "$w"/corrupt/*.log)

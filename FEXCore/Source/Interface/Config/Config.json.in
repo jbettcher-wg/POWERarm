@@ -43,40 +43,40 @@
         "Type": "bool",
         "Default": "false",
         "Desc": [
-          "Enable the code caching subsystem"
+          "Enable the code cache: translated blocks of guest files are kept on disk",
+          "and installed instead of recompiled in later processes. See",
+          "docs/powerarm/CODE-CACHE.md. Which files are written is set by",
+          "CodeCacheScope; the cache directory is POWERARM_APP_CACHE_LOCATION or",
+          "$XDG_CACHE_HOME/powerarm/, subdirectory cache/.",
+          "Each cached block is installed only if the guest bytes it was translated",
+          "from still match, so a replaced binary or self-modified code costs a",
+          "recompile, not wrong code. Codegen in this mode uses fixed-width guest",
+          "address loads (about 4% slower steady-state code, measured on cc1 -O2)."
         ]
       },
       "EnableCodeCacheValidation": {
         "Type": "bool",
         "Default": "false",
         "Desc": [
-          "Enable expensive validation when loading code caches"
+          "No effect. Validated the eagerly loaded format v3 caches; format v4",
+          "checks every block's integrity and guest bytes as it installs it."
         ]
       },
       "CodeCacheScope": {
         "Type": "str",
         "Default": "off",
         "Desc": [
-          "Which guest files the code cache subsystem may write caches for at",
-          "runtime. EnableCodeCachingWIP remains the master switch: with it off",
-          "nothing is loaded or written regardless of this value.",
-          "\toff (default): legacy behaviour. Caches are LOADED for any file, but",
-          "\t     never written by the running process -- only POWERarmOfflineCompiler",
-          "\t     produces them.",
-          "\trootfs: load and write caches only for files whose resolved path lies",
-          "\t     under the configured RootFS. These are system libraries: immutable",
-          "\t     in practice and shared between titles, so their translations are",
-          "\t     the ones worth keeping across runs.",
-          "\tall: additionally load and write caches for game-side native libraries",
-          "\t     and the main executable.",
-          "Any value other than off makes the process a cache *generator*: POWERarm",
-          "keeps POWERarm relocations and decodes section-bounded for every block, which",
-          "costs memory and forbids cross-file multiblock. Unrecognised values are",
-          "treated as off.",
-          "NOTE: EnableCodeCacheValidation only applies to caches produced by",
-          "POWERarmOfflineCompiler. It recompiles in ascending guest order, while a",
-          "runtime-generated cache is laid out in execution order, so the two",
-          "legitimately differ and validation will report a mismatch."
+          "Which guest files the code cache may write. EnableCodeCachingWIP remains",
+          "the master switch: with it off nothing is loaded or written.",
+          "\toff (default): caches are loaded for any file but never written.",
+          "\trootfs: load and write caches only for files under the configured",
+          "\t     RootFS (the toolchain and system libraries).",
+          "\tall: load and write caches for every file-backed executable mapping.",
+          "A writing process saves the blocks it compiled at exit, before execve,",
+          "and every 50000 blocks or 60 seconds, as append-only segments that",
+          "concurrent processes can share. POWERARM_CODECACHESTATS=1 prints each",
+          "process's load/miss/save counters to stderr.",
+          "Unrecognised values are treated as off."
         ]
       },
       "HostFeatures": {

@@ -792,13 +792,57 @@ namespace {
     uint32_t NumBlocks;
     uint32_t NumRelocs;
     uint32_t Pad;
+    // /proc/sys/kernel/random/boot_id of the writer. Within that boot the file
+    // is exactly what was written (it was complete before link(2) or rename(2)
+    // published it), so entry hashes only need checking in another boot, where
+    // a crash may have left it torn.
+    std::array<uint8_t, 16> BootId;
     uint64_t IndexOffset;
     uint64_t RelocOffset;
     uint64_t CodeOffset;
     uint64_t CodeSize;
     uint64_t HeaderHash; // XXH3 of every byte above
   };
-  static_assert(sizeof(SegmentHeader) == 96 && offsetof(SegmentHeader, HeaderHash) == 88, "cache segment header layout");
+  static_assert(sizeof(SegmentHeader) == 112 && offsetof(SegmentHeader, HeaderHash) == 104, "cache segment header layout");
+
+  // This boot's id, all zero if unreadable (which never matches a writer's, so
+  // every entry is then checked).
+  const std::array<uint8_t, 16>& CurrentBootId() {
+    static const std::array<uint8_t, 16> Id = [] {
+      std::array<uint8_t, 16> Out {};
+      int FD = ::open("/proc/sys/kernel/random/boot_id", O_RDONLY | O_CLOEXEC);
+      if (FD == -1) {
+        return Out;
+      }
+      char Buf[64] {};
+      const ssize_t N = ::read(FD, Buf, sizeof(Buf) - 1);
+      ::close(FD);
+      size_t Nibbles = 0;
+      for (ssize_t i = 0; i < N && Nibbles < 32; ++i) {
+        const char Ch = Buf[i];
+        int V = (Ch >= '0' && Ch <= '9') ? Ch - '0' : (Ch >= 'a' && Ch <= 'f') ? Ch - 'a' + 10 : -1;
+        if (V < 0) {
+          continue;
+        }
+        Out[Nibbles / 2] |= static_cast<uint8_t>(V << ((Nibbles % 2) ? 0 : 4));
+        ++Nibbles;
+      }
+      if (Nibbles != 32) {
+        Out = {};
+      }
+      return Out;
+    }();
+    return Id;
+  }
+
+  // POWERARM_CODECACHEVERIFY=1: check every entry hash even for this boot's files.
+  bool ForceVerify() {
+    static const bool Force = [] {
+      const char* Env = getenv("FEX_CODECACHEVERIFY");
+      return Env && *Env == '1';
+    }();
+    return Force;
+  }
 
   struct SegmentBlock {
     uint64_t GuestOffset; // entry PC - file load base
@@ -908,6 +952,7 @@ namespace {
     H.ConfigId = ConfigId;
     H.FileId = FileId;
     std::ranges::copy(GIT_HASH, H.BuildHash.begin());
+    H.BootId = CurrentBootId();
     H.NumBlocks = NumBlocks;
     H.NumRelocs = NumRelocs;
     H.IndexOffset = sizeof(SegmentHeader);
@@ -958,6 +1003,8 @@ struct CodeCache::CacheSegment {
   const SegmentBlock* Blocks {};
   const CPU::Relocation* Relocs {};
   const std::byte* Code {};
+  // Entry hashes need checking (written in another boot, or forced).
+  bool CheckHashes = true;
 
   CacheSegment() = default;
   CacheSegment(const CacheSegment&) = delete;
@@ -984,7 +1031,7 @@ struct CodeCache::CacheSegment {
     if (B.RelocBegin > Header->NumRelocs || B.RelocCount > Header->NumRelocs - B.RelocBegin) {
       return false;
     }
-    return HashBlock(B, Code + B.CodeOffset, Relocs + B.RelocBegin) == B.EntryHash;
+    return !CheckHashes || HashBlock(B, Code + B.CodeOffset, Relocs + B.RelocBegin) == B.EntryHash;
   }
 
   static fextl::unique_ptr<CacheSegment> Open(const fextl::string& Path, uint64_t ConfigId, uint64_t FileId) {
@@ -1021,18 +1068,26 @@ struct CodeCache::CacheSegment {
     Seg->Blocks = reinterpret_cast<const SegmentBlock*>(static_cast<const std::byte*>(Map) + H->IndexOffset);
     Seg->Relocs = reinterpret_cast<const CPU::Relocation*>(static_cast<const std::byte*>(Map) + H->RelocOffset);
     Seg->Code = static_cast<const std::byte*>(Map) + H->CodeOffset;
+    const auto& Boot = CurrentBootId();
+    Seg->CheckHashes = ForceVerify() || H->BootId != Boot || Boot == std::array<uint8_t, 16> {};
     return Seg;
   }
 };
 
 struct CodeCache::FileCache {
   fextl::string BasePath;
-  // Guarded by CodeCache::RegistryMutex: shared to read, unique to append.
-  fextl::vector<fextl::unique_ptr<CacheSegment>> Segments;
+  // Append-only. Appended under CodeCache::RegistryMutex (unique); read without
+  // a lock: a slot is filled before NumSegments counts it.
+  std::array<fextl::unique_ptr<CacheSegment>, MaxSegments> Segments;
+  std::atomic<size_t> NumSegments {0};
+
+  std::span<const fextl::unique_ptr<CacheSegment>> Loaded() const {
+    return {Segments.data(), NumSegments.load(std::memory_order_acquire)};
+  }
   std::atomic<uint64_t> LastProbeMS {0};
 
   bool Contains(uint64_t GuestOffset) const {
-    for (const auto& Seg : Segments) {
+    for (const auto& Seg : Loaded()) {
       if (Seg->Find(GuestOffset)) {
         return true;
       }
@@ -1042,12 +1097,14 @@ struct CodeCache::FileCache {
 
   // Opens segments this process has not seen yet, stopping at the first gap.
   void ProbeNewSegments(uint64_t ConfigId, uint64_t FileId) {
-    while (Segments.size() < MaxSegments) {
-      auto Seg = CacheSegment::Open(SegmentPath(BasePath, Segments.size()), ConfigId, FileId);
+    while (NumSegments.load(std::memory_order_relaxed) < MaxSegments) {
+      const size_t Index = NumSegments.load(std::memory_order_relaxed);
+      auto Seg = CacheSegment::Open(SegmentPath(BasePath, Index), ConfigId, FileId);
       if (!Seg) {
         break;
       }
-      Segments.push_back(std::move(Seg));
+      Segments[Index] = std::move(Seg);
+      NumSegments.store(Index + 1, std::memory_order_release);
     }
   }
 };
@@ -1166,11 +1223,25 @@ void CodeCache::ResetRelocations() {
 }
 
 CodeCache::FileCache* CodeCache::GetFileCache(const ExecutableFileInfo& FileInfo) {
+  // FileCaches are never freed, so a per-thread memo of the last one needs no
+  // lock. Consecutive misses are almost always in the same file.
+  thread_local const CodeCache* MemoCache = nullptr;
+  thread_local uint64_t MemoFileId = 0;
+  thread_local FileCache* MemoFile = nullptr;
+  if (MemoCache == this && MemoFileId == FileInfo.FileId && MemoFile) {
+    return MemoFile;
+  }
+  auto Remember = [&](FileCache* File) {
+    MemoCache = this;
+    MemoFileId = FileInfo.FileId;
+    MemoFile = File;
+    return File;
+  };
   {
     std::shared_lock lk {RegistryMutex};
     auto It = Registry.find(FileInfo.FileId);
     if (It != Registry.end()) {
-      return It->second.get();
+      return Remember(It->second.get());
     }
   }
   // First sight of this file in this process: resolve its scope and path once.
@@ -1185,7 +1256,7 @@ CodeCache::FileCache* CodeCache::GetFileCache(const ExecutableFileInfo& FileInfo
       Slot->ProbeNewSegments(ComputeCodeCacheConfigId(), FileInfo.FileId);
     }
   }
-  return Slot.get();
+  return Remember(Slot.get());
 }
 
 std::optional<CodeCache::LoadedBlock> CodeCache::TryLoadBlock(Core::InternalThreadState* Thread, uint64_t GuestRIP) {
@@ -1209,7 +1280,7 @@ std::optional<CodeCache::LoadedBlock> CodeCache::TryLoadBlock(Core::InternalThre
   const SegmentBlock* Block = nullptr;
   bool Found = false;
   auto Lookup = [&]() {
-    for (const auto& Candidate : File->Segments) {
+    for (const auto& Candidate : File->Loaded()) {
       if (auto* Entry = Candidate->Find(GuestOffset)) {
         Found = true;
         if (Candidate->Validate(*Entry)) {
@@ -1220,11 +1291,8 @@ std::optional<CodeCache::LoadedBlock> CodeCache::TryLoadBlock(Core::InternalThre
       }
     }
   };
-  {
-    std::shared_lock lk {RegistryMutex};
-    Lookup();
-  }
-  if (!Block && !Found && File->Segments.size() < MaxSegments) {
+  Lookup();
+  if (!Block && !Found && File->NumSegments.load(std::memory_order_relaxed) < MaxSegments) {
     // Another process (often a sibling from the same parent, which inherited
     // this registry) may have written the block since this file was probed.
     // Looking for a new segment costs one failed open(2); rate-limit it.
@@ -1232,15 +1300,15 @@ std::optional<CodeCache::LoadedBlock> CodeCache::TryLoadBlock(Core::InternalThre
     if (Now - File->LastProbeMS.load(std::memory_order_relaxed) >= 100) {
       std::unique_lock lk {RegistryMutex};
       File->LastProbeMS.store(Now, std::memory_order_relaxed);
-      const size_t Before = File->Segments.size();
+      const size_t Before = File->NumSegments.load(std::memory_order_relaxed);
       File->ProbeNewSegments(ComputeCodeCacheConfigId(), Section->FileInfo.FileId);
-      if (File->Segments.size() != Before) {
+      if (File->NumSegments.load(std::memory_order_relaxed) != Before) {
         Lookup();
       }
     }
   }
   if (!Block) {
-    (Found ? Stats.BadEntry : File->Segments.empty() ? Stats.NoFile : Stats.NotInIndex).fetch_add(1, std::memory_order_relaxed);
+    (Found ? Stats.BadEntry : File->NumSegments.load(std::memory_order_relaxed) == 0 ? Stats.NoFile : Stats.NotInIndex).fetch_add(1, std::memory_order_relaxed);
     return std::nullopt;
   }
 
