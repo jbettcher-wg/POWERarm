@@ -1527,6 +1527,20 @@ def gen_loadstore_nopair(p):
         p.vcase(pre + [f".inst 0x{word:08x}"], v, x, dumpbuf=not load)
 
 
+def gen_simd_shll(p):
+    """SHLL/SHLL2 (shift left long by the element width) at every width."""
+    nar = {8: ("8b", "16b", "8h"), 16: ("4h", "8h", "4s"), 32: ("2s", "4s", "2d")}
+    for _ in range(120):
+        d, n = p.vreg(), p.vreg()
+        bits = p.rng.choice([8, 16, 32])
+        nt, nt2, wt = nar[bits]
+        v = {d: p.vec(), n: lane_vec(p, bits)}
+        if p.rng.random() < 0.5:
+            p.vcase([f"shll v{d}.{wt}, v{n}.{nt}, #{bits}"], v)
+        else:
+            p.vcase([f"shll2 v{d}.{wt}, v{n}.{nt2}, #{bits}"], v)
+
+
 GROUPS = {
     "simd_loadstore": gen_simd_loadstore,
     "simd_copy": gen_simd_copy,
@@ -1548,6 +1562,7 @@ GROUPS = {
     "simd_sat": gen_simd_sat,
     "simd_crypto": gen_simd_crypto,
     "loadstore_nopair": gen_loadstore_nopair,
+    "simd_shll": gen_simd_shll,
 }
 
 

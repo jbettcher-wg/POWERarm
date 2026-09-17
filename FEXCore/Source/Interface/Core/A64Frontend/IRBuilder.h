@@ -253,7 +253,7 @@ public:
   bool SMULL_elt(uint32_t Word); bool UMULL_elt(uint32_t Word); bool SMLAL_elt(uint32_t Word); bool UMLAL_elt(uint32_t Word);
   bool SMLSL_elt(uint32_t Word); bool UMLSL_elt(uint32_t Word);
   bool UADDLV(uint32_t Word); bool SADDLV(uint32_t Word); bool SMAXV(uint32_t Word); bool SMINV(uint32_t Word);
-  bool CLZ_asimd(uint32_t Word); bool CLS_asimd(uint32_t Word); bool UDOT_vec(uint32_t Word);
+  bool CLZ_asimd(uint32_t Word); bool CLS_asimd(uint32_t Word); bool UDOT_vec(uint32_t Word); bool SHLL(uint32_t Word);
   // Cryptographic extension and CRC32 (TranslateCrypto.cpp).
   bool AESE(uint32_t Word); bool AESD(uint32_t Word); bool AESMC(uint32_t Word); bool AESIMC(uint32_t Word);
   bool PMULL(uint32_t Word);

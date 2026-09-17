@@ -79,6 +79,7 @@ by default and none with the knob set.
 | `simd_crypto` | differential, generated | AESE/AESD/AESMC/AESIMC, PMULL/PMULL2 (8 and 64 bit), SHA1C/M/P/H/SU0/SU1, SHA256H/H2/SU0/SU1, CRC32B-X and CRC32CB-CX on random operands and aliased registers; FIPS-197 C.1 AES-128 encryption and decryption, SHA-1 and SHA-256 compressions of the padded "abc" block, the CRC-32/CRC-32C check values of "123456789" |
 | `loadstore_rcpc2` | stated golden, self-checking | LRCPC2 STLUR*/LDAPUR*/LDAPURS* (the Pi 5 lacks LRCPC2): each load checked against the pattern stored with STUR, each store read back with LDUR |
 | `loadstore_nopair` | differential, generated | STNP/LDNP (pair index bits 00, no writeback) for W/X and S/D/Q registers, static and context-backed base, as .inst words |
+| `simd_shll` | differential, generated | SHLL/SHLL2 at every element width over lane boundary values |
 | `exclusive` | differential, generated | LDXR/LDAXR then STXR/STLXR at every width: success, store without a load, a second store, CLREX in between, NZCV across a successful store; LDAR/STLR. A store to a different address than the load is IMPLEMENTATION DEFINED (the Pi lets it succeed within a region) and is not tested |
 | `hello`, `printf_float`, `strmem`, `fpmath` (and `musl_*`) | differential | static glibc (and musl) programs: printf float formatting, the string/memory routines over lengths and alignments, scalar FP code |
 | `bb_*` | differential | busybox `echo`, `cat`, `wc`, `sort`, `sort -n`, `sha256sum`, `md5sum` |

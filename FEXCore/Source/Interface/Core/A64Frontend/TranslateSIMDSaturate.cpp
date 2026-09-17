@@ -685,6 +685,20 @@ bool IRBuilder::SIMDCountLeading(uint32_t Word, bool Sign) {
 bool IRBuilder::CLZ_asimd(uint32_t Word) { return SIMDCountLeading(Word, false); }
 bool IRBuilder::CLS_asimd(uint32_t Word) { return SIMDCountLeading(Word, true); }
 
+bool IRBuilder::SHLL(uint32_t Word) {
+  // SHLL/SHLL2: widen (the extension bits are shifted out) and shift left by the element width.
+  const uint32_t Size = Bits(Word, 23, 22);
+  if (Size == 3) {
+    return false;
+  }
+  const auto ES = LaneSize(Size);
+  const auto RS = OpSize::i128Bit;
+  Ref V = LoadV(Bits(Word, 9, 5));
+  Ref Wide = Bit(Word, 30) ? _VUXTL2(RS, ES, V).Node : _VUXTL(RS, ES, V).Node;
+  StoreV(Bits(Word, 4, 0), _VShlI(RS, LaneSize(Size + 1), Wide, 8U << Size));
+  return true;
+}
+
 bool IRBuilder::UDOT_vec(uint32_t Word) {
   if (Bits(Word, 23, 22) != 2) {
     return false;
