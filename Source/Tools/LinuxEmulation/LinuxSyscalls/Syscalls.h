@@ -373,8 +373,10 @@ public:
   // Applies the scope gate to a resolved host path.
   bool IsPathInCodeCacheScope(std::string_view Path) const;
 
-  // Loads (if present and in scope) the on-disk cache for one mapped section.
+  // Kept for the map-time hooks; blocks load lazily (CodeCache::TryLoadBlock).
   void LoadCodeCache(FEXCore::Core::InternalThreadState& Thread, FEXCore::ExecutableFileSectionInfo& Section);
+
+  fextl::string CodeCacheBasePath(const FEXCore::ExecutableFileInfo& FileInfo) override;
 
   /**
    * Writes a cache file for every in-scope mapped file that has newly compiled
@@ -866,12 +868,6 @@ public:
     return CodeCacheScopeType::Off;
   }();
 
-  // FileIds this process loaded a cache for. Those blocks were relocated on
-  // load and carry no relocation records of their own, so re-serializing them
-  // would produce a cache that is only valid at this run's base address. Never
-  // write a file we read.
-  std::mutex CodeCacheLoadedMutex;
-  fextl::set<uint64_t> CodeCacheLoadedFileIds;
 
 
 protected:

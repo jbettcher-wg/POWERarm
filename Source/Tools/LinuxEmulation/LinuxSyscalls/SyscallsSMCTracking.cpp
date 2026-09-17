@@ -1878,93 +1878,33 @@ static ReadELFHeadersResult ReadELFHeaders(int FD, std::span<std::byte> HeaderDa
   return ReadELFHeadersResult {std::move(Parser.phdrs), std::move(Relocations), HasCodeRelocations};
 }
 
-// Path of the cache file for one guest file.
-//
-// `<cache dir>/cache/<basename>-<FileId>-<ConfigId>`: FileId is derived from the
-// file's content (CodeCache::ComputeCodeMapId) and ConfigId from the FEX build
-// plus every codegen-affecting option (FEXCore::ComputeCodeCacheConfigId). A
-// rebuilt library, a rebuilt FEX, or a flipped codegen flag therefore names a
-// different file, which simply does not exist yet — a miss, not a mismatched
-// load.
-static fextl::string CodeCacheFilename(const FEXCore::ExecutableFileInfo& FileInfo, uint64_t CodeCacheConfigId) {
-  return fextl::fmt::format("{}cache/{}-{:016x}", FEX::Config::GetCacheDirectory(), FEXCore::CodeMap::GetBaseFilename(FileInfo, false),
-                            CodeCacheConfigId);
+// Base path of the cache for one guest file:
+// `<cache dir>/cache/<basename>-<FileId>-<ConfigId>`. FileId identifies the file
+// (CodeCache::ComputeCodeMapId) and ConfigId the FEX build, host features and
+// every codegen-affecting option (FEXCore::ComputeCodeCacheConfigId), so a
+// rebuilt emulator or a flipped option names a different file. The segments of
+// the cache live at this path and `<path>.N`; see CodeCache.cpp.
+fextl::string SyscallHandler::CodeCacheBasePath(const FEXCore::ExecutableFileInfo& FileInfo) {
+  // FEX_HWTSO revocation gate: every cache file this process can name holds
+  // blocks compiled for hardware TSO, which a revoked process cannot use or
+  // extend. See the ComputeCodeCacheConfigId notes.
+  if (!EnableCodeCaching() || CodeCacheConfigId == 0xffff'ffff'ffff'ffffULL || HardwareTSO::Revoked.load(std::memory_order_acquire)) {
+    return {};
+  }
+  if (!IsPathInCodeCacheScope(FileInfo.Filename)) {
+    return {};
+  }
+  const auto Name = FEXCore::CodeMap::GetBaseFilename(FileInfo, false);
+  if (Name.empty()) {
+    return {};
+  }
+  static const fextl::string CacheDir = FEX::Config::GetCacheDirectory() + "cache/";
+  return fextl::fmt::format("{}{}-{:016x}", CacheDir, Name, CodeCacheConfigId);
 }
 
-void SyscallHandler::LoadCodeCache(FEXCore::Core::InternalThreadState& Thread, FEXCore::ExecutableFileSectionInfo& Section) {
-  // FEX_HWTSO revocation gate. SOUNDNESS, not policy.
-  //
-  // CodeCacheConfigId is memoised when this handler is constructed, which is
-  // after FEX::Kernel::Init's TSO setup — so on a machine where SAO worked it
-  // is frozen as the HardwareTSOState::Active id, and every cache file this
-  // process can name holds blocks compiled with no TSO barriers at all. The id
-  // cannot be recomputed (see ComputeCodeCacheConfigId, which says the same
-  // thing from the other side), so a revoked process has no second namespace to
-  // fall back to and mapping one of those files in now would put exactly the
-  // barrier-free code RevokeHardwareTSO just invalidated straight back into the
-  // lookup cache, with no later event to drop it again.
-  //
-  // Note the division of labour: the id keeps a POWER8/SAO cache away from a
-  // radix box that never had SAO; this gate is the half that covers a downgrade
-  // WITHIN one process, which no filename can express.
-  if (HardwareTSO::Revoked.load(std::memory_order_acquire)) {
-    return;
-  }
-
-  // Scope gate. In "rootfs" scope only system libraries participate, so a title
-  // shares one cache namespace of immutable libraries with every other title
-  // instead of re-caching its own frequently-rebuilt binaries.
-  if (!IsPathInCodeCacheScope(Section.FileInfo.Filename)) {
-    return;
-  }
-
-  auto CacheFilename = CodeCacheFilename(Section.FileInfo, CodeCacheConfigId);
-  int CacheFD = open(CacheFilename.c_str(), O_RDONLY);
-  if (CacheFD == -1) {
-    LogMan::Msg::IFmt("Cache file does not exist: {}", CacheFilename);
-    return;
-  }
-
-  {
-    // Remember that this file's code came from disk: see
-    // CodeCacheLoadedFileIds. Recorded before the load attempt on purpose — a
-    // partially-applied load leaves relocated blocks registered too.
-    std::lock_guard lk {CodeCacheLoadedMutex};
-    CodeCacheLoadedFileIds.insert(Section.FileInfo.FileId);
-  }
-
-  struct stat buf;
-  if (fstat(CacheFD, &buf) != 0) {
-    LogMan::Msg::EFmt("Invalid cache file: {}", CacheFilename);
-    close(CacheFD);
-    return;
-  }
-
-  auto CacheFileSize = buf.st_size;
-  auto MappedCache = (std::byte*)FEXCore::Allocator::mmap(nullptr, CacheFileSize, PROT_READ, MAP_PRIVATE, CacheFD, 0);
-  LOGMAN_THROW_A_FMT(MappedCache, "Failed to map code cache into memory");
-  // Pass the file length, not the page-rounded mapping length: LoadData bounds every
-  // offset and count it parses out of the (untrusted) cache file against this, and the
-  // bytes between the end of the file and the end of its last page are not file data.
-  if (!Thread.CTX->GetCodeCache().LoadData(&Thread, MappedCache, static_cast<size_t>(CacheFileSize), Section)) {
-    // The cache file was rejected. Delete it so the next run regenerates it: without this, a cache that
-    // fails validation is silently ignored and then re-mapped and re-rejected on every single process
-    // start, forever, permanently pinning the guest onto the JIT-compile path with no visible symptom.
-    //
-    // Deleting a file that another process is currently mmap'ing is safe on Linux. The mapping holds a
-    // reference to the inode, so an existing MAP_PRIVATE mapping stays valid and readable after the
-    // directory entry is gone; concurrent FEX starts keep working on the data they already mapped. If
-    // two processes race to unlink the same path, one of them loses with ENOENT, which is not an error
-    // condition here.
-    LogMan::Msg::EFmt("Rejected invalid code cache, deleting it: {}", CacheFilename);
-    if (unlink(CacheFilename.c_str()) != 0 && errno != ENOENT) {
-      // Non-fatal: a read-only or permission-restricted cache directory just means we will re-reject
-      // this same file on the next start. Falling back to JIT compilation is still correct.
-      LogMan::Msg::EFmt("Failed to delete invalid code cache {}: {}", CacheFilename, strerror(errno));
-    }
-  }
-  FEXCore::Allocator::munmap(MappedCache, CacheFileSize);
-  close(CacheFD);
+void SyscallHandler::LoadCodeCache(FEXCore::Core::InternalThreadState&, FEXCore::ExecutableFileSectionInfo&) {
+  // Nothing to do at map time: blocks are loaded one at a time, on the
+  // dispatcher miss that would otherwise compile them (CodeCache::TryLoadBlock).
 }
 
 bool SyscallHandler::IsPathInCodeCacheScope(std::string_view Path) const {
@@ -1998,152 +1938,43 @@ void SyscallHandler::SaveCodeCaches(FEXCore::Core::InternalThreadState* Thread, 
   if (!CodeCacheWriteEnabled() || !Thread) {
     return;
   }
-
-  // FEX_HWTSO revocation gate. This one is NOT required for soundness -- a
-  // barrier-carrying block is correct in any session, and a future HWTSO run
-  // that hits the same refusal would revoke and drop whatever it had loaded.
-  // It is here because the file would be actively harmful: after revocation the
-  // code buffer is a mix of barrier-free (pre-revocation) and barrier-carrying
-  // (post-revocation) blocks, all of which would be written out under the
-  // HWTSO=1 config id, where a future run that would NOT have refused picks up
-  // the slow ones and has no event that ever invalidates them. One unlucky run
-  // would permanently poison the fast path for every later one.
+  // FEX_HWTSO revocation gate: after a revocation the code buffer mixes
+  // barrier-free and barrier-carrying blocks under one config id.
   if (HardwareTSO::Revoked.load(std::memory_order_acquire)) {
     return;
   }
   if (!CTX->GetCodeCache().WantsSave(Force)) {
     return;
   }
-
-  // Rearm first. A save pass is best-effort: if it partly fails we want the next
-  // trigger to come from newly compiled blocks, not to retry immediately in a
-  // loop at every mmap.
+  // Rearm first: a partly failed pass should not retry at every safe point.
   CTX->GetCodeCache().NotifyCachesSaved();
 
-  const auto CacheDir = fextl::fmt::format("{}cache/", FEX::Config::GetCacheDirectory());
-  std::error_code EC;
-  std::filesystem::create_directories(std::string_view {CacheDir}, EC);
-  if (EC) {
-    LogMan::Msg::EFmt("Code cache: cannot create {}: {}", CacheDir, EC.message());
-    return;
-  }
-
-  // One entry per file we intend to write.
-  struct SaveCandidate {
-    const FEXCore::ExecutableFileInfo* FileInfo;
-    uint64_t FileStartVA;
-    uint64_t BeginVA;
-    uint64_t EndVA;
-    fextl::vector<FEXCore::GuestAddressRange> GuestRanges;
-  };
-  fextl::vector<SaveCandidate> Candidates;
-
+  fextl::vector<FEXCore::CodeCacheSaveTarget> Targets;
   {
     auto lk = FEXCore::GuardSignalDeferringSection<std::shared_lock>(VMATracking.Mutex, Thread);
-
     for (const auto& ResourcePair : VMATracking.AllResources()) {
       const auto& Resource = ResourcePair.second;
-      if (!Resource.MappedFile || !Resource.FirstVMA) {
+      if (!Resource.MappedFile || !Resource.FirstVMA || Resource.MappedFile->HasUncacheableRelocations) {
         continue;
       }
-      const auto& FileInfo = *Resource.MappedFile;
-      if (!IsPathInCodeCacheScope(FileInfo.Filename)) {
+      auto Base = CodeCacheBasePath(*Resource.MappedFile);
+      if (Base.empty()) {
         continue;
       }
-
-      // See ExecutableFileInfo::HasUncacheableRelocations: a file carrying a
-      // Skip code relocation cannot be cached at block granularity by a runtime
-      // writer, so it is not cached at all.
-      if (FileInfo.HasUncacheableRelocations) {
-        continue;
-      }
-
-      {
-        // Never rewrite a file we loaded: those blocks were relocated into this
-        // process at load time and shipped no relocation records of their own,
-        // so re-serializing them bakes in this run's base address.
-        std::lock_guard LoadedLock {CodeCacheLoadedMutex};
-        if (CodeCacheLoadedFileIds.contains(FileInfo.FileId)) {
-          continue;
-        }
-      }
-
-      SaveCandidate Candidate {
-        .FileInfo = &FileInfo,
-        .FileStartVA = static_cast<uint64_t>(Resource.FirstVMA->Base),
-        .BeginVA = static_cast<uint64_t>(Resource.FirstVMA->Base),
-        .EndVA = static_cast<uint64_t>(Resource.FirstVMA->Base + Resource.FirstVMA->Length),
-      };
+      FEXCore::CodeCacheSaveTarget Target {BuildSectionInfo(Resource, Resource.FirstVMA->Base, Resource.FirstVMA->Length), {}, std::move(Base)};
       for (auto* VMA = Resource.FirstVMA; VMA; VMA = VMA->ResourceNextVMA) {
-        Candidate.GuestRanges.emplace_back(VMA->Base, VMA->Base + VMA->Length);
-        Candidate.EndVA = std::max<uint64_t>(Candidate.EndVA, VMA->Base + VMA->Length);
+        Target.GuestRanges.emplace_back(VMA->Base, VMA->Base + VMA->Length);
       }
-      Candidates.push_back(std::move(Candidate));
+      Targets.push_back(std::move(Target));
     }
   }
 
-  for (const auto& Candidate : Candidates) {
-    // NOTE: Candidate.FileInfo points into a MappedResource owned by
-    // VMATracking, and that lock has already been released. This mirrors the
-    // existing delayed-cache-load path in GuestMprotect, which likewise builds
-    // section infos under the lock and consumes them after.
-    //
-    // It is not optional here. SaveData takes CodeBufferWriteMutex, and a thread
-    // compiling a block holds CodeBufferWriteMutex while it looks a guest
-    // address up in VMATracking. VMATracking's mutex gives writers priority, so
-    // holding a shared lock across SaveData deadlocks the moment any thread
-    // queues for it exclusively: the compiler waits for the (now blocked)
-    // shared lock while we wait for its code buffer lock.
-    //
-    // The residual hazard — a guest thread unmapping this library between the
-    // two — is the pre-existing property of that pattern, not a new one.
-    FEXCore::ExecutableFileSectionInfo Section {*Candidate.FileInfo, Candidate.FileStartVA, Candidate.BeginVA, Candidate.EndVA};
-
-    const auto Final = CodeCacheFilename(*Candidate.FileInfo, CodeCacheConfigId);
-
-    // Crash safety: write a fresh temp file in the SAME directory, then
-    // rename(2) over the target.
-    //
-    // rename(2) within a directory is atomic, so a reader either sees the whole
-    // old file or the whole new one — never a mixture, and never a truncated
-    // file. A process killed at any point before the rename leaves only the
-    // temp file behind; the previously saved cache stays intact and loadable,
-    // and at most the translations compiled since the last save are lost. The
-    // temp name carries the pid so concurrent FEX processes caching the same
-    // library cannot collide, and O_EXCL means we never adopt a stale one.
-    const auto Temp = fextl::fmt::format("{}.{}.tmp", Final, ::getpid());
-
-    int FD = ::open(Temp.c_str(), O_CREAT | O_EXCL | O_WRONLY | O_CLOEXEC, 0644);
-    if (FD == -1) {
-      LogMan::Msg::EFmt("Code cache: cannot create {}: {}", Temp, strerror(errno));
-      continue;
-    }
-
-    bool Ok = CTX->GetCodeCache().SaveData(*Thread, FD, Section, 0 /* SerializedBaseAddress: LoadData only accepts 0 */,
-                                           std::span<const FEXCore::GuestAddressRange> {Candidate.GuestRanges});
-
-    // The data has to be on disk before the directory entry points at it,
-    // otherwise a crash between rename and writeback can leave the final name
-    // referring to a file with a hole in it.
-    if (Ok && ::fsync(FD) != 0) {
-      LogMan::Msg::EFmt("Code cache: fsync of {} failed: {}", Temp, strerror(errno));
-      Ok = false;
-    }
-    ::close(FD);
-
-    if (!Ok) {
-      ::unlink(Temp.c_str());
-      continue;
-    }
-
-    if (::rename(Temp.c_str(), Final.c_str()) != 0) {
-      LogMan::Msg::EFmt("Code cache: cannot rename {} -> {}: {}", Temp, Final, strerror(errno));
-      ::unlink(Temp.c_str());
-      continue;
-    }
-
-    LogMan::Msg::IFmt("Code cache: wrote {} for {}", Final, Candidate.FileInfo->Filename);
-  }
+  // Saves run under the shared CodeInvalidationMutex, like a compile: that keeps
+  // fork (which takes it exclusively) from ever snapshotting a cache lock held
+  // by this thread. The VMATracking lock must be released first: a compiling
+  // thread holds CodeBufferWriteMutex while it looks addresses up in VMATracking.
+  auto InvalidationLock = FEXCore::GuardSignalDeferringSectionWithFallback<std::shared_lock>(CTX->GetCodeInvalidationMutex(), Thread);
+  CTX->GetCodeCache().SaveNewBlocks(*Thread, Targets);
 }
 
 void* SyscallHandler::GuestMmap(bool Is64Bit, FEXCore::Core::InternalThreadState* Thread, void* addr, size_t length, int prot, int flags,

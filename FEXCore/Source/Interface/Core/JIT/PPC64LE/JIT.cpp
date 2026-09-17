@@ -2054,7 +2054,14 @@ PPC64JITCore::PPC64JITCore(FEXCore::Context::ContextImpl* ctx,
   // strictly safer than trying to delink-walk before SaveData, which would
   // still serialize the (unread-when-unlinked, but stale) HostCode fields
   // and needs a walk ordered against every thread's compile activity.
-  BlockLinkingEnabled = CTX->Config.BlockLinking() && !FEXCore::Config::Get_ENABLECODECACHINGWIP();
+  //
+  // Code caching no longer forces it off: CodeCache::SaveData serializes each
+  // block's host extent through its relocations, and every link thunk now
+  // carries RELOC_LINK_RECORD (restores the unlinked words in the copy),
+  // RELOC_GUEST_RIP_LITERAL (record GuestRIP) and a named-symbol literal
+  // (record StubAddr). Blocks are cached unlinked and relink on first use.
+  // Measured before this change: cc1 -O2 lvm.c 11.9 s linked, 21.3 s unlinked.
+  BlockLinkingEnabled = CTX->Config.BlockLinking();
 
   // Spin-loop SMT priority hints: pure nop-class emission, safe under every
   // other feature combination, so only the explicit kill switch gates it.

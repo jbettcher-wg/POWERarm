@@ -262,6 +262,7 @@ static uint64_t GetCycleCounterFrequency() {
 ContextImpl::ContextImpl(const FEXCore::HostFeatures& Features)
   : HostFeatures {Features}
   , CodeCache {*this} {
+  FEXCore::SetCodeCacheHostFeatures(Features);
   if (Config.BlockJITNaming() || Config.GlobalJITNaming() || Config.LibraryJITNaming()) {
     // Only initialize symbols file if enabled. Ensures we don't pollute /tmp with empty files.
     Symbols.InitFile();
@@ -808,6 +809,7 @@ void ContextImpl::UnlockAfterFork(FEXCore::Core::InternalThreadState* LiveThread
     if (CodeMapWriter) {
       CodeMapWriter->ResetAfterFork();
     }
+    CodeCache.ResetAfterFork();
 
     CodeInvalidationMutex.StealAndDropActiveLocks();
     if (Config.StrictInProcessSplitLocks) {
@@ -1152,6 +1154,14 @@ uintptr_t ContextImpl::CompileBlock(FEXCore::Core::CpuStateFrame* Frame, uint64_
     }
   }
 
+  // Code cache: install a stored translation of this block instead of
+  // compiling it. See CodeCache::TryLoadBlock for what it checks first.
+  if (CodeCache.CanLoad()) {
+    if (auto Loaded = CodeCache.TryLoadBlock(Thread, GuestRIP)) {
+      return RegisterCachedBlock(Thread, GuestRIP, *Loaded);
+    }
+  }
+
   // Accumulate a JIT count now, as even if another thread raced us, it should count as a compile.
   FEXCORE_PROFILE_INSTANT_INCREMENT(Thread, AccumulatedJITCount, 1);
 
@@ -1232,7 +1242,7 @@ uintptr_t ContextImpl::CompileBlock(FEXCore::Core::CpuStateFrame* Frame, uint64_
     // — a runtime cache writer saves from whichever thread reaches a safe point
     // first, and per-thread relocation lists would make it save a cache missing
     // every relocation another thread produced.
-    CodeCache.AbsorbRelocations(*Thread);
+    CodeCache.AbsorbRelocations(*Thread, GuestRIP);
     CodeCache.BlocksSinceSave.fetch_add(1, std::memory_order_relaxed);
   }
 
@@ -1312,6 +1322,45 @@ uintptr_t ContextImpl::CompileBlock(FEXCore::Core::CpuStateFrame* Frame, uint64_
   }
 
   return (uintptr_t)CodePtr;
+}
+
+// Registers a block installed by the code cache the way CompileBlock registers
+// a compiled one: guest code pages (arming SMC protection on new ones), the
+// soft-invalidation hash, and the lookup mapping. A cached block carries none
+// of the SMC patching metadata; CodeCache refuses to load when those modes are on.
+uintptr_t ContextImpl::RegisterCachedBlock(FEXCore::Core::InternalThreadState* Thread, uint64_t GuestRIP, const FEXCore::Context::CodeCache::LoadedBlock& Block) {
+  if (Config.BlockJITNaming()) {
+    if (auto Section = SyscallHandler->LookupExecutableFileSection(Thread, GuestRIP)) {
+      Symbols.Register(Thread->SymbolBuffer.get(), Block.BlockBegin, Block.Size, Section->FileInfo.Filename, GuestRIP - Section->FileStartVA);
+    } else {
+      Symbols.Register(Thread->SymbolBuffer.get(), Block.BlockBegin, GuestRIP, Block.Size);
+    }
+  }
+
+  // The decoder's page set for a single block: the page of every instruction.
+  fextl::vector<uint64_t> CodePages;
+  const uint64_t LastInst = Block.StartAddr + Block.Length - FEXCore::A64::INSTRUCTION_SIZE;
+  for (uint64_t Page = Block.StartAddr & FEXCore::Utils::FEX_GUEST_PAGE_MASK; Page <= LastInst; Page += FEXCore::Utils::FEX_GUEST_PAGE_SIZE) {
+    CodePages.push_back(Page);
+  }
+  const fextl::set<uint64_t> EntryPoints {GuestRIP};
+  for (auto CodePage : CodePages) {
+    if (Thread->LookupCache->AddBlockExecutableRange(Thread, EntryPoints, CodePage, FEXCore::Utils::FEX_GUEST_PAGE_SIZE, Block.StartAddr,
+                                                     Block.Length)) {
+      SyscallHandler->MarkGuestExecutableRange(Thread, CodePage, FEXCore::Utils::FEX_GUEST_PAGE_SIZE);
+    }
+  }
+
+  uint64_t GuestHash = 0;
+  uint64_t HashedRangeLength = 0;
+  if (Config.SMCSoftInvalidate() && FEXCore::SMC::IsHashableBlock(Block.Length, CodePages.size())) {
+    HashedRangeLength = Block.Length;
+    GuestHash = FEXCore::SMC::HashGuestBlock(CodePages, Block.StartAddr, Block.Length);
+  }
+
+  Thread->LookupCache->AddBlockMapping(Thread, GuestRIP, reinterpret_cast<uintptr_t>(Block.BlockBegin), CodePages, Block.HostCode,
+                                       Block.StartAddr, HashedRangeLength, GuestHash);
+  return reinterpret_cast<uintptr_t>(Block.HostCode);
 }
 
 uintptr_t ContextImpl::CompileSingleStep(FEXCore::Core::CpuStateFrame* Frame, uint64_t GuestRIP) {

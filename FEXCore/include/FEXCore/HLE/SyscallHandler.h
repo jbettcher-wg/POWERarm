@@ -76,6 +76,12 @@ public:
   virtual ExecutableRangeInfo QueryGuestExecutableRange(FEXCore::Core::InternalThreadState* Thread, uint64_t Address) = 0;
   virtual std::optional<ExecutableFileSectionInfo> LookupExecutableFileSection(Core::InternalThreadState* Thread, uint64_t GuestAddr) = 0;
 
+  // Code cache: the base path of the on-disk cache for this file, or empty when
+  // the file is outside the configured cache scope (or caching is off).
+  virtual fextl::string CodeCacheBasePath(const ExecutableFileInfo&) {
+    return {};
+  }
+
   // Fallback naming for executable code in mappings LookupExecutableFileSection
   // cannot attribute: anonymous memory holding a manually-loaded image. Wine
   // loads the MAIN PE image this way (anonymous reserve + copy-in), so without

@@ -85,6 +85,12 @@ using GuestAddressRange = std::pair<uint64_t, uint64_t>;
  */
 FEX_DEFAULT_VISIBILITY uint64_t ComputeCodeCacheConfigId();
 
+struct HostFeatures;
+// Records the detected host features that ComputeCodeCacheConfigId folds in.
+// Must be called before the first ComputeCodeCacheConfigId; without it the id
+// is the invalid sentinel and nothing is ever loaded or written.
+FEX_DEFAULT_VISIBILITY void SetCodeCacheHostFeatures(const HostFeatures&);
+
 // Information associated with a specific section of an executable file
 struct ExecutableFileSectionInfo {
   const ExecutableFileInfo& FileInfo;
@@ -217,6 +223,13 @@ private:
   CodeMapOpener& FileOpener;
 };
 
+// One file for AbstractCodeCache::SaveNewBlocks.
+struct CodeCacheSaveTarget {
+  ExecutableFileSectionInfo Section;
+  fextl::vector<GuestAddressRange> GuestRanges;
+  fextl::string BasePath;
+};
+
 class AbstractCodeCache {
 public:
   virtual ~AbstractCodeCache() = default;
@@ -236,37 +249,22 @@ public:
   virtual uint64_t ComputeCodeMapId(std::string_view Filename, int FD) = 0;
 
   /**
-   * Loads a code cache from mapped memory and appends it to the current Core state.
-   * TODO: Optionally recompiles all contained code blocks at runtime for validation.
-   * Returns false if the provided cache file is invalid, and true otherwise.
-   *
-   * MappedCacheFileSize is the number of bytes readable at MappedCacheFile. Cache
-   * files are untrusted input: every offset and count parsed out of one is bounded
-   * against this before it is used, so the caller must pass a length it knows will
-   * not fault, not a length the file claims for itself. Passing too small a value
-   * only costs a rejected cache; passing too large a one is a memory safety bug.
-   */
-  virtual bool LoadData(Core::InternalThreadState*, std::byte* MappedCacheFile, size_t MappedCacheFileSize,
-                        const ExecutableFileSectionInfo&) = 0;
-
-  /**
-   * Bundles the current Core state (CodeBuffer, GuestToHostMapping, ...) to a code cache and writes it to the given file descriptor.
-   * Returns true on success.
-   *
-   * The write is performed against a private copy of the live code buffer, so
-   * this is safe to call while other threads are executing translated code.
-   *
-   * GuestRanges, if non-empty, restricts the serialized guest->host block table
-   * to blocks whose guest entry lies in one of the given half-open ranges. A
-   * runtime caller MUST pass the ranges of the file being saved: the live block
-   * table covers every file in the process, and the loader only filters by the
-   * section's address window, so a block belonging to a different library that
-   * happens to land in that window would be loaded as this file's code. An empty
-   * span means "no filtering" and is what a single-binary generator
-   * (FEXOfflineCompiler) wants.
+   * Writes one self-contained cache segment holding every block in GuestRanges
+   * (all of them when empty) to TargetFD. Used by POWERarmOfflineCompiler.
+   * SerializedBaseAddress must be 0.
    */
   virtual bool SaveData(Core::InternalThreadState&, int TargetFD, const ExecutableFileSectionInfo&, uint64_t SerializedBaseAddress,
                         std::span<const GuestAddressRange> GuestRanges = {}) = 0;
+
+  /**
+   * Runtime writer. For each target file, appends the blocks this process
+   * compiled for it,
+   * that are not already in its on-disk cache at BasePath, as a new segment
+   * (BasePath, BasePath.1, ... ; compacted back into BasePath when full).
+   * Safe against concurrent writers in other processes. Forgets every compiled
+   * block it considered, written or not. Returns the number of segments written.
+   */
+  virtual size_t SaveNewBlocks(Core::InternalThreadState&, std::span<const CodeCacheSaveTarget> Targets) = 0;
 
   /**
    * Function to be called before compiling any code for caching purposes
@@ -280,11 +278,18 @@ public:
    * a save pass to rearm.
    *
    * IgnoreInterval drops the time/count thresholds but NOT the requirement that
-   * something new was compiled — an exit-time save should still not rewrite
-   * files byte-for-byte identical to what is already on disk.
+   * something new was compiled.
    */
   virtual bool WantsSave(bool IgnoreInterval) = 0;
   virtual void NotifyCachesSaved() = 0;
+
+  // In a fork child: forget the parent's unsaved compiles, so the child only
+  // writes what it compiled itself.
+  virtual void ResetAfterFork() = 0;
+
+  // POWERARM_CODECACHESTATS=1: one line on stderr at exit with this process's
+  // load/miss/reject/save counts.
+  virtual void DumpStats() = 0;
 };
 
 } // namespace FEXCore
