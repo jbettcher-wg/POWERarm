@@ -217,6 +217,20 @@ rootfs 6/6; `check-code-cache.sh`, `check-user-strings.sh` and `check-rootfs-ser
 - Whether mixed integer/vector workloads use more of the core's width (issue-queue stall events).
 - Half-precision conversion `xscvhpdp` at 38 cycles (NEON §7): is there a faster exact path?
 
+
+## Cold runs are a first-class metric (owner, 2026-09-17)
+
+**Every measurement reports cold and warm.** Cold is a real user's first run: first launch of a
+program, one-shot commands, CI, a fresh install, and anything after a rebuild or cache eviction.
+Optimizing only the warm number hides that cost.
+
+- **Per change:** run the slice twice with a **fresh cache directory** (cold), then again (warm),
+  and report both.
+- **Translation cost (X series) is reopened on that basis.** It is ~11% of a cold run and ~0% of a
+  warm one; closing it because warm runs dominate was the wrong call.
+- **AOT pre-translation** (`POWERARM_AOTTRANSLATE`, `Scripts/powerarm/aot-translate.sh`) is the
+  other lever on cold, especially for the short-lived tools a build spawns.
+
 ## Queue (scheduled 2026-09-17, in order)
 
 Starts after the CLAUDE-SIMD workstream (Claude CLI instruction gaps) merges.
