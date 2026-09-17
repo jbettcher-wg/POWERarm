@@ -168,6 +168,16 @@ guest `execve` runs that binary, not the one under test, so `cc1` and `as` of a 
 use another build (warm 94.8 ms became 109 ms with the same binary). `POWERARM_PORTABLE=1` skips
 binfmt; S2 and later numbers use it. S0 and S1 were measured and gated before the registration.
 
+After S2 (1b1235ead), warm, `POWERARM_PORTABLE=1`, per process (ms): premain CPU 2.1-2.8, config 0.26,
+server 0.05, loader 0.04, core 0.95, map 0.24-0.44, guest `cc1` 57.5 / `as` 11.8, save 0.02,
+teardown 0.04-0.09. Slice (CPU 100, private cache): 25.91 s cold, 23.72 s warm; zlib `./configure`
+alone: 4.00 s, then 3.61 s. Both ran while the gates below used CPUs 0-87.
+
+Gates at 1b1235ead (emulator runs with `POWERARM_PORTABLE=1` where guest `execve` matters): A64Frontend
+45/45 in default, `POWERARM_MAXINST=1` and `disableisa30`; a64diff (bundle 41c1f1e4dd1e, -j 16) on
+64k and 4k-kvm: insn required-fail 0 (optional-fail 18), alarm 3/3, programs 25/25, projects 2/2,
+rootfs 6/6; `check-code-cache.sh`, `check-user-strings.sh` and `check-rootfs-server.sh` pass.
+
 ## Follow-ups to measure
 
 - Done f4aa730da (test 0442316d6): abandoning a guest signal handler (`siglongjmp`/`longjmp` out
