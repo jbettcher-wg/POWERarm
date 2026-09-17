@@ -1,0 +1,163 @@
+From 85d561247c7e7b99405639895bbe627a74f50bab Mon Sep 17 00:00:00 2001
+From: Jordan Bettcher <thebettcher@gmail.com>
+Date: Wed, 16 Sep 2026 19:48:48 -0600
+Subject: [PATCH] ELFCodeLoader: back all of .bss when the host page is larger
+ than 4K
+
+On a host page larger than 4K, LoadElfFile mapped .bss from
+max(HostMappedEnd, AlignUp(BSSStart)), with AlignUp to the HOST page:
+
+1. A RW PT_LOAD with p_filesz == 0 and a 4K-aligned p_vaddr: MapFile
+   returns early, HostMappedEnd still ends at the previous segment, and the
+   anonymous map starts at the host page ABOVE p_vaddr. The first host page
+   of .bss stays unmapped and the first write faults. (A non-4K-aligned
+   p_vaddr gets a one-page file map from MapFile's 4K rounding, which goes
+   through the anon+pread fallback and hides the bug.)
+2. The same segment sharing a host page with an earlier R or R-X segment:
+   that page keeps the earlier protection, so .bss is not writable.
+3. A segment mapped straight from the file (host-aligned p_vaddr and
+   p_offset): the kernel maps whole host pages but zeroes only past EOF,
+   and only [BSSStart, PAGE_ALIGN_4K(BSSStart)) was cleared, so the rest of
+   the host page read as the file bytes after p_filesz.
+
+MapBSSHostGranular replaces the 64K block. Host pages the ELF already
+materialised get the union protection on the shared tail page and are
+zeroed from BSSStart to the 4K-rounded end of .bss when the segment is
+writable; anonymous memory starts at max(HostMappedEnd,
+AlignDown(BSSStart)). The 4K-host path is unchanged apart from its padding
+memset moving inside the MatchesGuest branch.
+
+x86 trigger: any x86-64 ELF with a p_filesz == 0 RW PT_LOAD at a
+4K-aligned p_vaddr, which lld emits for a program with .bss and no .data
+(`.bss` page-aligned, or placed with --section-start). Evidence, 64K host,
+FEX_HOSTPAGEMODE=force, static test programs (clang --target=x86_64-linux-gnu
+-nostdlib -static -fuse-ld=lld) that read, write and re-read .bss at its
+start and 64K in, exiting 184 on success:
+  bss_ownpage     RW p_vaddr 0x211000, own host page:        before SIGSEGV, after 184
+  bss_sharedpage  RW p_vaddr 0x203000, shares R/R-X page:     before SIGSEGV, after 184
+  bss_control     RW p_vaddr 0x2021e6, 1-byte .data:          184 before and after
+SMCChecks default and full give the same results. Dynamic Ubuntu 24.04
+/usr/bin/sha256sum and /usr/bin/ls from the RootFS still run.
+
+Found in POWERarm, where the AArch64 A64Frontend tests needed a .data
+quad to avoid case 1 on the 64K host.
+---
+ Source/Tools/FEXInterpreter/ELFCodeLoader.h | 87 ++++++++++++++-------
+ 1 file changed, 59 insertions(+), 28 deletions(-)
+
+diff --git a/Source/Tools/FEXInterpreter/ELFCodeLoader.h b/Source/Tools/FEXInterpreter/ELFCodeLoader.h
+index 79269a5f6..fa118cf9b 100644
+--- a/Source/Tools/FEXInterpreter/ELFCodeLoader.h
++++ b/Source/Tools/FEXInterpreter/ELFCodeLoader.h
+@@ -177,6 +177,58 @@ class ELFCodeLoader final : public FEX::CodeLoader {
+     return true;
+   }
+ 
++  // 64K: back [BSSStart, BSSPageEnd) when the host page is larger than 4K.
++  // BSSStart is wherever p_filesz ends and BSSPageEnd is only 4K-aligned, so the
++  // BSS can begin inside a host page that is
++  //   (a) already materialised by this ELF: the file-backed tail of this
++  //       segment's own mapping, or a previous segment's last host page (text
++  //       and a p_filesz == 0 RW segment share one when p_align < host page), or
++  //   (b) not mapped at all, when p_filesz == 0 and no earlier segment reaches
++  //       that host page.
++  // Case (b) used to be skipped: the anonymous map started at the host page
++  // ABOVE BSSStart, so the first host page of .bss stayed unmapped and a write
++  // to it faulted. Case (a) could leave the BSS read-only (the previous
++  // segment's protection) and, for a real file mapping, full of file bytes:
++  // the kernel only zeroes past EOF, and on a 4K kernel everything past
++  // p_filesz up to the next 4K page is zeroed by the ELF loader and the rest is
++  // fresh anonymous memory.
++  bool MapBSSHostGranular(const Elf64_Phdr& Header, uintptr_t BSSStart, uintptr_t BSSPageEnd, int MapProt, int MapType,
++                          FEX::HLE::SyscallMmapInterface* const Handler, FEXCore::Core::InternalThreadState* Thread) {
++    const uintptr_t HostPage = FEXCore::HostPage::Size();
++    const uintptr_t HostBSSStart = FEXCore::HostPage::AlignDown(BSSStart);
++    const uintptr_t HostBSSEnd = FEXCore::HostPage::AlignUp(BSSPageEnd);
++
++    // (a) Host pages this ELF has already materialised.
++    const uintptr_t SharedEnd = std::min(HostMappedEnd, HostBSSEnd);
++    if (HostBSSStart < SharedEnd) {
++      // Only the last materialised host page can carry a protection other than
++      // this segment's; everything below it is this segment's own file mapping.
++      const uintptr_t TailPage = HostMappedEnd - HostPage;
++      if (TailPage < SharedEnd && (HostTailProt & MapProt) != MapProt) {
++        const uintptr_t ProtStart = std::max(HostBSSStart, TailPage);
++        Handler->GuestMprotect(Thread, (void*)ProtStart, SharedEnd - ProtStart, MapProt | HostTailProt);
++        HostTailProt |= MapProt;
++      }
++      if (Header.p_flags & PF_W) {
++        memset((void*)BSSStart, 0, std::min(SharedEnd, BSSPageEnd) - BSSStart);
++      }
++    }
++
++    // (b) Everything above them is fresh anonymous memory, starting at the host
++    // page that contains BSSStart when no segment has reached it.
++    const uintptr_t AnonStart = std::max(HostMappedEnd, HostBSSStart);
++    if (AnonStart < HostBSSEnd) {
++      auto bss = Handler->GuestMmap(Thread, (void*)AnonStart, HostBSSEnd - AnonStart, MapProt, MapType | MAP_ANONYMOUS, -1, 0);
++      if (FEX::HLE::HasSyscallError(bss)) {
++        LogMan::Msg::EFmt("Failed to allocate BSS @ {}, {}\n", fmt::ptr(bss), errno);
++        return false;
++      }
++      HostTailProt = MapProt;
++      HostMappedEnd = HostBSSEnd;
++    }
++    return true;
++  }
++
+   bool MapFile(const ELFParser& file, uintptr_t Base, const Elf64_Phdr& Header, int prot, int flags,
+                FEX::HLE::SyscallMmapInterface* const Handler, FEXCore::Core::InternalThreadState* Thread) {
+ 
+@@ -293,12 +345,12 @@ class ELFCodeLoader final : public FEX::CodeLoader {
+         auto BSSPageStart = PAGE_ALIGN(BSSStart);
+         auto BSSPageEnd = PAGE_ALIGN(LoadBase + Header.p_vaddr + Header.p_memsz);
+ 
+-        // Only clear padding bytes if the section is writable
+-        if (Header.p_flags & PF_W) {
+-          memset((void*)BSSStart, 0, BSSPageStart - BSSStart);
+-        }
+-
+         if (FEXCore::HostPage::MatchesGuest()) {
++          // Only clear padding bytes if the section is writable
++          if (Header.p_flags & PF_W) {
++            memset((void*)BSSStart, 0, BSSPageStart - BSSStart);
++          }
++
+           if (BSSPageStart != BSSPageEnd) {
+             auto bss = Handler->GuestMmap(Thread, (void*)BSSPageStart, BSSPageEnd - BSSPageStart, MapProt, MapType | MAP_ANONYMOUS, -1, 0);
+             if (FEX::HLE::HasSyscallError(bss)) {
+@@ -306,29 +358,8 @@ class ELFCodeLoader final : public FEX::CodeLoader {
+               return {};
+             }
+           }
+-        } else {
+-          // 64K: BSSPageStart is only 4K-aligned, so a MAP_FIXED anonymous map there
+-          // is rejected outright -- and the host pages up to HostMappedEnd are
+-          // already mapped and already zero (the kernel zeroed the tail of a real
+-          // mapping, MapFileFallback memset it for a pread'd one). Only map what
+-          // lies beyond them.
+-          const uintptr_t AnonStart = std::max<uintptr_t>(HostMappedEnd, FEXCore::HostPage::AlignUp(BSSStart));
+-          const uintptr_t AnonEnd = FEXCore::HostPage::AlignUp(BSSPageEnd);
+-          if (AnonStart < AnonEnd) {
+-            auto bss = Handler->GuestMmap(Thread, (void*)AnonStart, AnonEnd - AnonStart, MapProt, MapType | MAP_ANONYMOUS, -1, 0);
+-            if (FEX::HLE::HasSyscallError(bss)) {
+-              LogMan::Msg::EFmt("Failed to allocate BSS @ {}, {}\n", fmt::ptr(bss), errno);
+-              return {};
+-            }
+-            HostTailProt = MapProt;
+-          } else if (HostMappedEnd > FEXCore::HostPage::AlignDown(BSSPageEnd)) {
+-            // The whole BSS lives inside an already-mapped host page. It still has
+-            // to be writable, which the file segment's protection may not be.
+-            Handler->GuestMprotect(Thread, (void*)FEXCore::HostPage::AlignDown(BSSStart),
+-                                   FEXCore::HostPage::AlignUp(BSSPageEnd) - FEXCore::HostPage::AlignDown(BSSStart), MapProt | HostTailProt);
+-            HostTailProt |= MapProt;
+-          }
+-          HostMappedEnd = std::max(HostMappedEnd, AnonEnd);
++        } else if (!MapBSSHostGranular(Header, BSSStart, BSSPageEnd, MapProt, MapType, Handler, Thread)) {
++          return {};
+         }
+       }
+ 
+-- 
+2.55.0
+
