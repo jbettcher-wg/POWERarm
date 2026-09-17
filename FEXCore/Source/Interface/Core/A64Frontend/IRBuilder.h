@@ -33,6 +33,7 @@
 #include <FEXCore/fextl/map.h>
 #include <FEXCore/fextl/vector.h>
 
+#include <array>
 #include <cstdint>
 #include <string_view>
 
@@ -137,7 +138,7 @@ public:
   bool LDR_lit_fpsimd(uint32_t Word); bool STP_LDP_fpsimd(uint32_t Word);
   bool STUR_LDUR_fpsimd(uint32_t Word); bool STR_LDR_imm_fpsimd_1(uint32_t Word); bool STR_LDR_imm_fpsimd_2(uint32_t Word);
   bool STR_LDR_reg_fpsimd(uint32_t Word);
-  bool LDx_STx_mult(uint32_t Word);
+  bool LDx_STx_mult(uint32_t Word); bool SIMDSingleStructure(uint32_t Word);
   // Advanced SIMD integer.
   bool DUP_gen(uint32_t Word); bool DUP_elt_1(uint32_t Word); bool DUP_elt_2(uint32_t Word);
   bool UMOV(uint32_t Word); bool SMOV(uint32_t Word); bool INS_gen(uint32_t Word); bool INS_elt(uint32_t Word);
@@ -278,6 +279,8 @@ private:
   bool SIMDShiftImm(uint32_t Word, ShiftImmOp Op, bool Scalar);
   bool SIMDPermute(uint32_t Word, PermuteOp Op);
   void StoreNarrow(uint32_t Rd, bool Upper, Ref Narrow);
+  // Byte permutation of up to four 16-byte sources (TranslateSIMDLoadStore.cpp).
+  Ref PermuteBytes(const std::array<Ref, 4>& Sources, uint32_t NumSources, const std::array<uint8_t, 16>& Map);
   // A 128-bit vector with Pattern in both 64-bit lanes.
   Ref VectorConstant64(uint64_t Pattern);
 
