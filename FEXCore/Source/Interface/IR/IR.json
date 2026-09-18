@@ -84,7 +84,8 @@
       "Load      = 0,",
       "Store     = 1,",
       "LoadStore = 2,",
-      "Inst      = 3,"
+      "Inst      = 3,",
+      "Acquire   = 4,"
     ],
     "class MemOffsetType : uint8_t": [
       "SXTX = 0,",

@@ -172,7 +172,7 @@ bool IRBuilder::HINT(uint32_t) {
 //
 // CRm bits 1:0 are the access types the barrier orders, and map onto what the
 // PPC64 backend emits for each FenceType (MemoryOps.cpp):
-//   0b01 (LD): loads before -> loads and stores after.   lwsync; isync
+//   0b01 (LD): loads before -> loads and stores after.   lwsync (Acquire)
 //   0b10 (ST): stores before -> stores after.            lwsync
 //   else (SY): everything before -> everything after.    hwsync
 // The domain (CRm bits 3:2 -- OSH/NSH/ISH/SY) is not distinguished: every
@@ -180,7 +180,7 @@ bool IRBuilder::HINT(uint32_t) {
 // observe, so the widest reading is the correct one.
 bool IRBuilder::Barrier(uint32_t Word) {
   switch (Bits(Word, 9, 8)) {
-  case 0b01: _Fence(IR::FenceType::Load); break;
+  case 0b01: _Fence(IR::FenceType::Acquire); break;
   case 0b10: _Fence(IR::FenceType::Store); break;
   default: _Fence(IR::FenceType::LoadStore); break;
   }

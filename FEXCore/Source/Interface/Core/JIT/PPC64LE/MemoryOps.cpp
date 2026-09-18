@@ -2303,6 +2303,15 @@ DEF_OP(Fence) {
   case IR::FenceType::Load:             lwsync(); isync(); break;
   case IR::FenceType::LoadStore:        hwsync(); break;
   case IR::FenceType::Store:            lwsync(); break;
+  // Acquire: prior loads ordered before every later load and store, and no
+  // more -- the A64 frontend's LDAR/LDAPR trailing fence and DMB ISHLD. lwsync
+  // alone gives exactly that on POWER (it orders load->load and load->store).
+  // Load's extra isync is the x86 LFENCE half, a speculation barrier AArch64
+  // acquire does not ask for; it cost one more barrier on every LDAR, which a
+  // V8 run executes ~17M times (checklist P7). Validated by
+  // unittests/A64Frontend/litmus.c: with this case emitting nothing,
+  // mp+dmb.ishst+dmb.ishld fails on every run.
+  case IR::FenceType::Acquire:          lwsync(); break;
   default:                              hwsync(); break;
   }
 }

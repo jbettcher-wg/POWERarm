@@ -135,6 +135,7 @@ static void PrintArg(fextl::stringstream* out, const IRListView*, FenceType Arg)
     case FenceType::Store: return "Stores";
     case FenceType::LoadStore: return "LoadStores";
     case FenceType::Inst: return "Instruction";
+    case FenceType::Acquire: return "Acquire";
     }
     return "<Unknown Fence Type>";
   }();

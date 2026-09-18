@@ -98,8 +98,9 @@ bool IRBuilder::LoadStoreAtomicWidth(uint32_t Word) {
   //
   // Use the standard leading-sync mapping: `hwsync` before the access, plus an
   // acquire fence after the load. Leading sync on both sides is what forbids
-  // the store-then-load reordering; the trailing lwsync/isync is the acquire
-  // half. Both halves must use the same convention, so do not "optimise" one
+  // the store-then-load reordering; the trailing lwsync (FenceType::Acquire) is
+  // the acquire half. It used to be lwsync; isync, whose isync is the x86
+  // LFENCE speculation-barrier half and bought AArch64 acquire nothing. Both halves must use the same convention, so do not "optimise" one
   // of them into a trailing sync without doing the other.
   const uint32_t Size = Bits(Word, 31, 30);
   const bool IsLoad = Bit(Word, 22);
@@ -107,7 +108,7 @@ bool IRBuilder::LoadStoreAtomicWidth(uint32_t Word) {
   _Fence(IR::FenceType::LoadStore);
   LoadStoreSingle(IsLoad, IR::SizeToOpSize(1U << Size), false, Size == 3, Bits(Word, 4, 0), Address);
   if (IsLoad) {
-    _Fence(IR::FenceType::Load);
+    _Fence(IR::FenceType::Acquire);
   }
   return true;
 }
@@ -261,7 +262,7 @@ bool IRBuilder::LDAPR(uint32_t Word) {
   // trailing acquire fence only -- no leading hwsync.
   const uint32_t Size = Bits(Word, 31, 30);
   LoadStoreSingle(true, IR::SizeToOpSize(1U << Size), false, Size == 3, Bits(Word, 4, 0), LoadXSP(Bits(Word, 9, 5)));
-  _Fence(IR::FenceType::Load);
+  _Fence(IR::FenceType::Acquire);
   return true;
 }
 
