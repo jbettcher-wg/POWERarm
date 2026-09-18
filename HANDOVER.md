@@ -21,8 +21,15 @@ cherry-pick; patches for them go in `docs/powerarm/outgoing-patches/fastppcx86/`
 - **Optimization rounds 1–3** merged: branch handling, code shape, translation speed, code cache
   (on by default), startup, opt-in AOT, cheaper linking.
 - **The aarch64 Claude Code CLI installs and runs** under POWERarm.
-- **Compile timings** are in `M2-PLAN.md`. **They predate real memory barriers** (see below) and
-  must be re-measured before being quoted again.
+- **FEAT_LSE is complete and advertised** (2026-09-17): the min/max forms and `CASP` landed, so
+  `ID_AA64ISAR0_EL1.Atomic`, `AT_HWCAP` and `/proc/cpuinfo` all report it. Tests `lse`,
+  `lseminmax`, `lsecasp` against Pi goldens.
+- **Compile timings** in `M2-PLAN.md` predate real memory barriers. Do not re-measure them for
+  their own sake — stop quoting them, and let the next optimization supply fresh numbers as a
+  side effect. Slice baseline on `774e9ce8a`, CPU 104: cold 23.90 s, warm 21.4–21.6 s.
+- **`powerarm-stable` is at `73e8b6b9e`** and so predates the LSE work; anything launched through
+  binfmt still lacks `LDSMAX`/`CASP`. binfmt itself is correctly registered
+  (`check-binfmt-inode.sh` passes) — it needs a `promote-powerarm-stable.sh`, not a re-register.
 
 ## The bugs that mattered (and what they teach)
 
@@ -87,12 +94,17 @@ cherry-pick; patches for them go in `docs/powerarm/outgoing-patches/fastppcx86/`
 
 ## Open items, roughly in order
 
-1. Memory-ordering (litmus) differential tests with Pi goldens.
+1. Memory-ordering (litmus) differential tests with Pi goldens. Fold in the one path the LSE
+   work could not cover: `AtomicMinMax`'s CAS retry loop never takes its back edge single
+   threaded, because with no competing writer the CAS always wins first time.
 2. Make `POWERARM_PORTABLE=1` plus a named rootfs fail loudly.
-3. Finish the LSE family (`LDSMAX`/`LDSMIN`/`LDUMAX`/`LDUMIN`, `CASP`), then advertise
-   `HWCAP_ATOMICS`.
-4. Re-measure the compile baseline now that barriers are real; then P7 (lightest correct fence per
-   case) is a live optimization target.
+3. `MRS` of `CNTVCT_EL0` and `CNTFRQ_EL0` — V8's clock source, and the first thing code-server's
+   Node dies on (`0xd53be040`). Exactly those two: the Pi SIGILLs on `CNTPCT_EL0`,
+   `CNTVCTSS`/`CNTPCTSS` and `CNTKCTL_EL1`, so they must stay unimplemented to keep faulting like
+   the reference. Report the real host timebase in `CNTFRQ`, not the Pi's 54 MHz.
+4. P7 (lightest correct fence per case) is a live optimization target now that the barriers are
+   real. (The "re-measure the compile baseline" half of this item was dropped 2026-09-17: it is
+   re-deriving numbers already on disk.)
 5. The cold-block emission mechanism in the backend, which unlocks F1–F3, F6, N5; F4, F5 and N1 need
    no new machinery.
 6. fastppcx86: patch `0034` for the madvise bug (diagnosis written, patch not yet made).
