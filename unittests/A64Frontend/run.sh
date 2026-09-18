@@ -36,8 +36,56 @@ run_emu() {
   echo $? > "$1.powerarm.rc"
 }
 
+# A tree's names, types, modes, sizes, mtimes, link targets and file hashes.
+snapshot() {
+  (cd "$1" && find . -printf '%y %m %s %T@ %p %l\n' | LC_ALL=C sort && find . -type f -exec sha256sum {} + | LC_ALL=C sort)
+}
+
+# rootfs_overlay runs with its own fixture as the base rootfs and an empty
+# overlay. Its stdout must match the Pi's (the same operations on a plain
+# directory there), and the host must see: the base unchanged, the changes in
+# the overlay, a host tool the base lacks still reachable, and with the
+# overlay disabled or absent the old fallthrough to the host's pacman state.
+run_rootfs_overlay() {
+  ovt=$(mktemp -d "${TMPDIR:-/tmp}/rootfs_overlay.XXXXXX")
+  "$emu" ./rootfs_overlay --make-fixture "$ovt/base" > rootfs_overlay.stderr 2>&1
+  mkdir "$ovt/overlay"
+  snapshot "$ovt/base" > "$ovt/before"
+  POWERARM_ROOTFS=$ovt/base POWERARM_ROOTFSOVERLAY=$ovt/overlay "$emu" ./rootfs_overlay > rootfs_overlay.powerarm 2>> rootfs_overlay.stderr
+  echo $? > rootfs_overlay.powerarm.rc
+  snapshot "$ovt/base" > "$ovt/after"
+  tool=$(POWERARM_ROOTFS=$ovt/base POWERARM_ROOTFSOVERLAY=$ovt/overlay "$emu" ./rootfs_overlay --probe /usr/bin/env 2>&1)
+  hidden=$(POWERARM_ROOTFS=$ovt/base POWERARM_ROOTFSOVERLAY=$ovt/overlay "$emu" ./rootfs_overlay --probe /var/lib/pacman 2>&1)
+  knob=$(POWERARM_ROOTFS=$ovt/base POWERARM_ROOTFSOVERLAY=0 "$emu" ./rootfs_overlay --probe /var/lib/pacman 2>&1)
+  absent=$(env -u POWERARM_ROOTFSOVERLAY POWERARM_ROOTFS="$ovt/base" "$emu" ./rootfs_overlay --probe /var/lib/pacman 2>&1)
+  host_pacman=ENOENT
+  [ -d /var/lib/pacman ] && host_pacman=exists
+  if ! cmp -s rootfs_overlay.golden rootfs_overlay.powerarm; then
+    report FAIL rootfs_overlay "stdout differs: $(cmp rootfs_overlay.golden rootfs_overlay.powerarm 2>&1 | head -1)"
+  elif [ "$(cat rootfs_overlay.rc)" != "$(cat rootfs_overlay.powerarm.rc)" ]; then
+    report FAIL rootfs_overlay "exit status $(cat rootfs_overlay.powerarm.rc), Pi $(cat rootfs_overlay.rc)"
+  elif ! cmp -s "$ovt/before" "$ovt/after"; then
+    report FAIL rootfs_overlay "the base rootfs changed: $(diff "$ovt/before" "$ovt/after" | head -3 | tr '\n' ' ')"
+  elif [ ! -f "$ovt/overlay/usr/share/ovtest/.wh.rename.txt" ] || [ ! -f "$ovt/overlay/usr/share/ovtest/modify.txt" ]; then
+    report FAIL rootfs_overlay "the overlay lacks the whiteout or the copied-up file"
+  elif [ "$tool" != exists ]; then
+    report FAIL rootfs_overlay "host /usr/bin/env unreachable through the overlay: $tool"
+  elif [ "$hidden" != ENOENT ]; then
+    report FAIL rootfs_overlay "/var/lib/pacman fell through to the host: $hidden"
+  elif [ "$knob" != "$host_pacman" ] || [ "$absent" != "$host_pacman" ]; then
+    report FAIL rootfs_overlay "disabled ($knob) or absent ($absent) overlay changed the host fallthrough ($host_pacman)"
+  else
+    report PASS rootfs_overlay "$(grep -c '^PASS' rootfs_overlay.powerarm) checks, base unchanged"
+  fi
+  rm -rf "$ovt"
+}
+
 for golden in *.golden; do
   t=${golden%.golden}
+  if [ "$t" = rootfs_overlay ]; then
+    run_rootfs_overlay
+    continue
+  fi
   run_emu "$t"
   if [ "$t" = sysreg ]; then
     fails=$(grep -c '^FAIL' sysreg.powerarm)

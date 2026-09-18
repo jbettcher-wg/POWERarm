@@ -47,6 +47,10 @@ fi
 # glibc only (ucontext): guest call/return shapes for the link-stack pairing.
 gcc -static -O2 -o callret "$here/callret.c"
 corpus="$corpus callret"
+# The rootfs overlay test: natively it runs inside a scratch copy of its own
+# fixture (OVT_ROOT); run.sh runs it under POWERarm with that fixture as the
+# base rootfs.
+gcc -static -O2 -o rootfs_overlay "$here/rootfs_overlay.c"
 
 run_golden() {
   set +e
@@ -70,6 +74,11 @@ done
 for t in $corpus; do
   run_golden "./$t"
 done
+t=rootfs_overlay
+rm -rf "$out/ovt-native"
+./rootfs_overlay --make-fixture "$out/ovt-native"
+run_golden env OVT_ROOT="$out/ovt-native" ./rootfs_overlay
+rm -rf "$out/ovt-native"
 
 # Busybox applets on a fixed input. <test>.bin names the binary and
 # <test>.args its arguments for run.sh.
