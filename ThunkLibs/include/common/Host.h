@@ -704,29 +704,21 @@ public:
 
   template<typename T, typename... Args>
   T* New(Args&&... args) {
-    // The OBJECT is aligned to max(alignof(T), 16). The STACK POINTER handed
-    // back is 8 below it, which is not an accident: both the x86-64 and the
-    // modern i386 psABI require ESP/RSP == 0 (mod 16) at the CALL instruction,
-    // so at function ENTRY -- after the return-address push -- the callee
-    // expects RSP == 8 (mod 16) on x86-64 and ESP == 12 (mod 16) on i386. The
-    // dispatcher's callback prologue (PPC64Dispatcher ExecuteJITCallback)
-    // pushes 16 resp. 12 bytes for the CallbackReturn trampoline, both of
-    // which preserve residue-8, so an SP == 8 (mod 16) here lands the guest
-    // callback on a correctly call-shaped stack in both modes.
+    // The OBJECT is aligned to max(alignof(T), 16), and so is the STACK
+    // POINTER handed back. POWERarm's guest is AArch64: AAPCS64 requires
+    // SP == 0 (mod 16) at every call and there is no return-address push, and
+    // the dispatcher's callback entry (PPC64Dispatcher.cpp CallbackPtr) moves
+    // SP down another 16 to save the crossing's X30, so the guest callback
+    // starts on an aligned stack.
     //
-    // The previous version aligned only to alignof(T) (8 for these packed-args
-    // structs), so every callback ran its guest function on an ABI-misaligned
-    // stack. Compiler-generated `movaps` to stack locals in the callback's
-    // callees would #GP on real x86 hardware; FEX's old vector lowering
-    // silently absorbed the misalignment, and the aligned lvx/stvx tier is
-    // what finally caught it (FEX_ALIGNTRAP, vkcube, 2026-08-16: guest
-    // `movaps %xmm0, 0x20(%rsp)` with RSP == 12 mod 16, two frames below a
-    // thunk callback).
+    // (Inherited from the x86-64 guests: this used to hand back SP == 8
+    // (mod 16), the x86-64 function-entry residue after a 16-byte push. Before
+    // that it aligned only to alignof(T), and the aligned lvx/stvx tier caught
+    // guest `movaps` to stack locals two frames below a thunk callback.)
     Next -= sizeof(T);
     constexpr uintptr_t ObjAlign = alignof(T) > 16 ? alignof(T) : 16;
     Next &= ~(ObjAlign - 1);
     T* Obj = reinterpret_cast<T*>(Next);
-    Next -= 8; // SP == 8 (mod 16); the object stays untouched above it.
     // Next > Top catches the wrap when Top is small; the second test catches
     // the runaway. Plain fprintf+abort because LOGMAN_THROW headers aren't in
     // this TU.

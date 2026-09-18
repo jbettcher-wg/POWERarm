@@ -8,6 +8,9 @@
 
 #include <FEXCore/Core/CoreState.h>
 #include <FEXCore/Core/SignalDelegator.h>
+#include <FEXCore/Core/Thunks.h>
+
+#include <cstring>
 
 namespace FEXCore::A64 {
 using namespace FEXCore::IR;
@@ -145,6 +148,60 @@ bool IRBuilder::BRK(uint32_t) {
                                 .TrapNumber = 0,
                                 .si_code = 1, ///< TRAP_BRKPT
                               });
+  return true;
+}
+
+// HLT is undefined at EL0 (no halting debug for user space), so the Pi raises
+// SIGILL for every immediate. One immediate is ours: HLT #0x0F3F followed by a
+// 32-byte SHA-256 is a guest->host thunk (Decoder.h, THUNK_MARKER_WORD).
+//
+// A thunk stub is entered with `bl`, X0 pointing at the packed arguments
+// (ThunkLibs/include/common/PackedArguments.h). The host function reads and
+// writes that struct, then the stub returns to X30. From the guest's side the
+// whole stub is one AAPCS64 call: the Thunk lowering spills and refills every
+// guest register around the host call, so nothing beyond what a call may
+// clobber changes.
+//
+// A marker whose hash names no registered thunk raises SIGILL like any other
+// HLT rather than calling a null host pointer. Blocks holding a thunk are never
+// stored in the code cache (CodeCache.cpp), so this check is made again in
+// every process.
+//
+// HLT #0x0F3E is the other end of a host->guest callback. The dispatcher
+// enters the guest callee with X30 pointing at ThunkCallbackRet, a word
+// POWERarm wrote there itself, so the callee's `ret` lands on it; its
+// translation is CallbackReturn, which restores the interrupted thunk
+// crossing's X30 and SP and returns to the host caller (PPC64Dispatcher.cpp
+// CallbackPtr, BranchOps.cpp). At any other address, HLT #0x0F3E is SIGILL.
+bool IRBuilder::HLT(uint32_t Word) {
+  if (Word == CALLBACK_RETURN_WORD) {
+    if (!CTX->SignalDelegation || CurrentPC != CTX->SignalDelegation->GetThunkCallbackRET()) {
+      return false;
+    }
+    _CallbackReturn();
+    // CallbackReturn leaves for the host and never falls through; the exit
+    // only closes the block.
+    ExitFunction(_LoadContext(OpSize::i64Bit, RegClass::GPR, offsetof(FEXCore::Core::CPUState, pc)));
+    BlockSetPC = true;
+    return true;
+  }
+  if (Word != THUNK_MARKER_WORD) {
+    return false;
+  }
+
+  IR::SHA256Sum Sum {};
+  // The decoder checked these bytes are readable (Decoder.cpp).
+  std::memcpy(Sum.data, reinterpret_cast<const void*>(CurrentPC + INSTRUCTION_SIZE), sizeof(Sum.data));
+  static_assert(sizeof(Sum.data) == THUNK_HASH_SIZE);
+  if (!CTX->ThunkHandler || !CTX->ThunkHandler->LookupThunk(Sum)) {
+    return false;
+  }
+
+  // A fault inside the host function is delivered with this PC.
+  _StoreContext(OpSize::i64Bit, RegClass::GPR, PCValue(CurrentPC), offsetof(FEXCore::Core::CPUState, pc));
+  _Thunk(LoadX(0), Sum);
+  ExitFunction(LoadX(30), BranchHint::Return);
+  BlockSetPC = true;
   return true;
 }
 

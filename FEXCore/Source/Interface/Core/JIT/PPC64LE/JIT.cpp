@@ -1946,7 +1946,11 @@ uint64_t PPC64JITCore::ExitFunctionLink(FEXCore::Core::CpuStateFrame* Frame, uin
     static const bool no_bypass = (getenv("FEX_EXITLINK_NOBYPASS") != nullptr);
     if (!no_bypass) {
       uint64_t TCR = Frame->Pointers.ThunkCallbackRet;
-      // POWERARM-M0-TODO(thunks): x86 callback-sentinel walk over the guest stack; an AArch64 callback returns through X30.
+      // Inert for the AArch64 guest: its callbacks return through X30, and the
+      // guest stack holds the saved X30 (PPC64Dispatcher.cpp CallbackPtr), not
+      // ThunkCallbackRet, so this walk never matches and a suspect RIP inside a
+      // callback goes to the diagnostic below. An AArch64 escape would also
+      // need the callback's entry SP, which CallbackReturn reads X30 back from.
       uint64_t RSP = Frame->State.sp;
       if (TCR && RSP >= 0x1000 && (RSP >> PtrShift) == 0) {
         // Walk up to 128 bytes above current RSP looking for

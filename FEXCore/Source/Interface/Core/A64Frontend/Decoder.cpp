@@ -223,6 +223,10 @@ void Decoder::DecodeInstructionsAtEntry(FEXCore::Core::InternalThreadState*, uin
       ++Decoded;
 
       const auto* Matcher = DecodeInstruction(Word);
+      if (Word == THUNK_MARKER_WORD && !CheckRangeExecutable(InstPC + INSTRUCTION_SIZE, THUNK_HASH_SIZE)) {
+        // A marker whose hash cannot be read is not a thunk: plain HLT, SIGILL.
+        Matcher = nullptr;
+      }
       SlotMatcher[SlotOf(InstPC)] = Matcher;
       if (!Matcher || !Matcher->Handler) {
         SetFlag(InstPC, StopBit);
@@ -272,6 +276,7 @@ void Decoder::DecodeInstructionsAtEntry(FEXCore::Core::InternalThreadState*, uin
       .IsEntryPoint = Leader == PC,
     };
     uint64_t InstPC = Leader;
+    uint64_t DecodedEnd = Leader;
     while (InWindow(InstPC)) {
       const uint32_t F = Flags(InstPC);
       if (!(F & DecodedBit) || (InstPC != Leader && (F & LeaderBit))) {
@@ -289,12 +294,23 @@ void Decoder::DecodeInstructionsAtEntry(FEXCore::Core::InternalThreadState*, uin
         LastPage = Page;
       }
       InstPC += INSTRUCTION_SIZE;
+      DecodedEnd = InstPC;
+      if (SlotWord[Slot] == THUNK_MARKER_WORD && SlotMatcher[Slot]) {
+        // The translation embeds the hash that follows the marker, so SMC
+        // tracking must cover those bytes too. The marker ends the block.
+        DecodedEnd = InstPC + THUNK_HASH_SIZE;
+        const uint64_t HashPage = (DecodedEnd - 1) & FEXCore::Utils::FEX_GUEST_PAGE_MASK;
+        if (HashPage != LastPage) {
+          BlockInfo.CodePages.insert(HashPage);
+          LastPage = HashPage;
+        }
+      }
       if (F & StopBit) {
         break;
       }
     }
     DecodedMinAddress = std::min(DecodedMinAddress, Leader);
-    DecodedMaxAddress = std::max(DecodedMaxAddress, InstPC);
+    DecodedMaxAddress = std::max(DecodedMaxAddress, DecodedEnd);
     BlockInfo.TotalInstructionCount += Block.NumInstructions;
     BlockInfo.Blocks.push_back(Block);
   }

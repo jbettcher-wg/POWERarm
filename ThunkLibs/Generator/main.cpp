@@ -13,7 +13,7 @@
 using namespace clang::tooling;
 
 void print_usage(const char* program_name) {
-  std::cerr << "Usage: " << program_name << " <filename> <libname> <gen_target> <output_filename> -- <clang_flags>\n";
+  std::cerr << "Usage: " << program_name << " <filename> <libname> <-host|-guest> <output_filename> <guest_rootfs|/> [guest_triple] -- <clang_flags>\n";
 }
 
 int main(int argc, char* const argv[]) {
@@ -44,7 +44,19 @@ int main(int argc, char* const argv[]) {
   const std::string libname = *arg++;
   const std::string target_abi = *arg++;
   const std::string output_filename = *arg++;
-  const std::string x86_rootfs = *arg++;
+  // Sysroot holding the guest's libc and libstdc++ headers, normally the guest
+  // rootfs itself. "/" means none: only a Debian-style multilib
+  // /usr/<triple>/include/ is searched in addition to the flags given.
+  const std::string guest_rootfs = *arg++;
+
+  // The guest is AArch64: AAPCS64, LP64, unsigned char, IEEE binary128 long
+  // double. Every guest data layout the generated code encodes comes from a
+  // parse with this target against the guest's own headers.
+  //
+  // An explicit triple overrides it. The host halves (ThunkLibs/HostLibs) pass
+  // x86_64-linux-gnu: they still model the inherited x86-64 guest until they
+  // are regenerated against the AArch64 rootfs and their layouts checked.
+  const std::string guest_triple = argc == 7 ? std::string {*arg++} : std::string {"aarch64-linux-gnu"};
 
   OutputFilenames output_filenames;
   if (target_abi == "-host") {
@@ -68,44 +80,40 @@ int main(int argc, char* const argv[]) {
 
   ClangTool GuestTool = Tool;
 
-  auto append_x86_rootfs_includes = [&x86_rootfs](clang::tooling::CommandLineArguments& Args, const char* triple) {
-    if (x86_rootfs == "/") {
+  auto append_guest_rootfs_includes = [&guest_rootfs](clang::tooling::CommandLineArguments& Args) {
+    if (guest_rootfs == "/") {
       return;
     }
 
+    // clang finds the guest gcc installation, and with it libstdc++, inside the
+    // sysroot (lib/gcc/aarch64-unknown-linux-gnu/<version> in an Arch Linux ARM
+    // rootfs).
     Args.push_back("--sysroot");
-    Args.push_back(x86_rootfs);
+    Args.push_back(guest_rootfs);
 
     // A cross-toolchain keeps its libstdc++ headers beside the compiler rather than inside the
-    // sysroot, so --sysroot alone resolves libc but not <type_traits>. Debian-style multilib hosts
-    // don't need this because their x86 headers live under the host's own prefix; anything else
-    // does. Set FEX_THUNKGEN_GCC_TOOLCHAIN to the toolchain root (the directory containing
-    // lib/gcc/<triple>/<version>) and clang locates both.
-    //
-    // This is applied here rather than from CMake deliberately: these arguments are only used for
-    // the x86 parse, which runs for host thunk generation as well as guest, and pointing the host
-    // (non-x86) parse at an x86 GCC installation would be wrong.
+    // sysroot, so --sysroot alone resolves libc but not <type_traits>. For that case, set
+    // FEX_THUNKGEN_GCC_TOOLCHAIN to the toolchain root (the directory containing
+    // lib/gcc/<triple>/<version>) and clang locates both. A guest rootfs needs none of this.
     if (const char* gcc_toolchain = getenv("FEX_THUNKGEN_GCC_TOOLCHAIN"); gcc_toolchain && *gcc_toolchain) {
       Args.push_back(std::string {"--gcc-toolchain="} + gcc_toolchain);
     }
 
-    // The dev rootfs is only really needed for the standard library.
-    // Other libraries generally don't have platform specific headers.
+    // Library headers the guest rootfs lacks are architecture-neutral in
+    // practice; fall back to the host's, behind everything else.
     Args.push_back("-idirafter");
     Args.push_back("/usr/include/");
   };
 
   // Analyse data layout for guest ABI
-  // POWERARM-M0-TODO(thunks): the guest data-layout parse still targets x86_64-linux-gnu; it needs an aarch64 (AAPCS64) guest model (DESIGN.md §6.1).
   GuestTool.appendArgumentsAdjuster([&](const clang::tooling::CommandLineArguments& Args, clang::StringRef) {
     clang::tooling::CommandLineArguments AdjustedArgs = Args;
-    const char* platform = "x86_64-linux-gnu";
     AdjustedArgs.push_back("-DGUEST_THUNK_LIBRARY");
-    AdjustedArgs.push_back(std::string {"--target="} + platform);
+    AdjustedArgs.push_back(std::string {"--target="} + guest_triple);
     AdjustedArgs.push_back("-isystem");
-    AdjustedArgs.push_back(std::string {"/usr/"} + platform + "/include/");
+    AdjustedArgs.push_back(std::string {"/usr/"} + guest_triple + "/include/");
 
-    append_x86_rootfs_includes(AdjustedArgs, platform);
+    append_guest_rootfs_includes(AdjustedArgs);
 
     return AdjustedArgs;
   });
@@ -118,8 +126,8 @@ int main(int argc, char* const argv[]) {
     clang::tooling::CommandLineArguments AdjustedArgs = Args;
     AdjustedArgs.push_back("-DIS_HOST_THUNKGEN_PASS");
     if (target_abi == "-guest") {
-      const char* platform = "x86_64-linux-gnu";
-      append_x86_rootfs_includes(AdjustedArgs, platform);
+      AdjustedArgs.push_back(std::string {"--target="} + guest_triple);
+      append_guest_rootfs_includes(AdjustedArgs);
     }
 
     return AdjustedArgs;

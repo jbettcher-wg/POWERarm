@@ -614,16 +614,19 @@ void LoadFEXGeneratedCode(FEXCore::Core::InternalThreadState* Thread, VDSOMappin
 
   FEXCore::Allocator::VirtualName("POWERarmMem_Misc", Mapping->X86GeneratedCodePtr, Mapping->X86GeneratedCodeSize);
 
-  // POWERARM-M0-TODO(signals): VDSO_FEX_CallbackRET is still the x86 FEX CALLBACKRET instruction bytes; the A64 guest needs a callback-return encoding the A64 frontend decodes (thunks are outside M1).
   size_t CurrentCodeOffset {};
   if (!VDSOPointers.VDSO_FEX_CallbackRET) {
-    constexpr std::array<uint8_t, 2> CallbackRetCode = {
-      0x0F, 0x3E, // CALLBACKRET FEX Instruction
+    // ThunkCallbackRet: where a host->guest callback's X30 points. The A64
+    // frontend translates this word, at this address only, as CallbackReturn
+    // (TranslateBranchSystem.cpp IRBuilder::HLT); anywhere else it is a HLT
+    // and raises SIGILL.
+    constexpr std::array<uint32_t, 1> CallbackRetCode = {
+      0xd441e7c0, // hlt #0x0f3e
     };
 
     VDSOPointers.VDSO_FEX_CallbackRET = reinterpret_cast<void*>(reinterpret_cast<uintptr_t>(Mapping->X86GeneratedCodePtr) + CurrentCodeOffset);
-    memcpy(VDSOPointers.VDSO_FEX_CallbackRET, CallbackRetCode.data(), CallbackRetCode.size());
-    CurrentCodeOffset += CallbackRetCode.size();
+    memcpy(VDSOPointers.VDSO_FEX_CallbackRET, CallbackRetCode.data(), sizeof(CallbackRetCode));
+    CurrentCodeOffset += sizeof(CallbackRetCode);
   }
 
   if (!VDSOPointers.VDSO_kernel_rt_sigreturn) {
@@ -664,13 +667,23 @@ VDSOMapping LoadVDSOThunks(FEXCore::Core::InternalThreadState* Thread, FEX::HLE:
   while (ThunkGuestPath.ends_with('/')) {
     ThunkGuestPath.pop_back();
   }
-  // POWERARM-M1-TODO(syscalls): there is no arm64 guest vDSO yet (__kernel_clock_gettime, __kernel_gettimeofday, __kernel_clock_getres, __kernel_rt_sigreturn; DESIGN.md §5). Without one no AT_SYSINFO_EHDR is passed and guest libcs use the syscalls, which is what M1 static binaries get.
-  ThunkGuestPath = fextl::fmt::format("{}/libVDSO-guest.so", ThunkGuestPath);
+  // The arm64 guest vDSO (ThunkLibs/libVDSO): __kernel_clock_gettime,
+  // __kernel_gettimeofday and __kernel_clock_getres as guest->host thunks, and
+  // __kernel_rt_sigreturn. Without it no AT_SYSINFO_EHDR is passed and guest
+  // libcs make the clock syscalls.
+  //
+  // The file name is deliberately not the inherited libVDSO-guest.so. Every
+  // POWERarm build before the HLT #0x0F3F thunk marker maps any AArch64 file of
+  // that name and then SIGILLs on the guest's first clock read, and old
+  // emulators stay in service: binfmt runs the promoted stable build for every
+  // guest child process, and a POWERARM_THUNKGUESTLIBS in the environment
+  // reaches those children too.
+  ThunkGuestPath = fextl::fmt::format("{}/libVDSO-a64-guest.so", ThunkGuestPath);
   // Load VDSO if we can
   int VDSOFD = ::open(ThunkGuestPath.c_str(), O_RDONLY);
   if (VDSOFD != -1) {
-    // An x86 libVDSO-guest.so from a fastppcx86 install must never be mapped
-    // into an arm64 guest.
+    // An x86 guest vDSO from a fastppcx86 install must never be mapped into an
+    // arm64 guest.
     Elf64_Ehdr Header {};
     if (::pread(VDSOFD, &Header, sizeof(Header), 0) != sizeof(Header) || memcmp(Header.e_ident, ELFMAG, SELFMAG) != 0 ||
         Header.e_ident[EI_CLASS] != ELFCLASS64 || Header.e_machine != EM_AARCH64) {

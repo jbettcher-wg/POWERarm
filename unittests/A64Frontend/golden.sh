@@ -32,7 +32,7 @@ python3 "$here/gen_blob.py" "$out/madvfile_blob.bin" $((24 * 1024 * 1024))
 gcc -O2 -o madvfile "$here/madvfile.c" "$here/madvfile.S"
 
 # Static libc programs.
-corpus="hello printf_float strmem fpmath lse lseminmax lsecasp litmus nosve cntvct madvfile"
+corpus="hello printf_float strmem fpmath lse lseminmax lsecasp litmus nosve cntvct madvfile vdso vdso_syscalls hlt thunk_callback"
 for t in $corpus; do
   gcc -static -O2 -o "$t" "$here/$t.c" -lm
 done
@@ -47,6 +47,12 @@ fi
 # glibc only (ucontext): guest call/return shapes for the link-stack pairing.
 gcc -static -O2 -o callret "$here/callret.c"
 corpus="$corpus callret"
+# POWERarm configuration for run.sh (<test>.env): vdso_syscalls counts
+# syscalls with a seccomp filter, and seccomp emulation is opt-in there.
+echo POWERARM_NEEDSSECCOMP=1 > vdso_syscalls.env
+# thunk_callback falls back to direct calls where no thunk host exists (the
+# Pi); under POWERarm the host path is required.
+echo THUNK_CALLBACK_REQUIRE_HOST=1 > thunk_callback.env
 
 run_golden() {
   set +e

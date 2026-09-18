@@ -1,3 +1,9 @@
+/*
+ * Layout of the AArch64 guest vDSO. POWERarm maps the file whole at one
+ * address, so file offsets are virtual addresses: one PT_LOAD from offset 0
+ * holding the headers, the dynamic symbol tables and the code. Nothing
+ * applies relocations to it. Modelled on arch/arm64/kernel/vdso/vdso.lds.S.
+ */
 SECTIONS {
   . = SIZEOF_HEADERS;
   .hash : { *(.hash) } :text
@@ -18,6 +24,7 @@ SECTIONS {
       *(.dynbss*)
       *(.gnu.linkonce.b.*)
   } :text
+  .text : { *(.text*) } :text
 
   /DISCARD/ : {
     *(.note)
@@ -31,25 +38,16 @@ SECTIONS {
 PHDRS {
   text PT_LOAD FLAGS(4 | 1) FILEHDR PHDRS;
   dynamic PT_DYNAMIC FLAGS(4);
-  note PT_NOTE FLAGS(4);
 }
 
+/* The version node glibc (dl_vdso_vsym) and musl look the symbols up under. */
 VERSION {
-  LINUX_2.6 {
+  LINUX_2.6.39 {
   global:
-    __vdso_time;
-    time;
-    __vdso_gettimeofday;
-    gettimeofday;
-    __vdso_clock_gettime;
-    clock_gettime;
-    __vdso_clock_getres;
-    clock_getres;
-    __vdso_getcpu;
-    getcpu;
-    __vdso_getrandom;
-    getrandom;
-    __fex_callback_ret;
+    __kernel_rt_sigreturn;
+    __kernel_gettimeofday;
+    __kernel_clock_gettime;
+    __kernel_clock_getres;
   local: *;
   };
 }

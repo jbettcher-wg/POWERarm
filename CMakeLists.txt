@@ -585,17 +585,47 @@ endif()
 if (BUILD_THUNKS)
   set(FEX_PROJECT_SOURCE_DIR ${PROJECT_SOURCE_DIR})
 
-  # Guest-side stub libraries. The inherited x86-64 guest stubs and their
-  # cross-build (x86_64 cross gcc, X86_DEV_ROOTFS sysroot, guest-libs
-  # ExternalProject) were removed in POWERarm M0a. AArch64 guest stubs need an
-  # AAPCS64 model in thunkgen and are milestone M5.
-  option(BUILD_GUEST_THUNKS "Build guest stub libraries (AArch64 guest thunks, not implemented yet)" OFF)
+  # Guest-side stub libraries (AArch64), built by the guest rootfs's own gcc
+  # running under the POWERarm built here: no cross toolchain. thunkgen parses
+  # their interfaces against the same rootfs (ThunkLibs/Generator/main.cpp).
+  # Only libVDSO so far (docs/powerarm/THUNKS-DESIGN.md, Stage 0).
+  option(BUILD_GUEST_THUNKS "Build the AArch64 guest stub libraries (needs an AArch64 guest rootfs)" ON)
+
+  # The guest rootfs: an explicit path, else the RootFS named in the user's
+  # POWERarm config, resolved the way POWERarm resolves it.
+  set(GUEST_ROOTFS "" CACHE PATH "AArch64 guest rootfs for the guest thunk build and thunkgen's guest-layout parse")
+  if (BUILD_GUEST_THUNKS AND NOT GUEST_ROOTFS)
+    set(_powerarm_config "$ENV{HOME}/.config/${POWERARM_DIR_NAME}/Config.json")
+    if (DEFINED ENV{XDG_CONFIG_HOME} AND NOT "$ENV{XDG_CONFIG_HOME}" STREQUAL "")
+      set(_powerarm_config "$ENV{XDG_CONFIG_HOME}/${POWERARM_DIR_NAME}/Config.json")
+    endif()
+    if (EXISTS "${_powerarm_config}")
+      file(READ "${_powerarm_config}" _powerarm_config_json)
+      string(JSON _rootfs ERROR_VARIABLE _rootfs_error GET "${_powerarm_config_json}" Config RootFS)
+      if (NOT _rootfs_error AND _rootfs)
+        if (IS_ABSOLUTE "${_rootfs}")
+          set(GUEST_ROOTFS "${_rootfs}")
+        else()
+          set(_data_home "$ENV{HOME}/.local/share")
+          if (DEFINED ENV{XDG_DATA_HOME} AND NOT "$ENV{XDG_DATA_HOME}" STREQUAL "")
+            set(_data_home "$ENV{XDG_DATA_HOME}")
+          endif()
+          set(GUEST_ROOTFS "${_data_home}/${POWERARM_DIR_NAME}/RootFS/${_rootfs}")
+        endif()
+      endif()
+    endif()
+  endif()
   if (BUILD_GUEST_THUNKS)
-    message(FATAL_ERROR "AArch64 guest thunks not implemented yet (POWERarm M5). Configure with -DBUILD_GUEST_THUNKS=OFF.")
+    if (NOT GUEST_ROOTFS OR NOT EXISTS "${GUEST_ROOTFS}/usr/bin/gcc" OR NOT EXISTS "${GUEST_ROOTFS}/usr/include/stdio.h")
+      message(FATAL_ERROR "Guest thunks need an AArch64 rootfs with gcc and glibc headers; set GUEST_ROOTFS "
+                          "(got '${GUEST_ROOTFS}') or configure with -DBUILD_GUEST_THUNKS=OFF.")
+    endif()
+    message(STATUS "Guest thunks: AArch64 rootfs ${GUEST_ROOTFS}")
   endif()
 
-  # Host halves only. thunkgen's interface parse still models the inherited
-  # x86-64 guest ABI until M5 replaces it.
+  # Host halves. Their interface parse still models the inherited x86-64
+  # guest ABI (ThunkLibs/HostLibs passes thunkgen an explicit x86-64 triple)
+  # until they are regenerated against the AArch64 rootfs.
   #
   # ArchPOWER packages a full x86_64 cross toolchain
   # (x86_64-pc-linux-gnu-{gcc,glibc}). When no explicit X86_DEV_ROOTFS was
@@ -620,11 +650,57 @@ if (BUILD_THUNKS)
   # require libclang for it.
   set(THUNKGEN_PREGEN_DIR "" CACHE PATH
       "Directory of pre-generated thunkgen host .inl files; skips the x86 interface parse")
-  if (NOT THUNKGEN_PREGEN_DIR)
+  if (NOT THUNKGEN_PREGEN_DIR OR BUILD_GUEST_THUNKS)
     add_subdirectory(ThunkLibs/Generator)
   endif()
 
   add_subdirectory(ThunkLibs/HostLibs)
+
+  if (BUILD_GUEST_THUNKS)
+    # The guest compiler: the rootfs's gcc under this build's POWERarm. The
+    # compiler's own children (cc1plus, as, ld) are guest execs and reach an
+    # emulator the way any guest exec does: through binfmt when POWERarm is
+    # registered there, else through this POWERarm.
+    set(_guest_tc "${CMAKE_BINARY_DIR}/guest-toolchain")
+    foreach(_tool gcc g++)
+      file(GENERATE OUTPUT "${_guest_tc}/aarch64-${_tool}"
+        CONTENT "#!/bin/sh\nPOWERARM_ROOTFS='${GUEST_ROOTFS}' exec '$<TARGET_FILE:FEX>' /usr/bin/${_tool} \"$@\"\n"
+        FILE_PERMISSIONS OWNER_READ OWNER_WRITE OWNER_EXECUTE GROUP_READ GROUP_EXECUTE WORLD_READ WORLD_EXECUTE)
+    endforeach()
+
+    include(ExternalProject)
+    ExternalProject_Add(guest-libs
+      PREFIX guest-libs
+      SOURCE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/ThunkLibs/GuestLibs"
+      BINARY_DIR "Guest"
+      CMAKE_ARGS
+        "-DCMAKE_BUILD_TYPE=${CMAKE_BUILD_TYPE}"
+        "-DCMAKE_TOOLCHAIN_FILE:FILEPATH=${CMAKE_CURRENT_SOURCE_DIR}/Data/CMake/toolchain_aarch64_guest.cmake"
+        "-DGUEST_TOOLCHAIN_DIR=${_guest_tc}"
+        "-DGUEST_ROOTFS=${GUEST_ROOTFS}"
+        "-DCMAKE_INSTALL_PREFIX=${CMAKE_INSTALL_PREFIX}"
+        "-DDATA_DIRECTORY=${DATA_DIRECTORY}"
+        "-DFEX_PROJECT_SOURCE_DIR=${FEX_PROJECT_SOURCE_DIR}"
+        "-DGENERATOR_EXE=$<TARGET_FILE:thunkgen>"
+        # The inner configure runs during the outer build and would otherwise
+        # absorb HOST toolchain flags from the environment. Guest code gets its
+        # flags from the toolchain file and the build type only.
+        "-DCMAKE_C_FLAGS="
+        "-DCMAKE_CXX_FLAGS="
+        "-DCMAKE_EXE_LINKER_FLAGS="
+        "-DCMAKE_SHARED_LINKER_FLAGS="
+        "-DCMAKE_MODULE_LINKER_FLAGS="
+      INSTALL_COMMAND ""
+      BUILD_ALWAYS ON
+      DEPENDS thunkgen FEX)
+
+    install(
+      CODE "message(\"-- Installing: guest-libs\")"
+      CODE "
+        execute_process(COMMAND ${CMAKE_COMMAND} --build . --target install
+          WORKING_DIRECTORY ${CMAKE_BINARY_DIR}/Guest)"
+      COMPONENT Runtime)
+  endif()
 endif()
 
 # Order the build-time git_version.h refresh ahead of the translation units

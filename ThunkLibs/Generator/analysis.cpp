@@ -7,6 +7,9 @@
 
 #include <fmt/format.h>
 
+#include <functional>
+#include <unordered_set>
+
 struct NamespaceAnnotations {
   std::optional<unsigned> version;
   std::optional<std::string> load_host_endpoint_via;
@@ -154,6 +157,77 @@ static clang::ClassTemplateDecl* FindClassTemplateDeclByName(clang::DeclContext&
   }
 }
 
+// True if `type` carries a `long double` anywhere the thunk would move or
+// dereference it: by value, behind pointers and references, in arrays and
+// _Complex, in struct/union members and bases, and in function pointer
+// signatures (callbacks). Pointers to incomplete or opaque_type structs are not
+// followed, since neither side ever looks inside them.
+//
+// POWERarm refuses these outright. The AArch64 guest's long double is IEEE
+// binary128; the ppc64le host's is IBM double-double (-mabi=ibmlongdouble), and
+// the port is staying on double-double. Both are 16 bytes, so a pass-through
+// would compile, link and silently hand the host the wrong number.
+static bool ContainsLongDouble(clang::QualType type, const std::function<bool(const clang::Type*)>& is_opaque,
+                               std::unordered_set<const clang::Type*>& visited) {
+  if (type.isNull()) {
+    return false;
+  }
+  const clang::Type* canonical = type->getCanonicalTypeInternal().getTypePtr();
+  if (!visited.insert(canonical).second) {
+    return false;
+  }
+
+  if (auto* builtin = llvm::dyn_cast<clang::BuiltinType>(canonical)) {
+    return builtin->getKind() == clang::BuiltinType::LongDouble;
+  }
+  if (auto* complex = llvm::dyn_cast<clang::ComplexType>(canonical)) {
+    return ContainsLongDouble(complex->getElementType(), is_opaque, visited);
+  }
+  if (canonical->isPointerType() || canonical->isReferenceType()) {
+    return ContainsLongDouble(canonical->getPointeeType(), is_opaque, visited);
+  }
+  if (auto* array = llvm::dyn_cast<clang::ArrayType>(canonical)) {
+    return ContainsLongDouble(array->getElementType(), is_opaque, visited);
+  }
+  if (auto* function = llvm::dyn_cast<clang::FunctionProtoType>(canonical)) {
+    if (ContainsLongDouble(function->getReturnType(), is_opaque, visited)) {
+      return true;
+    }
+    for (auto param : function->getParamTypes()) {
+      if (ContainsLongDouble(param, is_opaque, visited)) {
+        return true;
+      }
+    }
+    return false;
+  }
+  if (auto* function = llvm::dyn_cast<clang::FunctionNoProtoType>(canonical)) {
+    return ContainsLongDouble(function->getReturnType(), is_opaque, visited);
+  }
+  if (auto* record_type = llvm::dyn_cast<clang::RecordType>(canonical)) {
+    if (canonical->isIncompleteType() || is_opaque(canonical)) {
+      return false;
+    }
+    auto* record = record_type->getDecl()->getDefinition();
+    if (!record) {
+      return false;
+    }
+    if (auto* cxx_record = llvm::dyn_cast<clang::CXXRecordDecl>(record)) {
+      for (const auto& base : cxx_record->bases()) {
+        if (ContainsLongDouble(base.getType(), is_opaque, visited)) {
+          return true;
+        }
+      }
+    }
+    for (auto* field : record->fields()) {
+      if (ContainsLongDouble(field->getType(), is_opaque, visited)) {
+        return true;
+      }
+    }
+    return false;
+  }
+  return false;
+}
+
 struct TypeAnnotations {
   bool is_opaque = false;
   bool assumed_compatible = false;
@@ -209,6 +283,19 @@ static ParameterAnnotations GetParameterAnnotations(clang::ASTContext& context, 
 void AnalysisAction::ParseInterface(clang::ASTContext& context) {
   ErrorReporter report_error {context};
 
+  // Opaque types are recorded by the fex_gen_type pass below, which runs before
+  // any function is checked.
+  auto TypeContainsLongDouble = [&](clang::QualType type) {
+    std::unordered_set<const clang::Type*> visited;
+    return ContainsLongDouble(
+      type,
+      [&](const clang::Type* canonical) {
+        auto it = types.find(canonical);
+        return it != types.end() && it->second.pointers_only;
+      },
+      visited);
+  };
+
   const std::unordered_map<unsigned, ParameterAnnotations> no_param_annotations {};
 
   // TODO: Assert fex_gen_type is not declared at non-global namespaces
@@ -228,6 +315,10 @@ void AnalysisAction::ParseInterface(clang::ASTContext& context) {
       if (type->isFunctionPointerType() || type->isFunctionType()) {
         if (decl->getNumBases()) {
           throw report_error(decl->getBeginLoc(), "Function pointer types cannot be annotated");
+        }
+        if (TypeContainsLongDouble(type)) {
+          throw report_error(decl->getBeginLoc(), "long double cannot cross a thunk: the AArch64 guest's is IEEE binary128, the "
+                                                  "ppc64le host's is IBM double-double");
         }
         thunked_funcptrs[type.getAsString()] = std::pair {type.getTypePtr(), no_param_annotations};
       } else {
@@ -444,6 +535,13 @@ void AnalysisAction::ParseInterface(clang::ASTContext& context) {
               continue;
             }
 
+            if (TypeContainsLongDouble(param_type)) {
+              throw report_error(param_loc, "long double cannot cross a thunk: the AArch64 guest's is IEEE binary128, the ppc64le "
+                                            "host's is IBM double-double")
+                .addNote(report_error(emitted_function->getNameInfo().getLoc(), "in function", clang::DiagnosticsEngine::Note))
+                .addNote(report_error(template_arg_loc, "used in definition here", clang::DiagnosticsEngine::Note));
+            }
+
             if (data.param_annotations[param_idx].is_passthrough && !data.custom_host_impl) {
               throw report_error(param_loc, "Passthrough annotation requires custom host implementation");
             }
@@ -569,6 +667,10 @@ void AnalysisAction::ParseInterface(clang::ASTContext& context) {
           if (data.is_variadic) {
             if (!annotations.uniform_va_type) {
               throw report_error(decl->getBeginLoc(), "Variadic functions must be annotated with parameter type using uniform_va_type");
+            }
+            if (TypeContainsLongDouble(*annotations.uniform_va_type)) {
+              throw report_error(decl->getBeginLoc(), "long double cannot cross a thunk: the AArch64 guest's is IEEE binary128, the "
+                                                      "ppc64le host's is IBM double-double");
             }
 
             // Convert variadic argument list into a count + pointer pair

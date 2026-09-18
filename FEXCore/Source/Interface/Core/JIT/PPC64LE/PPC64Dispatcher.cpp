@@ -985,35 +985,36 @@ void PPC64Dispatcher::EmitDispatcher() {
     std(TMP1, static_cast<int16_t>(isi_off), STATE);
   }
 
-  // Push ThunkCallbackRet onto the guest stack so the guest callback's ret
-  // lands on the 0F3E trampoline, which triggers CallbackReturn IR op.
-  // Mirrors the ARM64 dispatcher.
+  // AArch64 callback return: the guest callee returns to X30, so X30 is set
+  // to ThunkCallbackRet, the HLT #0x0F3E word whose translation is
+  // CallbackReturn.
   //
-  // Invariant: push == retaddr_size + 8, because CallbackReturn's `+8` is
-  // unconditional and correct on both backends. So:
-  //   x86-64: push 16, guest `ret` pops 8, CallbackReturn adds 8 -> net 0
-  //   i386  : push 12, guest `ret` pops 4, CallbackReturn adds 8 -> net 0
+  // X30 in the frame is live guest state here: DEF_OP(Thunk) spilled every
+  // static register before its host call, and the interrupted crossing exits
+  // to X30 once the host function returns (IRBuilder::HLT). The callee
+  // overwrites it, so it is saved in 16 bytes below the guest SP (SP stays
+  // 16-byte aligned, as AAPCS64 requires at a call) and DEF_OP(CallbackReturn)
+  // restores both X30 and SP. The guest stack rather than the host's: nested
+  // callbacks pair up by stack discipline, and the host frame layout that
+  // CallbackReturn's ResetStack/PopCalleeSavedRegisters depend on is left
+  // alone.
   //
-  // Was hard-coded to -16 + std(8-byte), which leaked -4 per callback under
-  // an i386 guest. Not visible today because GuestStackBumpAllocator
-  // (ThunkLibs/include/common/Host.h:674-706, active whenever
-  // THUNK_HOST_NOT_X86_64 is defined -- true for every thunk lib on this
-  // host, see ThunkLibs/HostLibs/CMakeLists.txt:49-51) snapshots guest RSP
-  // before each callback and restores it after, so the leak never
-  // accumulates. But it goes live the moment anything reaches CallbackPtr
-  // outside that wrapper.
+  // The x86-64 convention this replaces pushed ThunkCallbackRet itself as the
+  // return address; the guest `ret` popped it and CallbackReturn added 8.
   {
-    // POWERARM-M0-TODO(thunks): x86-64 callback convention (push ThunkCallbackRet as the return address); an AArch64 callback should load X30 instead.
-    const int16_t PushBytes = -16;
     int32_t ret_off = static_cast<int32_t>(
       offsetof(CpuStateFrame, Pointers.ThunkCallbackRet));
-    int32_t rsp_off = static_cast<int32_t>(
+    int32_t sp_off = static_cast<int32_t>(
       offsetof(CpuStateFrame, State.sp));
+    int32_t lr_off = static_cast<int32_t>(
+      offsetof(CpuStateFrame, State.x) + 30 * sizeof(uint64_t));
     ld(TMP1, ret_off, STATE);     // TMP1 = ThunkCallbackRet (guest VA)
-    ld(TMP2, rsp_off, STATE);     // TMP2 = guest SP
-    addi(TMP2, TMP2, PushBytes);  // SP -= 16
-    std(TMP1, 0, TMP2);           // [SP+0] = ThunkCallbackRet
-    std(TMP2, rsp_off, STATE);    // write back new RSP to state
+    ld(TMP2, sp_off, STATE);      // TMP2 = guest SP
+    ld(TMP3, lr_off, STATE);      // TMP3 = the crossing's X30
+    addi(TMP2, TMP2, -16);        // SP -= 16
+    std(TMP3, 0, TMP2);           // [SP] = saved X30
+    std(TMP2, sp_off, STATE);     // write back the new SP
+    std(TMP1, lr_off, STATE);     // X30 = ThunkCallbackRet
   }
 
   FillStaticRegs();
