@@ -7,15 +7,22 @@ We support both guest->host thunks, as well as host->guest callbacks
 Configure the main FEX project with `-DBUILD_THUNKS=ON`. The host halves then build as part of the
 default target into `$BUILDDIR/HostLibs_64`.
 
-**POWERarm note.** The x86-64 guest-stub cross-build was removed in M0a. `-DBUILD_GUEST_THUNKS=ON`
-is a configure error until AArch64 guest stubs land (M5). The `lib*/Guest.cpp` sources and
-`include/common/Guest.h` are kept as the starting point; they still contain x86 trampolines.
+**POWERarm note.** The guest is AArch64. Guest stubs are built by the guest rootfs's own gcc
+running under the POWERarm of the same build (`BUILD_GUEST_THUNKS`, on by default with
+`BUILD_THUNKS`; the rootfs is `GUEST_ROOTFS`, or the one named in the user's POWERarm config) into
+`$BUILDDIR/Guest`. Only `libVDSO` is built so far; the other `lib*/Guest.cpp` sources still need
+porting. The thunk marker is `HLT #0x0F3F` followed by the 32-byte hash (`include/common/Guest.h`),
+and a host function pointer linked into the guest reaches its invoker in X16/X17.
 
-**PPC64LE note.** The generator must parse each `libX_interface.cpp` with an **x86** target, because
-the code it emits encodes guest data layout. Parsing against the ppc64le system headers is unsound:
-it has silently produced different repack code for libwayland-client and made the generator reject
-valid Vulkan structs. The build finds an x86 sysroot from the `x86_64-pc-linux-gnu` cross toolchain,
-or takes one from `X86_DEV_ROOTFS`. Never point the parse at host headers to make a build succeed.
+**PPC64LE note.** The generator parses each `libX_interface.cpp` for the guest data layout with an
+**aarch64** target against the guest rootfs's own headers (`ThunkLibs/Generator/main.cpp`), because
+the code it emits encodes guest data layout. The host halves (`HostLibs`) still pass an explicit
+x86-64 triple and x86 sysroot: they model the inherited x86-64 guest until they are regenerated
+against the AArch64 rootfs and their layouts checked. Parsing against the ppc64le system headers is
+unsound: it has silently produced different repack code for libwayland-client and made the generator
+reject valid Vulkan structs. Never point the parse at host headers to make a build succeed. The
+generator refuses `long double` anywhere in a thunked signature: the guest's is IEEE binary128 and the
+host's is IBM double-double.
 
 After that, a guest rootfs is needed with the guest-libs installed. Typically this is done with symlinks that replace the native guest libraries. eg 
 ```

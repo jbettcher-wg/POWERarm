@@ -82,6 +82,8 @@ by default and none with the knob set.
 | `simd_shll` | differential, generated | SHLL/SHLL2 at every element width over lane boundary values |
 | `exclusive` | differential, generated | LDXR/LDAXR then STXR/STLXR at every width: success, store without a load, a second store, CLREX in between, NZCV across a successful store; LDAR/STLR. A store to a different address than the load is IMPLEMENTATION DEFINED (the Pi lets it succeed within a region) and is not tested |
 | `hello`, `printf_float`, `strmem`, `fpmath` (and `musl_*`) | differential | static glibc (and musl) programs: printf float formatting, the string/memory routines over lengths and alignments, scalar FP code |
+| `vdso` | self-checking | the guest vDSO (needs the guest thunk build, below): `AT_SYSINFO_EHDR`, the ELF and its four `__kernel_*` symbols under `LINUX_2.6.39`, a signal handler returning into `__kernel_rt_sigreturn`, every vDSO-served `CLOCK_*` id, `clock_getres`, `gettimeofday` and `time`, monotonic and agreeing with the raw syscalls |
+| `vdso_syscalls` | differential | how many `clock_gettime`/`gettimeofday` reads are syscalls, counted with a seccomp filter (`vdso_syscalls.env` turns on POWERarm's seccomp emulation): 0 of 1000 through the vDSO, 1000 of 1000 raw `syscall()` reads as the positive control |
 | `hlt`, `sigill_hlt` | self-checking; differential exit status | HLT raises SIGILL for every immediate, at its own address; the thunk marker `HLT #0x0F3F` does too when its hash names no thunk, or runs off executable memory |
 | `bb_*` | differential | busybox `echo`, `cat`, `wc`, `sort`, `sort -n`, `sha256sum`, `md5sum` |
 
@@ -114,6 +116,23 @@ Three, and `run.sh` fails if any does not fire:
   the comparison to report a mismatch.
 - `run.sh` flips one hex digit of V17 on a `vdump` line of a copy of
   `fp_scalar.golden` and requires the comparison to report a mismatch.
+
+## The guest vDSO
+
+`vdso` and `vdso_syscalls` expect the guest vDSO, `libVDSO-a64-guest.so`,
+which a `-DBUILD_THUNKS=ON` build puts in `<build>/Guest`. POWERarm looks for
+it in `ThunkGuestLibs`, so run the suite with it pointed there:
+
+```sh
+POWERARM_THUNKGUESTLIBS=$PWD/build/Guest unittests/A64Frontend/run.sh "$PWD/build/Bin/POWERarm" OUTDIR
+```
+
+A POWERarm older than the thunk marker never loads a file of that name, so
+the variable is harmless to the binfmt-launched emulator that runs the shell
+itself when this shell is emulated.
+
+A test that needs POWERarm configuration of its own has a `<test>.env` file
+of `NAME=value` words, which `run.sh` sets for that test only.
 
 ## Per-test build flags and stated goldens
 

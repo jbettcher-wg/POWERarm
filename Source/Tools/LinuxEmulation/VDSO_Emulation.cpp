@@ -664,13 +664,23 @@ VDSOMapping LoadVDSOThunks(FEXCore::Core::InternalThreadState* Thread, FEX::HLE:
   while (ThunkGuestPath.ends_with('/')) {
     ThunkGuestPath.pop_back();
   }
-  // POWERARM-M1-TODO(syscalls): there is no arm64 guest vDSO yet (__kernel_clock_gettime, __kernel_gettimeofday, __kernel_clock_getres, __kernel_rt_sigreturn; DESIGN.md §5). Without one no AT_SYSINFO_EHDR is passed and guest libcs use the syscalls, which is what M1 static binaries get.
-  ThunkGuestPath = fextl::fmt::format("{}/libVDSO-guest.so", ThunkGuestPath);
+  // The arm64 guest vDSO (ThunkLibs/libVDSO): __kernel_clock_gettime,
+  // __kernel_gettimeofday and __kernel_clock_getres as guest->host thunks, and
+  // __kernel_rt_sigreturn. Without it no AT_SYSINFO_EHDR is passed and guest
+  // libcs make the clock syscalls.
+  //
+  // The file name is deliberately not the inherited libVDSO-guest.so. Every
+  // POWERarm build before the HLT #0x0F3F thunk marker maps any AArch64 file of
+  // that name and then SIGILLs on the guest's first clock read, and old
+  // emulators stay in service: binfmt runs the promoted stable build for every
+  // guest child process, and a POWERARM_THUNKGUESTLIBS in the environment
+  // reaches those children too.
+  ThunkGuestPath = fextl::fmt::format("{}/libVDSO-a64-guest.so", ThunkGuestPath);
   // Load VDSO if we can
   int VDSOFD = ::open(ThunkGuestPath.c_str(), O_RDONLY);
   if (VDSOFD != -1) {
-    // An x86 libVDSO-guest.so from a fastppcx86 install must never be mapped
-    // into an arm64 guest.
+    // An x86 guest vDSO from a fastppcx86 install must never be mapped into an
+    // arm64 guest.
     Elf64_Ehdr Header {};
     if (::pread(VDSOFD, &Header, sizeof(Header), 0) != sizeof(Header) || memcmp(Header.e_ident, ELFMAG, SELFMAG) != 0 ||
         Header.e_ident[EI_CLASS] != ELFCLASS64 || Header.e_machine != EM_AARCH64) {
