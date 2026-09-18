@@ -201,9 +201,10 @@ CAS five times as heavily in proportion.
    (SP 0 mod 16) must not be cherry-picked to fastppcx86.
 8. **Two-tier rootfs** (`DESIGN.md` §6.2a.1): merged 2026-09-18 (37be7c9aa).
    `ArchLinuxARM-vk-overlay` is bootstrapped with pacman, libxkbcommon and MangoHud v0.8.4 (built
-   from source; not in the ALARM repos). **Stable predates the overlay.** Guest `execve` goes through
-   binfmt, so every child process runs on stable and sees no overlay until the next promote. To
-   keep children on a dev build, use `POWERARM_PORTABLE=1` with an absolute `POWERARM_ROOTFS`.
+   from source; not in the ALARM repos). Stable has had the overlay since the 2026-09-18 promote.
+   The general trap remains: guest `execve` goes through binfmt, so every child process runs on
+   STABLE, whatever build launched the parent. To keep children on a dev build, use
+   `POWERARM_PORTABLE=1` with an absolute `POWERARM_ROOTFS`.
 9. **Research landed (Fable, design docs, no code):** COLD, the cost of translating
    (`docs/powerarm/research/cold-translation/`), and WARM, the quality of the emitted code
    (`docs/powerarm/research/warm-codegen/`). Each gives a ranked top five across the reference
