@@ -1,0 +1,140 @@
+# POWERarm Vulkan experiment manifest: the M2 toolchain roots plus vulkan-tools and RADV (unthunked baseline).
+# Format: whitespace-separated records, one per line, '#' comments.
+#   format N                          manifest format version
+#   arch ARCH                         package architecture
+#   mirror URL                        default repo base (URL/<repo>/<filename>)
+#   keyring-fingerprint FPR           only signatures by this key (or its subkeys) are accepted
+#   db REPO SHA256 LAST-MODIFIED      repo database the pins were resolved from (informational)
+#   root PKG...                       closure roots; 'resolve' recomputes the pkg lines from them
+#   keyring NAME VER REPO FILE SHA256 CSIZE ISIZE   keyring package (signature trust anchor)
+#   pkg NAME VER REPO FILE SHA256 CSIZE ISIZE       a package extracted into the sysroot
+#   project NAME VERSION URL SHA256   upstream source tarball for M2 builds
+#   basetar URL SHA256 SIZE           official rootfs tarball, used only with --base-tarball
+format 1
+arch aarch64
+mirror http://mirror.archlinuxarm.org/aarch64
+keyring-fingerprint 68B3537F39A313B3E574D06777193F152BDBE6A6
+db core c8b3b9ffaab4780e882b58583efb9cd42ef4e519d871b32549942169e05832b8 Thu,_17_Sep_2026_18:26:07_GMT
+db extra 447f6d4a958eb31e67f034b249b8bd8b0a9c23fa728ba77185c4a9c318ccc77b Fri,_18_Sep_2026_02:26:00_GMT
+db alarm 68059c46ace48c50fd16bcd28807fdd1129187f0e923619cba96b84c8777d6b3 Mon,_14_Sep_2026_18:44:51_GMT
+root filesystem glibc linux-api-headers gcc gcc-libs binutils make gmp
+root mpfr libmpc libisl zlib zstd libelf bash coreutils
+root vulkan-tools vulkan-radeon sed grep gawk diffutils findutils tar
+root gzip
+basetar http://os.archlinuxarm.org/os/ArchLinuxARM-aarch64-latest.tar.gz 42a4eeaa038994ffd31fa173256ef2f0ef511358eeb41b9ea1f8626391b9b319 829367415
+keyring archlinuxarm-keyring 20240419-2 core archlinuxarm-keyring-20240419-2-any.pkg.tar.xz 3cb36869edfe413672a6e932cc55d7f8386e1a9d3b38663cfb3bc6fe0d146e21 5160 3142
+pkg acl 2.4.0-1 core acl-2.4.0-1-aarch64.pkg.tar.xz 8d400d781a3fd765f0f7c98183492850f830da3d3efb05518b5927b446387350 143708 497040
+pkg attr 2.6.0-1 core attr-2.6.0-1-aarch64.pkg.tar.xz 7d0a27bb1761e2b5c329da6fee515af4d174869f303009283fbc6b74497d267c 69708 412510
+pkg audit 4.2.1-1 core audit-4.2.1-1-aarch64.pkg.tar.xz f2535b990835b668f1c587586617f3663ef33dd495bef14a9be5d680a58bda43 382336 1586666
+pkg bash 5.3.15-1 core bash-5.3.15-1-aarch64.pkg.tar.xz 4e131277195e18ec5ab3d7f199e123ea2ec31ed05d56c28c6ea9a24753e20476 1825960 12156424
+pkg binutils 2.46+r70+g155188ea10a7-1 core binutils-2.46+r70+g155188ea10a7-1-aarch64.pkg.tar.xz 1acb6074f546ee662f29937897ab80bd87b0dcdd66c714381e8488d79cd53fcc 7845808 53968435
+pkg brotli 1.2.0-1 core brotli-1.2.0-1-aarch64.pkg.tar.xz 5bc65da23452fe0408341a1c626c9a322ffb0890bcf83aae9902fd6092213356 392180 1258287
+pkg bzip2 1.0.8-6 core bzip2-1.0.8-6-aarch64.pkg.tar.xz b11f21c0bc3d1193dd02040644cd604d49cc89184db1b7bc76a623532fcb0dcb 56252 139951
+pkg ca-certificates 20240618-1 core ca-certificates-20240618-1-any.pkg.tar.xz 09cfa7af79ca8120572e737c34080580ddc50c5e33a03a686c5c55032f02b575 2152 0
+pkg ca-certificates-mozilla 3.129-1 core ca-certificates-mozilla-3.129-1-aarch64.pkg.tar.xz f05bc2121f84ded48261de66d8e58e18129aff4e55e0d86440db961eca27342f 380180 1071211
+pkg ca-certificates-utils 20240618-1 core ca-certificates-utils-20240618-1-any.pkg.tar.xz c60483cb5fb3002acfe4cbee8966e9c13936ea9bff3db9db360d8d638f013c8b 10884 13956
+pkg coreutils 9.11-2 core coreutils-9.11-2-aarch64.pkg.tar.xz fffa0cc4002dd955afbdff008a6489ee600dfeae1ec2a561feca13c1bdfe7d7f 2791848 20749562
+pkg curl 8.22.0-1 core curl-8.22.0-1-aarch64.pkg.tar.xz 5461bb97fca88b237d17db833622789eedca390634a6d2fb2e3b71287e52acb2 1281188 2508182
+pkg default-cursors 3-1 extra default-cursors-3-1-any.pkg.tar.xz 19a87290af8829271e9670576096b08b9262d8fac1e3deb4167d7cd3d3ae1830 2412 30
+pkg diffutils 3.12-2 core diffutils-3.12-2-aarch64.pkg.tar.xz 9ad7b66fac2b6094f14d924476fa4efadf81536efde06b29ef5a3e5737e22924 328268 1694864
+pkg e2fsprogs 1.47.4-1 core e2fsprogs-1.47.4-1-aarch64.pkg.tar.xz 153046071f8abf1caf546a0352c7d268fb07a5b0ba0abd996de382adc8692842 1195448 6537466
+pkg expat 2.8.4-1 core expat-2.8.4-1-aarch64.pkg.tar.xz 95b99acc39cb71d84fe2a7de224b0efb2fd1f383f9f6386508c280601e8714ec 116696 569151
+pkg filesystem 2025.10.12-1 core filesystem-2025.10.12-1-any.pkg.tar.xz 228b63ef4a88501a68856231a19325a1ad31d92016a692d0a8be181edc70703f 14864 24508
+pkg findutils 4.11.0-1 core findutils-4.11.0-1-aarch64.pkg.tar.xz 83bacaa55d1b28e5d800adf969221458695f0eb5cf7d300e2cb26a7b78f9c321 509248 2088196
+pkg gawk 5.4.1-1 core gawk-5.4.1-1-aarch64.pkg.tar.xz 340dcceea87ca9274cf7e6597b8c87aa495b4cdcb9470dc9ef4428a27612d6ca 1450720 5114836
+pkg gc 8.2.12-1 core gc-8.2.12-1-aarch64.pkg.tar.xz 6667e978482949ffc35931f1ef195354e14af47c3783dd62b2646a4d25573aa3 226420 943107
+pkg gcc 16.1.1+r12+g301eb08fa2c5-1 core gcc-16.1.1+r12+g301eb08fa2c5-1-aarch64.pkg.tar.xz 067a2aa64f5c7e626e3910fed6fd1f173a1fd9eb6bebaebdd7a7f5be58e170c4 46558316 197928515
+pkg gcc-libs 16.1.1+r12+g301eb08fa2c5-1 core gcc-libs-16.1.1+r12+g301eb08fa2c5-1-aarch64.pkg.tar.xz 28dc936393f6ba45fee433a58fb1c6c0648aa4500131087fded719c22e2fc222 2552 0
+pkg gdbm 1.26-2 core gdbm-1.26-2-aarch64.pkg.tar.xz 123df7945d23eb31262dc108bdf057b74cd93f13e782b99dfe077c51daabd222 246820 1014364
+pkg glibc 2.43+r22+g8362e8ce10b2-2 core glibc-2.43+r22+g8362e8ce10b2-2-aarch64.pkg.tar.xz 8fac217e98c6e4342326726b2640ac254e8c82032f06f30bfa13ebbcc4fcb25b 9676568 60014558
+pkg gmp 6.3.0-3 core gmp-6.3.0-3-aarch64.pkg.tar.xz 720607bed2249dd8cd0304b6cf4102884fa2ca24c21444f007bc12af542ea6c5 380364 946243
+pkg gnutls 3.8.13-3 core gnutls-3.8.13-3-aarch64.pkg.tar.xz aa74e78dc3f954e2b5399e1da8f89e926190aa64ffd57cf30006b3c1e2e037b1 1727672 9622358
+pkg grep 3.12-2 core grep-3.12-2-aarch64.pkg.tar.xz 7578277966710eeba59f82665ab6f33984ca11d6c2ab74deccc6f681d61c2027 225556 961145
+pkg guile 3.0.11-1 core guile-3.0.11-1-aarch64.pkg.tar.xz 28fdd4e5d274c0498a8e3026b7ca3694105b880a6143b6114a25fb8e9eda36af 7900976 57340914
+pkg gzip 1.14-2 core gzip-1.14-2-aarch64.pkg.tar.xz 24522c1c5669d1ca6da7581c0379ca7e59732eb414d21ec0357835eeda5eb05f 82792 199322
+pkg iana-etc 20260617-1 core iana-etc-20260617-1-any.pkg.tar.xz 09fced67d5a7e1e2380fe5aaf0ff257aff8a6866e87f3388f506e379c5ed01b5 394152 4213221
+pkg icu 78.3-1 core icu-78.3-1-aarch64.pkg.tar.xz 314cb2fecde9fd2a64ca9b6652c4c0e517bec0dceeafaf7e6a0cd578c607357f 10800876 46822662
+pkg jansson 2.15.1-1 core jansson-2.15.1-1-aarch64.pkg.tar.xz bffe44d5a784c7cac0a478cfb6caefe065fb59c907c1d182f60750d2873f261f 77460 337723
+pkg json-c 0.19-1 core json-c-0.19-1-aarch64.pkg.tar.xz 233dd80f44789cd2581ea7879593d230b5a322559cdde43ce73c9719cd7e19c6 58664 252370
+pkg keyutils 1.6.3-4 core keyutils-1.6.3-4-aarch64.pkg.tar.xz 7ee05c67895771b838dc035219290095e79866c61ce63bd726b002df7dfbfdd5 102664 342481
+pkg krb5 1.22.2-1 core krb5-1.22.2-1-aarch64.pkg.tar.xz 8b4e743a45590b49ea98a16b3ce339a663908bf67eb3a3965374aabac3c69511 1257028 6924090
+pkg leancrypto 1.9.0-1 core leancrypto-1.9.0-1-aarch64.pkg.tar.xz c501e72589c91225a13a2395e3acc53ed532486134ad8fde3574b2092c74fb4b 1341472 6433759
+pkg libasan 16.1.1+r12+g301eb08fa2c5-1 core libasan-16.1.1+r12+g301eb08fa2c5-1-aarch64.pkg.tar.xz 246617f4696ca770e4b36c7ceac2849517a68e19b5d5875a11d6844e212a1b83 408016 1851004
+pkg libatomic 16.1.1+r12+g301eb08fa2c5-1 core libatomic-16.1.1+r12+g301eb08fa2c5-1-aarch64.pkg.tar.xz 7eae53e2e1a42ebc21d78eb923f9e249a4008098473c61a3d9db1c7fb5de36d3 12944 70772
+pkg libcap 2.78-1 core libcap-2.78-1-aarch64.pkg.tar.xz 828383fe196cb3bbd4ea0a7cb4385e8184ea8b281b8833eee613837eda507643 715424 2632280
+pkg libcap-ng 0.9.6-1 core libcap-ng-0.9.6-1-aarch64.pkg.tar.xz 969fcda6dd3b20850288dd7f2a26f22554e2e99dcee5bcff838f7587dc8b15cb 68624 366596
+pkg libdisplay-info 0.3.0-1 extra libdisplay-info-0.3.0-1-aarch64.pkg.tar.xz 73af5a8923b764610ed281c3d1529c73bfeb40dcb3a4015a1e36ef4fc1ba7e5d 113384 437523
+pkg libdrm 2.4.134-1 extra libdrm-2.4.134-1-aarch64.pkg.tar.xz d4173d7adc60d32d389e44e976447962c31bc23ff9a2153539bd8ad766e307b8 400060 3090527
+pkg libedit 20260512_3.1-1 core libedit-20260512_3.1-1-aarch64.pkg.tar.xz 9900ef2ce4c8bddc1066a89951ff0e0dead005f168a9ac402ac487047961f2e5 107492 317208
+pkg libelf 0.196-1 core libelf-0.196-1-aarch64.pkg.tar.xz a8f417d24a297384b27935381a0a4f892b121956066c09a3c9cd1e3a47c6d214 577236 3722920
+pkg libevent 2.1.13-2 core libevent-2.1.13-2-aarch64.pkg.tar.xz 616950e746a507c7371d6643249e7dbb96934612c0cf0df8760acedd94411183 245152 1444882
+pkg libffi 3.8.0-1 core libffi-3.8.0-1-aarch64.pkg.tar.xz dfece459e053d53a5a7fdfbb2caf1b0fa662470220f86615a7789eba8571c0ff 51464 131246
+pkg libgcc 16.1.1+r12+g301eb08fa2c5-1 core libgcc-16.1.1+r12+g301eb08fa2c5-1-aarch64.pkg.tar.xz 0f98bdf94a6e2f6758b9ffe98cbc9391a109326ed23bd264cabe0a81a04d7ae4 55204 136916
+pkg libgcrypt 1.12.4-1 core libgcrypt-1.12.4-1-aarch64.pkg.tar.xz f1401f6381963b666109465ccc88dace60af7aa0d912aa04ca8c905e02f57394 598400 1766105
+pkg libgfortran 16.1.1+r12+g301eb08fa2c5-1 core libgfortran-16.1.1+r12+g301eb08fa2c5-1-aarch64.pkg.tar.xz 08b86638b136c637713115b5de78e04fb25310eaf16fe4db21a16510c591cc12 387916 1906836
+pkg libgomp 16.1.1+r12+g301eb08fa2c5-1 core libgomp-16.1.1+r12+g301eb08fa2c5-1-aarch64.pkg.tar.xz 117e58e103b45888561d7e39b69b5632ee16ac0b2e6e36c6f91f51f70ff85183 212292 480065
+pkg libgpg-error 1.61-1 core libgpg-error-1.61-1-aarch64.pkg.tar.xz e6ea4251e2d6919f861a08ac09b2c72a6a687e208a495341893dba5839b00b5d 254104 1268909
+pkg libidn2 2.3.8-1 core libidn2-2.3.8-1-aarch64.pkg.tar.xz 43224d721d0afb6bc99af5c7a546dd0c7cff44b597224fc5f5f8d6c5a7c14d89 146036 491056
+pkg libisl 0.28-1 core libisl-0.28-1-aarch64.pkg.tar.xz 09fbdc36a162be970ca6a2bdf95e778b998eeaacfc1655a8d73ae262ad1f9298 1625616 12729512
+pkg libldap 2.7.1-1 core libldap-2.7.1-1-aarch64.pkg.tar.xz 09423337d9311f65e2cdd298ff7a2bbfbfdd7f5cbccfc21e42d8b82de669c737 263796 730438
+pkg liblsan 16.1.1+r12+g301eb08fa2c5-1 core liblsan-16.1.1+r12+g301eb08fa2c5-1-aarch64.pkg.tar.xz 4e109ab2ab62d922bd3453593f5c8824cadbdf445c4a37000c2636f272e05c78 193756 605748
+pkg libmpc 1.4.1-1 core libmpc-1.4.1-1-aarch64.pkg.tar.xz 91c23ad752247d9784bbd2c3da96f379efd6360a5a88c2316d458bb2ecda093c 91352 249688
+pkg libnghttp2 1.70.0-1 core libnghttp2-1.70.0-1-aarch64.pkg.tar.xz 4d7fdbd963e5ff7a293079e35750cbd535ad846581e1a7926035b34968b40c0e 95812 445211
+pkg libnghttp3 1.18.0-1 core libnghttp3-1.18.0-1-aarch64.pkg.tar.xz b5eb225b96c3c3fcb33c8715b9987b9eaff742214964662befbc88df4d5bea65 79488 331262
+pkg libngtcp2 1.25.0-1 core libngtcp2-1.25.0-1-aarch64.pkg.tar.xz f69a124bd047616904c7e6bb980b8d3fec0a3550b5e35f1b7097b7645dfc5116 185240 851049
+pkg libnsl 2.0.1-2 core libnsl-2.0.1-2-aarch64.pkg.tar.xz 4f37f2ed67a79d76458e3af7b8bcdb0fef0cf35e0ba71569b7fbb0388d592619 21044 108730
+pkg libobjc 16.1.1+r12+g301eb08fa2c5-1 core libobjc-16.1.1+r12+g301eb08fa2c5-1-aarch64.pkg.tar.xz 61742f90c1cc572aed5c1f0068387a4e860e6a779e89e9fd1b1b3a7e61fb1c1c 33740 138964
+pkg libp11-kit 0.26.5-1 core libp11-kit-0.26.5-1-aarch64.pkg.tar.xz 0d8da62f6e0fb213858619d928b4b25afb9e783b8285dfdfbef54339584b35ef 416988 4249172
+pkg libpciaccess 0.19-1 extra libpciaccess-0.19-1-aarch64.pkg.tar.xz d490a86384c25a9258e7eec84f5eaceca072e6ca45c37972e12f6e8a3da3766d 20856 88272
+pkg libpsl 0.21.5-2 core libpsl-0.21.5-2-aarch64.pkg.tar.xz 8b565fcb0128be8c4c16ab82b3f9379348db6aeeffc3c639937eeedbe00fa500 84892 330334
+pkg libquadmath 16.1.1+r12+g301eb08fa2c5-1 core libquadmath-16.1.1+r12+g301eb08fa2c5-1-aarch64.pkg.tar.xz d97f0d43fe0212774d591a6d43b05da78590e4261af71b7a1b26097e63dc57eb 4168 3324
+pkg libsasl 2.1.28-5 core libsasl-2.1.28-5-aarch64.pkg.tar.xz 5ec2f2ec119161f9e0f93a91f0f7001f9f401d5eb6dd1d7769988ee0308f92b2 139992 986051
+pkg libssh2 1.11.1-7 core libssh2-1.11.1-7-aarch64.pkg.tar.xz cea0b5138a28b5b4d8eff76e2cc1665f030f109074d88c3962d19aa09921f3b3 242204 526906
+pkg libstdc++ 16.1.1+r12+g301eb08fa2c5-1 core libstdc++-16.1.1+r12+g301eb08fa2c5-1-aarch64.pkg.tar.xz 19832a38b2c4820695d28289f1c4f371955586d39fb893d8cbc0d8dbb09a4383 694148 3021979
+pkg libtasn1 4.21.0-1 core libtasn1-4.21.0-1-aarch64.pkg.tar.xz 96ef7088790462586eec0b5ba2aacdcbd1fc71bfd2a6dbe8bd7c20b03ed298a8 132184 476757
+pkg libtirpc 1.3.8-1 core libtirpc-1.3.8-1-aarch64.pkg.tar.xz 4b233a7e527e4874aa4622166333f13ba1a5da187f3a1d7a347f3895a8c360a4 171572 523572
+pkg libtsan 16.1.1+r12+g301eb08fa2c5-1 core libtsan-16.1.1+r12+g301eb08fa2c5-1-aarch64.pkg.tar.xz 8ac217aab99e465455309957031c4b058f37560be337a1fe1f2dac3ab9e0218d 380256 1539732
+pkg libubsan 16.1.1+r12+g301eb08fa2c5-1 core libubsan-16.1.1+r12+g301eb08fa2c5-1-aarch64.pkg.tar.xz 6b0f5501898077d3f9533edf75aded85072890f85c1713fde79ed99230d8e5bb 176464 540516
+pkg libunistring 1.4.2-1 core libunistring-1.4.2-1-aarch64.pkg.tar.xz 106ac7728ff2cc498ffa49d7623e64cf9002eea15c5026ec54fab8cd6a294134 595644 2907448
+pkg libverto 0.3.2-6 core libverto-0.3.2-6-aarch64.pkg.tar.xz 6b39f3feb66c1421dd4cfee2bbb339543db112c624a1eb8990ca9c9b36710dbc 18160 164278
+pkg libx11 1.8.13-1 extra libx11-1.8.13-1-aarch64.pkg.tar.xz e68195a71049251a68c5073c2baebc0f2bba41dbdfada5a41dbbd28a37040f3c 2011676 10387032
+pkg libxau 1.0.12-1 extra libxau-1.0.12-1-aarch64.pkg.tar.xz f9abaead8ca4f0d4f9a6e181c3fcad8f96ddb9cf1d75d1d82a81c0ca8ad08a50 11664 76296
+pkg libxcb 1.17.0-1 extra libxcb-1.17.0-1-aarch64.pkg.tar.xz 329a41249a09b4bb7f9b5f9694c1848c971188243cc1c0a479df4227800214c0 996228 3974793
+pkg libxcrypt 4.5.2-1 core libxcrypt-4.5.2-1-aarch64.pkg.tar.xz e699156589561ac0c6bfc7da42891e3945647ecdd178b907f7742696fb01a0c5 89676 224297
+pkg libxdmcp 1.1.5-2 extra libxdmcp-1.1.5-2-aarch64.pkg.tar.xz aaf3575b4139a0ee675cbc15c03324d09892ded2188ac7cc326a8b36ef308496 26648 176588
+pkg libxml2 2.15.4-1 core libxml2-2.15.4-1-aarch64.pkg.tar.xz c86239f383dc47736c4f6851063fb034edcda5ed59c7cafbe694e5f65e2d0da0 694244 3486902
+pkg libxshmfence 1.3.3-1 extra libxshmfence-1.3.3-1-aarch64.pkg.tar.xz d137d6cc13a75284267cd56beabfde6094fb1a4f8fb373af555c2e47c0e6b636 6188 70469
+pkg linux-api-headers 7.2-1 core linux-api-headers-7.2-1-aarch64.pkg.tar.xz e03baabe6bbf49b65b394eb24629978bbb2094cd17b3fecd892a011041f9c24a 1509724 7218172
+pkg llvm-libs 22.1.8-2 extra llvm-libs-22.1.8-2-aarch64.pkg.tar.xz f3119b25813452a1cddd84ea985d7d76d9da41201b39e82f15cf23c2d3ed348e 36838688 169053261
+pkg lmdb 0.9.35-1 extra lmdb-0.9.35-1-aarch64.pkg.tar.xz 6aff3bd58fbb98dbca71a83554be4b47d39ff01b3dbe4f724ba140416aa8486e 86632 747057
+pkg lz4 1:1.10.0-2 core lz4-1:1.10.0-2-aarch64.pkg.tar.xz 2734da8aa931852a6d82f5a90edbc5fd4e21cdbefc8752ab49db4228959d45d0 128668 571428
+pkg make 4.4.1-3 core make-4.4.1-3-aarch64.pkg.tar.xz c5c8b56bfbacd875d72823f10c910747714730c4180994d94a176c89ecea1e06 497124 1794707
+pkg mpfr 4.2.2-1 core mpfr-4.2.2-1-aarch64.pkg.tar.xz 6ae04b170fe6aed89519f0b2cba2f60a34e8a8ea74963e8f3619b12ddefc5117 392596 1043056
+pkg ncurses 6.6-2 core ncurses-6.6-2-aarch64.pkg.tar.xz e7b4f3c2190e3ebb559d288b05aba70094efae63738343521a5669e64ab4bfa6 1423256 6495475
+pkg nettle 4.0-1 core nettle-4.0-1-aarch64.pkg.tar.xz 0912dee3f6f20361e607e7101f39345af7ca9fe7bc51a4ba34620468f8949300 450528 1398466
+pkg openssl 3.6.4-1 core openssl-3.6.4-1-aarch64.pkg.tar.xz 6a1d3aa2c1706000f02c8d211bf82fe7d53c26a32b4d7381b74e0a3aba68322b 5886140 14011444
+pkg p11-kit 0.26.5-1 core p11-kit-0.26.5-1-aarch64.pkg.tar.xz 7e5c2facac3abd9b51709e081e8720dc7ccc0f27d6c9b49bcb3d188fa91e75f1 249124 1532364
+pkg pam 1.7.2-2 core pam-1.7.2-2-aarch64.pkg.tar.xz a0c3f35ba05a7da5de8e8cb7c50ff05c1e51512e6055ba6958ddb80e17dcd880 589036 5528635
+pkg pambase 20260616-1 core pambase-20260616-1-any.pkg.tar.xz 8824b4ddde15770edd4a760901b4c73add68bb18f639ded8316024bc1ab0210f 3360 2794
+pkg pcre2 10.48-1 core pcre2-10.48-1-aarch64.pkg.tar.xz 58b6a901b7516650acee3f04fe94f3f37935bafa4483f05d05aecdb58a7c7c2f 1260392 6963233
+pkg readline 8.3.003-1 core readline-8.3.003-1-aarch64.pkg.tar.xz 602efa44b9f3fdc89f4acbe270dd9698049462912817fb8f005d302d2a9bc0e3 401040 1630617
+pkg sed 4.10-2 core sed-4.10-2-aarch64.pkg.tar.xz 06d68115408b4ab7ca59b9e6f386dcc1015bdb0033686d115d6621711602ed8e 236260 827529
+pkg spirv-tools 1:1.4.357.0-1 extra spirv-tools-1:1.4.357.0-1-aarch64.pkg.tar.xz e49c54afc1e11b1a915df17ba380c4c4402477a5d5370417801a87df3388ae59 1935624 11223371
+pkg sqlite 3.53.4-1 core sqlite-3.53.4-1-aarch64.pkg.tar.xz 9512d37af4ac6910e10e2a8e6f85078ab72a2ece17a8e6b51755898f50b900ba 1850368 21161566
+pkg systemd-libs 261.3-1 core systemd-libs-261.3-1-aarch64.pkg.tar.xz edb41bb1952f2491c3b6cb72921ae84f4604d8ae6b0819415add8d9cd4e70aed 2359656 14549616
+pkg tar 1.35-5 core tar-1.35-5-aarch64.pkg.tar.xz 8a9a195736b5cdac96c0511b6a6ea8417477552cf1ad24d904bf6476539b0ad3 736708 3051018
+pkg tzdata 2026d-1 core tzdata-2026d-1-aarch64.pkg.tar.xz 1f03d3081d360015153035dfaaa2eb9b604304aaa1327ffd924fe1a80b77f79a 291976 1803946
+pkg util-linux-libs 2.42.3-1 core util-linux-libs-2.42.3-1-aarch64.pkg.tar.xz 977fa5d7c4f98ccbecb69edbf4264a8532cf39167f5e8907dbc6253240df6b72 503480 2205445
+pkg vulkan-icd-loader 1.4.357.0-1 extra vulkan-icd-loader-1.4.357.0-1-aarch64.pkg.tar.xz 1163492a4ded4484623bd350b4ed69ed908b75520a6cb7a730695579a0e254e8 141328 731286
+pkg vulkan-mesa-implicit-layers 1:26.2.3-1 extra vulkan-mesa-implicit-layers-1:26.2.3-1-aarch64.pkg.tar.xz 1bb2895c89ac4e29d4405d26095be5271034ed53714a82a14ccb76c5f7b77781 42288 204220
+pkg vulkan-radeon 1:26.2.3-1 extra vulkan-radeon-1:26.2.3-1-aarch64.pkg.tar.xz 4dbf27f910131265b856f2d5b2c0520fa56c866aa8d5750e86236efaa3b2e349 2938956 18746556
+pkg vulkan-tools 1.4.357.0-1 extra vulkan-tools-1.4.357.0-1-aarch64.pkg.tar.xz c251a1c0f6883a4092cbae685923b803a10b44ce4cde6f367f8523d4b1e4bfc3 347144 2237376
+pkg wayland 1.26.0-1 extra wayland-1.26.0-1-aarch64.pkg.tar.xz 9382b38f97ee3841597f89aa6ca1fceea3d968ae759151eaab9c4b5373d1ce72 143632 1139079
+pkg xcb-proto 1.17.0-4 extra xcb-proto-1.17.0-4-any.pkg.tar.xz c494c60bbb63fe42cd68a37710d389818611775fd74dcb228d901003958aa8ee 127676 1076752
+pkg xcb-util-keysyms 0.4.1-5 extra xcb-util-keysyms-0.4.1-5-aarch64.pkg.tar.xz 05bd273ab344ea9d8fd44d1688f8ac5aa009071672bbc8b50571c252c39dfe7a 7568 71069
+pkg xorgproto 2025.1-1 extra xorgproto-2025.1-1-any.pkg.tar.xz 682bdb76951a10606b0f3dfaa6e3fd48df2bd183a060e66aa23fbce2473bca53 238696 1540891
+pkg xz 5.8.4-1 core xz-5.8.4-1-aarch64.pkg.tar.xz 0a72061585c62a92d1a38348bc7f160665b0b508ddc92fd289b6b2ca12785150 822656 3174529
+pkg zlib 1:1.3.2-3 core zlib-1:1.3.2-3-aarch64.pkg.tar.xz 7e31b465e09e8e61375578b8e26ed883906e126e0c0ef1c75b7ccccfa95a58c4 77320 257244
+pkg zstd 1.5.7-3 core zstd-1.5.7-3-aarch64.pkg.tar.xz c3b907c36049b338bda0c6d85260251e48d17e2be6c0e11ddc0dfd4cf9d2e89a 436532 1631101
+project zlib 1.3.2 https://zlib.net/fossils/zlib-1.3.2.tar.gz bb329a0a2cd0274d05519d61c667c062e06990d72e125ee2dfa8de64f0119d16
+project lua 5.4.9 https://www.lua.org/ftp/lua-5.4.9.tar.gz 2335b6c582a52654f94612bf10d2f4672805d05329aa6568b1d8cd9e5c6fb8e6

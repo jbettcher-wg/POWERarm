@@ -504,6 +504,21 @@ view, so `pacman -Q` from the emulated shell is not evidence about the host.
 7. **Guest stubs build with the rootfs's own gcc under POWERarm**, the way every
    `unittests/A64Frontend` test was built this session; no cross toolchain and no Pi load needed.
 
+**Measured 2026-09-17: the UNTHUNKED path already works, and is at native speed when GPU-bound.**
+A rootfs built from `Scripts/powerarm/rootfs/alarm-vk.manifest` (the m2 roots plus `vulkan-tools
+vulkan-radeon`: 113 packages, aarch64 Mesa 26.2.3 RADV, loader 1.4.357, into `RootFS/ArchLinuxARM-vk`
+with `--dest`, never touching m2) lets an aarch64 `vulkaninfo` enumerate the RX 7900 XTX through the
+guest's own, emulated RADV. It reports Mesa 26.2.3, the guest package, where the host runs 26.2.2, so it
+is not falling through to the host driver. That driver talks to the real GPU through POWERarm's generic
+ioctl re-encoding (`ABITranslation.h`, `IoctlRequestToHost`), and the DRM argument structs need no
+translation because the DRM uAPI is arch-independent. vkcube on Wayland, 5000 frames, mailbox:
+**native 2107 fps, guest 2145 fps (frame time 0.98x)**. vkcube is far too light to show a driver's CPU
+cost (~0.47 ms a frame, one draw call), so this says nothing about API-bound rendering -- the Civilization
+6 shape, many thousands of draw calls a frame -- which is exactly where a thunk earns its place. So:
+games have a working unthunked graphics path today, GPU-bound work needs no thunk, and the Vulkan thunk
+must be justified on a draw-call-heavy benchmark (vkmark's heavier scenes, or a synthetic
+many-draw-calls test), native against unthunked against thunked.
+
 **Prior art: the parent project already runs these thunks.** POWERarm is a fork of fastppcx86
 (the x86-64 → ppc64le JIT), and fastppcx86's `build-thunks` carries the full working set: guest
 stubs for Vulkan, GL, EGL, wayland-client, drm, xshmfence, asound and the vDSO, plus ppc64le host
