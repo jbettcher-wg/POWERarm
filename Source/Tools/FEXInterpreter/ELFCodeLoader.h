@@ -30,6 +30,7 @@
 #include "LinuxSyscalls/Arm64/GeneratedABI.h"
 #include "LinuxSyscalls/Arm64/GuestVA.h"
 #include "LinuxSyscalls/GranuleTable.h"
+#include "LinuxSyscalls/Utils/Threads.h"
 #include "VDSO_Emulation.h"
 #include "Linux/Utils/ELFParser.h"
 
@@ -682,7 +683,22 @@ public:
     auto PageSize = sysconf(_SC_PAGESIZE);
     PageSize = PageSize > 0 ? PageSize : static_cast<long>(FEXCore::HostPage::Size());
 
+    // The guest runs its main thread on this process's own stack, which the
+    // kernel also put at the top of the address space and grows down on
+    // demand. The scan below used to settle the guest stack flush against
+    // the bottom of that mapping whenever the first try overlapped it (with
+    // ASLR, about one launch in eight; with ASLR off and a large stack rlimit,
+    // every launch). The next host frame deeper than any before then landed
+    // in the top of the guest stack with no fault: its strings, auxv and
+    // main's frame ("*** stack smashing detected ***" after a large stack
+    // buffer in a syscall). Keep the guest stack out of the host stack's
+    // growth range and its guard.
+    const auto HostStack = FEX::LinuxEmulation::Threads::ReserveMainThreadStack();
+
     do {
+      if (HostStack.GuardBase > FULL_STACK_SIZE && StackHint < HostStack.Top && StackHint + FULL_STACK_SIZE > HostStack.GuardBase) {
+        StackHint = HostStack.GuardBase - FULL_STACK_SIZE;
+      }
       // Allocate the base of the full 128MB stack range.
       StackPointerBase = Handler->GuestMmap(Thread, reinterpret_cast<void*>(StackHint), FULL_STACK_SIZE, PROT_NONE,
                                             MAP_PRIVATE | MAP_ANONYMOUS | MAP_STACK | MAP_GROWSDOWN | MAP_FIXED_NOREPLACE, -1, 0);

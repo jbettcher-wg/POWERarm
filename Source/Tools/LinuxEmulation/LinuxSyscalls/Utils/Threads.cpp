@@ -1,13 +1,133 @@
 // SPDX-License-Identifier: MIT
 #include "LinuxSyscalls/Utils/Threads.h"
+#include "LinuxSyscalls/HostOwnedRanges.h"
 #include "LinuxSyscalls/Syscalls.h"
 
 #include <FEXCore/Core/Context.h>
 #include <FEXCore/Utils/Allocator.h>
 #include <FEXCore/Utils/LongJump.h>
+#include <FEXCore/Utils/MathUtils.h>
 #include <FEXCore/Utils/Threads.h>
+#include <FEXCore/Utils/TypeDefines.h>
+
+#include <algorithm>
+#include <cstdlib>
+#include <fcntl.h>
+#include <sys/mman.h>
+#include <sys/resource.h>
+#include <unistd.h>
 
 namespace FEX::LinuxEmulation::Threads {
+namespace {
+  // A stack object is STACK_SIZE bytes at the pointer handed out, with a
+  // PROT_NONE guard of STACK_GUARD_SIZE directly below it.
+  void* MapStackObject() {
+    auto Mapping = FEXCore::Allocator::mmap(nullptr, STACK_GUARD_SIZE + STACK_SIZE, PROT_NONE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    if (Mapping == MAP_FAILED) {
+      return nullptr;
+    }
+    auto Stack = reinterpret_cast<uint8_t*>(Mapping) + STACK_GUARD_SIZE;
+    if (::mprotect(Stack, STACK_SIZE, PROT_READ | PROT_WRITE) != 0) {
+      FEXCore::Allocator::munmap(Mapping, STACK_GUARD_SIZE + STACK_SIZE);
+      return nullptr;
+    }
+    FEXCore::Allocator::VirtualName("POWERarmMem_Misc", Stack, STACK_SIZE);
+    return Stack;
+  }
+
+  void UnmapStackObject(void* Ptr) {
+    FEXCore::Allocator::munmap(reinterpret_cast<uint8_t*>(Ptr) - STACK_GUARD_SIZE, STACK_GUARD_SIZE + STACK_SIZE);
+  }
+
+  // The end of the mapping in /proc/self/maps that holds Address, or 0. Raw
+  // reads into small fixed buffers: this runs at start-up, on the stack it is
+  // measuring.
+  uint64_t MappingEnd(uint64_t Address) {
+    const int FD = ::open("/proc/self/maps", O_RDONLY | O_CLOEXEC);
+    if (FD == -1) {
+      return 0;
+    }
+    char Buf[1024];
+    // "<start>-<end> " is all a line needs to give; the rest is cut off.
+    char Line[64];
+    size_t LineLen = 0;
+    uint64_t Result = 0;
+    ssize_t Read;
+    while (Result == 0 && (Read = ::read(FD, Buf, sizeof(Buf))) > 0) {
+      for (ssize_t i = 0; i < Read && Result == 0; ++i) {
+        if (Buf[i] != '\n') {
+          if (LineLen + 1 < sizeof(Line)) {
+            Line[LineLen++] = Buf[i];
+          }
+          continue;
+        }
+        Line[LineLen] = '\0';
+        LineLen = 0;
+        char* End = nullptr;
+        const uint64_t Start = ::strtoull(Line, &End, 16);
+        if (End && *End == '-') {
+          const uint64_t Stop = ::strtoull(End + 1, nullptr, 16);
+          if (Address >= Start && Address < Stop) {
+            Result = Stop;
+          }
+        }
+      }
+    }
+    ::close(FD);
+    return Result;
+  }
+} // namespace
+
+MainThreadStackRange ReserveMainThreadStack() {
+  const uint64_t PageSize = FEXCore::HostPage::Size();
+  const uint64_t SP = reinterpret_cast<uint64_t>(__builtin_frame_address(0));
+
+  // Without /proc, the page above the stack pointer: the guard gap below
+  // absorbs the difference.
+  uint64_t Top = MappingEnd(SP);
+  if (Top == 0) {
+    Top = FEXCore::AlignUp(SP, PageSize);
+  }
+
+  // The kernel will not grow the stack past RLIMIT_STACK below its top.
+  // Unlimited (or absurd) gets a fixed allowance; the guard turns anything
+  // deeper into a fault.
+  constexpr uint64_t MaxGrowth = 1ULL << 30;
+  uint64_t Growth = MaxGrowth;
+  struct rlimit Limit {};
+  if (::getrlimit(RLIMIT_STACK, &Limit) == 0 && Limit.rlim_cur != RLIM_INFINITY) {
+    Growth = std::min<uint64_t>(FEXCore::AlignUp(Limit.rlim_cur, PageSize), MaxGrowth);
+  }
+  // The kernel's default stack_guard_gap: 16 MiB on a 64K-page host.
+  const uint64_t Guard = 256 * PageSize;
+
+  MainThreadStackRange Range {};
+  Range.Top = Top;
+  Range.GrowthLimit = Top > Growth ? Top - Growth : 0;
+  Range.GuardBase = Range.GrowthLimit > Guard ? Range.GrowthLimit - Guard : 0;
+  if (Range.GuardBase == 0) {
+    return Range;
+  }
+
+  // Neither MAP_GROWSDOWN nor accessible, so the kernel lets the stack grow
+  // right up to it and a host frame that reaches it faults. Nothing else
+  // would stop one: Linux keeps its stack guard gap only below an accessible
+  // neighbour that is not itself MAP_GROWSDOWN, and the guest stack is
+  // MAP_GROWSDOWN.
+  auto Mapping = ::mmap(reinterpret_cast<void*>(Range.GuardBase), Guard, PROT_NONE,
+                        MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE | FEX::HLE::FEX_MAP_FIXED_NOREPLACE, -1, 0);
+  if (Mapping == reinterpret_cast<void*>(Range.GuardBase)) {
+    FEXCore::Allocator::VirtualName("POWERarm host stack guard", Mapping, Guard);
+  } else if (Mapping != MAP_FAILED) {
+    // A kernel without MAP_FIXED_NOREPLACE took it as a hint.
+    ::munmap(Mapping, Guard);
+  }
+  // The guard and the growth range are host memory: a guest MAP_FIXED there
+  // would put guest memory back in the stack's way.
+  FEX::HLE::HostOwnedRanges::Add(Range.GuardBase, Range.Top - Range.GuardBase);
+  return Range;
+}
+
 void* StackTracker::AllocateStackObject() {
   std::lock_guard lk {DeadStackPoolMutex};
   // Keep the first item in the stack pool
@@ -23,7 +143,7 @@ void* StackTracker::AllocateStackObject() {
     }
 
     if (ReadyToBeReaped) {
-      FEXCore::Allocator::munmap(it->Ptr, it->Size);
+      UnmapStackObject(it->Ptr);
       it = DeadStackPool.erase(it);
       continue;
     }
@@ -32,8 +152,7 @@ void* StackTracker::AllocateStackObject() {
   }
 
   if (Ptr == nullptr) {
-    Ptr = FEXCore::Allocator::mmap(nullptr, FEX::LinuxEmulation::Threads::STACK_SIZE, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
-    FEXCore::Allocator::VirtualName("POWERarmMem_Misc", reinterpret_cast<void*>(Ptr), FEX::LinuxEmulation::Threads::STACK_SIZE);
+    Ptr = MapStackObject();
   }
 
   return Ptr;
@@ -75,7 +194,7 @@ void StackTracker::CleanupAfterFork_PThread() {
         ++it;
       } else {
         // Untracked stack. Clean it up
-        FEXCore::Allocator::munmap(Item.Ptr, Item.Size);
+        UnmapStackObject(Item.Ptr);
         it = StackPool.erase(it);
       }
     }
@@ -93,13 +212,13 @@ void StackTracker::Shutdown() {
   std::lock_guard lk2 {LiveStackPoolMutex};
   // Erase all the dead stack pools
   for (auto& Item : DeadStackPool) {
-    FEXCore::Allocator::munmap(Item.Ptr, Item.Size);
+    UnmapStackObject(Item.Ptr);
   }
 
   // Now clean up any that are considered to still be live
   // We are in shutdown phase, everything in the process is dead
   for (auto& Item : LiveStackPool) {
-    FEXCore::Allocator::munmap(Item.Ptr, Item.Size);
+    UnmapStackObject(Item.Ptr);
   }
 
   DeadStackPool.clear();

@@ -209,9 +209,14 @@ CAS five times as heavily in proportion.
     and blocks, SIGBUS, SMC, lookup-cache misses, cache lock time) for any run, with
     `POWERARM_PROFILESTATS=1` set for it. Desktop FPS moves with contention: POWER9 is SMT4, and
     a game thread sharing a core with build jobs slows sharply. Compare frames only on a quiet box.
-12. **A large host stack frame in syscall context can corrupt the guest's stack (open).** Found
-    fixing the overlay (242f8ee96): guest `mv` of a base file aborted with "stack smashing
-    detected" in 9 of 160 runs while `CopyData` kept a 64 KiB buffer on the stack, and in 0 of 160
-    with it on the heap. Why a host frame reaches guest memory is not understood. Other syscall
-    paths with big stack buffers may be exposed. It's a correctness issue: find out where the host
-    syscall stack sits relative to guest stacks, and audit stack buffers of 16 KiB or more.
+12. ~~A large host stack frame in syscall context can corrupt the guest's stack.~~ **Fixed.**
+    The guest's main thread runs on the process's own stack, and the ELF loader's
+    MAP_FIXED_NOREPLACE scan settled the guest stack flush under the host `[stack]` mapping
+    whenever its first try overlapped it (about one launch in eight with ASLR; every launch with
+    `setarch -R` and `ulimit -s unlimited`). The next host frame deeper than any before wrote
+    straight into the top of the guest stack with no fault. The loader now keeps the guest stack
+    below the host stack's RLIMIT_STACK growth range and a PROT_NONE guard
+    (`Threads::ReserveMainThreadStack`), and guest threads' host stacks got a 1 MiB guard too.
+    Regression test: `hoststack` (run.sh forces the layout). Still on the stack, harmless now but
+    82 KiB each on every call: the 64 KiB EXDEV copy buffers in `FileManager::Linkat` and
+    `FileManager::Renameat2`.
