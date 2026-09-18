@@ -209,3 +209,9 @@ CAS five times as heavily in proportion.
     and blocks, SIGBUS, SMC, lookup-cache misses, cache lock time) for any run, with
     `POWERARM_PROFILESTATS=1` set for it. Desktop FPS moves with contention: POWER9 is SMT4, and
     a game thread sharing a core with build jobs slows sharply. Compare frames only on a quiet box.
+12. **A large host stack frame in syscall context can corrupt the guest's stack (open).** Found
+    fixing the overlay (242f8ee96): guest `mv` of a base file aborted with "stack smashing
+    detected" in 9 of 160 runs while `CopyData` kept a 64 KiB buffer on the stack, and in 0 of 160
+    with it on the heap. Why a host frame reaches guest memory is not understood. Other syscall
+    paths with big stack buffers may be exposed. It's a correctness issue: find out where the host
+    syscall stack sits relative to guest stacks, and audit stack buffers of 16 KiB or more.
