@@ -55,6 +55,8 @@ is to be well rounded, and the concrete targets are:
    proxy is vkcube/vkmark, native against thunked.
 4. **General compiled code**, the well-rounded baseline: the slice and the M2 zlib/Lua builds.
 
+**North star: per-core parity with a 2.5 GHz Cortex-A76** -- at which point the 176-thread AC922 is, in effect, an Ampere Altra. The Pi 5 reference machine IS a 2.4 GHz A76, so the metric is the "x the Pi" ratio the checklist already reports, driven to ~1.0. Last recorded: A64Bench crc32 ~2x the Pi, vm ~6x. The POWER9 runs at 3.8 GHz, so parity means emulation overhead near 1.5x native POWER9. Every optimisation is judged by how far it moves that ratio across the reference workloads.
+
 **Priority: optimise the emulator first, then gauge thunks by measurement.** Two of the three targets are
 monolithic: the Claude binary is 221 MB and its only DT_NEEDED is glibc (JSC and Bun are inside it), and
 Electron carries Chromium, V8 and Node inside likewise. For them almost everything runs emulated whatever gets
