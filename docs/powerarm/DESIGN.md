@@ -490,8 +490,9 @@ old rules exactly.
 symlink in either layer is followed into the other: the base's root-level `lib -> usr/lib`
 reaches a library that only the overlay has. For each owned component the walk checks the
 overlay entry, then its whiteout, then the base. The first component found in neither stops
-the walk, and the host resolves the rest. Only paths whose *resolved* location is owned are
-layered. Paths whose first component can't reach an owned prefix never enter the walk: `usr`,
+the walk, and the host resolves the rest, except for package-manager state and in a sealed
+process (below), where that name does not exist. Only paths whose *resolved* location is owned
+are layered. Paths whose first component can't reach an owned prefix never enter the walk: `usr`,
 `etc`, `opt`, `var`, plus the base's root symlinks into them (`bin`, `sbin`, `lib`). Relative
 paths and directory descriptors are mapped back to a guest path first. A directory inside the
 overlay or the base drops that prefix, and any other host directory is already a guest path.
@@ -502,12 +503,50 @@ Paths the thunk overlays redirect are never layered.
 `/etc/pacman.conf`, `/etc/pacman.d`, `/var/log/pacman.log`) resolves overlay → base only. A
 guest `pacman` no longer sees the host's database.
 
-**Writes, all into the overlay:**
+**Sealed view (added 2026-09-18).** A sealed process resolves every owned path overlay → base
+only: a host file that neither layer has does not exist for it, for lookups, `stat`, `access`,
+`open`, `execve`, `chdir` and creation alike. The `RootFSOverlaySeal` setting
+(`POWERARM_ROOTFSOVERLAYSEAL`) decides which processes are sealed:
+- `auto` (the default): the guest's package manager, a program named `pacman`, and nothing
+  else. Its children (hooks, scriptlets, `gpg`) are ordinary programs and are not sealed.
+- `on` or `1`: every process. Guest `/usr`, `/etc` and `/opt` then hold only the base and the
+  overlay, e.g. for a guest build that must not find host headers.
+- `off` or `0`: no process.
+
+Why the package manager is sealed, and why only it: host and guest are both Arch, so most
+packages ship paths the host also has (`/usr/include/alsa/error.h`, man pages, completions).
+pacman's conflict check is an `lstat` of each path a package ships, so with the host showing
+through, `pacman -S libpulse` failed with "exists in filesystem" for files that no layer had.
+Nothing short of hiding the host from pacman fixes that without `--overwrite`. Hiding it from
+every process would break the rule that host tools stay reachable (the owner's workflow runs
+host `clang`, `ninja`, `meson`, `python3` and `perf` from an emulated shell through `/usr/bin`),
+and host data the base lacks (`/etc/localtime`, `/usr/share/vulkan/icd.d`, fonts, icons) that
+desktop programs read. The other candidate was keeping reads but making existence probes
+layer-only. It was rejected: `stat` and `open` would then disagree, and a shell that finds
+programs with `stat` along `PATH` could no longer find host tools. pacman's own process is
+where the conflict check, extraction, removal and `pacman -Qk` all happen. Its hooks write into
+the overlay either way, so they keep the ordinary view, the one every later guest program has.
+The program name is FEX's application name (the basename of the program POWERarm loads),
+available before the `FileManager` exists. Keying on it is the same mechanism FEX uses for
+per-application configuration.
+
+**Writes, all into the overlay.** No change under an owned prefix reaches the host or the
+base, in either view:
 - **Copy-up first.** Opening a base or host file for writing (write access, `O_TRUNC`), or
   changing it with `chmod`, `chown`, `utimensat`, `truncate`, `setxattr`/`removexattr`, or
   linking it, copies it into the overlay first. The copy keeps mode, times and, where
   permitted, owner. It skips the data for `O_TRUNC`/truncate-to-zero and does not copy xattrs.
   A directory is copied up empty.
+- **Changes through a descriptor** (added 2026-09-18): `fchmod`, `fchown`, `futimens`,
+  `fsetxattr`, `fremovexattr`, and the `*at` forms on `""` with `AT_EMPTY_PATH`. On a descriptor
+  that holds a base or host object under an owned prefix (one opened read-only, since opening
+  for writing already copies up), they copy the object up and change the overlay copy. The
+  descriptor keeps pointing at the original, so `fstat` through it still shows the old
+  metadata while every path lookup shows the new. If the name now shows a different object,
+  or none, the call fails with `EROFS`.
+- **Parents.** Creating anything inside a directory that only the host has (e.g.
+  `/usr/include/alsa`, when neither layer has it) makes that directory in the overlay first,
+  with the host directory's mode.
 - **Creates.** `open(O_CREAT)`, `O_TMPFILE`, `mkdir`, `mknod`, `symlink`, the new name of `link`
   and `rename`, and `bind()` of an `AF_UNIX` socket (gpg-agent's socket in
   `/etc/pacman.d/gnupg`) create the parent chain in the overlay. Each directory copies the mode
@@ -515,10 +554,12 @@ guest `pacman` no longer sees the host's database.
 - **Deletes and whiteouts.** Deleting an overlay entry removes it. If the base or the host
   still has that name, a whiteout `.wh.<name>` is written; deleting a base or host entry writes
   only the whiteout. A whiteout also hides the host fallthrough, so a deleted name is gone from
-  every layer. `rmdir` needs the merged directory empty. `mkdir` over a whiteout marks the new
-  directory opaque (`.wh..wh..opq`), so the old contents don't come back. This is the OCI layer
-  format. Whiteouts, the opaque marker and copy-up temporaries (`.wh..cu.*`) are never visible
-  to the guest.
+  every layer. A sealed process counts only the base: when it deletes an overlay file that the
+  host also has, it writes no whiteout, so `pacman -R` of a package that shadowed host files
+  shows the host's files to unsealed programs again. `rmdir` needs the merged directory empty.
+  `mkdir` over a whiteout marks the new directory opaque (`.wh..wh..opq`), so the old contents
+  don't come back. This is the OCI layer format. Whiteouts, the opaque marker and copy-up
+  temporaries (`.wh..cu.*`) are never visible to the guest.
 - **Rename** works for files and symlinks from any layer: a base or host source is copied, then
   whited out. A directory renames only if nothing in the base or on the host shares its name.
   Otherwise it returns `EXDEV`, as overlayfs without `redirect_dir` does, and `mv` copies.
@@ -537,7 +578,9 @@ through).
 - The loader resolves program and interpreter through the layers. POWERarm strips the overlay
   prefix from its own program path, and the code-cache identity uses the overlay copy.
 - `/proc/self/fd` readlinks and `getcwd` report guest paths.
-- `chdir` tries the host first, as before, then the overlay, then the base.
+- `chdir` asks the layers first: a hidden name (whited out, package state, or host-only in a
+  sealed process) is `ENOENT` even when the host has the directory. A visible directory is
+  entered on the host first, as before, then in the overlay, then in the base.
 - The overlay descriptor is hidden from `/proc/self/fd`. `close`/`close_range` skip the rootfs
   and overlay descriptors, because gpgme's spawn closes every descriptor before `exec`, and the
   child's `execve` of `gpg` then needs them.
@@ -564,6 +607,24 @@ privilege. On disk the files belong to the caller.
 - Afterwards the base still hashes to `0f4a9230…77d5`, and no base entry has a newer mtime.
 - The unit test is `unittests/A64Frontend/rootfs_overlay.c`.
 
+**Verified 2026-09-18 (sealed package manager):**
+- Setup: the `ArchLinuxARM-vk` base and its bootstrapped overlay. The host has the same
+  `alsa-lib` and `libpulse` files; neither layer did.
+- Before (or with `RootFSOverlaySeal=off`): `unshare -r POWERarm /usr/bin/pacman -S --noconfirm
+  libpulse` failed with 1210 "exists in filesystem" conflicts, all of them host files. With
+  `--overwrite` it installed.
+- After: the same command, without `--overwrite`, installs the 10 packages into the overlay.
+  `pacman -Q libpulse` works, `pacman -Qk libpulse alsa-lib` finds no missing files, the
+  install writes no whiteouts, and no base entry has a newer mtime or ctime.
+- An ordinary guest program still finds host `clang`, `ninja` and `python3` and host-only
+  headers. On a scratch copy, `pacman -R libpulse` leaves no whiteouts.
+- `rootfs_overlay` runs its checks twice, unsealed and sealed. Both runs must match the Pi.
+  They include changes through read-only descriptors onto base files and directories, and
+  files made inside a directory only the host has. run.sh also checks the probes through the
+  seal (`on`, and `auto` for a program named `pacman`), and that a host file changed and
+  deleted through the overlay is unchanged on the host. It checks that a sealed install over a
+  host file's name, and its removal, leave no trace.
+
 **Deviations from the decided semantics, and known gaps:**
 1. **The base is protected only under the owned prefixes.** "Everything outside keeps today's
    behaviour" and "the base must never be written to" conflict. The old rules modify an
@@ -577,14 +638,13 @@ privilege. On disk the files belong to the caller.
 3. **No overlay means no protection for package state.** With the overlay absent, which is
    required to behave exactly as before, a guest `pacman` still falls through to the host's
    `/var/lib/pacman` (THUNKS-DESIGN §3).
-4. **Host files conflict with packages.** Because `/usr` reads fall through to the host,
-   pacman sees host files as present. Installing a package that ships a path the host has, and
-   the base lacks, fails with "exists in filesystem" unless `--overwrite` is given. The host has
-   no `tree`.
-5. **Only path calls copy up.** Descriptor-based changes (`fchmod`, `fchown`, `futimens`,
-   `ftruncate`, `fsetxattr`) made through a descriptor that was opened read-only onto a base
-   file still reach the base file, and so does reopening it for writing via
-   `/proc/self/fd/N`. Only a read-only base on disk would close this.
+4. **Host files conflicted with packages (fixed 2026-09-18 by the sealed view).** Only the
+   package manager is sealed by default. An unsealed guest program that checks whether a file
+   exists before writing it still sees the host's copy.
+5. **Reopening through `/proc/self/fd/N`.** Descriptor changes now copy up (see Writes), but
+   reopening a read-only base descriptor for writing through `/proc/self/fd/N` still reaches
+   the base file. A descriptor keeps showing the metadata it had before such a change. Only a
+   read-only base on disk would close this.
 6. **Cost.** A layered lookup costs about five syscalls where the rootfs lookup costs one or
    two, but only with an overlay present.
 7. **Bootstrap limits.** Install scriptlets and sysusers of the bootstrapped packages don't

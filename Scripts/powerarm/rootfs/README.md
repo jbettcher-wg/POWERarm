@@ -277,6 +277,10 @@ unshare -r POWERarm /usr/bin/pacman -Sy
 unshare -r POWERarm /usr/bin/pacman -S tree
 ```
 
+Guest pacman sees only the base and the overlay under `/usr`, `/etc` and `/opt`; other guest
+programs also see the host's files there (`RootFSOverlaySeal`, DESIGN §6.2a.1). So a package
+that ships a path the host also has installs without `--overwrite`.
+
 `overlay-init`:
 
 1. Fetches and verifies the pinned base packages from the cache, the same way `extract` does.

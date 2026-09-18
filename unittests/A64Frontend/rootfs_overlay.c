@@ -7,15 +7,22 @@
 // Self-checking and differential at once. The same operations run natively on
 // the Pi inside a scratch copy of the fixture (OVT_ROOT=<dir>) and under
 // POWERarm with the fixture as the base rootfs and an empty overlay
-// (OVT_ROOT unset, so the paths are the guest's real /usr and /etc). Both runs
-// must print the same PASS lines. run.sh adds the checks only the host can
-// make: the base is byte-for-byte unchanged, the overlay holds the changes,
-// and a host tool the base lacks is still reachable.
+// (OVT_ROOT unset, so the paths are the guest's real /usr and /etc), once as
+// an ordinary program and once sealed (POWERARM_ROOTFSOVERLAYSEAL=on). All
+// runs must print the same PASS lines. run.sh adds the checks only the host
+// can make: the base is byte-for-byte unchanged, the overlay holds the
+// changes, the host is untouched, a host tool the base lacks is still
+// reachable, and a sealed process does not see it.
 //
 //   rootfs_overlay --make-fixture DIR   create the base tree in DIR
 //   rootfs_overlay --probe PATH         print "exists" or the errno name
+//   rootfs_overlay --stat PATH          print mode, mtime and size, or the errno name
 //   rootfs_overlay                      run the checks (OVT_ROOT optional)
 //   rootfs_overlay --cwd DIR            chdir, print getcwd and the short-buffer error
+//   rootfs_overlay --host-file PATH     change PATH through a read-only
+//                                       descriptor, then delete it; print what was seen
+//   rootfs_overlay --install PATH       create PATH exclusively, as a package manager does
+//   rootfs_overlay --remove PATH        unlink PATH
 #define _GNU_SOURCE
 #include <dirent.h>
 #include <errno.h>
@@ -159,6 +166,17 @@ static int Probe(const char* Path) {
   return 0;
 }
 
+// Mode, mtime and size, or the errno name.
+static int StatPath(const char* Path) {
+  struct stat St;
+  if (stat(Path, &St) == 0) {
+    printf("%o %lld %lld\n", St.st_mode & 07777, (long long)St.st_mtime, (long long)St.st_size);
+  } else {
+    printf("%s\n", strerrorname_np(errno));
+  }
+  return 0;
+}
+
 // The working directory's path after chdir(Path), then the error from a
 // getcwd buffer one byte too small for it.
 static int Cwd(const char* Path) {
@@ -173,9 +191,50 @@ static int Cwd(const char* Path) {
   return 0;
 }
 
+// A file the guest sees but the base lacks (a host file, under POWERarm):
+// change it through a read-only descriptor, as libarchive's fixups and
+// install(1) do, check the path shows the change, then delete it.
+static int HostFile(const char* Path) {
+  struct stat St;
+  if (stat(Path, &St) != 0) {
+    printf("%s\n", strerrorname_np(errno));
+    return 0;
+  }
+  int FD = open(Path, O_RDONLY | O_CLOEXEC);
+  const int Chmod = FD >= 0 && fchmod(FD, 0444) == 0;
+  const struct timespec Times[2] = {{1000000000, 0}, {1000000000, 0}};
+  const int Utime = FD >= 0 && futimens(FD, Times) == 0;
+  const int Seen = stat(Path, &St) == 0 && (St.st_mode & 07777) == 0444 && St.st_mtime == 1000000000;
+  if (FD >= 0) {
+    close(FD);
+  }
+  const int Gone = unlink(Path) == 0 && Missing(Path);
+  printf("fchmod=%d futimens=%d seen=%d unlink=%d\n", Chmod, Utime, Seen, Gone);
+  return 0;
+}
+
 int main(int argc, char** argv) {
   if (argc == 3 && strcmp(argv[1], "--cwd") == 0) {
     return Cwd(argv[2]);
+  }
+  if (argc == 3 && strcmp(argv[1], "--stat") == 0) {
+    return StatPath(argv[2]);
+  }
+  if (argc == 3 && strcmp(argv[1], "--host-file") == 0) {
+    return HostFile(argv[2]);
+  }
+  if (argc == 3 && strcmp(argv[1], "--install") == 0) {
+    const int R = WriteFile(argv[2], O_CREAT | O_EXCL, "guest\n");
+    printf("%s\n", R == 0 && Holds(argv[2], "guest\n") ? "installed" : R ? strerrorname_np(-R) : "EIO");
+    return 0;
+  }
+  if (argc == 3 && strcmp(argv[1], "--remove") == 0) {
+    if (unlink(argv[2]) != 0) {
+      printf("%s\n", strerrorname_np(errno));
+    } else {
+      printf("%s\n", Missing(argv[2]) ? "removed" : "still-visible");
+    }
+    return 0;
   }
   if (argc == 3 && strcmp(argv[1], "--make-fixture") == 0) {
     return MakeFixture(argv[2]);
@@ -190,6 +249,41 @@ int main(int argc, char** argv) {
 
   char List[4096];
   struct stat St;
+
+  // Changes through a read-only descriptor onto a base file and a base
+  // directory. Under POWERarm they land on overlay copies; run.sh checks the
+  // base did not change.
+  {
+    int FD = open(P("/etc/ovtest.d/two.conf"), O_RDONLY | O_CLOEXEC);
+    Check("fd.fchmod", FD >= 0 && fchmod(FD, 0640) == 0 && stat(P("/etc/ovtest.d/two.conf"), &St) == 0 && (St.st_mode & 07777) == 0640 &&
+                         Holds(P("/etc/ovtest.d/two.conf"), "two\n"));
+    const struct timespec Times[2] = {{1100000000, 0}, {1100000000, 0}};
+    Check("fd.futimens", FD >= 0 && futimens(FD, Times) == 0 && stat(P("/etc/ovtest.d/two.conf"), &St) == 0 && St.st_mtime == 1100000000);
+    Check("fd.fchownat-empty-path", FD >= 0 && fchownat(FD, "", getuid(), getgid(), AT_EMPTY_PATH) == 0 &&
+                                      stat(P("/etc/ovtest.d/two.conf"), &St) == 0 && St.st_uid == getuid() && (St.st_mode & 07777) == 0640);
+    if (FD >= 0) {
+      close(FD);
+    }
+    int Dir = open(P("/usr/lib"), O_RDONLY | O_DIRECTORY | O_CLOEXEC);
+    Check("fd.fchmod-dir", Dir >= 0 && fchmod(Dir, 0700) == 0 && stat(P("/usr/lib"), &St) == 0 && (St.st_mode & 07777) == 0700 &&
+                             fchmod(Dir, 0755) == 0 && stat(P("/usr/lib"), &St) == 0 && (St.st_mode & 07777) == 0755);
+    if (Dir >= 0) {
+      close(Dir);
+    }
+  }
+
+  // A directory the base lacks. Under POWERarm /usr/bin is the host's, so it
+  // already exists unless the process is sealed; either way everything made
+  // inside it lands in the overlay (run.sh checks the host is untouched).
+  Check("hostdir.mkdir", (mkdir(P("/usr/bin"), 0755) == 0 || errno == EEXIST) && mkdir(P("/usr/bin/ovtest.d"), 0755) == 0 &&
+                           stat(P("/usr/bin/ovtest.d"), &St) == 0 && S_ISDIR(St.st_mode));
+  Check("hostdir.create", WriteFile(P("/usr/bin/ovtest.d/kept"), O_CREAT | O_EXCL, "kept\n") == 0 && Holds(P("/usr/bin/ovtest.d/kept"), "kept\n"));
+  Check("hostdir.rename-unlink", WriteFile(P("/usr/bin/ovtest.d/a"), O_CREAT | O_EXCL, "a\n") == 0 &&
+                                   rename(P("/usr/bin/ovtest.d/a"), P("/usr/bin/ovtest.d/b")) == 0 && Missing(P("/usr/bin/ovtest.d/a")) &&
+                                   Holds(P("/usr/bin/ovtest.d/b"), "a\n") && unlink(P("/usr/bin/ovtest.d/b")) == 0 &&
+                                   Missing(P("/usr/bin/ovtest.d/b")));
+  Listing(P("/usr/bin/ovtest.d"), List, sizeof(List));
+  Check("hostdir.readdir", strcmp(List, "kept") == 0);
 
   // Create.
   Check("create.usr", WriteFile(P("/usr/share/ovtest/new.txt"), O_CREAT | O_EXCL, "new\n") == 0 &&

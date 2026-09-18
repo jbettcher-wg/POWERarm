@@ -54,6 +54,11 @@ namespace {
   };
   // First components that are, or lead to, an owned prefix.
   constexpr std::string_view OwnedRoots[] = {"usr"sv, "etc"sv, "opt"sv, "var"sv};
+  // Programs sealed under RootFSOverlaySeal=auto: the guest's package manager.
+  // Its file-conflict check is an lstat of every path a package ships, so a
+  // host file showing through would make every package that overlaps the
+  // host uninstallable.
+  constexpr std::string_view PackageManagers[] = {"pacman"sv};
 
   constexpr std::string_view WhiteoutPrefix = ".wh."sv;
   constexpr std::string_view OpaqueMarker = ".wh..wh..opq"sv;
@@ -141,11 +146,17 @@ namespace {
   }
 
   // Reads every entry of an open directory descriptor.
+  //
+  // The buffers here and in CopyData are on the heap on purpose. These run in
+  // syscall context, and while CopyData kept a 64 KiB buffer on the stack a
+  // guest mv of a base file intermittently died of a corrupted guest stack
+  // ("stack smashing detected").
   template<typename Fn>
   bool ForEachEntry(int DirFD, Fn&& Callback) {
-    alignas(8) char Buf[16 * 1024];
+    fextl::vector<uint64_t> Storage(16 * 1024 / sizeof(uint64_t));
+    char* Buf = reinterpret_cast<char*>(Storage.data());
     for (;;) {
-      long N = ::syscall(SYSCALL_DEF(getdents64), DirFD, Buf, sizeof(Buf));
+      long N = ::syscall(SYSCALL_DEF(getdents64), DirFD, Buf, Storage.size() * sizeof(uint64_t));
       if (N < 0) {
         return false;
       }
@@ -185,9 +196,10 @@ namespace {
       }
       break;
     }
-    char Buf[64 * 1024];
+    fextl::vector<char> Storage(64 * 1024);
+    char* Buf = Storage.data();
     for (;;) {
-      ssize_t N = ::read(Src, Buf, sizeof(Buf));
+      ssize_t N = ::read(Src, Buf, Storage.size());
       if (N == 0) {
         return 0;
       }
@@ -251,6 +263,21 @@ fextl::string RootFSOverlay::ConfiguredPath(const fextl::string& RootFS) {
   return Path;
 }
 
+bool RootFSOverlay::ConfiguredSeal(std::string_view ProgramName) {
+  FEX_CONFIG_OPT(Setting, ROOTFSOVERLAYSEAL);
+  const fextl::string& Value = Setting();
+  if (Value == "1" || Value == "on") {
+    return true;
+  }
+  if (Value == "0" || Value == "off") {
+    return false;
+  }
+  if (!Value.empty() && Value != "auto") {
+    LogMan::Msg::EFmt("RootFSOverlaySeal '{}' is not auto, on or off; using auto", Value);
+  }
+  return std::find(std::begin(PackageManagers), std::end(PackageManagers), ProgramName) != std::end(PackageManagers);
+}
+
 fextl::string RootFSOverlay::LoaderPath(const fextl::string& RootFS, const fextl::string& GuestPath) {
   if (GuestPath.empty() || GuestPath[0] != '/' || RootFS.empty()) {
     return {};
@@ -280,7 +307,7 @@ fextl::string RootFSOverlay::LoaderPath(const fextl::string& RootFS, const fextl
   return Result;
 }
 
-void RootFSOverlay::Init(const fextl::string& RootFS, int BaseDirFD) {
+void RootFSOverlay::Init(const fextl::string& RootFS, int BaseDirFD, std::string_view ProgramName) {
   if (BaseDirFD < 0) {
     return;
   }
@@ -306,6 +333,7 @@ void RootFSOverlay::Init(const fextl::string& RootFS, int BaseDirFD) {
   BaseFD = BaseDirFD;
   UpperFD = FD;
   UpperDev = St.st_dev;
+  Seal = ConfiguredSeal(ProgramName);
 
   for (auto Root : OwnedRoots) {
     Candidates.emplace_back(Root);
@@ -334,7 +362,11 @@ void RootFSOverlay::Init(const fextl::string& RootFS, int BaseDirFD) {
     });
     ::close(Dir);
   }
-  LogMan::Msg::DFmt("RootFS overlay: {} over {}", Upper, Base);
+  LogMan::Msg::DFmt("RootFS overlay: {} over {}{}", Upper, Base, Seal ? ", sealed" : "");
+}
+
+bool RootFSOverlay::NoFallthrough(std::string_view Path) const {
+  return Seal || IsNoFallthrough(Path);
 }
 
 uint64_t RootFSOverlay::Fail(int Error) const {
@@ -455,7 +487,8 @@ RootFSOverlay::Node RootFSOverlay::Resolve(std::string_view In, bool FollowLast)
   // walks a path, so that a symlink in either layer (the base's /lib ->
   // usr/lib, say) leads into the other layer correctly. Each owned component
   // is looked up in the overlay, then its whiteout, then the base; the first
-  // component found in neither stops the walk and the host resolves the rest.
+  // component found in neither stops the walk and the host resolves the rest,
+  // unless NoFallthrough() says the name is simply absent (Hidden).
   Node N;
   fextl::string Work {In};
   size_t Pos = 0;
@@ -582,7 +615,7 @@ RootFSOverlay::Node RootFSOverlay::Resolve(std::string_view In, bool FollowLast)
       Found = true;
     }
     if (!Found && !Err) {
-      Hit = (!S.Fallthrough || ParentOpaque || (Owned && IsNoFallthrough(Cand))) ? Layer::Hidden : Layer::Host;
+      Hit = (!S.Fallthrough || ParentOpaque || (Owned && NoFallthrough(Cand))) ? Layer::Hidden : Layer::Host;
     }
     if (Err) {
       N.Error = Err;
@@ -649,7 +682,7 @@ RootFSOverlay::Node RootFSOverlay::Resolve(std::string_view In, bool FollowLast)
       Child.Upper = Hit == Layer::Upper || HaveUpperAncestor;
       Child.OpaqueKnown = !Child.Upper || !Owned;
       Child.Lower = Hit == Layer::Lower || (S.Lower && !ParentHidesLower);
-      Child.Fallthrough = S.Fallthrough && !ParentHidesLower && !(Owned && IsNoFallthrough(Cand));
+      Child.Fallthrough = S.Fallthrough && !ParentHidesLower && !(Owned && NoFallthrough(Cand));
       const struct stat& U = Hit == Layer::Upper ? St : UpperAncestor;
       Child.Ino = U.st_ino;
       Child.MtimeSec = U.st_mtim.tv_sec;
@@ -802,7 +835,7 @@ bool RootFSOverlay::LowerVisible(const fextl::string& Path, const DirState& Pare
   if (Parent.Lower && ::fstatat(BaseFD, Rel(Path), &St, AT_SYMLINK_NOFOLLOW) == 0) {
     return true;
   }
-  return Parent.Fallthrough && !IsNoFallthrough(Path) && ::lstat(Path.c_str(), &St) == 0;
+  return Parent.Fallthrough && !NoFallthrough(Path) && ::lstat(Path.c_str(), &St) == 0;
 }
 
 int RootFSOverlay::CopyObject(const Node& Src, const fextl::string& Dest, bool WithData) {
@@ -1755,19 +1788,24 @@ std::optional<uint64_t> RootFSOverlay::Chdir(const char* Path) {
   if (!N) {
     return std::nullopt;
   }
-  // Host first, as FileManager::Chdir: a directory that exists on the host is
-  // entered there, so relative host executables keep working.
-  uint64_t Result = ::chdir(Path);
-  if (Result != static_cast<uint64_t>(-1) || errno != ENOENT) {
-    return Result;
-  }
+  // The layers decide whether the directory exists: a whited-out name, or one
+  // hidden from a sealed process, is not entered on the host either.
   if (N->Error) {
     return Fail(N->Error);
   }
-  if (N->Where == Layer::Upper || N->Where == Layer::Lower) {
-    return ::chdir(HostPathOf(*N).c_str());
+  if (N->Where == Layer::Hidden) {
+    return Fail(ENOENT);
   }
-  return Fail(ENOENT);
+  if (N->Where != Layer::Host && !S_ISDIR(N->St.st_mode)) {
+    return Fail(ENOTDIR);
+  }
+  // Host first, as FileManager::Chdir: a directory that exists on the host is
+  // entered there, so relative host executables keep working.
+  uint64_t Result = ::chdir(Path);
+  if (Result != static_cast<uint64_t>(-1) || errno != ENOENT || N->Where == Layer::Host) {
+    return Result;
+  }
+  return ::chdir(HostPathOf(*N).c_str());
 }
 
 std::optional<uint64_t> RootFSOverlay::Statfs(const char* Path, struct statfs* Buf) {
@@ -1819,6 +1857,72 @@ std::optional<uint64_t> RootFSOverlay::Xattr(XattrOp Op, int DirFD, const char* 
   case XattrOp::Remove: R = UseFollow ? ::removexattr(P, A.Name) : ::lremovexattr(P, A.Name); break;
   }
   return R < 0 ? Fail(errno) : static_cast<uint64_t>(R);
+}
+
+std::optional<uint64_t> RootFSOverlay::DescriptorChange(int FD, DescriptorOp Op, const DescriptorArgs& A) {
+  if (!Active()) {
+    return std::nullopt;
+  }
+  char Buf[PATH_MAX];
+  ssize_t Len = FD == AT_FDCWD ? ::readlink("/proc/self/cwd", Buf, sizeof(Buf)) : FEX::get_fdpath(FD, Buf);
+  if (Len <= 0 || Len >= static_cast<ssize_t>(sizeof(Buf)) || Buf[0] != '/') {
+    return std::nullopt;
+  }
+  const std::string_view HostPath {Buf, static_cast<size_t>(Len)};
+  if (HasPrefix(HostPath, Upper) || HostPath.ends_with(" (deleted)")) {
+    // The overlay's own object: change it in place.
+    return std::nullopt;
+  }
+  fextl::string Guest {HasPrefix(HostPath, Base) ? HostPath.substr(Base.size()) : HostPath};
+  if (Guest.empty() || !IsCandidate(Guest) || !IsOwned(Guest)) {
+    return std::nullopt;
+  }
+
+  struct stat Held {};
+  if (FD == AT_FDCWD ? ::stat(".", &Held) != 0 : ::fstat(FD, &Held) != 0) {
+    return std::nullopt;
+  }
+  if (Op == DescriptorOp::Chmod && S_ISLNK(Held.st_mode)) {
+    // An O_PATH descriptor onto a symlink: Linux has no mode on symlinks.
+    return Fail(EOPNOTSUPP);
+  }
+  Node N = Resolve(Guest, false);
+  if (N.Error || !N.Owned) {
+    return Fail(EROFS);
+  }
+  switch (N.Where) {
+  case Layer::Upper:
+    // Copied up since the descriptor was opened: the guest's object is the overlay's.
+    break;
+  case Layer::Lower:
+  case Layer::Host: {
+    struct stat Seen = N.St;
+    if (N.Where == Layer::Host && ::lstat(N.Path.c_str(), &Seen) != 0) {
+      return Fail(errno);
+    }
+    if (Seen.st_dev != Held.st_dev || Seen.st_ino != Held.st_ino) {
+      // The name now shows something else; the held object is in no layer the
+      // guest can change.
+      return Fail(EROFS);
+    }
+    if (int Err = CopyUp(N, true)) {
+      return Fail(Err);
+    }
+    break;
+  }
+  case Layer::Hidden: return Fail(EROFS);
+  }
+
+  const char* R = Rel(N.Path);
+  long Result = -1;
+  switch (Op) {
+  case DescriptorOp::Chmod: Result = ::syscall(SYSCALL_DEF(fchmodat), UpperFD, R, A.Mode); break;
+  case DescriptorOp::Chown: Result = ::syscall(SYSCALL_DEF(fchownat), UpperFD, R, A.Owner, A.Group, AT_SYMLINK_NOFOLLOW); break;
+  case DescriptorOp::Utimens: Result = ::syscall(SYSCALL_DEF(utimensat), UpperFD, R, A.Times, AT_SYMLINK_NOFOLLOW); break;
+  case DescriptorOp::SetXattr: Result = ::lsetxattr((Upper + N.Path).c_str(), A.Name, A.Value, A.Size, A.SetFlags); break;
+  case DescriptorOp::RemoveXattr: Result = ::lremovexattr((Upper + N.Path).c_str(), A.Name); break;
+  }
+  return Result < 0 ? Fail(errno) : static_cast<uint64_t>(Result);
 }
 
 std::optional<fextl::string> RootFSOverlay::EmulatedPath(const char* Path, bool Follow) const {

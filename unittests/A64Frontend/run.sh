@@ -67,47 +67,105 @@ snapshot() {
 }
 
 # rootfs_overlay runs with its own fixture as the base rootfs and an empty
-# overlay. Its stdout must match the Pi's (the same operations on a plain
-# directory there), and the host must see: the base unchanged, the changes in
-# the overlay, a host tool the base lacks still reachable, and with the
-# overlay disabled or absent the old fallthrough to the host's pacman state.
+# overlay, once as an ordinary program and once sealed. Both stdouts must
+# match the Pi's (the same operations on a plain directory there), and the
+# host must see: the base unchanged, the changes in the overlay and none on
+# the host, a host tool the base lacks still reachable except from a sealed
+# process (the package manager, by default), a host file changed and deleted
+# only in the overlay, and with the overlay disabled or absent the old
+# fallthrough to the host's pacman state.
 run_rootfs_overlay() {
   ovt=$(mktemp -d "${TMPDIR:-/tmp}/rootfs_overlay.XXXXXX")
+  # ovt_emu OVERLAY SEAL PROGRAM ARGS...: SEAL is on, off, or - for the default.
+  ovt_emu() {
+    (
+      export POWERARM_ROOTFS="$ovt/base" POWERARM_ROOTFSOVERLAY="$1"
+      if [ "$2" = - ]; then unset POWERARM_ROOTFSOVERLAYSEAL; else export POWERARM_ROOTFSOVERLAYSEAL="$2"; fi
+      shift 2
+      exec "$emu" "$@"
+    )
+  }
+  # What the host itself has at a path the fixture base lacks (the shell
+  # running this script may see a rootfs of its own there).
+  host_stat() {
+    ovt_emu 0 - ./rootfs_overlay --stat "$1" 2>&1
+  }
   "$emu" ./rootfs_overlay --make-fixture "$ovt/base" > rootfs_overlay.stderr 2>&1
-  mkdir "$ovt/overlay"
+  mkdir "$ovt/overlay" "$ovt/sealed" "$ovt/pm" "$ovt/hostfile" "$ovt/install"
+  cp ./rootfs_overlay "$ovt/pacman"
   snapshot "$ovt/base" > "$ovt/before"
-  POWERARM_ROOTFS=$ovt/base POWERARM_ROOTFSOVERLAY=$ovt/overlay "$emu" ./rootfs_overlay > rootfs_overlay.powerarm 2>> rootfs_overlay.stderr
+  hostdir_before=$(host_stat /usr/bin/ovtest.d)
+  ovt_emu "$ovt/overlay" - ./rootfs_overlay > rootfs_overlay.powerarm 2>> rootfs_overlay.stderr
   echo $? > rootfs_overlay.powerarm.rc
+  ovt_emu "$ovt/sealed" on ./rootfs_overlay > rootfs_overlay.sealed 2>> rootfs_overlay.stderr
+  echo $? > rootfs_overlay.sealed.rc
   snapshot "$ovt/base" > "$ovt/after"
-  tool=$(POWERARM_ROOTFS=$ovt/base POWERARM_ROOTFSOVERLAY=$ovt/overlay "$emu" ./rootfs_overlay --probe /usr/bin/env 2>&1)
-  hidden=$(POWERARM_ROOTFS=$ovt/base POWERARM_ROOTFSOVERLAY=$ovt/overlay "$emu" ./rootfs_overlay --probe /var/lib/pacman 2>&1)
-  knob=$(POWERARM_ROOTFS=$ovt/base POWERARM_ROOTFSOVERLAY=0 "$emu" ./rootfs_overlay --probe /var/lib/pacman 2>&1)
-  absent=$(env -u POWERARM_ROOTFSOVERLAY POWERARM_ROOTFS="$ovt/base" "$emu" ./rootfs_overlay --probe /var/lib/pacman 2>&1)
+  hostdir_after=$(host_stat /usr/bin/ovtest.d)
+  tool=$(ovt_emu "$ovt/overlay" - ./rootfs_overlay --probe /usr/bin/env 2>&1)
+  hidden=$(ovt_emu "$ovt/overlay" - ./rootfs_overlay --probe /var/lib/pacman 2>&1)
+  # Sealed: on for every program, auto only for pacman.
+  seal_on=$(ovt_emu "$ovt/pm" on ./rootfs_overlay --probe /usr/bin/env 2>&1)
+  seal_pm=$(ovt_emu "$ovt/pm" - "$ovt/pacman" --probe /usr/bin/env 2>&1)
+  seal_pm_off=$(ovt_emu "$ovt/pm" off "$ovt/pacman" --probe /usr/bin/env 2>&1)
+  knob=$(ovt_emu 0 - ./rootfs_overlay --probe /var/lib/pacman 2>&1)
+  absent=$(env -u POWERARM_ROOTFSOVERLAY -u POWERARM_ROOTFSOVERLAYSEAL POWERARM_ROOTFS="$ovt/base" "$emu" ./rootfs_overlay --probe /var/lib/pacman 2>&1)
   # getcwd inside the base reads as the guest path, with or without the
   # overlay; a host directory the base lacks reads as itself.
-  cwd_on=$(POWERARM_ROOTFS=$ovt/base POWERARM_ROOTFSOVERLAY=$ovt/overlay "$emu" ./rootfs_overlay --cwd /usr/share/ovtest/sub 2>&1)
-  cwd_off=$(POWERARM_ROOTFS=$ovt/base POWERARM_ROOTFSOVERLAY=0 "$emu" ./rootfs_overlay --cwd /usr/share/ovtest/sub 2>&1)
-  cwd_host=$(POWERARM_ROOTFS=$ovt/base POWERARM_ROOTFSOVERLAY=0 "$emu" ./rootfs_overlay --cwd /usr/bin 2>&1)
+  cwd_on=$(ovt_emu "$ovt/overlay" - ./rootfs_overlay --cwd /usr/share/ovtest/sub 2>&1)
+  cwd_off=$(ovt_emu 0 - ./rootfs_overlay --cwd /usr/share/ovtest/sub 2>&1)
+  cwd_host=$(ovt_emu 0 - ./rootfs_overlay --cwd /usr/bin 2>&1)
   host_pacman=ENOENT
   [ -d /var/lib/pacman ] && host_pacman=exists
+  # A host file the base lacks, under a guest-owned prefix: changed through a
+  # read-only descriptor and deleted by an ordinary program, installed over
+  # and removed by a sealed one; the host copy never changes. Not as root,
+  # where a regression would change the host's own file.
+  hostfile=/usr/lib/os-release
+  hf_before=$(host_stat "$hostfile")
+  hf=skipped
+  if [ "$(id -u)" != 0 ] && [ "$hf_before" != ENOENT ]; then
+    hf=$(ovt_emu "$ovt/hostfile" off ./rootfs_overlay --host-file "$hostfile" 2>&1)
+    hf_conflict=$(ovt_emu "$ovt/hostfile" off ./rootfs_overlay --install /usr/bin/env 2>&1)
+    hf_install=$(ovt_emu "$ovt/install" on ./rootfs_overlay --install "$hostfile" 2>&1)
+    hf_installed=$(cat "$ovt/install$hostfile" 2>&1)
+    hf_remove=$(ovt_emu "$ovt/install" on ./rootfs_overlay --remove "$hostfile" 2>&1)
+    hf_back=$(ovt_emu "$ovt/install" off ./rootfs_overlay --probe "$hostfile" 2>&1)
+    hf_after=$(host_stat "$hostfile")
+  fi
+  hf_name=${hostfile##*/}
+  hf_dir=${hostfile%/*}
   if ! cmp -s rootfs_overlay.golden rootfs_overlay.powerarm; then
     report FAIL rootfs_overlay "stdout differs: $(cmp rootfs_overlay.golden rootfs_overlay.powerarm 2>&1 | head -1)"
-  elif [ "$(cat rootfs_overlay.rc)" != "$(cat rootfs_overlay.powerarm.rc)" ]; then
-    report FAIL rootfs_overlay "exit status $(cat rootfs_overlay.powerarm.rc), Pi $(cat rootfs_overlay.rc)"
+  elif ! cmp -s rootfs_overlay.golden rootfs_overlay.sealed; then
+    report FAIL rootfs_overlay "sealed stdout differs: $(cmp rootfs_overlay.golden rootfs_overlay.sealed 2>&1 | head -1)"
+  elif [ "$(cat rootfs_overlay.rc)" != "$(cat rootfs_overlay.powerarm.rc)" ] || [ "$(cat rootfs_overlay.rc)" != "$(cat rootfs_overlay.sealed.rc)" ]; then
+    report FAIL rootfs_overlay "exit status $(cat rootfs_overlay.powerarm.rc), sealed $(cat rootfs_overlay.sealed.rc), Pi $(cat rootfs_overlay.rc)"
   elif ! cmp -s "$ovt/before" "$ovt/after"; then
     report FAIL rootfs_overlay "the base rootfs changed: $(diff "$ovt/before" "$ovt/after" | head -3 | tr '\n' ' ')"
   elif [ ! -f "$ovt/overlay/usr/share/ovtest/.wh.rename.txt" ] || [ ! -f "$ovt/overlay/usr/share/ovtest/modify.txt" ]; then
     report FAIL rootfs_overlay "the overlay lacks the whiteout or the copied-up file"
+  elif [ ! -f "$ovt/overlay/usr/bin/ovtest.d/kept" ] || [ ! -f "$ovt/sealed/usr/bin/ovtest.d/kept" ] || [ "$hostdir_after" != ENOENT ]; then
+    report FAIL rootfs_overlay "a file made in a host-only directory missed the overlay (host now: $hostdir_after, before: $hostdir_before)"
   elif [ "$tool" != exists ]; then
     report FAIL rootfs_overlay "host /usr/bin/env unreachable through the overlay: $tool"
+  elif [ "$seal_on" != ENOENT ] || [ "$seal_pm" != ENOENT ] || [ "$seal_pm_off" != exists ]; then
+    report FAIL rootfs_overlay "host /usr/bin/env through the seal: on [$seal_on] pacman [$seal_pm] pacman, seal off [$seal_pm_off]"
   elif [ "$hidden" != ENOENT ]; then
     report FAIL rootfs_overlay "/var/lib/pacman fell through to the host: $hidden"
   elif [ "$cwd_on" != "/usr/share/ovtest/sub ERANGE" ] || [ "$cwd_off" != "/usr/share/ovtest/sub ERANGE" ] || [ "$cwd_host" != "/usr/bin ERANGE" ]; then
     report FAIL rootfs_overlay "getcwd leaked a host path: overlay [$cwd_on] no overlay [$cwd_off] host dir [$cwd_host]"
   elif [ "$knob" != "$host_pacman" ] || [ "$absent" != "$host_pacman" ]; then
     report FAIL rootfs_overlay "disabled ($knob) or absent ($absent) overlay changed the host fallthrough ($host_pacman)"
+  elif [ "$hf" != skipped ] && { [ "$hf" != "fchmod=1 futimens=1 seen=1 unlink=1" ] || [ ! -f "$ovt/hostfile$hf_dir/.wh.$hf_name" ] || [ "$hf_conflict" != EEXIST ]; }; then
+    report FAIL rootfs_overlay "host $hostfile through a descriptor: [$hf], whiteout $(ls -a "$ovt/hostfile$hf_dir" 2>&1 | tr '\n' ' '), install unsealed [$hf_conflict]"
+  elif [ "$hf" != skipped ] && { [ "$hf_install" != installed ] || [ "$hf_installed" != guest ] || [ "$hf_remove" != removed ] || [ "$hf_back" != exists ] || [ -e "$ovt/install$hostfile" ] || [ -e "$ovt/install$hf_dir/.wh.$hf_name" ]; }; then
+    report FAIL rootfs_overlay "sealed install over host $hostfile: [$hf_install] content [$hf_installed] remove [$hf_remove] host visible again [$hf_back]"
+  elif [ "$hf" != skipped ] && [ "$hf_after" != "$hf_before" ]; then
+    report FAIL rootfs_overlay "the host's $hostfile changed: [$hf_before] -> [$hf_after]"
   else
-    report PASS rootfs_overlay "$(grep -c '^PASS' rootfs_overlay.powerarm) checks, base unchanged"
+    note=
+    [ "$hf" = skipped ] && note=", host-file checks skipped (root, or no $hostfile)"
+    report PASS rootfs_overlay "$(grep -c '^PASS' rootfs_overlay.powerarm) checks unsealed and sealed, base and host unchanged$note"
   fi
   rm -rf "$ovt"
 }

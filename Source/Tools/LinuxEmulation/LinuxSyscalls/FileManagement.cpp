@@ -272,8 +272,9 @@ FileManager::FileManager(FEXCore::Context::Context* ctx)
     } else {
       TrackFEXFD(RootFSFD);
       // The per-user writable layer, when "<rootfs>-overlay" (or the
-      // RootFSOverlay setting) names an existing directory.
-      Overlay.Init(LDPath(), RootFSFD);
+      // RootFSOverlay setting) names an existing directory. The program's
+      // name decides whether host files show through it (RootFSOverlaySeal).
+      Overlay.Init(LDPath(), RootFSFD, AppName);
       if (Overlay.Active()) {
         TrackFEXFD(Overlay.UpperDirFD());
       }
@@ -857,6 +858,55 @@ bool FileManager::UseOverlay(int DirFD, const char* Path) const {
       }                                        \
     }                                          \
   } while (0)
+
+// The *at calls that name the descriptor itself: "" with AT_EMPTY_PATH.
+static bool NamesDescriptor(const char* pathname, uint64_t flags) {
+  return (flags & AT_EMPTY_PATH) && pathname && pathname[0] == 0;
+}
+
+// Hands a change through a descriptor to the overlay, which answers when the
+// descriptor holds a base or host file under a guest-owned prefix.
+#define TRY_OVERLAY_DESCRIPTOR(FD, Op, ...)                                                                     \
+  do {                                                                                                          \
+    if (auto OverlayResult = Overlay.DescriptorChange((FD), RootFSOverlay::DescriptorOp::Op, {__VA_ARGS__})) { \
+      return *OverlayResult;                                                                                    \
+    }                                                                                                           \
+  } while (0)
+
+// fchmod, fchown and the f*xattr calls refuse an O_PATH descriptor (EBADF);
+// the kernel answers those itself.
+static bool IsPathOnly(int fd) {
+  const int Flags = ::fcntl(fd, F_GETFL);
+  return Flags != -1 && (Flags & O_PATH);
+}
+
+uint64_t FileManager::Fchmod(int fd, mode_t mode) {
+  if (!IsPathOnly(fd)) {
+    TRY_OVERLAY_DESCRIPTOR(fd, Chmod, .Mode = mode);
+  }
+  return ::fchmod(fd, mode);
+}
+
+uint64_t FileManager::Fchown(int fd, uid_t owner, gid_t group) {
+  if (!IsPathOnly(fd)) {
+    TRY_OVERLAY_DESCRIPTOR(fd, Chown, .Owner = owner, .Group = group);
+  }
+  return ::fchown(fd, owner, group);
+}
+
+uint64_t FileManager::Fsetxattr(int fd, const char* name, const void* value, size_t size, int flags) {
+  if (!IsPathOnly(fd)) {
+    TRY_OVERLAY_DESCRIPTOR(fd, SetXattr, .Name = name, .Value = value, .Size = size, .SetFlags = flags);
+  }
+  return ::fsetxattr(fd, name, value, size, flags);
+}
+
+uint64_t FileManager::Fremovexattr(int fd, const char* name) {
+  if (!IsPathOnly(fd)) {
+    TRY_OVERLAY_DESCRIPTOR(fd, RemoveXattr, .Name = name);
+  }
+  return ::fremovexattr(fd, name);
+}
 
 bool FileManager::IsOverlayHidden(const char* pathname) const {
   return pathname && pathname[0] == '/' && UseOverlay(AT_FDCWD, pathname) && Overlay.IsHidden(pathname);
@@ -1692,6 +1742,9 @@ uint64_t FileManager::Mknod(const char* pathname, mode_t mode, dev_t dev) {
 // ---------------------------------------------------------------------------
 
 uint64_t FileManager::Fchmodat(int dirfd, const char* pathname, mode_t mode, int flags) {
+  if (NamesDescriptor(pathname, flags)) {
+    TRY_OVERLAY_DESCRIPTOR(dirfd, Chmod, .Mode = mode);
+  }
   auto NewPath = GetSelf(pathname);
   const char* SelfPath = NewPath ? NewPath->data() : nullptr;
   TRY_OVERLAY(dirfd, SelfPath, Fchmodat(dirfd, SelfPath, mode, flags));
@@ -1711,6 +1764,9 @@ uint64_t FileManager::Fchmodat(int dirfd, const char* pathname, mode_t mode, int
 }
 
 uint64_t FileManager::Fchmodat2(int dirfd, const char* pathname, mode_t mode, unsigned int flags) {
+  if (NamesDescriptor(pathname, flags)) {
+    TRY_OVERLAY_DESCRIPTOR(dirfd, Chmod, .Mode = mode);
+  }
   auto NewPath = GetSelf(pathname);
   const char* SelfPath = NewPath ? NewPath->data() : nullptr;
   TRY_OVERLAY(dirfd, SelfPath, Fchmodat(dirfd, SelfPath, mode, static_cast<int>(flags)));
@@ -1729,6 +1785,9 @@ uint64_t FileManager::Fchmodat2(int dirfd, const char* pathname, mode_t mode, un
 }
 
 uint64_t FileManager::Fchownat(int dirfd, const char* pathname, uid_t owner, gid_t group, int flags) {
+  if (NamesDescriptor(pathname, flags)) {
+    TRY_OVERLAY_DESCRIPTOR(dirfd, Chown, .Owner = owner, .Group = group);
+  }
   auto NewPath = GetSelf(pathname);
   const char* SelfPath = NewPath ? NewPath->data() : nullptr;
   TRY_OVERLAY(dirfd, SelfPath, Fchownat(dirfd, SelfPath, owner, group, flags));
@@ -1782,8 +1841,12 @@ uint64_t FileManager::Utimensat(int dirfd, const char* pathname, const struct ti
   // A NULL pathname is legal here and means "operate on dirfd itself", which is
   // how futimens() is implemented. There is nothing to translate in that case,
   // so pass it straight through.
-  if (!pathname) {
-    return ::syscall(SYSCALL_DEF(utimensat), dirfd, nullptr, times, flags);
+  if (!pathname || NamesDescriptor(pathname, flags)) {
+    // The kernel takes a NULL path only with a descriptor and no flags.
+    if (pathname || (dirfd != AT_FDCWD && flags == 0)) {
+      TRY_OVERLAY_DESCRIPTOR(dirfd, Utimens, .Times = times);
+    }
+    return ::syscall(SYSCALL_DEF(utimensat), dirfd, pathname, times, flags);
   }
 
   auto NewPath = GetSelf(pathname);
@@ -2365,6 +2428,14 @@ uint64_t FileManager::SetxattrAt(int dfd, const char* pathname, uint32_t at_flag
     return syscall(SYSCALL_DEF(setxattrat), dfd, pathname, at_flags, name, uargs, usize);
   }
 
+  if (NamesDescriptor(pathname, at_flags) && uargs && usize >= sizeof(xattr_args)) {
+    xattr_args Args {};
+    if (FaultSafeUserMemAccess::CopyFromUser(&Args, uargs, sizeof(Args)) == 0) {
+      TRY_OVERLAY_DESCRIPTOR(dfd, SetXattr, .Name = name, .Value = reinterpret_cast<const void*>(Args.value), .Size = Args.size,
+                             .SetFlags = static_cast<int>(Args.flags));
+    }
+  }
+
   auto NewPath = GetSelf(pathname);
   const char* SelfPath = NewPath ? NewPath->data() : nullptr;
   if (UseOverlay(dfd, SelfPath) && uargs && usize >= sizeof(xattr_args)) {
@@ -2439,6 +2510,9 @@ uint64_t FileManager::ListxattrAt(int dfd, const char* pathname, uint32_t at_fla
 }
 
 uint64_t FileManager::RemovexattrAt(int dfd, const char* pathname, uint32_t at_flags, const char* name) {
+  if (NamesDescriptor(pathname, at_flags)) {
+    TRY_OVERLAY_DESCRIPTOR(dfd, RemoveXattr, .Name = name);
+  }
   if (IsSelfNoFollow(pathname, at_flags)) {
     // See Statx
     return syscall(SYSCALL_DEF(removexattrat), dfd, pathname, at_flags, name);
