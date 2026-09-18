@@ -19,10 +19,28 @@ cd "$out" || exit 2
 
 pass=0
 fail=0
+skip=0
 report() {
-  if [ "$1" = PASS ]; then pass=$((pass + 1)); else fail=$((fail + 1)); fi
+  case $1 in
+  PASS) pass=$((pass + 1)) ;;
+  SKIP) skip=$((skip + 1)) ;;
+  *) fail=$((fail + 1)) ;;
+  esac
   echo "$1 $2${3:+ ($3)}"
 }
+
+# The guest vDSO (vdso, vdso_syscalls) is libVDSO-a64-guest.so, which only a
+# -DBUILD_THUNKS=ON build produces, in <build>/Guest. Point POWERarm at the one
+# next to the emulator under test unless the caller already chose, so a
+# thunk build gates itself; a build without one SKIPs those two tests,
+# visibly and with the reason, instead of failing them.
+if [ -z "${POWERARM_THUNKGUESTLIBS:-}" ]; then
+  if guest=$(cd "$(dirname "$emu")/../Guest" 2>/dev/null && pwd) && [ -f "$guest/libVDSO-a64-guest.so" ]; then
+    export POWERARM_THUNKGUESTLIBS="$guest"
+  fi
+fi
+have_vdso=0
+[ -n "${POWERARM_THUNKGUESTLIBS:-}" ] && [ -f "$POWERARM_THUNKGUESTLIBS/libVDSO-a64-guest.so" ] && have_vdso=1
 
 # <test>.bin and <test>.args, when present, name the binary and its
 # arguments (the busybox applet tests); otherwise ./<test> runs bare.
@@ -45,6 +63,14 @@ run_emu() {
 
 for golden in *.golden; do
   t=${golden%.golden}
+  case $t in
+  vdso | vdso_syscalls)
+    if [ "$have_vdso" = 0 ]; then
+      report SKIP "$t" "no guest vDSO: build with -DBUILD_THUNKS=ON or set POWERARM_THUNKGUESTLIBS"
+      continue
+    fi
+    ;;
+  esac
   run_emu "$t"
   if [ "$t" = sysreg ]; then
     fails=$(grep -c '^FAIL' sysreg.powerarm)
@@ -87,5 +113,9 @@ if [ -f fp_scalar.powerarm ]; then
   fi
 fi
 
-echo "passed $pass, failed $fail"
+if [ "$skip" -gt 0 ]; then
+  echo "passed $pass, failed $fail, skipped $skip"
+else
+  echo "passed $pass, failed $fail"
+fi
 [ "$fail" = 0 ]
