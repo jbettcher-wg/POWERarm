@@ -186,10 +186,14 @@ CAS five times as heavily in proportion.
    `libVDSO-guest.so` on purpose so pre-marker emulators never map it. `run.sh` already gates
    itself either way (SKIPs the two vDSO tests when a build has none). Host.h's AArch64 stack rule
    (SP 0 mod 16) must not be cherry-picked to fastppcx86.
-8. **Two-tier rootfs** (`DESIGN.md` §6.2a): designed, and being implemented 2026-09-17. Until it
-   lands, guest `pacman` reads the HOST's package DB through fallthrough -- never trust its output.
-9. **Research queued overnight 2026-09-17 (Fable agents, design docs, no code)**, covering the two
-   halves of emulation cost: COLD, the cost of translating (`docs/powerarm/research/cold-translation/`),
-   and WARM, the quality of the emitted code, footprint included
-   (`docs/powerarm/research/warm-codegen/`). Each returns a ranked top five, weighed across the
-   reference workloads.
+8. **Two-tier rootfs** (`DESIGN.md` §6.2a.1): merged 2026-09-18 (37be7c9aa).
+   `ArchLinuxARM-vk-overlay` is bootstrapped with pacman, libxkbcommon and MangoHud v0.8.4 (built
+   from source; not in the ALARM repos). **Stable predates the overlay.** Guest `execve` goes through
+   binfmt, so every child process runs on stable and sees no overlay until the next promote. To
+   keep children on a dev build, use `POWERARM_PORTABLE=1` with an absolute `POWERARM_ROOTFS`.
+9. **Research landed (Fable, design docs, no code):** COLD, the cost of translating
+   (`docs/powerarm/research/cold-translation/`), and WARM, the quality of the emitted code
+   (`docs/powerarm/research/warm-codegen/`). Each gives a ranked top five across the reference
+   workloads. Warm's cheapest lever is its G2: A64 `CMP` arrives as `SubNZCV`, while
+   `CompareBranchFusion` accepts only `OP_SUBWITHFLAGS`, so no A64 compare+branch is ever fused.
+   Its §8 specifies the instrumented build a standard agent does before G2-G4 are priced.
