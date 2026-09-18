@@ -26,7 +26,7 @@ cherry-pick; patches for them go in `docs/powerarm/outgoing-patches/fastppcx86/`
   was stopping it. Verified end to end: HTTP 200 on the workbench HTML, `/healthz`,
   `/manifest.json` and a 1.05 MB `nls.messages.js`, the extension host agent (a child process)
   starting, and **zero** unimplemented-instruction reports for the whole session.
-  It needs the stable install promoted, not just a fresh build: code-server spawns child Node
+  It needs the stable install promoted, not just a fresh build (a trap that applies to any multi-process app): code-server spawns child Node
   processes, children reach the emulator through binfmt, and binfmt runs the stable copy.
 - **FEAT_LSE is complete and advertised** (2026-09-17): the min/max forms and `CASP` landed, so
   `ID_AA64ISAR0_EL1.Atomic`, `AT_HWCAP` and `/proc/cpuinfo` all report it. Tests `lse`,
@@ -40,14 +40,15 @@ cherry-pick; patches for them go in `docs/powerarm/outgoing-patches/fastppcx86/`
   launch no longer recompiles the blocks of small, 0644 or dlclose'd libraries (item 10). The
   guest main stack can no longer sit where the host stack grows (item 12). getcwd inside the
   rootfs returns guest paths.
-- **Stable is behind dev.** Everything in the bullet above is dev-build only. Binfmt-launched
-  programs and every guest child process still run on `c37536838`. Promote when Jordan calls it.
+- **Stable promoted to `c632e0bca`** (2026-09-18, binfmt re-registered, `check-binfmt-inode.sh`
+  OK), so binfmt-launched programs and guest children now have everything in the bullet above.
+  The first launches after the promote are cold (new cache config id).
 - **Next, in order:** warm G2 (A64 compare+branch fusion never fires; about a day,
   `docs/powerarm/research/warm-codegen/`); cold G1 (MapFile 64K offsets, so lld-linked binaries
   like Claude get code-cached, plus the CodeCacheScope default); ship the guest vDSO by default
   (item 7); the P7 acquire/release RMW census (item 4, standard agent).
-- **`powerarm-stable` is at `c37536838`** (promoted 2026-09-17, binfmt re-registered and
-  `check-binfmt-inode.sh` passing). Promoting is what moves binfmt-launched programs -- including
+- **`powerarm-stable` is at `c632e0bca`** (promoted 2026-09-18, binfmt re-registered and
+  `check-binfmt-inode.sh` passing; `.prev` holds `c37536838`). Promoting is what moves binfmt-launched programs -- including
   the Claude CLI and any guest child process -- onto new work, and a promote MUST be followed by
   `sudo sh ~/Development/register-powerarm-binfmt.sh`, because binfmt pins the interpreter's inode
   and the promote gives it a new one. `powerarm-stable.prev` is kept for rollback.
