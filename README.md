@@ -30,9 +30,12 @@ against a real Cortex-A76 (Raspberry Pi 5), on both 64K and 4K page-size POWER k
 | **M1:** static AArch64 programs (glibc and musl, busybox, TinyCC) | ✅ output identical to the reference |
 | **M2:** Arch Linux ARM's own GCC builds zlib and Lua | ✅ every object and binary byte-identical to the reference |
 | Optimization round 1 (branches, register use, code shape, translation speed, code cache, startup) | ✅ merged |
-| Larger real-world programs: JIT-based language runtimes | 🟡 the aarch64 Claude Code CLI (Bun / JavaScriptCore) installs and runs, and code-server 4.137 (VS Code on Node 24 / V8) starts, serves its workbench and spawns its extension host |
-| GPU and library thunks (Vulkan, GL, OpenSSL) | ⬜ planned |
-| Further performance work (ahead-of-time translation, faster cache install, compute lowerings) | 🔄 in progress |
+| Larger real-world programs: JIT-based language runtimes | ✅ the aarch64 Claude Code CLI (Bun / JavaScriptCore) runs day to day, and code-server 4.137 (VS Code on Node 24 / V8) serves its workbench and runs its extension host |
+| GPU | ✅ Vulkan and OpenGL run unthunked through the guest's own Mesa (RADV, radeonsi). `vkcube` matches the native frame rate |
+| Games | ✅ SuperTuxKart, Arch Linux ARM's aarch64 build, runs its benchmark at around 100 fps on an RX 7900 XTX. MangoHud for guests shows frame rate, GPU load and live JIT statistics |
+| Two-tier root filesystem | ✅ a read-only base plus a per-user writable layer; the guest's own `pacman` installs packages into it |
+| Library thunks (Vulkan, GL, libc string and math routines) | 🔄 the guest-to-host call path and callbacks have landed; shipping the guest vDSO by default is next |
+| Further performance work (code shape, flags, translation speed, code cache coverage) | 🔄 in progress; ranked goals in [`docs/powerarm/research/`](docs/powerarm/research/) |
 
 **Presented CPU:** Cortex-A76 class, with
 `fp asimd aes pmull sha1 sha2 crc32 atomics fphp asimdhp cpuid`. FEAT_LSE atomics are implemented
@@ -78,6 +81,16 @@ ninja -C build-powerarm
 Options are `POWERARM_*` environment variables or `Config.json` keys. The code cache is on by
 default for root filesystem binaries; `POWERARM_ENABLECODECACHINGWIP=0` turns it off.
 
+**Installing more guest software.** A directory `<rootfs>-overlay` next to a root filesystem
+(`~/.local/share/powerarm/RootFS/<name>-overlay/`) turns on a per-user
+writable layer. Guest `pacman` installs into it, and the base stays unchanged. See
+[`Scripts/powerarm/rootfs/README.md`](Scripts/powerarm/rootfs/README.md) and `DESIGN.md` §6.2a.
+
+**Metrics.** With `POWERARM_PROFILESTATS=1`, the emulator publishes live per-thread JIT
+statistics. [`Scripts/powerarm/shmstats.py`](Scripts/powerarm/shmstats.py) logs them to CSV,
+and [`Scripts/powerarm/mangohud/`](Scripts/powerarm/mangohud/) builds MangoHud for guests with a
+panel that shows them in game.
+
 ## Documentation
 
 | Document | Contents |
@@ -87,7 +100,8 @@ default for root filesystem binaries; `POWERARM_ENABLECODECACHINGWIP=0` turns it
 | [`docs/powerarm/M1-PLAN.md`](docs/powerarm/M1-PLAN.md), [`M2-PLAN.md`](docs/powerarm/M2-PLAN.md) | milestones, exit criteria, results |
 | [`docs/powerarm/OPTIMIZATION-CHECKLIST.md`](docs/powerarm/OPTIMIZATION-CHECKLIST.md) | measured optimization work and queue |
 | [`docs/powerarm/CODE-CACHE.md`](docs/powerarm/CODE-CACHE.md) | code cache design and correctness tests |
-| [`docs/powerarm/research/`](docs/powerarm/research/) | POWER9 pipeline, scalar FP and NEON lowering research |
+| [`docs/powerarm/THUNKS-DESIGN.md`](docs/powerarm/THUNKS-DESIGN.md) | library thunks: guest-to-host calls, callbacks, the guest vDSO |
+| [`docs/powerarm/research/`](docs/powerarm/research/) | POWER9 pipeline, scalar FP and NEON lowering, cold translation cost and warm code quality research |
 | [`unittests/A64Diff/README.md`](unittests/A64Diff/README.md) | differential test harness (64K and 4K KVM) |
 
 ## Acknowledgements
