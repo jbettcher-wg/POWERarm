@@ -194,17 +194,34 @@ The guest sees the stub instead of the real library at **open time**: `GetEmulat
 directories (`:526-540`), the basename. This is path redirection inside the emulator, not a
 mount, so `ld.so` in the guest loads the stub through an ordinary `openat`.
 
-**[guest view, 2026-09-17]** The rootfs mounted for this session has: glibc
-`2.43+r37+gfdf10644d6ee-1.1`, mesa `1:26.2.2-2`, `vulkan-radeon 1:26.2.2-2`,
-`vulkan-icd-loader 1.4.350.0-1`, `libglvnd 1.7.0-3`, `wayland 1.25.0-1`, `libdrm 2.4.134-1`,
-`libxkbcommon 1.13.2-1`, `libx11 1.8.13-1`, `vulkan-tools 1.4.350.0-1` (`pacman -Q`);
-`/usr/share/vulkan/icd.d/radeon_icd.json` and `/usr/lib/libvulkan_radeon.so` exist. `vkmark
-1:2025.01-2` and `mesa-demos 9.0.0-7` are in its repos, not installed (`pacman -Ss`). `libgbm`
-is not installed. So the guest has the real aarch64 loader and RADV for the *fallback* path.
-Aside: `ls -la /usr/lib/libvulkan.so.1` resolves (root-owned, overlay layer) while
-`ls /usr/lib | grep vulkan` shows nothing (base layer, uid 1000): the emulated `readdir` does not
-merge the two rootfs layers. Path opens are what `ld.so` and the thunk overlay use, so thunks
-are unaffected, but anything that discovers files by directory listing in the guest is.
+~~**[guest view, 2026-09-17]** The rootfs mounted for this session has: glibc … vulkan-tools
+1.4.350.0-1 (`pacman -Q`) … So the guest has the real aarch64 loader and RADV for the
+*fallback* path.~~
+
+**CORRECTED 2026-09-17 — that paragraph was reading the HOST, not the guest.** The m2 base rootfs
+carries no pacman database (`ArchLinuxARM-m2/var/lib/pacman/local` does not exist; it is
+extracted from pinned packages, not installed by pacman). A guest `pacman` therefore falls
+through, by the rootfs's ordinary path fallthrough, to the host's `/var/lib/pacman`, so
+`pacman -Q` listed **Jordan's ppc64le packages**: the reported `vulkan-tools 1.4.350.0-1` is
+exactly the host's (`/var/lib/pacman/local/vulkan-tools-1.4.350.0-1`), and the loader, RADV,
+Mesa and wayland versions match the host's `vulkaninfo` (§8 Answers). Likewise
+`/usr/share/vulkan/icd.d/radeon_icd.json` and `/usr/lib/libvulkan_radeon.so` "exist" only because
+the host's files show through. **So the guest has no aarch64 Vulkan loader or RADV today, and there
+is no guest fallback path yet**; a non-thunked aarch64 Vulkan app would find no usable driver.
+
+The aside about "two rootfs layers" not merging in `readdir` is the same effect, not two rootfs
+layers: `/usr/lib/libvulkan.so.1` resolves root-owned because it is the host file seen through
+fallthrough, while `ls /usr/lib` lists only the uid-1000 rootfs directory. The point stands for
+the thunks — path opens are what `ld.so` and the thunk overlay use — but the cause is fallthrough.
+
+**The two-tier rootfs of `DESIGN.md` §6.2a** (read-only base plus a per-user writable
+`RootFS/<name>-overlay/` where guest `pacman -S` installs) **is designed but not implemented**:
+nothing in `Source/` or `FEXCore/` references an `-overlay` layer. Until it is, a guest
+`pacman -S` would try to install into host paths (and fail on permissions as uid 1000), so
+aarch64 packages the GPU stage needs — `vulkan-tools` for vkcube, `vkmark`, the aarch64 loader
+and RADV for any fallback path — must come from a separately built rootfs (a second manifest
+over the m2 pins, `build-alarm-sysroot.sh --dest`), or from implementing the overlay layer
+first.
 
 ### 3.3 Host binding and what the host must have
 
