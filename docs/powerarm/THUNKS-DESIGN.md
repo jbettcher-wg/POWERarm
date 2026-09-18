@@ -463,6 +463,58 @@ or Jordan's console. Stage 1 is the first thing that needs the console.
    for Arch POWER.
 9. **`libasound` on the host:** PipeWire's ALSA plugin present (for the asound thunk later)?
 
+### Answers (2026-09-17)
+
+Host facts come from host tools run by absolute path. Tools absent from the guest rootfs (e.g.
+`vulkaninfo`, `vkcube`, `clang`, `ninja`) fall through to the host and run natively, so they see
+the real system. Tools that ARE in the rootfs (`pacman`, coreutils, `bash`) return the guest's
+view, so `pacman -Q` from the emulated shell is not evidence about the host.
+
+1. **`long double` is IBM double-double, and Jordan is not moving the port to IEEE128.** So
+   the generator's `long double` refusal is permanent, not a stopgap: a thunked signature that
+   carries `long double` must be refused (or hand-marshalled), never passed through.
+2. **Full Vulkan stack on the host** (Jordan: "full vulkan stack, and icd-loaders"). From
+   `vulkaninfo --summary`: loader instance 1.4.350; **AMD Radeon RX 7900 XTX (RADV NAVI31)**,
+   `DRIVER_ID_MESA_RADV`, **Mesa 26.2.2-arch1.2**, apiVersion 1.4.354, conformance 1.4.5.3,
+   discrete. ICD directory holds `radeon_icd.json` only. Instance extensions include
+   `VK_KHR_wayland_surface`, `VK_KHR_xcb_surface` and `VK_KHR_xlib_surface`.
+3. **Wayland and Xwayland both live** in the session: `WAYLAND_DISPLAY=wayland-1`,
+   `DISPLAY=:0`. (libglvnd/EGL/wayland-client versions still to read from the libraries.)
+4. **`vkcube` and `vkcubepp` are installed natively; `vkmark` is not.** vkcube defaults to FIFO
+   presentation, so natively it is vsync-bound (120 Hz display) and measures little. vkmark needs
+   packaging for the port (Jordan is its package distributor) before it can be the §6.2
+   benchmark. The guest side needs an aarch64 vkcube in the rootfs, which it does not have yet.
+7. **Guest stubs build with the rootfs's own gcc under POWERarm**, the way every
+   `unittests/A64Frontend` test was built this session; no cross toolchain and no Pi load needed.
+
+**Prior art: the parent project already runs these thunks.** POWERarm is a fork of fastppcx86
+(the x86-64 → ppc64le JIT), and fastppcx86's `build-thunks` carries the full working set: guest
+stubs for Vulkan, GL, EGL, wayland-client, drm, xshmfence, asound and the vDSO, plus ppc64le host
+libraries for all but the vDSO (`build-thunks/Guest/`, `build-thunks/HostLibs_64/`, selected with
+`FEX_THUNKGUESTLIBS`/`FEX_THUNKHOSTLIBS`). Its notes record the evidence:
+
+- **DOOM 2016 runs native Vulkan through the live thunk at 89 fps on this RX 7900 XTX**, not
+  vsync-capped (120 Hz display), dropping to ~53, with the GPU never the limit, so every lost
+  frame is CPU-side cost (`fastppcx86/build-agent.md`).
+- **FEX PR #4061 measured Civilization 6 at 333,601 Vulkan calls per frame, ~3.96 ms of
+  marshalling, near 25% of frame time.** The crossing cost is real on API-heavy workloads, which
+  is what the §6.2 API-bound threshold should be read against.
+
+So for POWERarm the GPU stage is porting the guest side of thunks already proven on this
+hardware, not building thunks. x86-64 and AArch64 are both LP64 little-endian with the same
+natural alignment for everything the Vulkan/wayland/drm/xshmfence interfaces carry (no
+`long double`, no x87 types), so the generated host libraries may be reusable nearly as they
+are. That is the first thing Stage 1 should establish, by checking the generator's own layout
+comparison rather than assuming it.
+
+**New risk, not in §9: host implicit layers.** The host loader has
+`VK_LAYER_VALVE_steam_overlay_{32,64}` and `VK_LAYER_VALVE_steam_fossilize_{32,64}` registered
+alongside Mesa's `anti_lag` and `device_select`. A thunked guest app enumerates through the host
+loader, so it inherits every implicit layer the host has. The Steam ones are presumably x86
+builds for fastppcx86, which the native loader skips (vulkaninfo runs clean), but the thunk has
+to be tested with them present, and `VK_LOADER_LAYERS_DISABLE` is the escape hatch if one
+misbehaves.
+
 ## 9. Risks, ranked
 
 1. **The AArch64 guest ABI touches the JIT's callback path in three places**
