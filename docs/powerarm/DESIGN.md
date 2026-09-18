@@ -435,7 +435,7 @@ the generator's layout-repacking work mostly disappears. What remains:
 - **No conflict:** this rig registers FEX only for `x86_64` and `x86` (`binfmt.d/` `[CODE]`).
   Check for a stale `qemu-aarch64` registration from `qemu-user-static` before registering.
 
-### 6.2a Rootfs layout and lookup (decided 2026-09-16)
+### 6.2a Rootfs layout and lookup (layout decided 2026-09-16; two layers implemented 2026-09-17)
 
 POWERarm follows XDG and FHS conventions, so the layout used in development is the same one
 packages install to. The inherited FEX lookup code already resolves these paths
@@ -450,11 +450,12 @@ packages install to. The inherited FEX lookup code already resolves these paths
 | Code cache, thunk preflight cache | `~/.cache/powerarm/` | n/a |
 
 - **Lookup order:** explicit config or env → per user → system.
-- **Two layers.** The base image is a read-only erofs/squashfs built from Arch Linux ARM
-  packages, shipped as e.g. `powerarm-rootfs-alarm` or fetched per user. On top sits a
-  writable per-user layer where `pacman -S` inside the guest installs packages. Upgrading the
-  base keeps user installs, and nothing needs root, because the overlay is path redirection
-  inside the emulator, not a kernel mount.
+- **Two layers.** The base image is a read-only tree built from Arch Linux ARM packages (today
+  a directory; later possibly erofs/squashfs, shipped as e.g. `powerarm-rootfs-alarm` or
+  fetched per user). On top sits a writable per-user layer where `pacman -S` inside the guest
+  installs packages. Upgrading the base keeps user installs, and nothing needs root, because
+  the overlay is path redirection inside the emulator, not a kernel mount. Implemented as
+  described in §6.2a.1 below.
 - **Guest thunk stubs live outside the rootfs,** versioned with the emulator they must match,
   so a rootfs update can't break them.
 - **Minimal base before the Arch Linux ARM image exists:** if Arch's
@@ -464,6 +465,131 @@ packages install to. The inherited FEX lookup code already resolves these paths
 - **One image serves 4K and 64K hosts,** because aarch64 packages are 64K-aligned.
 - **During development,** the image builder writes into `~/.local/share/powerarm/RootFS/`,
   the same place the fetcher does, so nothing moves when packages arrive.
+
+#### 6.2a.1 The writable layer, as implemented `[CODE]`
+
+`Source/Tools/LinuxEmulation/LinuxSyscalls/RootFSOverlay.{h,cpp}`, called from the top of
+each `FileManager` path syscall. Each entry point returns "not layered" unless the overlay is
+active and the path resolves under a guest-owned prefix, and the existing rootfs/host code then
+runs unchanged.
+
+**Activation.** The overlay is `<RootFS>-overlay`, next to a directory rootfs, when that
+directory exists. The `RootFSOverlay` setting (`POWERARM_ROOTFSOVERLAY`) overrides it: an
+absolute path to an existing directory, or `0`/`off`/`none` to disable it. An overlay that is
+the base or lies inside it is refused. **With no overlay directory every hook returns before it
+touches anything, so the old behaviour is unchanged.** That covers the pinned `ArchLinuxARM-m2`,
+the M2 builds and the a64diff bundles, which never have an overlay. A squashfs/erofs rootfs is
+mounted at a temporary path, so it only gets an overlay through the setting.
+
+**Guest-owned prefixes:** `/usr`, `/etc`, `/opt`, `/var/lib/pacman`, `/var/cache/pacman`, and
+`/var/log/pacman.log` (added; see the deviations below). Everything else (`/home`, `/tmp`,
+`/run`, `/dev`, `/proc`, `/sys`, and the rest of the base such as `/var/log` or `/root`) keeps the
+old rules exactly.
+
+**Resolution.** A guest path is walked one component at a time over the merged namespace, so a
+symlink in either layer is followed into the other: the base's root-level `lib -> usr/lib`
+reaches a library that only the overlay has. For each owned component the walk checks the
+overlay entry, then its whiteout, then the base. The first component found in neither stops
+the walk, and the host resolves the rest. Only paths whose *resolved* location is owned are
+layered. Paths whose first component can't reach an owned prefix never enter the walk: `usr`,
+`etc`, `opt`, `var`, plus the base's root symlinks into them (`bin`, `sbin`, `lib`). Relative
+paths and directory descriptors are mapped back to a guest path first. A directory inside the
+overlay or the base drops that prefix, and any other host directory is already a guest path.
+Paths the thunk overlays redirect are never layered.
+
+**Reads:** overlay → base → host, so host tools stay reachable (host `clang` from the guest's
+`/usr/bin/clang`). Package-manager state (`/var/lib/pacman`, `/var/cache/pacman`,
+`/etc/pacman.conf`, `/etc/pacman.d`, `/var/log/pacman.log`) resolves overlay → base only. A
+guest `pacman` no longer sees the host's database.
+
+**Writes, all into the overlay:**
+- **Copy-up first.** Opening a base or host file for writing (write access, `O_TRUNC`), or
+  changing it with `chmod`, `chown`, `utimensat`, `truncate`, `setxattr`/`removexattr`, or
+  linking it, copies it into the overlay first. The copy keeps mode, times and, where
+  permitted, owner. It skips the data for `O_TRUNC`/truncate-to-zero and does not copy xattrs.
+  A directory is copied up empty.
+- **Creates.** `open(O_CREAT)`, `O_TMPFILE`, `mkdir`, `mknod`, `symlink`, the new name of `link`
+  and `rename`, and `bind()` of an `AF_UNIX` socket (gpg-agent's socket in
+  `/etc/pacman.d/gnupg`) create the parent chain in the overlay. Each directory copies the mode
+  and owner of the one the guest sees.
+- **Deletes and whiteouts.** Deleting an overlay entry removes it. If the base or the host
+  still has that name, a whiteout `.wh.<name>` is written; deleting a base or host entry writes
+  only the whiteout. A whiteout also hides the host fallthrough, so a deleted name is gone from
+  every layer. `rmdir` needs the merged directory empty. `mkdir` over a whiteout marks the new
+  directory opaque (`.wh..wh..opq`), so the old contents don't come back. This is the OCI layer
+  format. Whiteouts, the opaque marker and copy-up temporaries (`.wh..cu.*`) are never visible
+  to the guest.
+- **Rename** works for files and symlinks from any layer: a base or host source is copied, then
+  whited out. A directory renames only if nothing in the base or on the host shares its name.
+  Otherwise it returns `EXDEV`, as overlayfs without `redirect_dir` does, and `mv` copies.
+  `RENAME_EXCHANGE` works only between two overlay non-directories (otherwise `EXDEV`), and
+  `RENAME_WHITEOUT` returns `EINVAL`.
+
+**readdir.** `getdents64` on a directory descriptor inside the overlay lists overlay + base
+(unless opaque), applies the whiteouts and hides the markers. The cursor is the descriptor's own
+file offset, so it is per open file description, and `rewinddir`/`seekdir` work through
+`lseek`. Host merging is unchanged: a directory that only the host has lists as before, and an
+overlay directory over a host-only one lists only the overlay's entries (lookups still fall
+through).
+
+**Other plumbing:**
+- `execve` returns `ENOENT` for a hidden path and runs the overlay copy.
+- The loader resolves program and interpreter through the layers. POWERarm strips the overlay
+  prefix from its own program path, and the code-cache identity uses the overlay copy.
+- `/proc/self/fd` readlinks and `getcwd` report guest paths.
+- `chdir` tries the host first, as before, then the overlay, then the base.
+- The overlay descriptor is hidden from `/proc/self/fd`. `close`/`close_range` skip the rootfs
+  and overlay descriptors, because gpgme's spawn closes every descriptor before `exec`, and the
+  child's `execve` of `gpg` then needs them.
+
+**Guest pacman.** `Scripts/powerarm/rootfs/alarm_sysroot.py overlay-init --dest <overlay>
+--with-pacman` does the bootstrap (README next to it). It writes `/var/lib/pacman/local`
+entries for the 90 pinned base packages, generated from the cached tarballs' `.PKGINFO`,
+`.MTREE` and file lists. It then extracts pacman's missing dependency closure (36 packages
+including `systemd`, resolved against today's repos and signature-checked against the pinned
+Arch Linux ARM key) into the overlay, along with the keyring, `pacman.conf` and the mirrorlist.
+It writes only the overlay and never touches the base or its content hash. The keyring is
+initialised inside the guest with `pacman-key --init` and `--populate archlinuxarm`. pacman
+insists on uid 0, so it runs as root of a user namespace (`unshare -r`), which needs no
+privilege. On disk the files belong to the caller.
+
+**Verified 2026-09-17:**
+- Setup: a reflink copy of `ArchLinuxARM-m2` with content hash `sha256:0f4a9230…77d5`, and a
+  fresh overlay.
+- Commands: `pacman-key --init`, `--populate archlinuxarm`, `pacman -Sy`, then `pacman -S tree`.
+  The package was signature-checked, installed into the overlay, and the systemd
+  post-transaction hook ran.
+- `tree` runs, and `pacman -Qo` names it.
+- `pacman -R tree` removes it without leaving whiteouts, and `pacman -Dk` is clean.
+- Afterwards the base still hashes to `0f4a9230…77d5`, and no base entry has a newer mtime.
+- The unit test is `unittests/A64Frontend/rootfs_overlay.c`.
+
+**Deviations from the decided semantics, and known gaps:**
+1. **The base is protected only under the owned prefixes.** "Everything outside keeps today's
+   behaviour" and "the base must never be written to" conflict. The old rules modify an
+   existing base file in place, and create inside the base when the host lacks the parent
+   directory: `/var/log/*`, `/var/lib/<other>`, `/root`, `/srv`. Outside the owned prefixes
+   those rules are kept. Without an overlay, the unit test's program changes 39 lines of its
+   fixture base's snapshot. Extending the owned set to the whole base, minus the host-only
+   directories, would close this.
+2. **`/var/log/pacman.log` was added** to both lists. Without it, guest pacman appends to the
+   host's log: `EACCES` as a user, a real write as real root.
+3. **No overlay means no protection for package state.** With the overlay absent, which is
+   required to behave exactly as before, a guest `pacman` still falls through to the host's
+   `/var/lib/pacman` (THUNKS-DESIGN §3).
+4. **Host files conflict with packages.** Because `/usr` reads fall through to the host,
+   pacman sees host files as present. Installing a package that ships a path the host has, and
+   the base lacks, fails with "exists in filesystem" unless `--overwrite` is given. The host has
+   no `tree`.
+5. **Only path calls copy up.** Descriptor-based changes (`fchmod`, `fchown`, `futimens`,
+   `ftruncate`, `fsetxattr`) made through a descriptor that was opened read-only onto a base
+   file still reach the base file, and so does reopening it for writing via
+   `/proc/self/fd/N`. Only a read-only base on disk would close this.
+6. **Cost.** A layered lookup costs about five syscalls where the rootfs lookup costs one or
+   two, but only with an overlay present.
+7. **Bootstrap limits.** Install scriptlets and sysusers of the bootstrapped packages don't
+   run, the same as for the base. `chown` to users other than the caller fails outside a user
+   namespace.
 
 ### 6.2b Automatic thunk selection with fallback (proposed)
 
