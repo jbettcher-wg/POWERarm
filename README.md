@@ -30,12 +30,15 @@ against a real Cortex-A76 (Raspberry Pi 5), on both 64K and 4K page-size POWER k
 | **M1:** static AArch64 programs (glibc and musl, busybox, TinyCC) | ✅ output identical to the reference |
 | **M2:** Arch Linux ARM's own GCC builds zlib and Lua | ✅ every object and binary byte-identical to the reference |
 | Optimization round 1 (branches, register use, code shape, translation speed, code cache, startup) | ✅ merged |
-| Larger real-world programs | 🟡 the aarch64 Claude Code CLI (Bun) runs `--version` and `--help`; its installer still fails |
+| Larger real-world programs: JIT-based language runtimes | 🟡 the aarch64 Claude Code CLI (Bun / JavaScriptCore) installs and runs, and code-server 4.137 (VS Code on Node 24 / V8) starts, serves its workbench and spawns its extension host |
 | GPU and library thunks (Vulkan, GL, OpenSSL) | ⬜ planned |
 | Further performance work (ahead-of-time translation, faster cache install, compute lowerings) | 🔄 in progress |
 
-**Presented CPU:** Cortex-A76 class, with `fp asimd fphp asimdhp aes pmull sha1 sha2 crc32 cpuid`.
-LSE atomics are implemented but not yet advertised; there is no SVE or SME.
+**Presented CPU:** Cortex-A76 class, with
+`fp asimd aes pmull sha1 sha2 crc32 atomics fphp asimdhp cpuid`. FEAT_LSE atomics are implemented
+in full and advertised through `AT_HWCAP`, `ID_AA64ISAR0_EL1` and `/proc/cpuinfo` alike; there is
+no SVE or SME. The EL0-readable generic timer (`CNTVCT_EL0`, `CNTFRQ_EL0`) is present, which is
+what JavaScript engines use as their high-resolution clock.
 
 ## Requirements
 
