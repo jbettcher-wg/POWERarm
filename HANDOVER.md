@@ -34,6 +34,18 @@ cherry-pick; patches for them go in `docs/powerarm/outgoing-patches/fastppcx86/`
 - **Compile timings** in `M2-PLAN.md` predate real memory barriers. Do not re-measure them for
   their own sake — stop quoting them, and let the next optimization supply fresh numbers as a
   side effect. Slice baseline on `774e9ce8a`, CPU 104: cold 23.90 s, warm 21.4–21.6 s.
+- **2026-09-18:** games and GPU work unthunked. SuperTuxKart (the ALARM aarch64 build) runs its
+  benchmark at ~100 fps on the RX 7900 XTX, with MangoHud showing GPU and live JIT stats (item 11).
+  The two-tier rootfs is merged and guest pacman installs into the vk overlay (item 8). A warm
+  launch no longer recompiles the blocks of small, 0644 or dlclose'd libraries (item 10). The
+  guest main stack can no longer sit where the host stack grows (item 12). getcwd inside the
+  rootfs returns guest paths.
+- **Stable is behind dev.** Everything in the bullet above is dev-build only. Binfmt-launched
+  programs and every guest child process still run on `c37536838`. Promote when Jordan calls it.
+- **Next, in order:** warm G2 (A64 compare+branch fusion never fires; about a day,
+  `docs/powerarm/research/warm-codegen/`); cold G1 (MapFile 64K offsets, so lld-linked binaries
+  like Claude get code-cached, plus the CodeCacheScope default); ship the guest vDSO by default
+  (item 7); the P7 acquire/release RMW census (item 4, standard agent).
 - **`powerarm-stable` is at `c37536838`** (promoted 2026-09-17, binfmt re-registered and
   `check-binfmt-inode.sh` passing). Promoting is what moves binfmt-launched programs -- including
   the Claude CLI and any guest child process -- onto new work, and a promote MUST be followed by
