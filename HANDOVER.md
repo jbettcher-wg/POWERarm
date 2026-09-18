@@ -55,6 +55,16 @@ is to be well rounded, and the concrete targets are:
    proxy is vkcube/vkmark, native against thunked.
 4. **General compiled code**, the well-rounded baseline: the slice and the M2 zlib/Lua builds.
 
+**Priority: optimise the emulator first, then gauge thunks by measurement.** Two of the three targets are
+monolithic: the Claude binary is 221 MB and its only DT_NEEDED is glibc (JSC and Bun are inside it), and
+Electron carries Chromium, V8 and Node inside likewise. For them almost everything runs emulated whatever gets
+thunked, so emulation speed is the lever. Thunks come after, and each earns its place with a measured gain
+against the optimised emulator. The candidates, in likely order: Vulkan (games, the VS Code GPU path), and a
+**glibc pure-function redirect** -- memcpy/memmove/memset/memcmp, the str* routines, libm -- as a JIT-level
+direct native call at the guest function's entry, the one thunk that reaches the monolithic binaries too
+(`THUNKS-DESIGN.md` §4). Stateful glibc (malloc, stdio, pthreads, TLS, locale) stays emulated: the guest's own
+glibc owns that process state.
+
 **Measure against this set, not against whatever is at hand.** A result from one runtime is a data
 point, not a priority: 2026-09-17's P7 census was V8-only, and JSC turned out to use acquire/release
 CAS five times as heavily in proportion.
@@ -166,6 +176,8 @@ CAS five times as heavily in proportion.
    Stage 0 (AArch64 thunk ABI + guest vDSO) in progress 2026-09-17.
 8. **Two-tier rootfs** (`DESIGN.md` §6.2a): designed, and being implemented 2026-09-17. Until it
    lands, guest `pacman` reads the HOST's package DB through fallthrough -- never trust its output.
-9. **Research queued overnight 2026-09-17 (Fable agents, design docs, no code):** cold translation
-   cost (`docs/powerarm/research/cold-translation/`) and code footprint / icache
-   (`docs/powerarm/research/code-footprint/`). Each returns a ranked top five.
+9. **Research queued overnight 2026-09-17 (Fable agents, design docs, no code)**, covering the two
+   halves of emulation cost: COLD, the cost of translating (`docs/powerarm/research/cold-translation/`),
+   and WARM, the quality of the emitted code, footprint included
+   (`docs/powerarm/research/warm-codegen/`). Each returns a ranked top five, weighed across the
+   reference workloads.
