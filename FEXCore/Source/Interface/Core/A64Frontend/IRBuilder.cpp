@@ -90,6 +90,7 @@ const IRBuilder::HandlerEntry IRBuilder::HandlerTable[] = {
   {"LDSMAX", &IRBuilder::AtomicMinMax}, {"LDSMIN", &IRBuilder::AtomicMinMax}, {"LDUMAX", &IRBuilder::AtomicMinMax}, {"LDUMIN", &IRBuilder::AtomicMinMax},
   {"LDAPRB", &IRBuilder::LDAPR}, {"LDAPRH", &IRBuilder::LDAPR}, {"LDAPR", &IRBuilder::LDAPR},
   {"CASB", &IRBuilder::CompareAndSwap}, {"CASH", &IRBuilder::CompareAndSwap}, {"CAS", &IRBuilder::CompareAndSwap},
+  {"CASP", &IRBuilder::CompareAndSwapPair},
   {"STLR", &IRBuilder::LoadStoreAtomicWidth}, {"STLLR", &IRBuilder::LoadStoreAtomicWidth},
   // Data processing (register): 2 source, 1 source.
   {"UDIV", &IRBuilder::UDIV}, {"SDIV", &IRBuilder::SDIV},

@@ -253,8 +253,7 @@ bool IRBuilder::LDAPR(uint32_t Word) {
   return true;
 }
 
-// FEAT_LSE CASB/CASH/CAS. CASP is still unimplemented: the pair form needs the
-// two-result CASPair op, and no outline-atomics helper emits it.
+// FEAT_LSE CASB/CASH/CAS.
 //
 // CAS compares [Xn] against Rs and stores Rt on a match; Rs is overwritten with
 // the value that was in memory either way. The CAS lowering clobbers the host
@@ -270,6 +269,65 @@ bool IRBuilder::CompareAndSwap(uint32_t Word) {
   Ref Old = _CAS(MemSize, LoadX(Rs), LoadX(Rt), LoadXSP(Rn));
   _StoreNZCV(NZCV);
   StoreReg(Rs, Size == 3, Old);
+  return true;
+}
+
+// FEAT_LSE CASP: the paired compare-and-swap. Rs and Rt each name the first of
+// an even/odd register pair, and the memory operand is twice the register
+// width -- 8 bytes for the 32-bit form, 16 for the 64-bit one. Bit 30 selects.
+//
+// The pair {Rs, Rs+1} is compared against memory and {Rt, Rt+1} stored on a
+// match; Rs:Rs+1 receive what was in memory either way. In the little-endian
+// image Rs holds the low half, at [Xn], and Rs+1 the half above it. That is
+// the same shape as x86's CMPXCHG8B/CMPXCHG16B writing back into EDX:EAX,
+// which is what the IR's CASPair op and its PPC64 lowering were written for:
+// Size i32Bit is the 8-byte-memory form and i64Bit the 16-byte one, matching
+// CASP's two variants exactly.
+//
+// Worth knowing when reading a bug here: nothing in this tree used CASPair
+// before this, so its lowering had never executed. There is no x86 frontend
+// here to have exercised it, and the A64 frontend reached the plain _CAS only.
+//
+// CASPair is a multi-destination op, which the IR generator implements by
+// appending the destinations as ordinary `Out` SSA sources ("Named
+// destinations require side effects because they break SSA hard") -- the
+// backend writes into whatever registers those operands were allocated, and
+// the reads below then see the written values. They need to be register
+// resident and distinct from the Expected operands the lowering still needs
+// while it works, so they are fresh _Copy nodes rather than the Expected
+// values themselves.
+//
+// Unlike _CAS, CASPair is not declared ImplicitFlagClobber: its lowering saves
+// CR0 to the red zone on entry and restores it on exit, so no NZCV dance is
+// needed around it here.
+bool IRBuilder::CompareAndSwapPair(uint32_t Word) {
+  const bool Is64 = Bit(Word, 30);
+  const auto MemSize = Is64 ? OpSize::i64Bit : OpSize::i32Bit;
+  const uint32_t Rs = Bits(Word, 20, 16);
+  const uint32_t Rn = Bits(Word, 9, 5);
+  const uint32_t Rt = Bits(Word, 4, 0);
+
+  // An odd Rs or Rt is UNDEFINED, so decode it as unallocated rather than
+  // guessing a pair: returning false raises the SIGILL the architecture asks
+  // for. Rs or Rt == 30 is legal, and makes the odd half of the pair register
+  // 31, which LoadX reads as XZR and StoreX discards -- the architectural
+  // meaning, and what these helpers already do for that number.
+  if ((Rs & 1) || (Rt & 1)) {
+    return false;
+  }
+
+  Ref ExpLo = LoadX(Rs);
+  Ref ExpHi = LoadX(Rs + 1);
+  Ref DesLo = LoadX(Rt);
+  Ref DesHi = LoadX(Rt + 1);
+  Ref Address = LoadXSP(Rn);
+
+  Ref OutLo = _Copy(ExpLo);
+  Ref OutHi = _Copy(ExpHi);
+  _CASPair(MemSize, ExpLo, ExpHi, DesLo, DesHi, Address, OutLo, OutHi);
+
+  StoreReg(Rs, Is64, OutLo);
+  StoreReg(Rs + 1, Is64, OutHi);
   return true;
 }
 

@@ -182,7 +182,7 @@ INST(STLLR,                  "STLLRB, STLLRH, STLLR",                     "zz001
 INST(STLR,                   "STLRB, STLRH, STLR",                        "zz00100010011111111111nnnnnttttt")
 INST(LDLAR,                  "LDLARB, LDLARH, LDLAR",                     "zz00100011011111011111nnnnnttttt")
 INST(LDAR,                   "LDARB, LDARH, LDAR",                        "zz00100011011111111111nnnnnttttt")
-//INST(CASP,                   "CASP, CASPA, CASPAL, CASPL",                "0z0010000L1sssssp11111nnnnnttttt") // ARMv8.1
+INST(CASP,                   "CASP, CASPA, CASPAL, CASPL",                "0z0010000L1sssssp11111nnnnnttttt") // ARMv8.1
 INST(CASB,                   "CASB, CASAB, CASALB, CASLB",                "000010001L1sssssp11111nnnnnttttt") // ARMv8.1
 INST(CASH,                   "CASH, CASAH, CASALH, CASLH",                "010010001L1sssssp11111nnnnnttttt") // ARMv8.1
 INST(CAS,                    "CAS, CASA, CASAL, CASL",                    "1z0010001L1sssssp11111nnnnnttttt") // ARMv8.1

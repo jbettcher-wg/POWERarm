@@ -126,7 +126,8 @@ public:
   bool PRFM_imm(uint32_t Word);
   bool LoadStoreRegOffset(uint32_t Word);
   bool LoadExclusive(uint32_t Word); bool StoreExclusive(uint32_t Word); bool LoadStoreAtomicWidth(uint32_t Word);
-  bool AtomicMemOp(uint32_t Word); bool AtomicMinMax(uint32_t Word); bool LDAPR(uint32_t Word); bool CompareAndSwap(uint32_t Word);
+  bool AtomicMemOp(uint32_t Word); bool AtomicMinMax(uint32_t Word); bool LDAPR(uint32_t Word);
+  bool CompareAndSwap(uint32_t Word); bool CompareAndSwapPair(uint32_t Word);
   // Data processing (register).
   bool UDIV(uint32_t Word); bool SDIV(uint32_t Word);
   bool LSLV(uint32_t Word); bool LSRV(uint32_t Word); bool ASRV(uint32_t Word); bool RORV(uint32_t Word);
