@@ -121,11 +121,19 @@ bool IRBuilder::LoadStoreAtomicWidth(uint32_t Word) {
 // AT_HWCAP, so leaving these unimplemented is a SIGILL in ordinary programs
 // however the emulator advertises itself.
 //
-// Ordering: A and R (bits 23 and 22) are ignored here because the PPC64
-// backend already brackets every atomic with hwsync/isync (AtomicOps.cpp),
-// which is at least as strong as any of the four variants asks for. That
-// reasoning covers the JIT's atomics ONLY -- LDAR/STLR and DMB are plain
-// accesses to the backend and need their barriers emitted explicitly, see
+// Ordering: A and R (bits 23 and 22). The PPC64 backend brackets each atomic
+// with hwsync/isync (AtomicOps.cpp), which is at least as strong as any of the
+// four variants asks for, and every variant with A or R set still gets exactly
+// that. Only the fully relaxed form -- neither bit set -- passes Relaxed and
+// drops the bracket (checklist P7, first step). That is safe under either fence
+// convention because a relaxed RMW takes no part in acquire/release ordering at
+// all: AArch64 promises it only atomicity and coherence, which the larx/stcx.
+// loop provides alone, and any ordering the program wants around it comes from
+// a DMB, which keeps its own hwsync. unittests/A64Frontend/litmus.c gates
+// exactly that composition (sb/mp+ldadd.relaxed+dmb).
+//
+// None of this covers LDAR/STLR and DMB, which are plain accesses to the
+// backend and need their barriers emitted explicitly -- see
 // LoadStoreAtomicWidth above and Barrier() in TranslateBranchSystem.cpp.
 //
 // Rs == 31 is the zero register, so LDADD with Rs == 31 is a plain load.
@@ -138,16 +146,17 @@ bool IRBuilder::AtomicMemOp(uint32_t Word) {
   const uint32_t Rs = Bits(Word, 20, 16);
   const uint32_t Rn = Bits(Word, 9, 5);
   const uint32_t Rt = Bits(Word, 4, 0);
+  const bool Relaxed = !Bit(Word, 23) && !Bit(Word, 22);
 
   Ref Address = LoadXSP(Rn);
   Ref Value = LoadX(Rs);
   Ref Old {};
   switch (Op) {
-  case 0b0000: Old = _AtomicFetchAdd(MemSize, Value, Address); break;
-  case 0b0001: Old = _AtomicFetchCLR(MemSize, Value, Address); break;
-  case 0b0010: Old = _AtomicFetchXor(MemSize, Value, Address); break;
-  case 0b0011: Old = _AtomicFetchOr(MemSize, Value, Address); break;
-  case 0b1000: Old = _AtomicSwap(MemSize, Value, Address); break;
+  case 0b0000: Old = _AtomicFetchAdd(MemSize, Value, Address, Relaxed); break;
+  case 0b0001: Old = _AtomicFetchCLR(MemSize, Value, Address, Relaxed); break;
+  case 0b0010: Old = _AtomicFetchXor(MemSize, Value, Address, Relaxed); break;
+  case 0b0011: Old = _AtomicFetchOr(MemSize, Value, Address, Relaxed); break;
+  case 0b1000: Old = _AtomicSwap(MemSize, Value, Address, Relaxed); break;
   // LDSMAX/LDSMIN/LDUMAX/LDUMIN (opc 010x/011x) go to AtomicMinMax.
   default: return false;
   }
@@ -190,6 +199,9 @@ bool IRBuilder::AtomicMinMax(uint32_t Word) {
   const bool Unsigned = (Op & 0b0010) != 0;
   const bool IsMin = (Op & 0b0001) != 0;
   const auto Cond = Unsigned ? (IsMin ? CondClass::ULT : CondClass::UGT) : (IsMin ? CondClass::SLT : CondClass::SGT);
+  // Relaxed (neither A nor R) lets the loop's CAS drop its fence bracket, as
+  // AtomicMemOp explains; atomicity comes from the CAS either way.
+  const bool Relaxed = !Bit(Word, 23) && !Bit(Word, 22);
 
   // The loop body needs a block of its own to branch back to; the current one
   // holds the guest instructions before this one. A forward Jump to the next
@@ -230,7 +242,7 @@ bool IRBuilder::AtomicMinMax(uint32_t Word) {
 
   // _CAS returns the value it observed, zero-extended at the access width, as
   // does _LoadMem -- so a mismatch is a plain 64-bit compare either way.
-  Ref Seen = _CAS(MemSize, Old, New, Address);
+  Ref Seen = _CAS(MemSize, Old, New, Address, Relaxed);
   _StoreNZCV(NZCV);
   auto Retry = _CondJump(Seen, Old, InvalidNode, InvalidNode, CondClass::NEQ, OpSize::i64Bit);
   SetTrueJumpTarget(Retry, Head);
@@ -265,8 +277,12 @@ bool IRBuilder::CompareAndSwap(uint32_t Word) {
   const uint32_t Rn = Bits(Word, 9, 5);
   const uint32_t Rt = Bits(Word, 4, 0);
 
+  // Acquire is bit 22 (L) and release is bit 15 (o0) in this encoding, not
+  // the 23/22 of the LDADD family. Plain CAS -- neither -- is relaxed and
+  // drops the fence bracket, as AtomicMemOp explains.
+  const bool Relaxed = !Bit(Word, 22) && !Bit(Word, 15);
   Ref NZCV = _LoadNZCV();
-  Ref Old = _CAS(MemSize, LoadX(Rs), LoadX(Rt), LoadXSP(Rn));
+  Ref Old = _CAS(MemSize, LoadX(Rs), LoadX(Rt), LoadXSP(Rn), Relaxed);
   _StoreNZCV(NZCV);
   StoreReg(Rs, Size == 3, Old);
   return true;

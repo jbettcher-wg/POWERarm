@@ -11,6 +11,17 @@
 // execute inside that bracket (Tier D atomics C1). lwsync is insufficient
 // because it doesn't order earlier stores against the LL/SC's load.
 //
+// Relaxed (checklist P7): AtomicSwap, the AtomicFetch* ops and CAS carry a
+// defaulted `Relaxed` flag. When set, the op emits NO bracket -- only the
+// larx/stcx. loop, which alone gives the atomicity and single-location
+// coherence a relaxed RMW promises. Nothing sets it by default, so every
+// existing caller keeps the full seq_cst bracket. The A64 frontend sets it
+// only for LSE RMWs with neither acquire nor release semantics, where AArch64
+// itself promises no ordering and any ordering the guest wants comes from a
+// DMB carrying its own hwsync (TranslateExclusive.cpp AtomicMemOp;
+// unittests/A64Frontend/litmus.c gates the composition). CASPair has no such
+// flag: a relaxed CASP is rare enough not to be worth the widening.
+//
 // Misalignment: lwarx/lharx/ldarx all require natural alignment, so an x86
 // `lock add dword [r15+3]` would raise SIGBUS if dispatched straight to the
 // LL/SC path. Each RMW op below emits a runtime alignment check; aligned EAs
@@ -500,7 +511,7 @@ DEF_OP(AtomicSwap) {
   std(TMP4, -8, r1);
 
   // C1: hwsync/isync bracket both paths (aligned LL/SC and mutex helper).
-  hwsync();
+  if (!Op->Relaxed) hwsync();
   const unsigned AlignMask = static_cast<unsigned>(IR::OpSizeToSize(Sz)) - 1;
   PPC64Emitter::Label aligned, done;
   if (AlignMask) {
@@ -522,7 +533,7 @@ DEF_OP(AtomicSwap) {
   STORE_COND(Val, A, Sz);
   bc(CC_NE, &loop);
   Bind(&done);
-  isync();
+  if (!Op->Relaxed) isync();
   // Restore CR0 — XCHG preserves flags.
   ld(TMP4, -8, r1);
   mtocrf(0x80, TMP4);
@@ -562,7 +573,7 @@ DEF_OP(AtomicFetchAdd) {
   mfocrf(TMP4, 0x80);
   std(TMP4, -8, r1);
   // C1: hwsync/isync bracket both paths (aligned LL/SC and mutex helper).
-  hwsync();
+  if (!Op->Relaxed) hwsync();
   const unsigned AlignMask = static_cast<unsigned>(IR::OpSizeToSize(Sz)) - 1;
   PPC64Emitter::Label aligned, done;
   if (AlignMask) {
@@ -585,7 +596,7 @@ DEF_OP(AtomicFetchAdd) {
   STORE_COND(TMP2, A, Sz);
   bc(CC_NE, &loop);
   Bind(&done);
-  isync();
+  if (!Op->Relaxed) isync();
   // Restore CR0 saved at op entry — x86 LOCK <op> conceptually preserves
   // any prior NZCV state up until the following flag-setter writes its own.
   ld(TMP4, -8, r1);
@@ -615,7 +626,7 @@ DEF_OP(AtomicFetchSub) {
   mfocrf(TMP4, 0x80);
   std(TMP4, -8, r1);
   // C1: hwsync/isync bracket both paths (aligned LL/SC and mutex helper).
-  hwsync();
+  if (!Op->Relaxed) hwsync();
   const unsigned AlignMask = static_cast<unsigned>(IR::OpSizeToSize(Sz)) - 1;
   PPC64Emitter::Label aligned, done;
   if (AlignMask) {
@@ -638,7 +649,7 @@ DEF_OP(AtomicFetchSub) {
   STORE_COND(TMP2, A, Sz);
   bc(CC_NE, &loop);
   Bind(&done);
-  isync();
+  if (!Op->Relaxed) isync();
   // Restore CR0 saved at op entry — x86 LOCK <op> conceptually preserves
   // any prior NZCV state up until the following flag-setter writes its own.
   ld(TMP4, -8, r1);
@@ -668,7 +679,7 @@ DEF_OP(AtomicFetchAnd) {
   mfocrf(TMP4, 0x80);
   std(TMP4, -8, r1);
   // C1: hwsync/isync bracket both paths (aligned LL/SC and mutex helper).
-  hwsync();
+  if (!Op->Relaxed) hwsync();
   const unsigned AlignMask = static_cast<unsigned>(IR::OpSizeToSize(Sz)) - 1;
   PPC64Emitter::Label aligned, done;
   if (AlignMask) {
@@ -691,7 +702,7 @@ DEF_OP(AtomicFetchAnd) {
   STORE_COND(TMP2, A, Sz);
   bc(CC_NE, &loop);
   Bind(&done);
-  isync();
+  if (!Op->Relaxed) isync();
   // Restore CR0 saved at op entry — x86 LOCK <op> conceptually preserves
   // any prior NZCV state up until the following flag-setter writes its own.
   ld(TMP4, -8, r1);
@@ -721,7 +732,7 @@ DEF_OP(AtomicFetchCLR) {
   mfocrf(TMP4, 0x80);
   std(TMP4, -8, r1);
   // C1: hwsync/isync bracket both paths (aligned LL/SC and mutex helper).
-  hwsync();
+  if (!Op->Relaxed) hwsync();
   const unsigned AlignMask = static_cast<unsigned>(IR::OpSizeToSize(Sz)) - 1;
   PPC64Emitter::Label aligned, done;
   if (AlignMask) {
@@ -744,7 +755,7 @@ DEF_OP(AtomicFetchCLR) {
   STORE_COND(TMP2, A, Sz);
   bc(CC_NE, &loop);
   Bind(&done);
-  isync();
+  if (!Op->Relaxed) isync();
   // Restore CR0 saved at op entry — x86 LOCK <op> conceptually preserves
   // any prior NZCV state up until the following flag-setter writes its own.
   ld(TMP4, -8, r1);
@@ -774,7 +785,7 @@ DEF_OP(AtomicFetchOr) {
   mfocrf(TMP4, 0x80);
   std(TMP4, -8, r1);
   // C1: hwsync/isync bracket both paths (aligned LL/SC and mutex helper).
-  hwsync();
+  if (!Op->Relaxed) hwsync();
   const unsigned AlignMask = static_cast<unsigned>(IR::OpSizeToSize(Sz)) - 1;
   PPC64Emitter::Label aligned, done;
   if (AlignMask) {
@@ -797,7 +808,7 @@ DEF_OP(AtomicFetchOr) {
   STORE_COND(TMP2, A, Sz);
   bc(CC_NE, &loop);
   Bind(&done);
-  isync();
+  if (!Op->Relaxed) isync();
   // Restore CR0 saved at op entry — x86 LOCK <op> conceptually preserves
   // any prior NZCV state up until the following flag-setter writes its own.
   ld(TMP4, -8, r1);
@@ -827,7 +838,7 @@ DEF_OP(AtomicFetchXor) {
   mfocrf(TMP4, 0x80);
   std(TMP4, -8, r1);
   // C1: hwsync/isync bracket both paths (aligned LL/SC and mutex helper).
-  hwsync();
+  if (!Op->Relaxed) hwsync();
   const unsigned AlignMask = static_cast<unsigned>(IR::OpSizeToSize(Sz)) - 1;
   PPC64Emitter::Label aligned, done;
   if (AlignMask) {
@@ -850,7 +861,7 @@ DEF_OP(AtomicFetchXor) {
   STORE_COND(TMP2, A, Sz);
   bc(CC_NE, &loop);
   Bind(&done);
-  isync();
+  if (!Op->Relaxed) isync();
   // Restore CR0 saved at op entry — x86 LOCK <op> conceptually preserves
   // any prior NZCV state up until the following flag-setter writes its own.
   ld(TMP4, -8, r1);
@@ -878,7 +889,7 @@ DEF_OP(AtomicFetchNeg) {
   mfocrf(TMP4, 0x80);
   std(TMP4, -8, r1);
   // C1: hwsync/isync bracket both paths (aligned LL/SC and mutex helper).
-  hwsync();
+  if (!Op->Relaxed) hwsync();
   const unsigned AlignMask = static_cast<unsigned>(IR::OpSizeToSize(Sz)) - 1;
   PPC64Emitter::Label aligned, done;
   if (AlignMask) {
@@ -902,7 +913,7 @@ DEF_OP(AtomicFetchNeg) {
   STORE_COND(TMP2, A, Sz);
   bc(CC_NE, &loop);
   Bind(&done);
-  isync();
+  if (!Op->Relaxed) isync();
   // Restore CR0 saved at op entry — x86 LOCK <op> conceptually preserves
   // any prior NZCV state up until the following flag-setter writes its own.
   ld(TMP4, -8, r1);
@@ -958,7 +969,7 @@ DEF_OP(CAS) {
   };
 
   // C1: hwsync/isync bracket both paths (aligned LL/SC and mutex helper).
-  hwsync();
+  if (!Op->Relaxed) hwsync();
   const unsigned AlignMask = static_cast<unsigned>(IR::OpSizeToSize(Sz)) - 1;
   PPC64Emitter::Label aligned, done;
   if (AlignMask) {
@@ -1006,7 +1017,7 @@ DEF_OP(CAS) {
   bc(CC_NE, &loop);   // SC failed (reservation lost): retry
   Bind(&fail);
   Bind(&done);
-  isync();
+  if (!Op->Relaxed) isync();
 }
 
 // ---------------------------------------------------------------------------

@@ -787,7 +787,7 @@
       }
     },
     "Atomic": {
-      "GPR = CAS OpSize:#Size, GPR:$Expected, GPR:$Desired, GPR:$Addr": {
+      "GPR = CAS OpSize:#Size, GPR:$Expected, GPR:$Desired, GPR:$Addr, i1:$Relaxed{false}": {
         "HasSideEffects": true,
         "Desc": ["Does a compare and swap of values to a memory location",
                  "This mostly matches the C++ atomic_compare_exchange_strong function",
@@ -817,7 +817,7 @@
           "Size == FEXCore::IR::OpSize::i32Bit || Size == FEXCore::IR::OpSize::i64Bit"
         ]
       },
-      "GPR = AtomicSwap OpSize:#Size, GPR:$Value, GPR:$Addr": {
+      "GPR = AtomicSwap OpSize:#Size, GPR:$Value, GPR:$Addr, i1:$Relaxed{false}": {
         "HasSideEffects": true,
         "Desc": ["Atomic integer swap"
                 ],
@@ -826,7 +826,7 @@
           "Size == FEXCore::IR::OpSize::i8Bit || Size == FEXCore::IR::OpSize::i16Bit || Size == FEXCore::IR::OpSize::i32Bit || Size == FEXCore::IR::OpSize::i64Bit"
         ]
       },
-      "GPR = AtomicFetchAdd OpSize:#Size, GPR:$Value, GPR:$Addr": {
+      "GPR = AtomicFetchAdd OpSize:#Size, GPR:$Value, GPR:$Addr, i1:$Relaxed{false}": {
         "HasSideEffects": true,
         "Desc": ["Atomic integer fetch and add",
                  "Atomically fetches %Addr and adds %value to the memory location",
@@ -838,7 +838,7 @@
           "Size == FEXCore::IR::OpSize::i8Bit || Size == FEXCore::IR::OpSize::i16Bit || Size == FEXCore::IR::OpSize::i32Bit || Size == FEXCore::IR::OpSize::i64Bit"
         ]
       },
-      "GPR = AtomicFetchSub OpSize:#Size, GPR:$Value, GPR:$Addr": {
+      "GPR = AtomicFetchSub OpSize:#Size, GPR:$Value, GPR:$Addr, i1:$Relaxed{false}": {
         "HasSideEffects": true,
         "Desc": ["Atomic integer fetch and sub",
                  "Atomically fetches %Addr and subtracts %value to the memory location",
@@ -850,7 +850,7 @@
           "Size == FEXCore::IR::OpSize::i8Bit || Size == FEXCore::IR::OpSize::i16Bit || Size == FEXCore::IR::OpSize::i32Bit || Size == FEXCore::IR::OpSize::i64Bit"
         ]
       },
-      "GPR = AtomicFetchAnd OpSize:#Size, GPR:$Value, GPR:$Addr": {
+      "GPR = AtomicFetchAnd OpSize:#Size, GPR:$Value, GPR:$Addr, i1:$Relaxed{false}": {
         "HasSideEffects": true,
         "Desc": ["Atomic integer fetch and binary and",
                  "Atomically fetches %Addr and binary ands %value to the memory location",
@@ -862,7 +862,7 @@
           "Size == FEXCore::IR::OpSize::i8Bit || Size == FEXCore::IR::OpSize::i16Bit || Size == FEXCore::IR::OpSize::i32Bit || Size == FEXCore::IR::OpSize::i64Bit"
         ]
       },
-      "GPR = AtomicFetchCLR OpSize:#Size, GPR:$Value, GPR:$Addr": {
+      "GPR = AtomicFetchCLR OpSize:#Size, GPR:$Value, GPR:$Addr, i1:$Relaxed{false}": {
         "HasSideEffects": true,
         "Desc": ["Atomic integer fetch and binary clear",
                  "Atomically fetches %Addr and binary clears %value to the memory location",
@@ -876,7 +876,7 @@
           "Size == FEXCore::IR::OpSize::i8Bit || Size == FEXCore::IR::OpSize::i16Bit || Size == FEXCore::IR::OpSize::i32Bit || Size == FEXCore::IR::OpSize::i64Bit"
         ]
       },
-      "GPR = AtomicFetchOr OpSize:#Size, GPR:$Value, GPR:$Addr": {
+      "GPR = AtomicFetchOr OpSize:#Size, GPR:$Value, GPR:$Addr, i1:$Relaxed{false}": {
         "HasSideEffects": true,
         "Desc": ["Atomic integer fetch and binary or",
                  "Atomically fetches %Addr and binary ors %value to the memory location",
@@ -888,7 +888,7 @@
           "Size == FEXCore::IR::OpSize::i8Bit || Size == FEXCore::IR::OpSize::i16Bit || Size == FEXCore::IR::OpSize::i32Bit || Size == FEXCore::IR::OpSize::i64Bit"
         ]
       },
-      "GPR = AtomicFetchXor OpSize:#Size, GPR:$Value, GPR:$Addr": {
+      "GPR = AtomicFetchXor OpSize:#Size, GPR:$Value, GPR:$Addr, i1:$Relaxed{false}": {
         "HasSideEffects": true,
         "Desc": ["Atomic integer fetch and binary exclusive or",
                  "Atomically fetches %Addr and binary exclusive ors %value to the memory location",
@@ -900,7 +900,7 @@
           "Size == FEXCore::IR::OpSize::i8Bit || Size == FEXCore::IR::OpSize::i16Bit || Size == FEXCore::IR::OpSize::i32Bit || Size == FEXCore::IR::OpSize::i64Bit"
         ]
       },
-      "GPR = AtomicFetchNeg OpSize:#Size, GPR:$Addr": {
+      "GPR = AtomicFetchNeg OpSize:#Size, GPR:$Addr, i1:$Relaxed{false}": {
         "HasSideEffects": true,
         "Desc": ["Atomic integer fetch and two's complement negate",
                  "Dest is the value prior to operating on the value in memory",
