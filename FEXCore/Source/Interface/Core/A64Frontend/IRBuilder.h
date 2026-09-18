@@ -387,7 +387,13 @@ private:
   bool FPScalarSIMDConvert(uint32_t Word, bool ToInt, bool Signed);
   // Every ElementSize lane of the 128-bit result holds Bits.
   Ref FPConstant(uint64_t Bits, OpSize ElementSize);
+  // FPAdd/FPSub/FPMul/FPDiv on every ElementSize lane, with A64 NaN precedence
+  // built into the backend op (one host instruction plus a NaN check that
+  // branches to an out-of-line cold block; docs/powerarm/COLD-BLOCK-DESIGN.md).
+  Ref A64Arith(OpSize ElementSize, Ref A, Ref B, FPBinaryOp Op);
   // Operand 1 for a VSX arithmetic op so that the op propagates NaNs the A64 way.
+  // Still used by FPMinMax and FPMulAddLanes, which have their own NaN rules and
+  // their own cold bodies still to land (checklist F2/F3).
   Ref PropagateNaNOperand(OpSize ElementSize, Ref A, Ref B);
   Ref FPMinMax(OpSize ElementSize, Ref A, Ref B, bool IsMax, bool IsNumber);
   // All-ones 64-bit lanes when FPCR.FZ16 is set, zero otherwise.

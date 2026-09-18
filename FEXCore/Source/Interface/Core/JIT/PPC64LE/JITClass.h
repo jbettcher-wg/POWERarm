@@ -336,6 +336,62 @@ private:
   void EmitShortCondIsland();
 
   // -------------------------------------------------------------------------
+  // A64 FP cold blocks (DEF_OP(A64FArith), A64FPOps.cpp).
+  // See docs/powerarm/COLD-BLOCK-DESIGN.md §4-§6 for the whole mechanism.
+  //
+  // The hot path of a fused A64 FP op is the plain VSX instruction plus
+  // `xvcmpeq{dp,sp}. VTMP1, Dst, Dst; bc 4,24,.cold`, and the ARM-exact NaN
+  // fix-up lives out of line. The fix-up cannot be an IR block: no non-fixed
+  // SSA value crosses a block edge (ConstrainedRAPass resets Class.Available
+  // per block), so both halves must be one IR op and the cold half must be
+  // host-level labels only.
+  //
+  // Placement mirrors ShortCondBranches above, and for the same reason: the
+  // site's `bc` reaches ±32 KB. Stubs are flushed under a `b over` island
+  // between IR ops once the oldest pending site is kShortCondIslandAge bytes
+  // old OR kFPColdStubFlushCount stubs are pending (the count bound is what
+  // keeps the LAST stub of a flush in reach of the FIRST site: worst-case
+  // distance is the age bound plus the flush's own stub bytes), and whatever
+  // is left is flushed at the unit tail, before the ShortCondBranches
+  // unbound-check in CompileCode. A stub is always emitted after its site, so
+  // the `bc` is forward and the stub's `b` back to Join is backward and bound.
+  //
+  // Everything lands inside the code buffer, like the shared spill stubs, so
+  // the signal delegator's IsAddressInCodeBuffer "SRA may be live" proxy holds
+  // for a signal delivered mid-stub. No absolute addresses, so nothing new for
+  // RetainRelocations or the code cache.
+  struct FPColdStub {
+    size_t SiteOffset {};              // offset of the site's `bc`, for the reach check
+    PPC64Emitter::Label Entry {};      // the `bc` target; bound at the stub
+    PPC64Emitter::Label Join {};       // bound at the site, right after the `bc`
+    PPC64Emitter::VR Dst {};
+    PPC64Emitter::VR A {};             // Vector1, or VTMP2 when Dst aliased it
+    PPC64Emitter::VR B {};             // Vector2, or VTMP2 when Dst aliased it
+    uint8_t Op {};                     // IROp_A64FArith::Op
+    bool Is64 {};                      // ElementSize == i64Bit
+  };
+  fextl::list<FPColdStub> FPColdStubs;
+  static constexpr size_t kFPColdStubFlushCount = 256;
+  // One shared NaNFix body per element width, emitted on demand at the first
+  // flush that needs it ([0] = sp, [1] = dp). Reset per compile alongside
+  // ShortCondBranches — a Label carries a pending-fixup chain index into the
+  // emitter's per-compile PendingBranches vector.
+  PPC64Emitter::Label FPNaNFixBody[2] {};
+  bool FPNaNFixBodyUsed[2] {};
+  void EmitFPColdStubs(bool BranchOver);
+  void EmitFPNaNFixBody(bool Is64);
+  // POWERARM_FPCOLD=0: emit the check but never the branch, so the ARM-exact
+  // NaN rows of the goldens must FAIL. That is the positive control proving the
+  // cold path is reached at all (COLD-BLOCK-DESIGN.md §9, FP research §12.1).
+  static bool FPColdEnabled() {
+    static const bool Enabled = []{
+      const char* E = getenv("POWERARM_FPCOLD");
+      return !(E && E[0] == '0');
+    }();
+    return Enabled;
+  }
+
+  // -------------------------------------------------------------------------
   // 32-bit tail-mask elision (FEX_ZEXTOPT=0 kill switch).
   //
   // Every i32 GPR ALU handler canonicalizes its result with

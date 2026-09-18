@@ -963,6 +963,30 @@ public:
            (3u << 4) /*XO=3*/ | (((c.idx >> 5) & 1u) << 3) /*CX*/ | (((a.idx >> 5) & 1u) << 2) /*AX*/ |
            (((b.idx >> 5) & 1u) << 1) /*BX*/ | ((t.idx >> 5) & 1u) /*TX*/);
   }
+
+  // ---- Low-bank twins for the A64 FP cold blocks -----------------------------
+  // The per-site cold stubs and the shared NaNFix bodies
+  // (docs/powerarm/COLD-BLOCK-DESIGN.md §5, JIT/PPC64LE/A64FPOps.cpp) hold six
+  // live vector values while only two VMX temporaries exist, so they run on the
+  // RA-invisible low bank vs3-vs8. Same XO values as the VR forms above; only
+  // the AX/BX/TX derivation differs, which EmitXX3VSX already handles.
+  void xvaddsp(VSXR t, VSXR a, VSXR b) { EmitXX3VSX(t.idx, a.idx, b.idx,  64); }
+  void xvsubsp(VSXR t, VSXR a, VSXR b) { EmitXX3VSX(t.idx, a.idx, b.idx,  72); }
+  void xvmulsp(VSXR t, VSXR a, VSXR b) { EmitXX3VSX(t.idx, a.idx, b.idx,  80); }
+  void xvdivsp(VSXR t, VSXR a, VSXR b) { EmitXX3VSX(t.idx, a.idx, b.idx,  88); }
+  void xvadddp(VSXR t, VSXR a, VSXR b) { EmitXX3VSX(t.idx, a.idx, b.idx,  96); }
+  void xvsubdp(VSXR t, VSXR a, VSXR b) { EmitXX3VSX(t.idx, a.idx, b.idx, 104); }
+  void xvmuldp(VSXR t, VSXR a, VSXR b) { EmitXX3VSX(t.idx, a.idx, b.idx, 112); }
+  void xvdivdp(VSXR t, VSXR a, VSXR b) { EmitXX3VSX(t.idx, a.idx, b.idx, 120); }
+  // Rc=0 (no CR write): the bodies are branch-free and read the lane mask, not
+  // a CR field. The record forms are VR-only on purpose — only the hot-path
+  // site wants CR6, and its operands are always allocator registers.
+  void xvcmpeqsp(VSXR t, VSXR a, VSXR b) { EmitXX3VSX(t.idx, a.idx, b.idx, 67); }
+  void xvcmpeqdp(VSXR t, VSXR a, VSXR b) { EmitXX3VSX(t.idx, a.idx, b.idx, 99); }
+  void xxland (VSXR t, VSXR a, VSXR b) { EmitXX3VSX(t.idx, a.idx, b.idx, 130); }
+  void xxlandc(VSXR t, VSXR a, VSXR b) { EmitXX3VSX(t.idx, a.idx, b.idx, 138); }
+  void xxlnor (VSXR t, VSXR a, VSXR b) { EmitXX3VSX(t.idx, a.idx, b.idx, 162); }
+
   // m-form: T = ±(T*B) ± A (T is multiplicand, A is addend)
   void xvmaddmsp (VR t, VR a, VR b) { EmitXX3(t.idx, a.idx, b.idx,  73); }
   void xvmsubmsp (VR t, VR a, VR b) { EmitXX3(t.idx, a.idx, b.idx,  89); }
@@ -1114,6 +1138,28 @@ public:
   void xvcmpgtdp(VR t, VR a, VR b) { EmitXX3(t.idx, a.idx, b.idx, 107); }
   void xvcmpgesp(VR t, VR a, VR b) { EmitXX3(t.idx, a.idx, b.idx,  83); }
   void xvcmpgedp(VR t, VR a, VR b) { EmitXX3(t.idx, a.idx, b.idx, 115); }
+
+  // Record-form (Rc=1) twins of the FP vector compares.
+  //
+  // The XX3 compares are a 7-bit XO at bits 22:28 with Rc at bit 21, i.e. the
+  // TOP bit of the 8-bit field EmitXX3 splices in at word bits 10:3 — so the
+  // record form is just `XO | 0x80`. Checked against
+  // `llvm-mc -triple=powerpc64le -show-encoding`:
+  //   xvcmpeqdp  12,30,31 = 18 fb 9e f1     xvcmpeqdp. 12,30,31 = 18 ff 9e f1
+  //   xvcmpeqsp  12,30,31 = 18 fa 9e f1     xvcmpeqsp. 12,30,31 = 18 fe 9e f1
+  // (the pairs differ by 0x0400 in the word, which is bit 7 of the XO field).
+  //
+  // Besides writing VRT, Rc=1 sets CR field 6 exactly as the integer record
+  // compares do (see vcmpequb_ below):
+  //   CR6[0] (CR bit 24) = 1 iff EVERY lane compared equal
+  //   CR6[2] (CR bit 26) = 1 iff NO lane compared equal
+  // `xvcmpeq{dp,sp}. t, r, r` is therefore a two-instruction "is any lane a
+  // NaN" test — a value is unordered with itself iff it is a NaN — consumed by
+  // a `bc Cond{4, 24}` (branch when CR6[0] is CLEAR). That is the fast-path
+  // check of the A64 FP cold-block mechanism (COLD-BLOCK-DESIGN.md §3);
+  // VRT absorbs the unwanted lane mask.
+  void xvcmpeqsp_(VR t, VR a, VR b) { EmitXX3(t.idx, a.idx, b.idx,  67 | 0x80); }
+  void xvcmpeqdp_(VR t, VR a, VR b) { EmitXX3(t.idx, a.idx, b.idx,  99 | 0x80); }
 
   // =========================================================================
   // Floating-point arithmetic (opcode 63 = double; opcode 59 = single)

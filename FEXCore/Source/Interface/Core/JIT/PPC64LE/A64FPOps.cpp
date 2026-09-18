@@ -20,9 +20,11 @@
 // ties away from zero.
 //
 // Everything here is ISA 2.07 (POWER8) except the half-precision
-// instructions, which are gated on SupportsISA30 with a POWER8 path, and
-// touches only TMP1-TMP4, VTMP1, VTMP2, f0 and CR1. CR0 and XER, which hold the guest NZCV,
-// are untouched.
+// instructions, which are gated on SupportsISA30 with a POWER8 path. The
+// conversions touch only TMP1-TMP4, VTMP1, VTMP2, f0 and CR1; A64FArith at the
+// bottom of this file additionally writes CR6 and, on its cold path only,
+// vs3-vs8 and LR (saved and restored). CR0 and XER, which hold the guest NZCV,
+// are untouched throughout.
 #include "Interface/Context/Context.h"
 #include "Interface/Core/JIT/PPC64LE/JITClass.h"
 
@@ -362,6 +364,270 @@ DEF_OP(A64FToF) {
   }
 
   Op_Unhandled(IROp, Node);
+}
+
+// ===========================================================================
+// A64FArith — FADD/FSUB/FMUL/FDIV with A64 NaN precedence (F1)
+// ===========================================================================
+//
+// The frontend used to run PropagateNaNOperand (8 IR ops plus a constant) in
+// front of every VFAdd/VFSub/VFMul/VFDiv. The research measured that
+// branch-free fix at 11 dependent instructions / 18.35 cycles against 6.35 for
+// the bare add, i.e. "more than the arithmetic itself, three times over"
+// (docs/powerarm/research/scalar-fp/SCALAR-FP-LOWERING.md §3.2, §13).
+//
+// It exists to cover ONE divergent shape. VSX arithmetic returns operand 1 if
+// it is any NaN, else operand 2, quieted; ARM returns the first SIGNALLING NaN,
+// else the first quiet one. Those agree except when operand 1 is a quiet NaN
+// and operand 2 a signalling NaN — 72 of 2 756 672 corpus pairs, and nothing
+// else in any rounding mode (§3.1 [MEASURED]).
+//
+// So: run the plain instruction, ask the result whether ANY lane is a NaN, and
+// branch out of line if so.
+//
+//     [xxlor VTMP2, Ds, Ds]         ; only when Dst aliases a source
+//     xv{add,sub,mul,div}{dp,sp} Dst, A, B
+//     xvcmpeq{dp,sp}. VTMP1, Dst, Dst
+//     bc 4, 24, .cold               ; CR6[0] clear <=> some lane is a NaN
+//   .join:
+//
+// Two instructions on the ordered path, three when the destination aliases a
+// source. The post-check is COMPLETE for the binary ops: a NaN result implies
+// a NaN operand or an invalid operation, and invalid operations (Inf-Inf,
+// 0*Inf, 0/0, Inf/Inf) give the default NaN on both architectures (§3.1), so
+// re-running the op in the stub always reproduces the fast path's answer where
+// the fast path was already right. The compare reads the RESULT, so it does not
+// lengthen the dependent chain the next op sees, and the `bc` is predicted not
+// taken. It also fires when a *garbage* lane of the result is a NaN, which is
+// correct but slow (§3.2 note); for a scalar op the upper lane is zeroed by the
+// StoreVSized VMov afterwards, so the value written is unaffected.
+//
+// REGISTER AND CR DISCIPLINE (COLD-BLOCK-DESIGN.md §5):
+//   Site:  writes Dst, VTMP1 (the compare's discarded lane mask), VTMP2 (the
+//          alias stash) and CR6. No GPR, no CR0/CR1, no XER, no LR, no memory.
+//          The stash and the discard target are deliberately DIFFERENT
+//          registers — AtomicOps.cpp:552-558 records what happens when a stash
+//          register is also the op's scratch.
+//   CR6:   safe. Its three users (CondJump's vector-compare leg,
+//          DEF_OP(MemCpy)'s alignment-loop predicate, DEF_OP(VAnyNonZero)) are
+//          each confined to one IR op, so CR6 never crosses an op boundary.
+//          Do not widen CR6 use beyond this op.
+//   Stub:  adds TMP1 (constant materialisation in the body), TMP4 (the LR
+//          park), vs3-vs8 and LR — SAVED AND RESTORED, not left clobbered.
+//   LR:    LR is NOT scratch between ops. The rule is stated in tree at
+//          BranchOps.cpp:23 and :1035 ("Every mflr(r0) in the backend today is
+//          paired with a restore ... the failure mode is silent guest memory
+//          corruption"), and all eight mid-op LR clobbers honour it. The park
+//          goes through TMP4, never r0: routing LR through r0 would break the
+//          global r0 == 0 invariant that JIT blocks rely on for
+//          `ldx/stdx rX, rBase, r0`, which is the bug ALUOps.cpp:3768 records.
+//          The bodies clobber at most TMP1, so TMP4 is safe by construction —
+//          A BODY THAT GROWS A TMP4 USE SILENTLY DESTROYS THE RETURN ADDRESS.
+//          If one ever needs more GPRs, switch it to the full
+//          VectorOps.cpp:4934-4950 frame ceremony including the trailing
+//          `li r0, 0`, rather than reaching for TMP3/TMP4.
+//
+// Everything is ISA 2.06 (VSX arithmetic, xxsel, the record-form compares) or
+// 2.07 (mtfprd), so POWERARM_HOSTFEATURES=disableisa30 runs identical code.
+//
+// Signal note: on the taken path Dst briefly holds the host's NaN choice
+// before the stub overwrites it with ARM's. If Dst is an SRA register and an
+// asynchronous signal lands in that window, a guest handler would observe the
+// other NaN's payload. Same shape as DEF_OP(A64FloatToGPR)'s `mfvsrwz Dst`
+// followed by a conditional `li Dst, 0`, and as DEF_OP(VFMLA)'s addend copy
+// into Dst; it differs only in the NaN payload, never in the value's class.
+
+namespace {
+  // The cold path's fixed low-bank registers. vs3-vs8 are RA-invisible: the
+  // backend names only f0-f2 as FPRs, vs12 is VTMP3_VSX, vs14 VZERO_VSX, vs15
+  // was the AES-mask trap and vs16-vs31 are the AVX-high bank when it is on
+  // (PPC64Emitter.h). They are transient within a stub — no host call can occur
+  // between the `bl` and the stub's final `b` — so nothing is pinned. The SHA-1
+  // and SHA-256 round emitters (VectorOps.cpp EmitSha1Rounds4 /
+  // EmitSha256Rounds4) already take vs2-vs9 as op-local scratch the same way.
+  constexpr auto P0 = PPC64Emitter::VSXR {3}; // A, and A' on return
+  constexpr auto P1 = PPC64Emitter::VSXR {4}; // B
+  constexpr auto P2 = PPC64Emitter::VSXR {5};
+  constexpr auto P3 = PPC64Emitter::VSXR {6};
+  constexpr auto P4 = PPC64Emitter::VSXR {7}; // the quiet-bit mask
+  constexpr auto P5 = PPC64Emitter::VSXR {8};
+
+  // CR6[0] (CR bit 24) is set iff EVERY lane compared equal, so BO=4 ("branch
+  // if the bit is clear") on it is "some lane is a NaN".
+  constexpr PPC64Emitter::Cond CondSomeLaneNaN {4, 24};
+} // namespace
+
+DEF_OP(A64FArith) {
+  const auto Op = IROp->C<IR::IROp_A64FArith>();
+  const auto ElemSz = IROp->ElementSize;
+  if (ElemSz != IR::OpSize::i32Bit && ElemSz != IR::OpSize::i64Bit) {
+    Op_Unhandled(IROp, Node);
+    return;
+  }
+  const bool Is64 = ElemSz == IR::OpSize::i64Bit;
+  const auto Dst = GetVReg(Node);
+  const auto V1 = GetVReg(Op->Vector1);
+  const auto V2 = GetVReg(Op->Vector2);
+
+  // The RA prefers the SRA register the result is next stored to
+  // (RegisterAllocationPass.cpp:626-633), so accumulator shapes like
+  // `fadd d0, d0, d1` routinely tie Dst to a source. The arithmetic then
+  // destroys an operand the cold stub still needs, so stash it first. At most
+  // one stash is ever needed: when Dst aliases BOTH sources the two sources
+  // are the same register, and the one stash serves for both.
+  PPC64Emitter::VR A = V1, B = V2;
+  if (Dst == V1 || Dst == V2) {
+    const auto Aliased = (Dst == V1) ? V1 : V2;
+    xxlor(VTMP2, Aliased, Aliased);
+    if (Dst == V1) {
+      A = VTMP2;
+    }
+    if (Dst == V2) {
+      B = VTMP2;
+    }
+  }
+
+  switch (Op->Op) {
+  case 0: Is64 ? xvadddp(Dst, V1, V2) : xvaddsp(Dst, V1, V2); break;
+  case 1: Is64 ? xvsubdp(Dst, V1, V2) : xvsubsp(Dst, V1, V2); break;
+  case 2: Is64 ? xvmuldp(Dst, V1, V2) : xvmulsp(Dst, V1, V2); break;
+  case 3: Is64 ? xvdivdp(Dst, V1, V2) : xvdivsp(Dst, V1, V2); break;
+  default: Op_Unhandled(IROp, Node); return;
+  }
+
+  Is64 ? xvcmpeqdp_(VTMP1, Dst, Dst) : xvcmpeqsp_(VTMP1, Dst, Dst);
+
+  if (!FPColdEnabled()) {
+    // Positive control: the check is emitted, the branch is not. The goldens'
+    // (qNaN, sNaN) rows must then FAIL, which is how we know the cold path is
+    // reached at all.
+    return;
+  }
+
+  FPNaNFixBodyUsed[Is64] = true;
+  auto& Stub = FPColdStubs.emplace_back();
+  Stub.SiteOffset = GetOffset();
+  Stub.Dst = Dst;
+  Stub.A = A;
+  Stub.B = B;
+  Stub.Op = Op->Op;
+  Stub.Is64 = Is64;
+  bc(CondSomeLaneNaN, &Stub.Entry);
+  Bind(&Stub.Join);
+}
+
+// NaNFix_{dp,sp} — the host transcription of IRBuilder::PropagateNaNOperand
+// (A64Frontend/TranslateFP.cpp:135-145), which the Pi goldens already verify,
+// so the cold path's specification is the existing frontend code.
+//
+//   in:  P0 = A, P1 = B
+//   out: P0 = A' — B in lanes where A is a quiet NaN and B a signalling NaN,
+//        A everywhere else
+//   clobbers: P2, P3, P4, P5, TMP1. NO CR field, no XER, no VMX register, no
+//             memory, and no GPR besides TMP1 — TMP4 carries the caller's LR.
+//
+// Re-running the site's own op on (A', B) is what makes the swap sufficient
+// for sub and div too: a NaN operand makes the result a NaN whatever the
+// order, only the choice of NaN changes (FP research §3.4 [MEASURED: fsub and
+// fdiv PASS]).
+//
+// The quiet-bit test is `xxland t, X, Q` then `xvcmpeq{dp,sp} m, t, Q`: X & Q
+// is either 0 or Q, Q is a denormal bit pattern, and VSX has no DAZ (FP
+// research §6.3, "denormals are free on POWER9"), so comparing it with itself
+// is exact and no VMX-form op is needed on the low bank. The sticky VXSNAN
+// this raises in FPSCR is unobservable — FPSR cumulative flags are not
+// emulated (TranslateFP.cpp:335).
+void PPC64JITCore::EmitFPNaNFixBody(bool Is64) {
+  Bind(&FPNaNFixBody[Is64]);
+
+  // The quiet bit, replicated into every lane. mtfprd writes doubleword 0 and
+  // leaves doubleword 1 undefined, so splat dw0 across both with xxpermdi
+  // DM=0b00. The sp pattern is pre-replicated into the 64-bit immediate.
+  LoadConstant(TMP1, Is64 ? 0x0008000000000000ULL : 0x0040000000400000ULL);
+  mtfprd(f(P4.idx), TMP1);
+  xxpermdi(P4, P4, P4, 0b00);
+
+  // A lane is unordered with itself iff it is a NaN.
+  if (Is64) {
+    xvcmpeqdp(P2, P0, P0); // OrdA
+    xvcmpeqdp(P3, P1, P1); // OrdB
+  } else {
+    xvcmpeqsp(P2, P0, P0);
+    xvcmpeqsp(P3, P1, P1);
+  }
+
+  xxland(P5, P0, P4);
+  Is64 ? xvcmpeqdp(P5, P5, P4) : xvcmpeqsp(P5, P5, P4); // A's quiet bit set
+  xxlandc(P2, P5, P2);                                  // QuietA   = QSetA & ~OrdA
+
+  xxland(P5, P1, P4);
+  Is64 ? xvcmpeqdp(P5, P5, P4) : xvcmpeqsp(P5, P5, P4); // B's quiet bit set
+  xxlnor(P3, P3, P5);                                   // SigB     = ~(OrdB | QSetB)
+
+  xxland(P2, P2, P3);                                   // swap where both hold
+  xxsel(P0, P0, P1, P2);                                // A' = mask ? B : A
+  blr();
+}
+
+// One per-site stub: copy the (possibly stashed) operands to the body's fixed
+// registers, call the body, re-run the site's own arithmetic on the fixed
+// operands, and branch back. Join is already bound, so the `b` is backward and
+// its 24-bit displacement is never a concern.
+//
+// The cold path takes two taken branches plus the call/return pair; its cost is
+// irrelevant, an ordered-data workload never enters it (FP research §11).
+void PPC64JITCore::EmitFPColdStubs(bool BranchOver) {
+  if (FPColdStubs.empty()) {
+    return;
+  }
+
+  // `bl` sets the emitter's r0-dirty flag (primary 18 with LK=1 is a call form,
+  // and ELFv2 r0 is volatile). Here it is a false positive: the callee is a
+  // JIT-emitted leaf that never touches r0. Restoring the flag keeps the P5.0.2
+  // exit re-zero elision exact for units that only ever "clobber" r0 this way.
+  const bool WasR0Dirty = R0Dirty();
+
+  PPC64Emitter::Label Over {};
+  if (BranchOver) {
+    b(&Over);
+  }
+
+  for (auto& S : FPColdStubs) {
+    if (GetOffset() - S.SiteOffset > 32764) {
+      ERROR_AND_DIE_FMT("PPC64 JIT: A64FArith cold branch at +{:#x} cannot reach its stub at +{:#x}", S.SiteOffset, GetOffset());
+    }
+    Bind(&S.Entry);
+    xxlor(P0, AsVSX(S.A), AsVSX(S.A));
+    xxlor(P1, AsVSX(S.B), AsVSX(S.B));
+    mflr(TMP4);
+    bl(&FPNaNFixBody[S.Is64]);
+    mtlr(TMP4);
+    const auto D = AsVSX(S.Dst);
+    switch (S.Op) {
+    case 0: S.Is64 ? xvadddp(D, P0, P1) : xvaddsp(D, P0, P1); break;
+    case 1: S.Is64 ? xvsubdp(D, P0, P1) : xvsubsp(D, P0, P1); break;
+    case 2: S.Is64 ? xvmuldp(D, P0, P1) : xvmulsp(D, P0, P1); break;
+    case 3: S.Is64 ? xvdivdp(D, P0, P1) : xvdivsp(D, P0, P1); break;
+    default: ERROR_AND_DIE_FMT("PPC64 JIT: A64FArith cold stub with kind {}", S.Op);
+    }
+    b(&S.Join);
+  }
+  FPColdStubs.clear();
+
+  // Bodies last, and only once per unit per width: a later flush's `bl` to an
+  // already-bound label is a backward branch with 24 bits of reach.
+  for (int W = 0; W < 2; ++W) {
+    if (FPNaNFixBodyUsed[W] && !FPNaNFixBody[W].bound) {
+      EmitFPNaNFixBody(W != 0);
+    }
+  }
+
+  if (BranchOver) {
+    Bind(&Over);
+  }
+  if (!WasR0Dirty) {
+    ResetR0Dirty();
+  }
 }
 
 } // namespace FEXCore::CPU
