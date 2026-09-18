@@ -21,15 +21,24 @@ cherry-pick; patches for them go in `docs/powerarm/outgoing-patches/fastppcx86/`
 - **Optimization rounds 1–3** merged: branch handling, code shape, translation speed, code cache
   (on by default), startup, opt-in AOT, cheaper linking.
 - **The aarch64 Claude Code CLI installs and runs** under POWERarm.
+- **code-server 4.137.0 (VS Code, bundled Node v24.18.1) starts and serves** under POWERarm
+  (2026-09-17), once `MRS CNTVCT_EL0` landed -- V8's clock source, and the one instruction that
+  was stopping it. Verified end to end: HTTP 200 on the workbench HTML, `/healthz`,
+  `/manifest.json` and a 1.05 MB `nls.messages.js`, the extension host agent (a child process)
+  starting, and **zero** unimplemented-instruction reports for the whole session.
+  It needs the stable install promoted, not just a fresh build: code-server spawns child Node
+  processes, children reach the emulator through binfmt, and binfmt runs the stable copy.
 - **FEAT_LSE is complete and advertised** (2026-09-17): the min/max forms and `CASP` landed, so
   `ID_AA64ISAR0_EL1.Atomic`, `AT_HWCAP` and `/proc/cpuinfo` all report it. Tests `lse`,
   `lseminmax`, `lsecasp` against Pi goldens.
 - **Compile timings** in `M2-PLAN.md` predate real memory barriers. Do not re-measure them for
   their own sake — stop quoting them, and let the next optimization supply fresh numbers as a
   side effect. Slice baseline on `774e9ce8a`, CPU 104: cold 23.90 s, warm 21.4–21.6 s.
-- **`powerarm-stable` is at `73e8b6b9e`** and so predates the LSE work; anything launched through
-  binfmt still lacks `LDSMAX`/`CASP`. binfmt itself is correctly registered
-  (`check-binfmt-inode.sh` passes) — it needs a `promote-powerarm-stable.sh`, not a re-register.
+- **`powerarm-stable` is at `c37536838`** (promoted 2026-09-17, binfmt re-registered and
+  `check-binfmt-inode.sh` passing). Promoting is what moves binfmt-launched programs -- including
+  the Claude CLI and any guest child process -- onto new work, and a promote MUST be followed by
+  `sudo sh ~/Development/register-powerarm-binfmt.sh`, because binfmt pins the interpreter's inode
+  and the promote gives it a new one. `powerarm-stable.prev` is kept for rollback.
 
 ## The bugs that mattered (and what they teach)
 
@@ -105,7 +114,15 @@ cherry-pick; patches for them go in `docs/powerarm/outgoing-patches/fastppcx86/`
 4. P7 (lightest correct fence per case) is a live optimization target now that the barriers are
    real. (The "re-measure the compile baseline" half of this item was dropped 2026-09-17: it is
    re-deriving numbers already on disk.)
-5. The cold-block emission mechanism in the backend, which unlocks F1–F3, F6, N5; F4, F5 and N1 need
-   no new machinery.
+5. **An FP-heavy benchmark. This now blocks the rest of the F series.** F1 landed with the
+   cold-block mechanism (`docs/powerarm/COLD-BLOCK-DESIGN.md`, `A64FArith`), and its only
+   measurable effect on the workloads we have is a slice regression: cold 23.90 -> 24.58 s
+   (+2.8%), warm flat. That matches its instruction counts -- the executed path loses 20 host
+   instructions per FP arithmetic op, but a one-FP-op unit emits 4 more because the 15-instruction
+   shared `NaNFix` body does not amortise there. The slice is a C compile and barely executes FP,
+   and nothing in A64Bench (crc32, sha256, vm, sort, bst) is FP-heavy either, so the win is real
+   and currently unmeasurable. Fix that before F2/F3/F6/N5 rather than shipping four more
+   landings on inference; they share the same stubs and bodies, so the per-unit cost amortises as
+   sites multiply.
 6. fastppcx86: patch `0034` for the madvise bug (diagnosis written, patch not yet made).
 7. Thunks (GL/Vulkan first, then OpenSSL), per `DESIGN.md` §6.
