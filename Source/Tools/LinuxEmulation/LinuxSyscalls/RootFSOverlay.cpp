@@ -141,11 +141,17 @@ namespace {
   }
 
   // Reads every entry of an open directory descriptor.
+  //
+  // The buffers here and in CopyData are on the heap on purpose. These run in
+  // syscall context, and while CopyData kept a 64 KiB buffer on the stack a
+  // guest mv of a base file intermittently died of a corrupted guest stack
+  // ("stack smashing detected").
   template<typename Fn>
   bool ForEachEntry(int DirFD, Fn&& Callback) {
-    alignas(8) char Buf[16 * 1024];
+    fextl::vector<uint64_t> Storage(16 * 1024 / sizeof(uint64_t));
+    char* Buf = reinterpret_cast<char*>(Storage.data());
     for (;;) {
-      long N = ::syscall(SYSCALL_DEF(getdents64), DirFD, Buf, sizeof(Buf));
+      long N = ::syscall(SYSCALL_DEF(getdents64), DirFD, Buf, Storage.size() * sizeof(uint64_t));
       if (N < 0) {
         return false;
       }
@@ -185,9 +191,10 @@ namespace {
       }
       break;
     }
-    char Buf[64 * 1024];
+    fextl::vector<char> Storage(64 * 1024);
+    char* Buf = Storage.data();
     for (;;) {
-      ssize_t N = ::read(Src, Buf, sizeof(Buf));
+      ssize_t N = ::read(Src, Buf, Storage.size());
       if (N == 0) {
         return 0;
       }
