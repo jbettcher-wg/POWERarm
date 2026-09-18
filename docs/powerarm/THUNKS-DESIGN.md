@@ -515,9 +515,13 @@ translation because the DRM uAPI is arch-independent. vkcube on Wayland, 5000 fr
 **native 2107 fps, guest 2145 fps (frame time 0.98x)**. vkcube is far too light to show a driver's CPU
 cost (~0.47 ms a frame, one draw call), so this says nothing about API-bound rendering -- the Civilization
 6 shape, many thousands of draw calls a frame -- which is exactly where a thunk earns its place. So:
-games have a working unthunked graphics path today, GPU-bound work needs no thunk, and the Vulkan thunk
-must be justified on a draw-call-heavy benchmark (vkmark's heavier scenes, or a synthetic
-many-draw-calls test), native against unthunked against thunked.
+games have a working unthunked graphics path today, and GPU-bound work needs no thunk. That a native
+driver beats an emulated one for the driver's CPU work is not in question -- it is the premise of FEX's
+thunks, and fastppcx86 already demonstrates it on this machine and GPU -- so the Vulkan thunk is NOT
+gated on a benchmark; its priority is set by the owner's order (emulation first). What deserves a
+measurement, once there is a real arm64 game or API-heavy app to run, is the crossing cost on very
+chatty APIs, where a fixed per-call cost can eat much of what native execution saves on tiny calls
+(FEX's Civilization 6 figure): a tuning step during the thunk work, not a gate before it.
 
 **Prior art: the parent project already runs these thunks.** POWERarm is a fork of fastppcx86
 (the x86-64 → ppc64le JIT), and fastppcx86's `build-thunks` carries the full working set: guest
