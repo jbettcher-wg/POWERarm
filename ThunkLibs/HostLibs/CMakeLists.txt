@@ -120,7 +120,12 @@ function(generate NAME SOURCE_FILE GUEST_BITNESS)
     DEPENDS "${SOURCE_FILE}"
     DEPENDS thunkgen
     COMMAND ${CMAKE_COMMAND} -E env ${THUNKGEN_GCC_TOOLCHAIN_ENV}
-      "$<TARGET_FILE:thunkgen>" "${SOURCE_FILE}" "${NAME}" "-host" "${OUTFILE}" "${X86_DEV_ROOTFS}" -- -std=c++20
+      # POWERarm's guest is AArch64, but these host halves still encode the
+      # inherited x86-64 guest layout: switching them means regenerating
+      # against the AArch64 rootfs and checking every interface's layouts
+      # (docs/powerarm/THUNKS-DESIGN.md, Stage 1). Until then the triple is
+      # explicit rather than thunkgen's AArch64 default.
+      "$<TARGET_FILE:thunkgen>" "${SOURCE_FILE}" "${NAME}" "-host" "${OUTFILE}" "${X86_DEV_ROOTFS}" "x86_64-linux-gnu" -- -std=c++20
       # Expand compile definitions to space-separated list of -D parameters
       "$<$<BOOL:${compile_prop}>:;-D$<JOIN:${compile_prop},;-D>>"
       # Expand include directories to space-separated list of -isystem parameters
