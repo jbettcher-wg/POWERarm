@@ -869,11 +869,40 @@ std::optional<uint64_t> FileManager::OverlayGetdents64(int fd, void* dirp, uint3
   return Overlay.Getdents64(fd, dirp, count);
 }
 
-std::optional<uint64_t> FileManager::OverlayGetcwd(char* buf, size_t size) {
-  if (!Overlay.Active()) {
+std::optional<uint64_t> FileManager::Getcwd(char* buf, size_t size) {
+  if (Overlay.Active()) {
+    if (auto Guest = Overlay.Getcwd(buf, size)) {
+      return Guest;
+    }
+  }
+
+  // chdir resolves rootfs-first, so a working directory can sit inside the
+  // RootFS; the host getcwd then reports the RootFS prefix, which real
+  // hardware never shows (SuperTuxKart's Irrlicht indexes its data folders
+  // by getcwd and failed to find them). The stripped path resolves back to
+  // the same directory, because lookups try the RootFS first.
+  char Host[PATH_MAX];
+  long Len = ::syscall(SYSCALL_DEF(getcwd), Host, sizeof(Host));
+  if (Len <= 1) {
     return std::nullopt;
   }
-  return Overlay.Getcwd(buf, size);
+  // The kernel's length counts the NUL.
+  const size_t PathLen = Len - 1;
+  const size_t Prefix = GetRootFSPrefixLen(Host, PathLen, false);
+  if (Prefix == 0) {
+    return std::nullopt;
+  }
+  std::string_view Guest = Prefix == PathLen ? std::string_view {"/"} : std::string_view {Host + Prefix, PathLen - Prefix};
+  if (Guest.size() + 1 > size) {
+    errno = ERANGE;
+    return -1;
+  }
+  fextl::string Out {Guest};
+  if (FaultSafeUserMemAccess::CopyToUser(buf, Out.c_str(), Out.size() + 1) != 0) {
+    errno = EFAULT;
+    return -1;
+  }
+  return Out.size() + 1;
 }
 
 std::optional<uint64_t> FileManager::OverlaySocket(bool Bind, int fd, const void* addr, uint32_t addrlen) {

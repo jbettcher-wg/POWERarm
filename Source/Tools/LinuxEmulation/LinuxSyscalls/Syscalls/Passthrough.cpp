@@ -1018,8 +1018,8 @@ void RegisterCommon(FEX::HLE::SyscallHandler* Handler) {
   REGISTER_SYSCALL_IMPL(fsync, SyscallPassthrough1<SYSCALL_DEF(fsync)>);
   REGISTER_SYSCALL_IMPL(fdatasync, SyscallPassthrough1<SYSCALL_DEF(fdatasync)>);
   REGISTER_SYSCALL_IMPL(getcwd, [](FEXCore::Core::CpuStateFrame* Frame, char* buf, size_t size) -> uint64_t {
-    // A working directory inside the rootfs overlay reads as its guest path.
-    if (auto Guest = FEX::HLE::_SyscallHandler->FM.OverlayGetcwd(buf, size)) {
+    // A working directory inside the rootfs (overlay or base) reads as its guest path.
+    if (auto Guest = FEX::HLE::_SyscallHandler->FM.Getcwd(buf, size)) {
       uint64_t Result = *Guest;
       SYSCALL_ERRNO();
     }

@@ -15,6 +15,7 @@
 //   rootfs_overlay --make-fixture DIR   create the base tree in DIR
 //   rootfs_overlay --probe PATH         print "exists" or the errno name
 //   rootfs_overlay                      run the checks (OVT_ROOT optional)
+//   rootfs_overlay --cwd DIR            chdir, print getcwd and the short-buffer error
 #define _GNU_SOURCE
 #include <dirent.h>
 #include <errno.h>
@@ -158,7 +159,24 @@ static int Probe(const char* Path) {
   return 0;
 }
 
+// The working directory's path after chdir(Path), then the error from a
+// getcwd buffer one byte too small for it.
+static int Cwd(const char* Path) {
+  char Buf[4096];
+  if (chdir(Path) != 0 || getcwd(Buf, sizeof(Buf)) == NULL) {
+    printf("%s\n", strerrorname_np(errno));
+    return 0;
+  }
+  char Short[4096];
+  const char* Err = getcwd(Short, strlen(Buf)) != NULL ? "fits" : strerrorname_np(errno);
+  printf("%s %s\n", Buf, Err);
+  return 0;
+}
+
 int main(int argc, char** argv) {
+  if (argc == 3 && strcmp(argv[1], "--cwd") == 0) {
+    return Cwd(argv[2]);
+  }
   if (argc == 3 && strcmp(argv[1], "--make-fixture") == 0) {
     return MakeFixture(argv[2]);
   }

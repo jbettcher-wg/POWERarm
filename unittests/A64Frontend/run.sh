@@ -83,6 +83,11 @@ run_rootfs_overlay() {
   hidden=$(POWERARM_ROOTFS=$ovt/base POWERARM_ROOTFSOVERLAY=$ovt/overlay "$emu" ./rootfs_overlay --probe /var/lib/pacman 2>&1)
   knob=$(POWERARM_ROOTFS=$ovt/base POWERARM_ROOTFSOVERLAY=0 "$emu" ./rootfs_overlay --probe /var/lib/pacman 2>&1)
   absent=$(env -u POWERARM_ROOTFSOVERLAY POWERARM_ROOTFS="$ovt/base" "$emu" ./rootfs_overlay --probe /var/lib/pacman 2>&1)
+  # getcwd inside the base reads as the guest path, with or without the
+  # overlay; a host directory the base lacks reads as itself.
+  cwd_on=$(POWERARM_ROOTFS=$ovt/base POWERARM_ROOTFSOVERLAY=$ovt/overlay "$emu" ./rootfs_overlay --cwd /usr/share/ovtest/sub 2>&1)
+  cwd_off=$(POWERARM_ROOTFS=$ovt/base POWERARM_ROOTFSOVERLAY=0 "$emu" ./rootfs_overlay --cwd /usr/share/ovtest/sub 2>&1)
+  cwd_host=$(POWERARM_ROOTFS=$ovt/base POWERARM_ROOTFSOVERLAY=0 "$emu" ./rootfs_overlay --cwd /usr/bin 2>&1)
   host_pacman=ENOENT
   [ -d /var/lib/pacman ] && host_pacman=exists
   if ! cmp -s rootfs_overlay.golden rootfs_overlay.powerarm; then
@@ -97,6 +102,8 @@ run_rootfs_overlay() {
     report FAIL rootfs_overlay "host /usr/bin/env unreachable through the overlay: $tool"
   elif [ "$hidden" != ENOENT ]; then
     report FAIL rootfs_overlay "/var/lib/pacman fell through to the host: $hidden"
+  elif [ "$cwd_on" != "/usr/share/ovtest/sub ERANGE" ] || [ "$cwd_off" != "/usr/share/ovtest/sub ERANGE" ] || [ "$cwd_host" != "/usr/bin ERANGE" ]; then
+    report FAIL rootfs_overlay "getcwd leaked a host path: overlay [$cwd_on] no overlay [$cwd_off] host dir [$cwd_host]"
   elif [ "$knob" != "$host_pacman" ] || [ "$absent" != "$host_pacman" ]; then
     report FAIL rootfs_overlay "disabled ($knob) or absent ($absent) overlay changed the host fallthrough ($host_pacman)"
   else

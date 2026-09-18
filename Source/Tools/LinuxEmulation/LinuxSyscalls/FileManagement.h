@@ -124,7 +124,10 @@ public:
   uint64_t Mknodat(int dirfd, const char* pathname, mode_t mode, dev_t dev);
   // nullopt: not an overlay directory / not an overlay working directory.
   std::optional<uint64_t> OverlayGetdents64(int fd, void* dirp, uint32_t count);
-  std::optional<uint64_t> OverlayGetcwd(char* buf, size_t size);
+  // getcwd for a working directory the guest reached through the rootfs
+  // (overlay or base): its guest path. nullopt: a host directory, so the
+  // raw syscall answers.
+  std::optional<uint64_t> Getcwd(char* buf, size_t size);
   // bind/connect of an AF_UNIX pathname socket under a guest-owned prefix.
   std::optional<uint64_t> OverlaySocket(bool Bind, int fd, const void* addr, uint32_t addrlen);
   // True when the guest must see ENOENT for an absolute path the overlay hides.
