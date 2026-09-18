@@ -82,6 +82,7 @@ by default and none with the knob set.
 | `simd_shll` | differential, generated | SHLL/SHLL2 at every element width over lane boundary values |
 | `exclusive` | differential, generated | LDXR/LDAXR then STXR/STLXR at every width: success, store without a load, a second store, CLREX in between, NZCV across a successful store; LDAR/STLR. A store to a different address than the load is IMPLEMENTATION DEFINED (the Pi lets it succeed within a region) and is not tested |
 | `hello`, `printf_float`, `strmem`, `fpmath` (and `musl_*`) | differential | static glibc (and musl) programs: printf float formatting, the string/memory routines over lengths and alignments, scalar FP code |
+| `hlt`, `sigill_hlt` | self-checking; differential exit status | HLT raises SIGILL for every immediate, at its own address; the thunk marker `HLT #0x0F3F` does too when its hash names no thunk, or runs off executable memory |
 | `bb_*` | differential | busybox `echo`, `cat`, `wc`, `sort`, `sort -n`, `sha256sum`, `md5sum` |
 
 The SIMD/FP programs print `vdump` after `dump`: V0-V31, FPCR, and FPSR with

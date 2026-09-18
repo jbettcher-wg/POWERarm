@@ -17,7 +17,10 @@
 // encodings), after an exception-generating instruction (SVC, BRK, HLT, ...),
 // after an instruction the translator does not know (it raises SIGILL), at the
 // instruction cap, or before an instruction whose word is not in executable
-// memory (that PC gets its own block and SIGSEGV). The targets of B, B.cond,
+// memory (that PC gets its own block and SIGSEGV). A thunk marker (HLT #0x0F3F)
+// ends its block like any HLT; its 32 hash bytes are part of the decoded range
+// (SMC tracking and the code pages cover them) and must be readable, or the
+// marker raises SIGILL. The targets of B, B.cond,
 // CBZ/CBNZ and TBZ/TBNZ that lie near the branch become further blocks of the
 // same unit (see DecodeInstructionsAtEntry for the limits), so the branches
 // between them, loops included, stay inside the unit. POWERARM_MULTIBLOCK=0 or
@@ -44,6 +47,16 @@ struct InstMatcher;
 constexpr uint64_t INSTRUCTION_SIZE = 4;
 // Upper bound on instructions in one block, below the MaxInst config.
 constexpr uint64_t DEFAULT_MAX_INSTRUCTIONS = 1024;
+
+// Guest->host thunk marker: HLT #0x0F3F, immediately followed by the 32-byte
+// SHA-256 of "library:function" (ThunkLibs/include/common/Guest.h emits it).
+// The immediate spells the x86 guests' `0F 3F` marker. HLT is undefined at EL0,
+// so every other HLT immediate keeps raising SIGILL, as it does on hardware.
+constexpr uint32_t HLT_IMM16(uint32_t Imm) {
+  return 0xD4400000U | (Imm << 5);
+}
+constexpr uint32_t THUNK_MARKER_WORD = HLT_IMM16(0x0F3F);
+constexpr uint64_t THUNK_HASH_SIZE = 32;
 
 class Decoder final {
 public:

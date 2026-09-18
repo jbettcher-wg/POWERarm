@@ -1636,8 +1636,17 @@ void ContextImpl::AddThunkTrampolineIRHandler(uintptr_t Entrypoint, uintptr_t Gu
       IRHeader.first->Blocks = emit->WrapNode(Block);
       emit->SetCurrentCodeBlock(Block);
 
-      // POWERARM-M0-TODO(thunks): the x86-64 trampoline passed its own address in R11; X16 (IP0) is the AAPCS64 veneer register but the guest-thunk ABI is an M5 decision.
-      emit->_StoreContextGPR(IR::OpSize::i64Bit, emit->Constant(Entrypoint), Core::CPUState::GPROffset(16));
+      // Linked-callee convention (ThunkLibs/include/common/Guest.h,
+      // CallHostFunction): the host address goes to X16 and X17 (IP0/IP1), which
+      // AAPCS64 lets any call clobber, so no guest caller can depend on them.
+      // The invoker reads X17; X16 carries the same value for anything that
+      // follows the linker-veneer habit of looking in IP0. X30 is left alone:
+      // it is the guest caller's return address, which the invoker returns to.
+      // Neither register has a static host register (StaticGPRGuestReg), so
+      // the context slots are their only home.
+      auto Callee = emit->Constant(Entrypoint);
+      emit->_StoreContextGPR(IR::OpSize::i64Bit, Callee, Core::CPUState::GPROffset(16));
+      emit->_StoreContextGPR(IR::OpSize::i64Bit, Callee, Core::CPUState::GPROffset(17));
       emit->_ExitFunction(IR::OpSize::i64Bit, emit->Constant(GuestThunkEntrypoint), IR::BranchHint::None, emit->Invalid(), emit->Invalid());
     },
     ThunkHandler, (void*)GuestThunkEntrypoint);

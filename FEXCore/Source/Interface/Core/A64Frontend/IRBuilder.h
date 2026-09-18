@@ -114,7 +114,7 @@ public:
   bool B_cond(uint32_t Word); bool B_uncond(uint32_t Word); bool BL(uint32_t Word);
   bool CBZ(uint32_t Word); bool CBNZ(uint32_t Word); bool TBZ(uint32_t Word); bool TBNZ(uint32_t Word);
   bool BR(uint32_t Word); bool BLR(uint32_t Word); bool RET(uint32_t Word);
-  bool SVC(uint32_t Word); bool BRK(uint32_t Word);
+  bool SVC(uint32_t Word); bool BRK(uint32_t Word); bool HLT(uint32_t Word);
   bool HINT(uint32_t Word); bool Barrier(uint32_t Word); bool CLREX(uint32_t Word);
   bool MRS(uint32_t Word); bool MSR_reg(uint32_t Word);
   bool DC_ZVA(uint32_t Word); bool CacheMaintenanceNop(uint32_t Word);

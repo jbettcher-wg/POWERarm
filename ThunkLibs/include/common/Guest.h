@@ -18,25 +18,37 @@
 template<typename signature>
 THUNK_ABI const int (*fexthunks_invoke_callback)(void*);
 
-#ifndef ARCHITECTURE_arm64
+// A guest thunk is a stub entered with `bl` and X0 pointing at the packed
+// arguments. Its body is the marker the POWERarm A64 frontend recognises,
+// HLT #0x0F3F (0xd441e7e0), followed by the 32-byte SHA-256 of
+// "library:function". The frontend translates the pair as "call the host
+// function registered for that hash with X0, then return to X30", so the stub
+// needs no instructions of its own. HLT is undefined at EL0: run on hardware,
+// the stub raises SIGILL rather than doing anything plausible.
+#if defined(__aarch64__)
+#define FEX_THUNK_STUB_ASM(symbol, hash)                                          \
+  ".text\n.balign 4\n.type " symbol ", %function\n" symbol ":\n.inst 0xd441e7e0\n" \
+  ".byte " hash "\n.size " symbol ", . - " symbol "\n"
+
 #define MAKE_THUNK(lib, name, hash)                                                                    \
   extern "C" __attribute__((visibility("hidden"))) THUNK_ABI int fexthunks_##lib##_##name(void* args); \
-  asm(".text\nfexthunks_" #lib "_" #name ":\n.byte 0xF, 0x3F\n.byte " hash);
+  asm(FEX_THUNK_STUB_ASM("fexthunks_" #lib "_" #name, hash));
 
 #define MAKE_CALLBACK_THUNK(name, signature, hash)                                             \
   extern "C" __attribute__((visibility("hidden"))) THUNK_ABI int fexthunks_##name(void* args); \
-  asm(".text\nfexthunks_" #name ":\n.byte 0xF, 0x3F\n.byte " hash);                            \
+  asm(FEX_THUNK_STUB_ASM("fexthunks_" #name, hash));                                           \
   template<>                                                                                   \
   THUNK_ABI inline constexpr int (*fexthunks_invoke_callback<signature>)(void*) = fexthunks_##name;
 
 #else
-// We're compiling for IDE integration, so provide a dummy-implementation that just calls an undefined function.
-// The name of that function serves as an error message if this library somehow gets loaded at runtime.
-extern "C" void BROKEN_INSTALL___TRIED_LOADING_AARCH64_BUILD_OF_GUEST_THUNK();
-#define MAKE_THUNK(lib, name, hash)                                \
-  extern "C" int fexthunks_##lib##_##name(void* args) {            \
-    BROKEN_INSTALL___TRIED_LOADING_AARCH64_BUILD_OF_GUEST_THUNK(); \
-    return 0;                                                      \
+// Any other target (host-toolchain IDE integration): provide a dummy
+// implementation that calls an undefined function, whose name serves as the
+// error message if such a build is ever loaded at runtime.
+extern "C" void BROKEN_INSTALL___TRIED_LOADING_NON_AARCH64_BUILD_OF_GUEST_THUNK();
+#define MAKE_THUNK(lib, name, hash)                                    \
+  extern "C" int fexthunks_##lib##_##name(void* args) {                \
+    BROKEN_INSTALL___TRIED_LOADING_NON_AARCH64_BUILD_OF_GUEST_THUNK(); \
+    return 0;                                                          \
   }
 #define MAKE_CALLBACK_THUNK(name, signature, hash) \
   extern "C" int fexthunks_##name(void* args);     \
@@ -117,41 +129,33 @@ inline bool IsLibLoaded(const char* libname) {
 }
 
 // Helper template that packs the given arguments and invokes a thunk at the
-// address stored in the `r11` guest register. The signature of the thunk must
-// be specified at compile-time via the Thunk template parameter.
-// Other than reading the thunk address from `r11`, this is equivalent to the
+// host address the caller left in X17. The signature of the thunk must be
+// specified at compile-time via the Thunk template parameter.
+// Other than reading the thunk address from X17, this is equivalent to the
 // fexfn_pack_* functions generated for global API functions.
+//
+// The linked-callee convention: a host function pointer the guest calls is
+// linked (LinkAddressToFunction) to a block the JIT compiles at that address,
+// which writes the host address to both X16 and X17 (IP0/IP1) and branches
+// here with the caller's X30 intact (Core.cpp AddThunkTrampolineIRHandler).
+// IP0/IP1 are the AAPCS64 intra-procedure-call scratch registers: no caller may
+// expect them to survive a call, and nothing else writes them between that
+// block and this function's entry.
 template<auto Thunk, typename Result, typename... Args>
 inline Result CallHostFunction(Args... args) {
-#ifndef ARCHITECTURE_arm64
-#if __SIZEOF_POINTER__ == 8
-  // This magic incantation of using a register variable with an empty asm block is necessary for correct operation!
-  // If we only use inline asm that sets a variable then the compiler will reorder the function
-  // prologue to be BEFORE our inline asm. Which makes sense in hindsight, but for anything with 8+ arguments this
-  // will clobber our r11 register we save the data that is inside of it.
-
-  // First we need to declare the r11 register variable
-  register uintptr_t host_addr asm("r11");
-
-  // We then create an empty *volatile* asm block saying that it is assigning the register variable.
-  // Yes, it is already set coming in to this function due to custom ABI.
-  // This gets both GCC and Clang to understand that the variable is set, seemingly at the start of the function.
-  // So its own internal live-range tracking extends its begining range to the start of the function.
+#if defined(__aarch64__)
+  // Copy X17 out with the first statement. A volatile asm is never moved
+  // across a call, so the copy happens before the memset/memcpy calls GCC
+  // emits to build a packed_args holding a by-value aggregate, and those calls
+  // (and the PLT stubs in front of them) are free to clobber IP0/IP1.
   //
-  // To verify this in the future, search for `mov     r11` in binaryninja, and ensure that all uses inside of `CallHostFunction`
-  // don't have intersecting ranges.
-  //
-  // Note that this issue is more likely to occur when clang is used to compile thunks, since its optimizer is more aggressive at using R11.
-  // This magic incantation also works in that instance so this is about the best we can do without adding a new attribute to clang for
-  // modifying the ABI.
-  asm volatile("" : "=r"(host_addr));
-#else
-  // Use mm0 to pass in host_addr (chosen to avoid conflicts with vectorcall).
-  // Note this register overlaps the x87 st(0) register (used to return float values),
-  // so applications that expect this register to be preserved could run into problems.
+  // Not the x86-64 stubs' register-variable trick (`register ... asm("r11")`
+  // plus an empty asm "assigning" it): GCC 16 honours such a variable only at
+  // the asm, and with a by-value struct argument it read X17 after those
+  // calls. What the copy cannot stop is a prologue that uses IP0/IP1 as its
+  // own scratch; GCC 16 uses x13 for large frames and stack-clash probes.
   uintptr_t host_addr;
-  asm volatile("movd %%mm0, %0" : "=r"(host_addr));
-#endif
+  asm volatile("mov %0, x17" : "=r"(host_addr));
 #else
   uintptr_t host_addr = 0;
 #endif
