@@ -23,6 +23,16 @@ namespace FEX::LinuxEmulation::Threads {
 constexpr size_t STACK_SIZE = 8 * 1024 * 1024;
 
 /**
+ * @brief PROT_NONE guard mapped below each stack that this interface creates.
+ *
+ * The stacks are anonymous mappings placed by the kernel among the guest's
+ * own, so without it an overflowing host thread writes straight into whatever
+ * the guest has mapped below. It is larger than any single host frame, so a
+ * frame cannot step over it.
+ */
+constexpr size_t STACK_GUARD_SIZE = 1024 * 1024;
+
+/**
  * @brief The address range reserved for the main thread's host stack.
  *
  * The guest's main thread runs on the stack the kernel gave the process. The

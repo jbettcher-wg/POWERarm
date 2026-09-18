@@ -19,6 +19,26 @@
 
 namespace FEX::LinuxEmulation::Threads {
 namespace {
+  // A stack object is STACK_SIZE bytes at the pointer handed out, with a
+  // PROT_NONE guard of STACK_GUARD_SIZE directly below it.
+  void* MapStackObject() {
+    auto Mapping = FEXCore::Allocator::mmap(nullptr, STACK_GUARD_SIZE + STACK_SIZE, PROT_NONE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    if (Mapping == MAP_FAILED) {
+      return nullptr;
+    }
+    auto Stack = reinterpret_cast<uint8_t*>(Mapping) + STACK_GUARD_SIZE;
+    if (::mprotect(Stack, STACK_SIZE, PROT_READ | PROT_WRITE) != 0) {
+      FEXCore::Allocator::munmap(Mapping, STACK_GUARD_SIZE + STACK_SIZE);
+      return nullptr;
+    }
+    FEXCore::Allocator::VirtualName("POWERarmMem_Misc", Stack, STACK_SIZE);
+    return Stack;
+  }
+
+  void UnmapStackObject(void* Ptr) {
+    FEXCore::Allocator::munmap(reinterpret_cast<uint8_t*>(Ptr) - STACK_GUARD_SIZE, STACK_GUARD_SIZE + STACK_SIZE);
+  }
+
   // The end of the mapping in /proc/self/maps that holds Address, or 0. Raw
   // reads into small fixed buffers: this runs at start-up, on the stack it is
   // measuring.
@@ -123,7 +143,7 @@ void* StackTracker::AllocateStackObject() {
     }
 
     if (ReadyToBeReaped) {
-      FEXCore::Allocator::munmap(it->Ptr, it->Size);
+      UnmapStackObject(it->Ptr);
       it = DeadStackPool.erase(it);
       continue;
     }
@@ -132,8 +152,7 @@ void* StackTracker::AllocateStackObject() {
   }
 
   if (Ptr == nullptr) {
-    Ptr = FEXCore::Allocator::mmap(nullptr, FEX::LinuxEmulation::Threads::STACK_SIZE, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
-    FEXCore::Allocator::VirtualName("POWERarmMem_Misc", reinterpret_cast<void*>(Ptr), FEX::LinuxEmulation::Threads::STACK_SIZE);
+    Ptr = MapStackObject();
   }
 
   return Ptr;
@@ -175,7 +194,7 @@ void StackTracker::CleanupAfterFork_PThread() {
         ++it;
       } else {
         // Untracked stack. Clean it up
-        FEXCore::Allocator::munmap(Item.Ptr, Item.Size);
+        UnmapStackObject(Item.Ptr);
         it = StackPool.erase(it);
       }
     }
@@ -193,13 +212,13 @@ void StackTracker::Shutdown() {
   std::lock_guard lk2 {LiveStackPoolMutex};
   // Erase all the dead stack pools
   for (auto& Item : DeadStackPool) {
-    FEXCore::Allocator::munmap(Item.Ptr, Item.Size);
+    UnmapStackObject(Item.Ptr);
   }
 
   // Now clean up any that are considered to still be live
   // We are in shutdown phase, everything in the process is dead
   for (auto& Item : LiveStackPool) {
-    FEXCore::Allocator::munmap(Item.Ptr, Item.Size);
+    UnmapStackObject(Item.Ptr);
   }
 
   DeadStackPool.clear();
