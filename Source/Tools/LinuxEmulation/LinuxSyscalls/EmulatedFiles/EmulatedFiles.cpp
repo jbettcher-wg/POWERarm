@@ -76,7 +76,7 @@ fextl::string GenerateCPUInfo(FEXCore::Context::Context* ctx, uint32_t CPUCores)
     cpu_stream << "processor\t: " << i << std::endl;
     cpu_stream << "BogoMIPS\t: 100.00" << std::endl;
     // Linux prints the hwcaps in this order (arch/arm64/kernel/cpuinfo.c).
-    cpu_stream << "Features\t: fp asimd aes pmull sha1 sha2 crc32 fphp asimdhp cpuid" << std::endl;
+    cpu_stream << "Features\t: fp asimd aes pmull sha1 sha2 crc32 atomics fphp asimdhp cpuid" << std::endl;
     cpu_stream << "CPU implementer\t: 0x00" << std::endl;
     cpu_stream << "CPU architecture: 8" << std::endl;
     cpu_stream << "CPU variant\t: 0x0" << std::endl;
