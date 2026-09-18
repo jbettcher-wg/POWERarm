@@ -142,6 +142,23 @@ struct alignas(64) CPUState {
   // callret_end's partner: the low bound the CALL push checks against.
   uint64_t callret_base {};
 
+  // Scratch for an atomic RMW that the frontend has to spell out as a CAS
+  // retry loop (LDSMAX/LDSMIN/LDUMAX/LDUMIN; TranslateExclusive.cpp
+  // AtomicMinMax). The loop needs the loaded value in the block that follows
+  // it, and no non-fixed SSA value may be live across a block boundary --
+  // ConstrainedRAPass::Run makes every register available again at the top of
+  // each block, so only the pinned GPRFixed/SRA slots cross an edge. A guest
+  // register cannot carry it either: Rt is free to alias Rn or Rs (Rt == Rs is
+  // the ordinary `x = __atomic_fetch_max(p, x)` shape), so writing Rt before
+  // the back edge would corrupt the address or the operand for the retry.
+  // Nothing guest-visible is written until the loop has committed, which also
+  // leaves the instruction restartable if a guest SIGSEGV handler resumes.
+  //
+  // It goes last, in the tail padding that alignof(CPUState) == 64 already
+  // required, so it costs no space and moves no other context offset. There is
+  // no room earlier: v[] is 16-byte aligned and _pad1 runs up to it exactly.
+  uint64_t atomic_scratch {};
+
   static constexpr size_t GPR_REG_SIZE = sizeof(x[0]);
   static constexpr size_t VECTOR_REG_SIZE = sizeof(v[0]);
   static constexpr size_t NUM_XREGS = sizeof(x) / GPR_REG_SIZE;
@@ -189,6 +206,14 @@ static_assert(offsetof(CPUState, L1Mask) + 8 <= 32760, "L1 lookup mirrors must s
 static_assert(offsetof(CPUState, fpsr) + 4 <= 32767, "NZCV/FPCR/FPSR must be D-form reachable off STATE");
 // lvx/stvx drop the low 4 EA bits.
 static_assert(offsetof(CPUState, v) % 16 == 0, "v[] must be 16-byte aligned for lvx/stvx");
+// atomic_scratch is deliberately the last member: it fills tail padding that
+// alignof(CPUState) == 64 already required, so adding it moved no other context
+// offset and did not grow the struct. 896 is the size both before and after it
+// was added. If this fires, the field has started costing a whole cacheline per
+// thread and wants a real home or a rethink -- do not just bump the number.
+static_assert(sizeof(CPUState) == 896, "CPUState grew; see the note on atomic_scratch");
+static_assert(offsetof(CPUState, atomic_scratch) + sizeof(uint64_t) <= sizeof(CPUState),
+              "atomic_scratch must lie inside CPUState's existing tail padding");
 static_assert(CPUState::VectorOffset(CPUState::NUM_VREGS) <= 32767, "v[] must stay within a signed 16-bit displacement");
 
 // Guest registers held in the backend's static (pinned) GPR slots, in slot

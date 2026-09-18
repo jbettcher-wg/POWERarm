@@ -84,6 +84,10 @@ const IRBuilder::HandlerEntry IRBuilder::HandlerTable[] = {
   {"LDADDB", &IRBuilder::AtomicMemOp}, {"LDCLRB", &IRBuilder::AtomicMemOp}, {"LDEORB", &IRBuilder::AtomicMemOp}, {"LDSETB", &IRBuilder::AtomicMemOp}, {"SWPB", &IRBuilder::AtomicMemOp},
   {"LDADDH", &IRBuilder::AtomicMemOp}, {"LDCLRH", &IRBuilder::AtomicMemOp}, {"LDEORH", &IRBuilder::AtomicMemOp}, {"LDSETH", &IRBuilder::AtomicMemOp}, {"SWPH", &IRBuilder::AtomicMemOp},
   {"LDADD", &IRBuilder::AtomicMemOp}, {"LDCLR", &IRBuilder::AtomicMemOp}, {"LDEOR", &IRBuilder::AtomicMemOp}, {"LDSET", &IRBuilder::AtomicMemOp}, {"SWP", &IRBuilder::AtomicMemOp},
+  // The signed and unsigned min/max forms take the CAS retry loop instead.
+  {"LDSMAXB", &IRBuilder::AtomicMinMax}, {"LDSMINB", &IRBuilder::AtomicMinMax}, {"LDUMAXB", &IRBuilder::AtomicMinMax}, {"LDUMINB", &IRBuilder::AtomicMinMax},
+  {"LDSMAXH", &IRBuilder::AtomicMinMax}, {"LDSMINH", &IRBuilder::AtomicMinMax}, {"LDUMAXH", &IRBuilder::AtomicMinMax}, {"LDUMINH", &IRBuilder::AtomicMinMax},
+  {"LDSMAX", &IRBuilder::AtomicMinMax}, {"LDSMIN", &IRBuilder::AtomicMinMax}, {"LDUMAX", &IRBuilder::AtomicMinMax}, {"LDUMIN", &IRBuilder::AtomicMinMax},
   {"LDAPRB", &IRBuilder::LDAPR}, {"LDAPRH", &IRBuilder::LDAPR}, {"LDAPR", &IRBuilder::LDAPR},
   {"CASB", &IRBuilder::CompareAndSwap}, {"CASH", &IRBuilder::CompareAndSwap}, {"CAS", &IRBuilder::CompareAndSwap},
   {"STLR", &IRBuilder::LoadStoreAtomicWidth}, {"STLLR", &IRBuilder::LoadStoreAtomicWidth},

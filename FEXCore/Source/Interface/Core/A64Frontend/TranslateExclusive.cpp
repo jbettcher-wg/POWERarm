@@ -148,11 +148,97 @@ bool IRBuilder::AtomicMemOp(uint32_t Word) {
   case 0b0010: Old = _AtomicFetchXor(MemSize, Value, Address); break;
   case 0b0011: Old = _AtomicFetchOr(MemSize, Value, Address); break;
   case 0b1000: Old = _AtomicSwap(MemSize, Value, Address); break;
-  // LDSMAX/LDSMIN/LDUMAX/LDUMIN (opc 010x/011x) need a CAS retry loop and are
-  // still unimplemented; the outline-atomics helpers never emit them.
+  // LDSMAX/LDSMIN/LDUMAX/LDUMIN (opc 010x/011x) go to AtomicMinMax.
   default: return false;
   }
   StoreReg(Rt, Is64, Old);
+  return true;
+}
+
+// FEAT_LSE LDSMAX/LDSMIN/LDUMAX/LDUMIN, all four widths and all four ordering
+// variants. POWER has no atomic min or max, and the IR has no AtomicFetch op
+// for one, so these are the one LSE family that has to be spelled out as a
+// load / compare / CAS retry loop.
+//
+// A new IR op per form with an LL/SC lowering would be one memory op per
+// iteration instead of two, but it would also need the four misaligned
+// fallbacks every other AtomicFetch* op carries (EmitInlineContainedRMW, a
+// SplitLockOp enum entry and an ApplyRmwOp case that knows the operand width
+// for the signed compare) -- and all of that is dead weight for these
+// encodings, because a misaligned LSE atomic faults on real hardware rather
+// than being emulated. The loop reuses _CAS, which already has those paths
+// right. Min/max is also the case where a CAS loop is at its best: the ABA
+// window a value-compare CAS leaves open is harmless here, because if memory
+// goes A -> B -> A our stored max(A, operand) is still correct for the A the
+// CAS matched.
+//
+// The loop carries nothing across its own back edge: the address and the
+// operand are reloaded from Rn and Rs each time round, and the loaded value
+// goes to CPUState::atomic_scratch, which the block after the loop reads.
+// See the comment on that field for why neither an SSA value nor a guest
+// register can hold it.
+bool IRBuilder::AtomicMinMax(uint32_t Word) {
+  const uint32_t Size = Bits(Word, 31, 30);
+  const auto MemSize = IR::SizeToOpSize(1U << Size);
+  const bool Is64 = Size == 3;
+  const uint32_t Op = Bits(Word, 15, 12); // o3:opc
+  const uint32_t Rs = Bits(Word, 20, 16);
+  const uint32_t Rn = Bits(Word, 9, 5);
+  const uint32_t Rt = Bits(Word, 4, 0);
+
+  // opc 0100 LDSMAX, 0101 LDSMIN, 0110 LDUMAX, 0111 LDUMIN.
+  const bool Unsigned = (Op & 0b0010) != 0;
+  const bool IsMin = (Op & 0b0001) != 0;
+  const auto Cond = Unsigned ? (IsMin ? CondClass::ULT : CondClass::UGT) : (IsMin ? CondClass::SLT : CondClass::SGT);
+
+  // The loop body needs a block of its own to branch back to; the current one
+  // holds the guest instructions before this one. A forward Jump to the next
+  // block emits no host instruction (P6), so entering costs nothing.
+  Ref Head = CreateNewCodeBlockAfter(GetCurrentBlock());
+  auto Enter = _Jump();
+  SetJumpTarget(Enter, Head);
+  SetCurrentCodeBlock(Head);
+
+  Ref Address = LoadXSP(Rn);
+  Ref Value = LoadX(Rs);
+
+  // _Select and _CAS both clobber the host flags that hold NZCV, and these
+  // instructions leave PSTATE.NZCV alone. Save it across the whole body.
+  Ref NZCV = _LoadNZCV();
+  Ref Old = _LoadMem(RegClass::GPR, MemSize, Address, Invalid(), OpSize::i8Bit, MemOffsetType::SXTX, 1);
+  _StoreContext(OpSize::i64Bit, RegClass::GPR, Old, offsetof(FEXCore::Core::CPUState, atomic_scratch));
+
+  // Compare at the access width. Select only validates a 32- or 64-bit
+  // CompareSize, so the byte and halfword forms are widened here rather than
+  // compared narrow: Old arrives zero-extended from _LoadMem, so an unsigned
+  // compare needs only the operand masked, while a signed one needs both sides
+  // sign-extended out of the access width. The value that goes to memory is
+  // the unwidened Old or Value -- _CAS stores the access width and drops the
+  // rest.
+  const uint8_t WidthBits = 8U << Size;
+  Ref OldCmp = Old;
+  Ref ValueCmp = Value;
+  if (!Is64) {
+    if (Unsigned) {
+      ValueCmp = _Bfe(OpSize::i64Bit, WidthBits, 0, Value);
+    } else {
+      OldCmp = _Sbfe(OpSize::i64Bit, WidthBits, 0, Old);
+      ValueCmp = _Sbfe(OpSize::i64Bit, WidthBits, 0, Value);
+    }
+  }
+  Ref New = _Select(OpSize::i64Bit, OpSize::i64Bit, Cond, OldCmp, ValueCmp, Old, Value);
+
+  // _CAS returns the value it observed, zero-extended at the access width, as
+  // does _LoadMem -- so a mismatch is a plain 64-bit compare either way.
+  Ref Seen = _CAS(MemSize, Old, New, Address);
+  _StoreNZCV(NZCV);
+  auto Retry = _CondJump(Seen, Old, InvalidNode, InvalidNode, CondClass::NEQ, OpSize::i64Bit);
+  SetTrueJumpTarget(Retry, Head);
+
+  Ref Done = CreateNewCodeBlockAfter(Head);
+  SetFalseJumpTarget(Retry, Done);
+  SetCurrentCodeBlock(Done);
+  StoreReg(Rt, Is64, _LoadContext(OpSize::i64Bit, RegClass::GPR, offsetof(FEXCore::Core::CPUState, atomic_scratch)));
   return true;
 }
 
