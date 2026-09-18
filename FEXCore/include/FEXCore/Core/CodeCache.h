@@ -230,6 +230,18 @@ struct CodeCacheSaveTarget {
   fextl::string BasePath;
 };
 
+// Why AbstractCodeCache::SaveNewBlocks runs.
+enum class CodeCacheSaveKind {
+  // A checkpoint while the image runs. The targets are every mapped file. A
+  // file with too few new blocks keeps them for a later pass.
+  Periodic,
+  // The image is ending (exit_group, execve): every file's last chance.
+  Final,
+  // The targets are about to be unmapped (dlclose): their last chance. Blocks
+  // of other files wait for a later pass.
+  Unmap,
+};
+
 class AbstractCodeCache {
 public:
   virtual ~AbstractCodeCache() = default;
@@ -259,10 +271,11 @@ public:
    * compiled for it,
    * that are not already in its on-disk cache at BasePath, as a new segment
    * (BasePath, BasePath.1, ... ; compacted back into BasePath when full).
-   * Safe against concurrent writers in other processes. Forgets every compiled
-   * block it considered, written or not. Returns the number of segments written.
+   * Safe against concurrent writers in other processes. Forgets the compiled
+   * blocks it considered, written or not, except those a later pass can still
+   * save (see CodeCacheSaveKind). Returns the number of segments written.
    */
-  virtual size_t SaveNewBlocks(Core::InternalThreadState&, std::span<const CodeCacheSaveTarget> Targets) = 0;
+  virtual size_t SaveNewBlocks(Core::InternalThreadState&, std::span<const CodeCacheSaveTarget> Targets, CodeCacheSaveKind Kind) = 0;
 
   /**
    * Folds every segment of the file cache at BasePath into one, under the
@@ -283,7 +296,7 @@ public:
    * a save pass to rearm.
    *
    * IgnoreInterval drops the time/count thresholds but NOT the requirement that
-   * something new was compiled.
+   * something new was compiled, or kept unsaved by an earlier pass.
    */
   virtual bool WantsSave(bool IgnoreInterval) = 0;
   virtual void NotifyCachesSaved() = 0;

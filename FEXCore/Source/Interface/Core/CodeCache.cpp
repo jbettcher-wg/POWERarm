@@ -807,6 +807,34 @@ namespace {
     return Enabled;
   }
 
+  // Where DumpStats writes: a private copy of the stderr the process started
+  // with. The counters are printed as the image ends, and by then the guest may
+  // have closed its own stderr (every coreutils program does, in the atexit
+  // handler close_stdout), which silently lost the line. Taken in the
+  // CodeCache constructor, before any guest code runs.
+  struct StatsOutput {
+    int FD = -1;
+    dev_t Dev {};
+    ino_t Ino {};
+  };
+  const StatsOutput& StatsStream() {
+    static const StatsOutput Out = [] {
+      StatsOutput O;
+      if (!StatsTimersEnabled()) {
+        return O;
+      }
+      struct stat St {};
+      const int FD = ::fcntl(STDERR_FILENO, F_DUPFD_CLOEXEC, 3);
+      if (FD >= 0 && ::fstat(FD, &St) == 0) {
+        O = {FD, St.st_dev, St.st_ino};
+      } else if (FD >= 0) {
+        ::close(FD);
+      }
+      return O;
+    }();
+    return Out;
+  }
+
   uint64_t MonotonicSeconds() {
     struct timespec TS {};
     if (::clock_gettime(CLOCK_MONOTONIC, &TS) != 0) {
@@ -1182,6 +1210,7 @@ CodeCache::CodeCache(ContextImpl& CTX_)
   LoadEnabled = EnableCodeCaching() && !FEXCore::Config::Get_SMCSEMANTICPATCH() && !FEXCore::Config::Get_SMCLAZYINVAL() &&
                 !FEXCore::Config::Get_SMCCHEAPTIER() && !FEXCore::Config::Get_SMCSTOREEMULATION() &&
                 !FEXCore::Config::Get_SMCSTOREBACKPATCH();
+  StatsStream();
 }
 CodeCache::~CodeCache() = default;
 
@@ -1226,7 +1255,12 @@ bool CodeCache::WantsSave(bool IgnoreInterval) {
   }
   const uint64_t Blocks = BlocksSinceSave.load(std::memory_order_relaxed);
   if (Blocks == 0) {
-    return false;
+    if (!IgnoreInterval) {
+      return false;
+    }
+    // Blocks an earlier pass kept for later still need the final pass.
+    std::lock_guard lk {RelocationSinkMutex};
+    return !CompiledBlocks.empty();
   }
   if (IgnoreInterval || Blocks >= BlocksPerSave) {
     return true;
@@ -1251,10 +1285,17 @@ void CodeCache::ResetAfterFork() {
   // under CodeInvalidationMutex (shared), which fork holds exclusively, so none
   // can be held by a thread that did not survive the fork.
   BlocksSinceSave.store(0, std::memory_order_relaxed);
+  RanPeriodicPass.store(false, std::memory_order_relaxed);
   {
     std::lock_guard lk {RelocationSinkMutex};
     CompiledBlocks.clear();
     RelocationSink.clear();
+    ++SinkGeneration;
+  }
+  // The child's counters start at zero, so its line describes the child alone.
+  for (auto* Counter : {&Stats.Loaded, &Stats.NotInIndex, &Stats.NoFile, &Stats.BadEntry, &Stats.GuestMismatch, &Stats.NotExecutable,
+                        &Stats.RelocFailed, &Stats.SavedBlocks, &Stats.SavedSegments, &Stats.Compactions, &Stats.SaveNS, &Stats.LoadNS}) {
+    Counter->store(0, std::memory_order_relaxed);
   }
 }
 
@@ -1262,12 +1303,20 @@ void CodeCache::DumpStats() {
   auto L = [](const std::atomic<uint64_t>& A) {
     return A.load(std::memory_order_relaxed);
   };
+  // The private copy of stderr, unless the guest has since put something else
+  // on that descriptor number.
+  const auto& Out = StatsStream();
+  int FD = STDERR_FILENO;
+  struct stat St {};
+  if (Out.FD >= 0 && ::fstat(Out.FD, &St) == 0 && St.st_dev == Out.Dev && St.st_ino == Out.Ino) {
+    FD = Out.FD;
+  }
   const auto Line = fextl::fmt::format("POWERarm code cache [{}]: loaded {} not-in-index {} no-file {} bad-entry {} guest-mismatch {} not-exec {} "
                                        "reloc-failed {} saved {} blocks in {} segments, {} compactions; save-ms {} lookup-ms {}\n",
                                        ::getpid(), L(Stats.Loaded), L(Stats.NotInIndex), L(Stats.NoFile), L(Stats.BadEntry),
                                        L(Stats.GuestMismatch), L(Stats.NotExecutable), L(Stats.RelocFailed), L(Stats.SavedBlocks),
                                        L(Stats.SavedSegments), L(Stats.Compactions), L(Stats.SaveNS) / 1000000, L(Stats.LoadNS) / 1000000);
-  (void)::write(STDERR_FILENO, Line.data(), Line.size());
+  (void)::write(FD, Line.data(), Line.size());
 }
 
 void CodeCache::AbsorbRelocations(Core::InternalThreadState& Thread, uint64_t GuestRIP) {
@@ -1284,6 +1333,7 @@ void CodeCache::ResetRelocations() {
   std::lock_guard lk {RelocationSinkMutex};
   RelocationSink.clear();
   CompiledBlocks.clear();
+  ++SinkGeneration;
 }
 
 CodeCache::FileCache* CodeCache::GetFileCache(const ExecutableFileInfo& FileInfo) {
@@ -1971,9 +2021,12 @@ bool CodeCache::CompactAllSegments(const fextl::string& Base, uint64_t FileId) {
   return Done;
 }
 
-size_t CodeCache::SaveNewBlocks(Core::InternalThreadState&, std::span<const CodeCacheSaveTarget> Targets) {
+size_t CodeCache::SaveNewBlocks(Core::InternalThreadState&, std::span<const CodeCacheSaveTarget> Targets, CodeCacheSaveKind Kind) {
   if (!IsGeneratingCache || Targets.empty()) {
     return 0;
+  }
+  if (Kind == CodeCacheSaveKind::Periodic) {
+    RanPeriodicPass.store(true, std::memory_order_relaxed);
   }
   ScopedNS Timer {Stats.SaveNS};
   const uint64_t ConfigId = ComputeCodeCacheConfigId();
@@ -1982,14 +2035,31 @@ size_t CodeCache::SaveNewBlocks(Core::InternalThreadState&, std::span<const Code
   // runs belong to the next one.
   fextl::vector<CompiledRecord> Records;
   fextl::vector<CPU::Relocation> Sink;
+  uint64_t Generation {};
   {
     std::lock_guard lk {RelocationSinkMutex};
+    if (Kind == CodeCacheSaveKind::Unmap) {
+      // Most unmapped files have nothing compiled since the last pass.
+      const bool AnyInTargets = std::ranges::any_of(CompiledBlocks, [&](const CompiledRecord& Record) {
+        return std::ranges::any_of(Targets, [&](const CodeCacheSaveTarget& Target) {
+          return std::ranges::any_of(Target.GuestRanges, [&](const auto& Range) {
+            const auto& [RangeBegin, RangeEnd] = Range;
+            return Record.GuestRIP >= RangeBegin && Record.GuestRIP < RangeEnd;
+          });
+        });
+      });
+      if (!AnyInTargets) {
+        return 0;
+      }
+    }
     Records = CompiledBlocks;
     if (Records.empty()) {
       return 0;
     }
     Sink.assign(RelocationSink.begin(), RelocationSink.begin() + Records.back().RelocEnd);
+    Generation = SinkGeneration;
   }
+  const size_t SnapshotSize = Records.size();
   // Latest record per guest entry: a block recompiled after an invalidation is
   // live at its newest translation, whose relocations are the newest record's.
   std::ranges::stable_sort(Records, {}, &CompiledRecord::GuestRIP);
@@ -1999,6 +2069,15 @@ size_t CodeCache::SaveNewBlocks(Core::InternalThreadState&, std::span<const Code
       Latest.push_back(Records[i]);
     }
   }
+
+  // What happens to each latest record after this pass. A periodic or final
+  // pass targets every mapped file, so a record outside every target belongs
+  // to a file that is gone and is dropped. An unmap pass targets only the
+  // files being unmapped and leaves every other record for a later pass.
+  fextl::vector<bool> KeepRecord(Latest.size(), Kind == CodeCacheSaveKind::Unmap);
+  // The last pass that can save a target's blocks, so the per-file minimum
+  // cannot defer them.
+  const bool LastChance = Kind != CodeCacheSaveKind::Periodic;
 
   size_t SegmentsWritten = 0;
   for (const auto& Target : Targets) {
@@ -2010,17 +2089,34 @@ size_t CodeCache::SaveNewBlocks(Core::InternalThreadState&, std::span<const Code
     }
 
     fextl::vector<uint64_t> Candidates;
-    fextl::unordered_map<uint64_t, const CompiledRecord*> ByGuest;
-    for (const auto& Record : Latest) {
+    fextl::unordered_map<uint64_t, size_t> ByGuest;
+    for (size_t i = 0; i < Latest.size(); ++i) {
+      const auto& Record = Latest[i];
       for (const auto& [RangeBegin, RangeEnd] : Target.GuestRanges) {
         if (Record.GuestRIP >= RangeBegin && Record.GuestRIP < RangeEnd && Record.GuestRIP >= Section.FileStartVA) {
           Candidates.push_back(Record.GuestRIP);
-          ByGuest[Record.GuestRIP] = &Record;
+          ByGuest[Record.GuestRIP] = i;
+          KeepRecord[i] = false;
           break;
         }
       }
     }
-    if (Candidates.size() < MinNewBlocksPerSegment) {
+    if (Candidates.empty()) {
+      continue;
+    }
+    // Too few new blocks for a segment: a periodic pass keeps them, so a file
+    // whose code is reached a few blocks at a time (a library's constructors
+    // at startup and its destructors at exit) still gets saved. Dropping them
+    // here left such files uncached for good.
+    auto Defer = [&] {
+      if (!LastChance) {
+        for (uint64_t Guest : Candidates) {
+          KeepRecord[ByGuest[Guest]] = true;
+        }
+      }
+    };
+    if (!LastChance && Candidates.size() < MinNewBlocksPerSegment) {
+      Defer();
       continue;
     }
 
@@ -2031,18 +2127,34 @@ size_t CodeCache::SaveNewBlocks(Core::InternalThreadState&, std::span<const Code
       continue;
     }
     SegmentBuilder Builder;
+    size_t MinBlocks = MinNewBlocksPerSegment;
     {
       std::unique_lock lk {RegistryMutex};
       File->ProbeNewSegments(ConfigId, FileId);
-      CollectLiveBlocks(
-        *this, CTX, Section, Candidates, [File](uint64_t Off) { return File->Contains(Off); },
-        [&](uint64_t Guest) -> std::span<const CPU::Relocation> {
-          const auto* Record = ByGuest[Guest];
-          return {Sink.data() + Record->RelocBegin, static_cast<size_t>(Record->RelocEnd - Record->RelocBegin)};
-        },
-        Builder);
+      // The minimum keeps the many short processes of a build from each
+      // spending a segment (and, every MaxSegments, a compaction) on a few
+      // rare-path blocks. On a file's last chance it is waived where that
+      // cannot happen: for a file with no cache yet, whose first segment costs
+      // no compaction (a small library's handful of constructor blocks), and
+      // in a process that has run long enough for a periodic pass, which
+      // exits too rarely for its segments to add up. Otherwise the blocks a
+      // long-running process reaches only at exit, its libraries'
+      // destructors, were recompiled by every run.
+      if (LastChance && (File->NumSegments.load(std::memory_order_relaxed) == 0 || RanPeriodicPass.load(std::memory_order_relaxed))) {
+        MinBlocks = 1;
+      }
+      if (Candidates.size() >= MinBlocks) {
+        CollectLiveBlocks(
+          *this, CTX, Section, Candidates, [File](uint64_t Off) { return File->Contains(Off); },
+          [&](uint64_t Guest) -> std::span<const CPU::Relocation> {
+            const auto& Record = Latest[ByGuest[Guest]];
+            return {Sink.data() + Record.RelocBegin, static_cast<size_t>(Record.RelocEnd - Record.RelocBegin)};
+          },
+          Builder);
+      }
     }
-    if (Builder.Blocks.size() < MinNewBlocksPerSegment) {
+    if (Builder.Blocks.size() < MinBlocks) {
+      Defer();
       continue;
     }
 
@@ -2098,20 +2210,34 @@ size_t CodeCache::SaveNewBlocks(Core::InternalThreadState&, std::span<const Code
     }
   }
 
-  // Everything in the snapshot has had its chance: written, already on disk,
-  // not cacheable, below the per-file minimum, or outside every target. Drop
-  // it, and the relocations only it referenced.
+  // Replace the snapshot's records with the ones kept above, and the
+  // relocations only they reference. The rest has had its chance: written,
+  // already on disk, not cacheable, or of a file no longer mapped. Records
+  // appended during the pass stay, after the kept ones (newest last).
   {
     std::lock_guard lk {RelocationSinkMutex};
-    const size_t N = Records.size();
     const uint64_t SinkPrefix = Sink.size();
-    if (CompiledBlocks.size() >= N && RelocationSink.size() >= SinkPrefix) {
-      CompiledBlocks.erase(CompiledBlocks.begin(), CompiledBlocks.begin() + N);
-      RelocationSink.erase(RelocationSink.begin(), RelocationSink.begin() + SinkPrefix);
-      for (auto& Record : CompiledBlocks) {
-        Record.RelocBegin -= SinkPrefix;
-        Record.RelocEnd -= SinkPrefix;
+    if (SinkGeneration == Generation && CompiledBlocks.size() >= SnapshotSize && RelocationSink.size() >= SinkPrefix) {
+      fextl::vector<CompiledRecord> Blocks;
+      fextl::vector<CPU::Relocation> Relocs;
+      for (size_t i = 0; i < Latest.size(); ++i) {
+        if (KeepRecord[i]) {
+          const auto& Record = Latest[i];
+          const uint64_t Begin = Relocs.size();
+          Relocs.insert(Relocs.end(), Sink.begin() + Record.RelocBegin, Sink.begin() + Record.RelocEnd);
+          Blocks.push_back({Record.GuestRIP, Begin, Relocs.size()});
+        }
       }
+      const uint64_t KeptRelocs = Relocs.size();
+      Relocs.insert(Relocs.end(), RelocationSink.begin() + SinkPrefix, RelocationSink.end());
+      for (size_t i = SnapshotSize; i < CompiledBlocks.size(); ++i) {
+        auto Record = CompiledBlocks[i];
+        Record.RelocBegin = Record.RelocBegin - SinkPrefix + KeptRelocs;
+        Record.RelocEnd = Record.RelocEnd - SinkPrefix + KeptRelocs;
+        Blocks.push_back(Record);
+      }
+      CompiledBlocks = std::move(Blocks);
+      RelocationSink = std::move(Relocs);
     }
   }
   return SegmentsWritten;

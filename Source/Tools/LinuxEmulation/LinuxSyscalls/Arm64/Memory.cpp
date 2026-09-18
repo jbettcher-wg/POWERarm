@@ -70,6 +70,9 @@ void RegisterMemory(FEX::HLE::SyscallHandler* Handler) {
     if (!GuestVA::RangeFits(reinterpret_cast<uint64_t>(addr), length)) {
       return -EINVAL;
     }
+    // A dlclose: the last point at which the library's compiled blocks can be
+    // saved to the code cache.
+    FEX::HLE::_SyscallHandler->SaveCodeCachesBeforeUnmap(Frame->Thread, reinterpret_cast<uint64_t>(addr), length);
     uint64_t Emulated {};
     if (FEX::HLE::Granule::Munmap(Frame->Thread, addr, length, &Emulated)) {
       return Emulated;

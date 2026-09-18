@@ -119,7 +119,7 @@ public:
   uint64_t ComputeCodeMapId(std::string_view Filename, int FD) override;
   bool SaveData(Core::InternalThreadState&, int TargetFD, const ExecutableFileSectionInfo&, uint64_t SerializedBaseAddress,
                 std::span<const GuestAddressRange> GuestRanges = {}) override;
-  size_t SaveNewBlocks(Core::InternalThreadState&, std::span<const CodeCacheSaveTarget> Targets) override;
+  size_t SaveNewBlocks(Core::InternalThreadState&, std::span<const CodeCacheSaveTarget> Targets, CodeCacheSaveKind Kind) override;
   bool CompactAllSegments(const fextl::string& BasePath, uint64_t FileId) override;
 
   void InitiateCacheGeneration() override {
@@ -179,6 +179,9 @@ public:
 
   // Number of blocks compiled since the last save pass; also drives WantsSave.
   std::atomic<uint64_t> BlocksSinceSave {0};
+  // This process has run a periodic save pass: it is long-running, not one of
+  // a build's short processes (see the per-file minimum in SaveNewBlocks).
+  std::atomic<bool> RanPeriodicPass {false};
 
   /**
    * Applies a set of relocations to the given code.
@@ -203,14 +206,17 @@ private:
   // the code buffer base.
   fextl::vector<CPU::Relocation> RelocationSink;
   // Every block this process compiled (not loaded) since the buffer was
-  // created, the process forked, or the last save pass, with the range of
-  // RelocationSink its compile appended.
+  // created or the process forked, and that no save pass has consumed yet,
+  // with the range of RelocationSink its compile appended. Oldest first.
   struct CompiledRecord {
     uint64_t GuestRIP;
     uint64_t RelocBegin;
     uint64_t RelocEnd;
   };
   fextl::vector<CompiledRecord> CompiledBlocks;
+  // Bumped whenever the sink and CompiledBlocks are dropped wholesale, so a
+  // save pass does not trim records that arrived after its snapshot.
+  uint64_t SinkGeneration = 0;
 
 
   std::shared_mutex RegistryMutex;

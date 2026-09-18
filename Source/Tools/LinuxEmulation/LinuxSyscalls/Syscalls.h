@@ -393,6 +393,11 @@ public:
    */
   void SaveCodeCaches(FEXCore::Core::InternalThreadState* Thread, bool Force);
 
+  // Before the guest unmaps [Start, Start + Length): saves the new blocks of
+  // every in-scope file with an executable mapping in the range, while its code
+  // is still mapped. Same calling rules as SaveCodeCaches.
+  void SaveCodeCachesBeforeUnmap(FEXCore::Core::InternalThreadState* Thread, uint64_t Start, uint64_t Length);
+
   // The guest image is about to go away (exit_group, execve): save what it
   // compiled and, with POWERARM_CODECACHESTATS=1, print its cache counters.
   void CodeCacheImageExit(FEXCore::Core::InternalThreadState* Thread) {
