@@ -96,13 +96,21 @@ DEF_OP(CallbackReturn) {
   addi(TMP2, TMP2, -1);
   stw(TMP2, ref_off, STATE);
 
-  // Adjust RSP by 8 (restore "misaligned" state from before callback)
-  // POWERARM-M0-TODO(thunks): x86 callback convention (return address pushed on the guest stack); an AArch64 callback returns through X30 and should not touch SP.
-  int32_t rsp_off = static_cast<int32_t>(
+  // Undo the dispatcher's callback entry (PPC64Dispatcher.cpp CallbackPtr):
+  // it saved the interrupted thunk crossing's X30 at [SP] and moved SP down
+  // 16. The guest callee has returned (to here, through X30) with SP back
+  // where it found it, so restore X30 from [SP] and SP += 16. The crossing's
+  // refill then reads both from the frame: the callback killed the
+  // InSyscallInfo sentinel, so that refill is the full one.
+  int32_t sp_off = static_cast<int32_t>(
     offsetof(FEXCore::Core::CpuStateFrame, State.sp));
-  ld(TMP2, rsp_off, STATE);
-  addi(TMP2, TMP2, 8);
-  std(TMP2, rsp_off, STATE);
+  int32_t lr_off = static_cast<int32_t>(
+    offsetof(FEXCore::Core::CpuStateFrame, State.x) + 30 * sizeof(uint64_t));
+  ld(TMP2, sp_off, STATE);
+  ld(TMP3, 0, TMP2);
+  std(TMP3, lr_off, STATE);
+  addi(TMP2, TMP2, 16);
+  std(TMP2, sp_off, STATE);
 
   PopCalleeSavedRegisters();
   blr();

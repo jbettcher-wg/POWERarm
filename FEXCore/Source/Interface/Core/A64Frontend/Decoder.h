@@ -57,6 +57,11 @@ constexpr uint32_t HLT_IMM16(uint32_t Imm) {
 }
 constexpr uint32_t THUNK_MARKER_WORD = HLT_IMM16(0x0F3F);
 constexpr uint64_t THUNK_HASH_SIZE = 32;
+// Host->guest callback return: HLT #0x0F3E (x86's `0F 3E`), meaningful only at
+// the one address POWERarm writes it to, the ThunkCallbackRet that a callback's
+// X30 points at (VDSO_Emulation.cpp LoadFEXGeneratedCode). Anywhere else it is
+// a plain HLT and raises SIGILL.
+constexpr uint32_t CALLBACK_RETURN_WORD = HLT_IMM16(0x0F3E);
 
 class Decoder final {
 public:

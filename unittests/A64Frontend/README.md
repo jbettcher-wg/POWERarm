@@ -84,6 +84,7 @@ by default and none with the knob set.
 | `hello`, `printf_float`, `strmem`, `fpmath` (and `musl_*`) | differential | static glibc (and musl) programs: printf float formatting, the string/memory routines over lengths and alignments, scalar FP code |
 | `vdso` | self-checking | the guest vDSO (needs the guest thunk build, below): `AT_SYSINFO_EHDR`, the ELF and its four `__kernel_*` symbols under `LINUX_2.6.39`, a signal handler returning into `__kernel_rt_sigreturn`, every vDSO-served `CLOCK_*` id, `clock_getres`, `gettimeofday` and `time`, monotonic and agreeing with the raw syscalls |
 | `vdso_syscalls` | differential | how many `clock_gettime`/`gettimeofday` reads are syscalls, counted with a seccomp filter (`vdso_syscalls.env` turns on POWERarm's seccomp emulation): 0 of 1000 through the vDSO, 1000 of 1000 raw `syscall()` reads as the positive control |
+| `thunk_callback` | differential | host->guest callbacks through POWERarm's built-in `fex:callback_selftest` thunk: counts and sums, the caller's x19-x28/d8-d15 and SP across callbacks that overwrite them, three-deep nesting, signals raised and handled inside callbacks, interval-timer signals landing anywhere in the crossing, the registers timer signals and a SIGSEGV see in their ucontext inside a callback, SP alignment in callbacks, four threads at once, the caller's frame. On the Pi the thunk's HLT faults and the test makes the same calls directly; `thunk_callback.env` makes the POWERarm run fail unless the host path was taken |
 | `hlt`, `sigill_hlt` | self-checking; differential exit status | HLT raises SIGILL for every immediate, at its own address; the thunk marker `HLT #0x0F3F` does too when its hash names no thunk, or runs off executable memory |
 | `bb_*` | differential | busybox `echo`, `cat`, `wc`, `sort`, `sort -n`, `sha256sum`, `md5sum` |
 
@@ -131,8 +132,9 @@ A POWERarm older than the thunk marker never loads a file of that name, so
 the variable is harmless to the binfmt-launched emulator that runs the shell
 itself when this shell is emulated.
 
-A test that needs POWERarm configuration of its own has a `<test>.env` file
-of `NAME=value` words, which `run.sh` sets for that test only.
+A test that needs environment of its own under POWERarm (POWERarm
+configuration, or a variable the guest reads) has a `<test>.env` file of
+`NAME=value` words, which `run.sh` sets for that test only.
 
 ## Per-test build flags and stated goldens
 

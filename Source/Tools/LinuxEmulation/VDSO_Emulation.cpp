@@ -614,16 +614,19 @@ void LoadFEXGeneratedCode(FEXCore::Core::InternalThreadState* Thread, VDSOMappin
 
   FEXCore::Allocator::VirtualName("POWERarmMem_Misc", Mapping->X86GeneratedCodePtr, Mapping->X86GeneratedCodeSize);
 
-  // POWERARM-M0-TODO(signals): VDSO_FEX_CallbackRET is still the x86 FEX CALLBACKRET instruction bytes; the A64 guest needs a callback-return encoding the A64 frontend decodes (thunks are outside M1).
   size_t CurrentCodeOffset {};
   if (!VDSOPointers.VDSO_FEX_CallbackRET) {
-    constexpr std::array<uint8_t, 2> CallbackRetCode = {
-      0x0F, 0x3E, // CALLBACKRET FEX Instruction
+    // ThunkCallbackRet: where a host->guest callback's X30 points. The A64
+    // frontend translates this word, at this address only, as CallbackReturn
+    // (TranslateBranchSystem.cpp IRBuilder::HLT); anywhere else it is a HLT
+    // and raises SIGILL.
+    constexpr std::array<uint32_t, 1> CallbackRetCode = {
+      0xd441e7c0, // hlt #0x0f3e
     };
 
     VDSOPointers.VDSO_FEX_CallbackRET = reinterpret_cast<void*>(reinterpret_cast<uintptr_t>(Mapping->X86GeneratedCodePtr) + CurrentCodeOffset);
-    memcpy(VDSOPointers.VDSO_FEX_CallbackRET, CallbackRetCode.data(), CallbackRetCode.size());
-    CurrentCodeOffset += CallbackRetCode.size();
+    memcpy(VDSOPointers.VDSO_FEX_CallbackRET, CallbackRetCode.data(), sizeof(CallbackRetCode));
+    CurrentCodeOffset += sizeof(CallbackRetCode);
   }
 
   if (!VDSOPointers.VDSO_kernel_rt_sigreturn) {

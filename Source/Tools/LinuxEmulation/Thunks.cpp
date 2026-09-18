@@ -207,6 +207,7 @@ namespace ThunkFunctions {
   void LinkAddressToGuestFunction(void* argsv);
   void AllocateHostTrampolineForGuestFunction(void* ArgsRV);
   void RegisterCallbackUnpacker(void* argsv);
+  void CallbackSelftest(void* ArgsRV);
 } // namespace ThunkFunctions
 
 struct ThunkHandler_impl final : public FEX::HLE::ThunkHandler {
@@ -304,6 +305,10 @@ private:
      {0x1b, 0xc2, 0x72, 0xb3, 0x65, 0xbe, 0x39, 0x15, 0xb0, 0xcb, 0xda, 0x79, 0xaf, 0xa2, 0x8c, 0x19,
       0x50, 0x2a, 0xbe, 0xc8, 0xd5, 0xbb, 0x64, 0x48, 0x2b, 0x87, 0x7f, 0xb6, 0xd6, 0xee, 0x3a, 0x86},
      &ThunkFunctions::RegisterCallbackUnpacker},
+    {// sha256(fex:callback_selftest)
+     {0xa1, 0xe7, 0xfc, 0xbd, 0x77, 0x1c, 0xd0, 0x3f, 0x15, 0xca, 0xcf, 0xe5, 0x75, 0x87, 0x1b, 0x83,
+      0x47, 0x66, 0xe2, 0xa0, 0xa7, 0xfd, 0x4a, 0xa4, 0xf4, 0x96, 0x50, 0x0e, 0xa5, 0x82, 0xa4, 0xa1},
+     &ThunkFunctions::CallbackSelftest},
   };
 
   FEX_CONFIG_OPT(ThunkHostLibsPath, THUNKHOSTLIBS);
@@ -547,9 +552,8 @@ namespace ThunkFunctions {
   /**
    * Instructs the Core to redirect calls to functions at the given
    * address to another function. The original callee address is passed
-   * to the target function through an implicit argument stored in r11.
-   *
-   * For 32-bit the implicit argument is stored in the lower 32-bits of mm0.
+   * to the target function in X16 and X17 (Core.cpp
+   * AddThunkTrampolineIRHandler; common/Guest.h CallHostFunction reads X17).
    *
    * The primary use case of this is ensuring that host function pointers
    * returned from thunked APIs can safely be called by the guest.
@@ -610,6 +614,35 @@ namespace ThunkFunctions {
     std::lock_guard lk(handler->CallbackUnpackerByNameMutex);
     // Insert or overwrite; if the guest re-registers, trust the latest value.
     handler->CallbackUnpackerByName.insert_or_assign(fextl::string {name}, static_cast<uintptr_t>(args->guest_unpacker));
+  }
+
+  /**
+   * The host->guest callback path with no host library in it: calls the
+   * guest function Fn(Arg0, Arg1 + i) for i in [0, Count) through CallCallback,
+   * the entry a thunked library's callbacks take, then stores Count. It
+   * exists to test that path (unittests/A64Frontend/thunk_callback.c): the
+   * dispatcher's callback entry, ThunkCallbackRet and CallbackReturn, nesting,
+   * and the crossing's return afterwards. Reaching it takes a thunk marker
+   * with its hash, and all it can do is call a guest function the caller
+   * named, which the caller could do itself.
+   */
+  void CallbackSelftest(void* ArgsRV) {
+    struct ArgsRV_t {
+      uint64_t Fn;
+      uint64_t Arg0;
+      uint64_t Arg1;
+      uint64_t Count;
+      uint64_t rv;
+    }* args = reinterpret_cast<ArgsRV_t*>(ArgsRV);
+    // The struct is guest memory the callee can reach; read it once.
+    const uint64_t Fn = args->Fn;
+    const uint64_t Arg0 = args->Arg0;
+    const uint64_t Arg1 = args->Arg1;
+    const uint64_t Count = args->Count;
+    for (uint64_t i = 0; i < Count; ++i) {
+      ThunkHandler_impl::CallCallback(reinterpret_cast<void*>(Fn), reinterpret_cast<void*>(Arg0), reinterpret_cast<void*>(Arg1 + i));
+    }
+    args->rv = Count;
   }
 } // namespace ThunkFunctions
 

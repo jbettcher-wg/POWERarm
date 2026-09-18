@@ -166,7 +166,25 @@ bool IRBuilder::BRK(uint32_t) {
 // HLT rather than calling a null host pointer. Blocks holding a thunk are never
 // stored in the code cache (CodeCache.cpp), so this check is made again in
 // every process.
+//
+// HLT #0x0F3E is the other end of a host->guest callback. The dispatcher
+// enters the guest callee with X30 pointing at ThunkCallbackRet, a word
+// POWERarm wrote there itself, so the callee's `ret` lands on it; its
+// translation is CallbackReturn, which restores the interrupted thunk
+// crossing's X30 and SP and returns to the host caller (PPC64Dispatcher.cpp
+// CallbackPtr, BranchOps.cpp). At any other address, HLT #0x0F3E is SIGILL.
 bool IRBuilder::HLT(uint32_t Word) {
+  if (Word == CALLBACK_RETURN_WORD) {
+    if (!CTX->SignalDelegation || CurrentPC != CTX->SignalDelegation->GetThunkCallbackRET()) {
+      return false;
+    }
+    _CallbackReturn();
+    // CallbackReturn leaves for the host and never falls through; the exit
+    // only closes the block.
+    ExitFunction(_LoadContext(OpSize::i64Bit, RegClass::GPR, offsetof(FEXCore::Core::CPUState, pc)));
+    BlockSetPC = true;
+    return true;
+  }
   if (Word != THUNK_MARKER_WORD) {
     return false;
   }
