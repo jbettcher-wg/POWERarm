@@ -271,6 +271,12 @@ FileManager::FileManager(FEXCore::Context::Context* ctx)
       RootFSFD = AT_FDCWD;
     } else {
       TrackFEXFD(RootFSFD);
+      // The per-user writable layer, when "<rootfs>-overlay" (or the
+      // RootFSOverlay setting) names an existing directory.
+      Overlay.Init(LDPath(), RootFSFD);
+      if (Overlay.Active()) {
+        TrackFEXFD(Overlay.UpperDirFD());
+      }
     }
   }
 
@@ -448,6 +454,16 @@ ssize_t FileManager::StripRootFSPrefix(char* pathname, ssize_t len, bool leaky) 
     return len;
   }
 
+  if (Overlay.Active()) {
+    // A /proc/self/fd link to a file in the overlay reads as its guest path.
+    auto Guest = Overlay.StripUpperPrefix(std::string_view(pathname, len));
+    if (!Guest.empty() && static_cast<ssize_t>(Guest.size()) < len) {
+      ::memcpy(pathname, Guest.data(), Guest.size());
+      pathname[Guest.size()] = '\0';
+      return Guest.size();
+    }
+  }
+
   auto Prefix = GetRootFSPrefixLen(pathname, len, false);
   if (Prefix == 0) {
     return len;
@@ -472,6 +488,14 @@ ssize_t FileManager::StripRootFSPrefix(char* pathname, ssize_t len, bool leaky) 
 }
 
 fextl::string FileManager::GetHostPath(fextl::string& Path, bool AliasedOnly) const {
+  if (!AliasedOnly && Overlay.Active()) {
+    // A script in the overlay is handed to its interpreter by guest path.
+    auto Guest = Overlay.StripUpperPrefix(Path);
+    if (!Guest.empty()) {
+      return Guest;
+    }
+  }
+
   auto Prefix = GetRootFSPrefixLen(Path.c_str(), Path.length(), AliasedOnly);
 
   if (Prefix == 0) {
@@ -569,6 +593,15 @@ fextl::string FileManager::GetEmulatedPath(const char* pathname, bool FollowSyml
 
   if (IsHostOnlyPath(pathname)) {
     return {};
+  }
+
+  if (Overlay.Active()) {
+    // Guest-owned prefixes: the overlay's copy, else the base's. Anything the
+    // guest cannot see comes back as a path that does not exist, so callers
+    // fall through to the host path as they do for a base miss.
+    if (auto Layered = Overlay.EmulatedPath(pathname, FollowSymlink)) {
+      return *Layered;
+    }
   }
 
   const auto& RootFSPath = LDPath();
@@ -801,6 +834,60 @@ int FileManager::OpenPathInRootFS(const EmulatedFDPathResult& Path, bool FollowS
   return -1;
 }
 
+bool FileManager::UseOverlay(int DirFD, const char* Path) const {
+  if (!Overlay.Active() || !Path) {
+    return false;
+  }
+  if (ThunkOverlays.empty() && ThunkOverlayBasenames.empty()) {
+    return true;
+  }
+  // A path the thunk overlays redirect stays theirs.
+  FDPathTmpData TmpFilename;
+  return GetEmulatedFDPath(DirFD, Path, false, TmpFilename).FD != AT_FDCWD;
+}
+
+// Hands a call to the rootfs overlay when the overlay layers its path (a
+// guest-owned prefix with an overlay directory present). Otherwise the code
+// after it runs exactly as it did before the overlay existed.
+#define TRY_OVERLAY(DirFD, Path, Call)         \
+  do {                                         \
+    if (UseOverlay((DirFD), (Path))) {         \
+      if (auto OverlayResult = Overlay.Call) { \
+        return *OverlayResult;                 \
+      }                                        \
+    }                                          \
+  } while (0)
+
+bool FileManager::IsOverlayHidden(const char* pathname) const {
+  return pathname && pathname[0] == '/' && UseOverlay(AT_FDCWD, pathname) && Overlay.IsHidden(pathname);
+}
+
+std::optional<uint64_t> FileManager::OverlayGetdents64(int fd, void* dirp, uint32_t count) {
+  if (!Overlay.Active()) {
+    return std::nullopt;
+  }
+  return Overlay.Getdents64(fd, dirp, count);
+}
+
+std::optional<uint64_t> FileManager::OverlayGetcwd(char* buf, size_t size) {
+  if (!Overlay.Active()) {
+    return std::nullopt;
+  }
+  return Overlay.Getcwd(buf, size);
+}
+
+std::optional<uint64_t> FileManager::OverlaySocket(bool Bind, int fd, const void* addr, uint32_t addrlen) {
+  if (!Overlay.Active()) {
+    return std::nullopt;
+  }
+  return Overlay.SocketPath(Bind, fd, addr, addrlen);
+}
+
+uint64_t FileManager::Mknodat(int dirfd, const char* pathname, mode_t mode, dev_t dev) {
+  TRY_OVERLAY(dirfd, pathname, Mknodat(dirfd, pathname, mode, dev));
+  return ::syscall(SYSCALL_DEF(mknodat), dirfd, pathname, mode, dev);
+}
+
 ///< Returns true if the pathname is self and symlink flags are set NOFOLLOW.
 bool FileManager::IsSelfNoFollow(const char* Pathname, int flags) const {
   const bool Follow = (flags & AT_SYMLINK_NOFOLLOW) == 0;
@@ -916,6 +1003,7 @@ bool FileManager::ReplaceEmuFd(int fd, int flags, uint32_t mode) {
 uint64_t FileManager::Open(const char* pathname, int flags, uint32_t mode) {
   auto NewPath = GetSelf(pathname);
   const char* SelfPath = NewPath ? NewPath->data() : nullptr;
+  TRY_OVERLAY(AT_FDCWD, SelfPath, Openat(AT_FDCWD, SelfPath, flags, mode));
   int fd = -1;
   bool OverlayAttempted = false;
 
@@ -1004,6 +1092,14 @@ uint64_t FileManager::Open(const char* pathname, int flags, uint32_t mode) {
 }
 
 uint64_t FileManager::Close(int fd) {
+  if (Overlay.Active() && (fd == RootFSFD || fd == Overlay.UpperDirFD())) {
+    // The overlay resolves every guest-owned path through these two, including
+    // the execve that follows a child's close-everything loop (gpgme spawning
+    // gpg). They are hidden from /proc/self/fd, so to the guest they are not
+    // open at all.
+    errno = EBADF;
+    return -1;
+  }
 #if defined(ASSERTIONS_ENABLED) && ASSERTIONS_ENABLED
   if (CheckIfFDInTrackedSet(fd)) {
     LogMan::Msg::EFmt("{} closing POWERarm FD {}", __func__, fd);
@@ -1025,12 +1121,35 @@ uint64_t FileManager::CloseRange(unsigned int first, unsigned int last, unsigned
   }
 #endif
 
+  if (Overlay.Active() && first <= last) {
+    // Close around the overlay's two descriptors (see Close()).
+    int Keep[2] = {std::min(RootFSFD, Overlay.UpperDirFD()), std::max(RootFSFD, Overlay.UpperDirFD())};
+    uint64_t Low = first;
+    for (int K : Keep) {
+      if (K < 0 || static_cast<uint64_t>(K) < Low || static_cast<uint64_t>(K) > last) {
+        continue;
+      }
+      if (static_cast<uint64_t>(K) > Low) {
+        uint64_t Result = ::syscall(SYSCALL_DEF(close_range), Low, K - 1, flags);
+        if (Result != 0) {
+          return Result;
+        }
+      }
+      Low = static_cast<uint64_t>(K) + 1;
+    }
+    if (Low > last) {
+      return 0;
+    }
+    return ::syscall(SYSCALL_DEF(close_range), Low, last, flags);
+  }
+
   return ::syscall(SYSCALL_DEF(close_range), first, last, flags);
 }
 
 uint64_t FileManager::Stat(const char* pathname, void* buf) {
   auto NewPath = GetSelf(pathname);
   const char* SelfPath = NewPath ? NewPath->data() : nullptr;
+  TRY_OVERLAY(AT_FDCWD, SelfPath, Fstatat(AT_FDCWD, SelfPath, reinterpret_cast<struct stat*>(buf), 0));
 
   // Stat follows symlinks
   FDPathTmpData TmpFilename;
@@ -1059,6 +1178,7 @@ uint64_t FileManager::Stat(const char* pathname, void* buf) {
 uint64_t FileManager::Lstat(const char* pathname, void* buf) {
   auto NewPath = GetSelf(pathname);
   const char* SelfPath = NewPath ? NewPath->data() : nullptr;
+  TRY_OVERLAY(AT_FDCWD, SelfPath, Fstatat(AT_FDCWD, SelfPath, reinterpret_cast<struct stat*>(buf), AT_SYMLINK_NOFOLLOW));
 
   // lstat does not follow symlinks
   FDPathTmpData TmpFilename;
@@ -1084,6 +1204,7 @@ uint64_t FileManager::Lstat(const char* pathname, void* buf) {
 uint64_t FileManager::Access(const char* pathname, [[maybe_unused]] int mode) {
   auto NewPath = GetSelf(pathname);
   const char* SelfPath = NewPath ? NewPath->data() : nullptr;
+  TRY_OVERLAY(AT_FDCWD, SelfPath, Faccessat(AT_FDCWD, SelfPath, mode, 0));
 
   // Access follows symlinks
   FDPathTmpData TmpFilename;
@@ -1114,6 +1235,7 @@ uint64_t FileManager::Access(const char* pathname, [[maybe_unused]] int mode) {
 uint64_t FileManager::FAccessat(int dirfd, const char* pathname, int mode) {
   auto NewPath = GetSelf(pathname);
   const char* SelfPath = NewPath ? NewPath->data() : nullptr;
+  TRY_OVERLAY(dirfd, SelfPath, Faccessat(dirfd, SelfPath, mode, 0));
 
   FDPathTmpData TmpFilename;
   auto Path = GetEmulatedFDPath(dirfd, SelfPath, true, TmpFilename);
@@ -1140,6 +1262,7 @@ uint64_t FileManager::FAccessat(int dirfd, const char* pathname, int mode) {
 uint64_t FileManager::FAccessat2(int dirfd, const char* pathname, int mode, int flags) {
   auto NewPath = GetSelf(pathname);
   const char* SelfPath = NewPath ? NewPath->data() : nullptr;
+  TRY_OVERLAY(dirfd, SelfPath, Faccessat(dirfd, SelfPath, mode, flags));
 
   FDPathTmpData TmpFilename;
   auto Path = GetEmulatedFDPath(dirfd, SelfPath, (flags & AT_SYMLINK_NOFOLLOW) == 0, TmpFilename);
@@ -1177,6 +1300,8 @@ uint64_t FileManager::Readlink(const char* pathname, char* buf, size_t bufsiz) {
     }
     return Len;
   }
+
+  TRY_OVERLAY(AT_FDCWD, pathname, Readlinkat(AT_FDCWD, pathname, buf, bufsiz));
 
   FDPathTmpData TmpFilename;
   auto Path = GetEmulatedFDPath(AT_FDCWD, pathname, false, TmpFilename);
@@ -1224,6 +1349,7 @@ uint64_t FileManager::Readlink(const char* pathname, char* buf, size_t bufsiz) {
 uint64_t FileManager::Chmod(const char* pathname, mode_t mode) {
   auto NewPath = GetSelf(pathname);
   const char* SelfPath = NewPath ? NewPath->data() : nullptr;
+  TRY_OVERLAY(AT_FDCWD, SelfPath, Fchmodat(AT_FDCWD, SelfPath, mode, 0));
 
   // chmod() follows symlinks per POSIX; pre-resolve scoped to rootfs.
   FDPathTmpData TmpFilename;
@@ -1298,6 +1424,8 @@ uint64_t FileManager::Readlinkat(int dirfd, const char* pathname, char* buf, siz
     return Len;
   }
 
+  TRY_OVERLAY(dirfd, pathname, Readlinkat(dirfd, pathname, buf, bufsiz));
+
   FDPathTmpData TmpFilename;
   auto NewPath = GetEmulatedFDPath(dirfd, pathname, false, TmpFilename);
   uint64_t Result = -1;
@@ -1335,6 +1463,7 @@ uint64_t FileManager::Readlinkat(int dirfd, const char* pathname, char* buf, siz
 uint64_t FileManager::Openat([[maybe_unused]] int dirfs, const char* pathname, int flags, uint32_t mode) {
   auto NewPath = GetSelf(pathname);
   const char* SelfPath = NewPath ? NewPath->data() : nullptr;
+  TRY_OVERLAY(dirfs, SelfPath, Openat(dirfs, SelfPath, flags, mode));
 
   int32_t fd = -1;
   bool OverlayAttempted = false;
@@ -1426,6 +1555,10 @@ uint64_t FileManager::Openat([[maybe_unused]] int dirfs, const char* pathname, i
 uint64_t FileManager::Openat2(int dirfs, const char* pathname, FEX::HLE::open_how* how, size_t usize) {
   auto NewPath = GetSelf(pathname);
   const char* SelfPath = NewPath ? NewPath->data() : nullptr;
+  if (how->resolve == 0) {
+    // RESOLVE_* scoping is the guest's own and is left to the existing code.
+    TRY_OVERLAY(dirfs, SelfPath, Openat(dirfs, SelfPath, static_cast<int>(how->flags), static_cast<uint32_t>(how->mode)));
+  }
 
   int32_t fd = -1;
   bool OverlayAttempted = false;
@@ -1474,6 +1607,7 @@ uint64_t FileManager::Statx(int dirfd, const char* pathname, int flags, uint32_t
 
   auto NewPath = GetSelf(pathname);
   const char* SelfPath = NewPath ? NewPath->data() : nullptr;
+  TRY_OVERLAY(dirfd, SelfPath, Statx(dirfd, SelfPath, flags, mask, statxbuf));
 
   FDPathTmpData TmpFilename;
   auto Path = GetEmulatedFDPath(dirfd, SelfPath, (flags & AT_SYMLINK_NOFOLLOW) == 0, TmpFilename);
@@ -1497,6 +1631,7 @@ uint64_t FileManager::Statx(int dirfd, const char* pathname, int flags, uint32_t
 uint64_t FileManager::Mknod(const char* pathname, mode_t mode, dev_t dev) {
   auto NewPath = GetSelf(pathname);
   const char* SelfPath = NewPath ? NewPath->data() : nullptr;
+  TRY_OVERLAY(AT_FDCWD, SelfPath, Mknodat(AT_FDCWD, SelfPath, mode, dev));
 
   // Node creation belongs to the real filesystem — never create inside the
   // rootfs overlay (see Mkdirat()). Overlay consulted for EEXIST only.
@@ -1530,6 +1665,7 @@ uint64_t FileManager::Mknod(const char* pathname, mode_t mode, dev_t dev) {
 uint64_t FileManager::Fchmodat(int dirfd, const char* pathname, mode_t mode, int flags) {
   auto NewPath = GetSelf(pathname);
   const char* SelfPath = NewPath ? NewPath->data() : nullptr;
+  TRY_OVERLAY(dirfd, SelfPath, Fchmodat(dirfd, SelfPath, mode, flags));
 
   FDPathTmpData TmpFilename;
   auto Path = GetEmulatedFDPath(dirfd, SelfPath, (flags & AT_SYMLINK_NOFOLLOW) == 0, TmpFilename);
@@ -1548,6 +1684,7 @@ uint64_t FileManager::Fchmodat(int dirfd, const char* pathname, mode_t mode, int
 uint64_t FileManager::Fchmodat2(int dirfd, const char* pathname, mode_t mode, unsigned int flags) {
   auto NewPath = GetSelf(pathname);
   const char* SelfPath = NewPath ? NewPath->data() : nullptr;
+  TRY_OVERLAY(dirfd, SelfPath, Fchmodat(dirfd, SelfPath, mode, static_cast<int>(flags)));
 
   FDPathTmpData TmpFilename;
   auto Path = GetEmulatedFDPath(dirfd, SelfPath, (flags & AT_SYMLINK_NOFOLLOW) == 0, TmpFilename);
@@ -1565,6 +1702,7 @@ uint64_t FileManager::Fchmodat2(int dirfd, const char* pathname, mode_t mode, un
 uint64_t FileManager::Fchownat(int dirfd, const char* pathname, uid_t owner, gid_t group, int flags) {
   auto NewPath = GetSelf(pathname);
   const char* SelfPath = NewPath ? NewPath->data() : nullptr;
+  TRY_OVERLAY(dirfd, SelfPath, Fchownat(dirfd, SelfPath, owner, group, flags));
 
   FDPathTmpData TmpFilename;
   auto Path = GetEmulatedFDPath(dirfd, SelfPath, (flags & AT_SYMLINK_NOFOLLOW) == 0, TmpFilename);
@@ -1583,6 +1721,7 @@ uint64_t FileManager::Fchownat(int dirfd, const char* pathname, uid_t owner, gid
 uint64_t FileManager::Unlinkat(int dirfd, const char* pathname, int flags) {
   auto NewPath = GetSelf(pathname);
   const char* SelfPath = NewPath ? NewPath->data() : nullptr;
+  TRY_OVERLAY(dirfd, SelfPath, Unlinkat(dirfd, SelfPath, flags));
 
   FDPathTmpData TmpFilename;
   // unlink/rmdir never follow the final symlink — the symlink itself is removed.
@@ -1620,6 +1759,7 @@ uint64_t FileManager::Utimensat(int dirfd, const char* pathname, const struct ti
 
   auto NewPath = GetSelf(pathname);
   const char* SelfPath = NewPath ? NewPath->data() : nullptr;
+  TRY_OVERLAY(dirfd, SelfPath, Utimensat(dirfd, SelfPath, times, flags));
 
   FDPathTmpData TmpFilename;
   // AT_SYMLINK_NOFOLLOW means stamp the link itself rather than its target.
@@ -1640,6 +1780,7 @@ uint64_t FileManager::Utimensat(int dirfd, const char* pathname, const struct ti
 uint64_t FileManager::Mkdirat(int dirfd, const char* pathname, mode_t mode) {
   auto NewPath = GetSelf(pathname);
   const char* SelfPath = NewPath ? NewPath->data() : nullptr;
+  TRY_OVERLAY(dirfd, SelfPath, Mkdirat(dirfd, SelfPath, mode));
 
   // Directory creation belongs to the real filesystem — never create inside
   // the rootfs overlay (see Openat()). Repeated guest runs were growing a
@@ -1667,6 +1808,11 @@ uint64_t FileManager::Linkat(int olddirfd, const char* oldpath, int newdirfd, co
   const char* OldSelfPath = OldNewPath ? OldNewPath->data() : nullptr;
   auto NewNewPath = GetSelf(newpath);
   const char* NewSelfPath = NewNewPath ? NewNewPath->data() : nullptr;
+  if (UseOverlay(olddirfd, OldSelfPath) && UseOverlay(newdirfd, NewSelfPath)) {
+    if (auto OverlayResult = Overlay.Linkat(olddirfd, OldSelfPath, newdirfd, NewSelfPath, flags)) {
+      return *OverlayResult;
+    }
+  }
 
   FDPathTmpData OldTmp, NewTmp;
   auto OldPath = GetEmulatedFDPath(olddirfd, OldSelfPath, (flags & AT_SYMLINK_FOLLOW) != 0, OldTmp);
@@ -1761,6 +1907,7 @@ uint64_t FileManager::Symlinkat(const char* target, int newdirfd, const char* li
   // Only `linkpath` (where the symlink lands) gets overlay-translated.
   auto NewLink = GetSelf(linkpath);
   const char* SelfLink = NewLink ? NewLink->data() : nullptr;
+  TRY_OVERLAY(newdirfd, SelfLink, Symlinkat(target, newdirfd, SelfLink));
 
   // Symlink creation belongs to the real filesystem — never create inside
   // the rootfs overlay (see Mkdirat()). Overlay consulted for EEXIST only.
@@ -1788,6 +1935,11 @@ uint64_t FileManager::Renameat2(int olddirfd, const char* oldpath, int newdirfd,
   const char* OldSelfPath = OldNewPath ? OldNewPath->data() : nullptr;
   auto NewNewPath = GetSelf(newpath);
   const char* NewSelfPath = NewNewPath ? NewNewPath->data() : nullptr;
+  if (UseOverlay(olddirfd, OldSelfPath) && UseOverlay(newdirfd, NewSelfPath)) {
+    if (auto OverlayResult = Overlay.Renameat2(olddirfd, OldSelfPath, newdirfd, NewSelfPath, flags)) {
+      return *OverlayResult;
+    }
+  }
 
   FDPathTmpData OldTmp, NewTmp;
   auto OldPath = GetEmulatedFDPath(olddirfd, OldSelfPath, false, OldTmp);
@@ -1885,6 +2037,7 @@ uint64_t FileManager::Chdir(const char* path) {
   // — the "dpkg-deb (subprocess): failed to chdir to directory" symptom.
   auto NewPath = GetSelf(path);
   const char* SelfPath = NewPath ? NewPath->data() : nullptr;
+  TRY_OVERLAY(AT_FDCWD, SelfPath, Chdir(SelfPath));
 
   // Host first, rootfs only when the host genuinely lacks the directory.
   // The other order broke Steam: almost every absolute chdir target ("/",
@@ -1942,6 +2095,7 @@ uint64_t FileManager::Creat(const char* pathname, mode_t mode) {
 uint64_t FileManager::Truncate(const char* pathname, off_t length) {
   auto NewPath = GetSelf(pathname);
   const char* SelfPath = NewPath ? NewPath->data() : nullptr;
+  TRY_OVERLAY(AT_FDCWD, SelfPath, Truncate(SelfPath, length));
 
   FDPathTmpData TmpFilename;
   auto Path = GetEmulatedFDPath(AT_FDCWD, SelfPath, true, TmpFilename);
@@ -1974,6 +2128,7 @@ uint64_t FileManager::Truncate(const char* pathname, off_t length) {
 
 
 uint64_t FileManager::Statfs(const char* path, void* buf) {
+  TRY_OVERLAY(AT_FDCWD, path, Statfs(path, reinterpret_cast<struct statfs*>(buf)));
   auto Path = GetEmulatedPath(path);
   if (!Path.empty()) {
     uint64_t Result = ::statfs(Path.c_str(), reinterpret_cast<struct statfs*>(buf));
@@ -1997,6 +2152,7 @@ uint64_t FileManager::NewFSStatAt(int dirfd, const char* pathname, struct stat* 
 
   auto NewPath = GetSelf(pathname);
   const char* SelfPath = NewPath ? NewPath->data() : nullptr;
+  TRY_OVERLAY(dirfd, SelfPath, Fstatat(dirfd, SelfPath, buf, flag));
 
   FDPathTmpData TmpFilename;
   auto Path = GetEmulatedFDPath(dirfd, SelfPath, (flag & AT_SYMLINK_NOFOLLOW) == 0, TmpFilename);
@@ -2025,6 +2181,7 @@ uint64_t FileManager::NewFSStatAt64(int dirfd, const char* pathname, struct stat
 
   auto NewPath = GetSelf(pathname);
   const char* SelfPath = NewPath ? NewPath->data() : nullptr;
+  TRY_OVERLAY(dirfd, SelfPath, Fstatat(dirfd, SelfPath, reinterpret_cast<struct stat*>(buf), flag));
 
   FDPathTmpData TmpFilename;
   auto Path = GetEmulatedFDPath(dirfd, SelfPath, (flag & AT_SYMLINK_NOFOLLOW) == 0, TmpFilename);
@@ -2048,6 +2205,7 @@ uint64_t FileManager::NewFSStatAt64(int dirfd, const char* pathname, struct stat
 uint64_t FileManager::Setxattr(const char* path, const char* name, const void* value, size_t size, int flags) {
   auto NewPath = GetSelf(path);
   const char* SelfPath = NewPath ? NewPath->data() : nullptr;
+  TRY_OVERLAY(AT_FDCWD, SelfPath, Xattr(RootFSOverlay::XattrOp::Set, AT_FDCWD, SelfPath, true, {name, const_cast<void*>(value), size, flags}));
 
   auto Path = GetEmulatedPath(SelfPath, true);
   if (!Path.empty()) {
@@ -2063,6 +2221,7 @@ uint64_t FileManager::Setxattr(const char* path, const char* name, const void* v
 uint64_t FileManager::LSetxattr(const char* path, const char* name, const void* value, size_t size, int flags) {
   auto NewPath = GetSelf(path);
   const char* SelfPath = NewPath ? NewPath->data() : nullptr;
+  TRY_OVERLAY(AT_FDCWD, SelfPath, Xattr(RootFSOverlay::XattrOp::Set, AT_FDCWD, SelfPath, false, {name, const_cast<void*>(value), size, flags}));
 
   auto Path = GetEmulatedPath(SelfPath, false);
   if (!Path.empty()) {
@@ -2078,6 +2237,7 @@ uint64_t FileManager::LSetxattr(const char* path, const char* name, const void* 
 uint64_t FileManager::Getxattr(const char* path, const char* name, void* value, size_t size) {
   auto NewPath = GetSelf(path);
   const char* SelfPath = NewPath ? NewPath->data() : nullptr;
+  TRY_OVERLAY(AT_FDCWD, SelfPath, Xattr(RootFSOverlay::XattrOp::Get, AT_FDCWD, SelfPath, true, {name, value, size, 0}));
 
   auto Path = GetEmulatedPath(SelfPath, true);
   if (!Path.empty()) {
@@ -2093,6 +2253,7 @@ uint64_t FileManager::Getxattr(const char* path, const char* name, void* value, 
 uint64_t FileManager::LGetxattr(const char* path, const char* name, void* value, size_t size) {
   auto NewPath = GetSelf(path);
   const char* SelfPath = NewPath ? NewPath->data() : nullptr;
+  TRY_OVERLAY(AT_FDCWD, SelfPath, Xattr(RootFSOverlay::XattrOp::Get, AT_FDCWD, SelfPath, false, {name, value, size, 0}));
 
   auto Path = GetEmulatedPath(SelfPath, false);
   if (!Path.empty()) {
@@ -2108,6 +2269,7 @@ uint64_t FileManager::LGetxattr(const char* path, const char* name, void* value,
 uint64_t FileManager::Listxattr(const char* path, char* list, size_t size) {
   auto NewPath = GetSelf(path);
   const char* SelfPath = NewPath ? NewPath->data() : nullptr;
+  TRY_OVERLAY(AT_FDCWD, SelfPath, Xattr(RootFSOverlay::XattrOp::List, AT_FDCWD, SelfPath, true, {nullptr, list, size, 0}));
 
   auto Path = GetEmulatedPath(SelfPath, true);
   if (!Path.empty()) {
@@ -2123,6 +2285,7 @@ uint64_t FileManager::Listxattr(const char* path, char* list, size_t size) {
 uint64_t FileManager::LListxattr(const char* path, char* list, size_t size) {
   auto NewPath = GetSelf(path);
   const char* SelfPath = NewPath ? NewPath->data() : nullptr;
+  TRY_OVERLAY(AT_FDCWD, SelfPath, Xattr(RootFSOverlay::XattrOp::List, AT_FDCWD, SelfPath, false, {nullptr, list, size, 0}));
 
   auto Path = GetEmulatedPath(SelfPath, false);
   if (!Path.empty()) {
@@ -2138,6 +2301,7 @@ uint64_t FileManager::LListxattr(const char* path, char* list, size_t size) {
 uint64_t FileManager::Removexattr(const char* path, const char* name) {
   auto NewPath = GetSelf(path);
   const char* SelfPath = NewPath ? NewPath->data() : nullptr;
+  TRY_OVERLAY(AT_FDCWD, SelfPath, Xattr(RootFSOverlay::XattrOp::Remove, AT_FDCWD, SelfPath, true, {name, nullptr, 0, 0}));
 
   auto Path = GetEmulatedPath(SelfPath, true);
   if (!Path.empty()) {
@@ -2153,6 +2317,7 @@ uint64_t FileManager::Removexattr(const char* path, const char* name) {
 uint64_t FileManager::LRemovexattr(const char* path, const char* name) {
   auto NewPath = GetSelf(path);
   const char* SelfPath = NewPath ? NewPath->data() : nullptr;
+  TRY_OVERLAY(AT_FDCWD, SelfPath, Xattr(RootFSOverlay::XattrOp::Remove, AT_FDCWD, SelfPath, false, {name, nullptr, 0, 0}));
 
   auto Path = GetEmulatedPath(SelfPath, false);
   if (!Path.empty()) {
@@ -2173,6 +2338,15 @@ uint64_t FileManager::SetxattrAt(int dfd, const char* pathname, uint32_t at_flag
 
   auto NewPath = GetSelf(pathname);
   const char* SelfPath = NewPath ? NewPath->data() : nullptr;
+  if (UseOverlay(dfd, SelfPath) && uargs && usize >= sizeof(xattr_args)) {
+    xattr_args Args {};
+    if (FaultSafeUserMemAccess::CopyFromUser(&Args, uargs, sizeof(Args)) == 0) {
+      if (auto OverlayResult = Overlay.Xattr(RootFSOverlay::XattrOp::Set, dfd, SelfPath, (at_flags & AT_SYMLINK_NOFOLLOW) == 0,
+                                             {name, reinterpret_cast<void*>(Args.value), Args.size, static_cast<int>(Args.flags)})) {
+        return *OverlayResult;
+      }
+    }
+  }
 
   FDPathTmpData TmpFilename;
   auto Path = GetEmulatedFDPath(dfd, SelfPath, (at_flags & AT_SYMLINK_NOFOLLOW) == 0, TmpFilename);
@@ -2193,6 +2367,15 @@ uint64_t FileManager::GetxattrAt(int dfd, const char* pathname, uint32_t at_flag
 
   auto NewPath = GetSelf(pathname);
   const char* SelfPath = NewPath ? NewPath->data() : nullptr;
+  if (UseOverlay(dfd, SelfPath) && uargs && usize >= sizeof(xattr_args)) {
+    xattr_args Args {};
+    if (FaultSafeUserMemAccess::CopyFromUser(&Args, uargs, sizeof(Args)) == 0) {
+      if (auto OverlayResult = Overlay.Xattr(RootFSOverlay::XattrOp::Get, dfd, SelfPath, (at_flags & AT_SYMLINK_NOFOLLOW) == 0,
+                                             {name, reinterpret_cast<void*>(Args.value), Args.size, 0})) {
+        return *OverlayResult;
+      }
+    }
+  }
 
   FDPathTmpData TmpFilename;
   auto Path = GetEmulatedFDPath(dfd, SelfPath, (at_flags & AT_SYMLINK_NOFOLLOW) == 0, TmpFilename);
@@ -2213,6 +2396,7 @@ uint64_t FileManager::ListxattrAt(int dfd, const char* pathname, uint32_t at_fla
 
   auto NewPath = GetSelf(pathname);
   const char* SelfPath = NewPath ? NewPath->data() : nullptr;
+  TRY_OVERLAY(dfd, SelfPath, Xattr(RootFSOverlay::XattrOp::List, dfd, SelfPath, (at_flags & AT_SYMLINK_NOFOLLOW) == 0, {nullptr, list, size, 0}));
 
   FDPathTmpData TmpFilename;
   auto Path = GetEmulatedFDPath(dfd, SelfPath, (at_flags & AT_SYMLINK_NOFOLLOW) == 0, TmpFilename);
@@ -2233,6 +2417,7 @@ uint64_t FileManager::RemovexattrAt(int dfd, const char* pathname, uint32_t at_f
 
   auto NewPath = GetSelf(pathname);
   const char* SelfPath = NewPath ? NewPath->data() : nullptr;
+  TRY_OVERLAY(dfd, SelfPath, Xattr(RootFSOverlay::XattrOp::Remove, dfd, SelfPath, (at_flags & AT_SYMLINK_NOFOLLOW) == 0, {name, nullptr, 0, 0}));
 
   FDPathTmpData TmpFilename;
   auto Path = GetEmulatedFDPath(dfd, SelfPath, (at_flags & AT_SYMLINK_NOFOLLOW) == 0, TmpFilename);
@@ -2259,6 +2444,15 @@ void FileManager::UpdatePID(uint32_t PID) {
     RootFSFDInode = 0;
     ProcFDInode = 0;
     return;
+  }
+
+  // And the rootfs overlay's directory descriptor, when there is one
+  OverlayFDInode = 0;
+  if (Overlay.Active()) {
+    FDpath = fextl::fmt::format("self/fd/{}", Overlay.UpperDirFD());
+    if (fstatat(ProcFD, FDpath.c_str(), &Buffer, AT_SYMLINK_NOFOLLOW) >= 0) {
+      OverlayFDInode = Buffer.st_ino;
+    }
   }
 
   // And track the ProcFSFD itself
@@ -2305,6 +2499,8 @@ bool FileManager::IsProtectedFile(int ParentDirFD, uint64_t inode) const {
     Match = "/proc";
   } else if (inode == CodeMapInode) {
     Match = "code map";
+  } else if (OverlayFDInode != 0 && inode == static_cast<uint64_t>(OverlayFDInode)) {
+    Match = "RootFS overlay";
   }
   if (Match) {
     struct stat Buffer;

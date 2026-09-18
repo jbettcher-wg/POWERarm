@@ -291,8 +291,15 @@ void Shutdown(fextl::vector<FEXCore::Allocator::MemoryRegion>&& MemoryRegions) {
 bool InterpreterHandler(fextl::string* Filename, const fextl::string& RootFS, fextl::vector<fextl::string>* args) {
   int FD {-1};
 
+  // The rootfs overlay's copy first, when an overlay exists.
+  if (auto Layered = FEX::HLE::RootFSOverlay::LoaderPath(RootFS, *Filename); !Layered.empty()) {
+    FD = open(Layered.c_str(), O_RDONLY | O_CLOEXEC);
+  }
+
   // Attempt to open the filename from the rootfs first.
-  FD = open(fextl::fmt::format("{}{}", RootFS, *Filename).c_str(), O_RDONLY | O_CLOEXEC);
+  if (FD == -1) {
+    FD = open(fextl::fmt::format("{}{}", RootFS, *Filename).c_str(), O_RDONLY | O_CLOEXEC);
+  }
   if (FD == -1) {
     // Failing that, attempt to open the filename directly.
     FD = open(Filename->c_str(), O_RDONLY | O_CLOEXEC);
@@ -616,7 +623,20 @@ int main(int argc, char** argv, char** const envp) {
 
   FEXCore::Telemetry::Initialize();
 
-  if (!LDPath().empty() && Program.ProgramPath.starts_with(LDPath())) {
+  // A program in the rootfs overlay ("<rootfs>-overlay/usr/bin/x", as execve
+  // hands it over) also runs under its guest path. Checked first: the overlay
+  // path starts with the rootfs path too, without a '/' at the join.
+  bool InOverlay = false;
+  if (!LDPath().empty()) {
+    const auto OverlayPath = FEX::HLE::RootFSOverlay::ConfiguredPath(LDPath());
+    if (!OverlayPath.empty() && Program.ProgramPath.size() > OverlayPath.size() && Program.ProgramPath.starts_with(OverlayPath) &&
+        Program.ProgramPath[OverlayPath.size()] == '/') {
+      Program.ProgramPath.erase(0, OverlayPath.size());
+      InOverlay = true;
+    }
+  }
+
+  if (!InOverlay && !LDPath().empty() && Program.ProgramPath.starts_with(LDPath())) {
     // From this point on, ProgramPath needs to not have the LDPath prefixed on to it.
     auto RootFSLength = LDPath().size();
     if (Program.ProgramPath.at(RootFSLength) != '/') {

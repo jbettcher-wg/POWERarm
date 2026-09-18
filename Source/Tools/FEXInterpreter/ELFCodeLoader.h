@@ -419,6 +419,11 @@ public:
       return File;
     }
 
+    // The rootfs overlay's copy, else the rootfs's, when an overlay exists.
+    if (auto Layered = FEX::HLE::RootFSOverlay::LoaderPath(RootFS, File); !Layered.empty()) {
+      return Layered;
+    }
+
     fextl::string RootFSLink = RootFS + File;
 
     char Filename[PATH_MAX];
