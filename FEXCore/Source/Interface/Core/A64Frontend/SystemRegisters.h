@@ -12,6 +12,16 @@
 // Change these together with AT_HWCAP (Linux layer) and /proc/cpuinfo: a
 // feature must be visible the same way through all three, and only once its
 // instructions pass parity against the Pi.
+//
+// ONE DELIBERATE EXCEPTION to modelling the Pi: CNTFRQ_EL0, handled in
+// TranslateBranchSystem.cpp rather than here, reports the real host timebase
+// (512 MHz on POWER8+) and not the Pi's 54000000. CNTFRQ is a board property,
+// not a CPU feature -- real arm64 hardware runs anywhere from 24 MHz to 1 GHz
+// and every correct guest divides by whatever it reads -- so the value must
+// describe the counter the guest actually gets from CNTVCT_EL0, which is
+// `mftb`. Faking the Pi's number would force a multiply-shift on every counter
+// read purely to keep the two self-consistent. A test that compares the two
+// machines must compare elapsed time, never raw counter values or CNTFRQ.
 #pragma once
 
 #include <cstdint>

@@ -4,6 +4,7 @@
 #include "Interface/Core/A64Frontend/IRBuilder.h"
 #include "Interface/Core/A64Frontend/SystemRegisters.h"
 #include "Interface/Core/A64Frontend/TranslateCommon.h"
+#include "Interface/Context/Context.h"
 
 #include <FEXCore/Core/CoreState.h>
 #include <FEXCore/Core/SignalDelegator.h>
@@ -226,6 +227,12 @@ namespace {
   constexpr uint32_t REG_TPIDRRO_EL0 = SysReg(3, 3, 13, 0, 3);
   constexpr uint32_t REG_CTR_EL0 = SysReg(3, 3, 0, 0, 1);
   constexpr uint32_t REG_DCZID_EL0 = SysReg(3, 3, 0, 0, 7);
+  // Generic timer, EL0-readable half. Exactly these two: on the Pi, CNTPCT_EL0,
+  // CNTVCTSS_EL0/CNTPCTSS_EL0 (FEAT_ECV, which the A76 lacks and our ID
+  // registers agree it lacks) and CNTKCTL_EL1 all SIGILL from EL0, so they must
+  // stay absent here to fault the same way.
+  constexpr uint32_t REG_CNTFRQ_EL0 = SysReg(3, 3, 14, 0, 0);
+  constexpr uint32_t REG_CNTVCT_EL0 = SysReg(3, 3, 14, 0, 2);
 } // namespace
 
 bool IRBuilder::MRS(uint32_t Word) {
@@ -242,6 +249,42 @@ bool IRBuilder::MRS(uint32_t Word) {
     return true;
   case REG_CTR_EL0: StoreX(Rt, Constant(SystemRegisters::CTR_EL0)); return true;
   case REG_DCZID_EL0: StoreX(Rt, Constant(SystemRegisters::DCZID_EL0)); return true;
+
+  // CNTVCT_EL0, the virtual counter. V8 reads it as its high-resolution clock,
+  // which is where code-server's Node dies without it. The PPC64 lowering of
+  // CycleCounter is `mftb`, the host timebase, which is a free-running upcount
+  // at a fixed rate exactly like the ARM virtual counter.
+  //
+  // SelfSynchronizingLoads=false deliberately: that flag makes the lowering
+  // emit `isync` first, which is the RDTSCP ordering guarantee, not this one.
+  // Plain CNTVCT_EL0 carries no ordering requirement -- a guest that needs one
+  // issues ISB itself -- and paying for a pipeline flush on every clock read in
+  // a JIT's hot timing path would be a real cost for nothing. It is also why
+  // CNTVCTSS_EL0, the self-synchronising form, staying unimplemented is both
+  // faithful to the A76 and the cheap answer.
+  case REG_CNTVCT_EL0: StoreX(Rt, _CycleCounter(false)); return true;
+
+  // CNTFRQ_EL0: the rate CNTVCT ticks at, so it must describe `mftb` -- the
+  // real host timebase, not the Pi's 54 MHz. CNTFRQ is a board property rather
+  // than a CPU feature (real arm64 hardware ranges from 24 MHz to 1 GHz) and
+  // every correct guest divides by whatever it reads, so reporting the truth is
+  // both honest and free; faking the Pi's value would mean a multiply-shift on
+  // every counter read just to keep the pair self-consistent. This is the one
+  // place the A64 system-register surface deliberately does NOT model the Pi --
+  // see the note in SystemRegisters.h.
+  //
+  // The frequency is baked in as a constant, so it is captured in cached code.
+  // That is sound here because it is a property of the host the cache is keyed
+  // on, and architecturally 512 MHz on every POWER8 and later part.
+  //
+  // A host that cannot report a frequency leaves this unimplemented rather than
+  // returning zero: zero is what a guest divides by.
+  case REG_CNTFRQ_EL0:
+    if (!CTX->CycleCounterFrequency) {
+      return false;
+    }
+    StoreX(Rt, Constant(CTX->CycleCounterFrequency));
+    return true;
   default: break;
   }
 

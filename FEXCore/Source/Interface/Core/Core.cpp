@@ -268,7 +268,12 @@ ContextImpl::ContextImpl(const FEXCore::HostFeatures& Features)
     Symbols.InitFile();
   }
 
-  uint64_t FrequencyCounter = GetCycleCounterFrequency();
+  // Captured before the TSC scaling below, which rewrites its own copy. The A64
+  // frontend reports this through MRS CNTFRQ_EL0 and must describe the rate the
+  // unscaled CycleCounter (mftb) behind CNTVCT_EL0 actually ticks at.
+  CycleCounterFrequency = GetCycleCounterFrequency();
+
+  uint64_t FrequencyCounter = CycleCounterFrequency;
   if (FrequencyCounter && FrequencyCounter < FEXCore::Context::TSC_SCALE_MAXIMUM && Config.SmallTSCScale()) {
     // Scale TSC until it is at the minimum required.
     while (FrequencyCounter < FEXCore::Context::TSC_SCALE_MAXIMUM) {

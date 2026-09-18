@@ -420,6 +420,16 @@ public:
 
   uint32_t StrictSplitLockMutex {};
 
+  // Host timebase frequency in Hz, as __ppc_get_timebase_freq() reports it and
+  // therefore the rate `mftb` actually counts at. Read by the A64 frontend for
+  // MRS CNTFRQ_EL0, which must agree with the raw CycleCounter the guest reads
+  // through CNTVCT_EL0. Deliberately the UNSCALED value: the x86 TSC path below
+  // may shift its own copy up by Config.TSCScale to meet a minimum rate, and
+  // applying that here would make CNTFRQ disagree with the counter. Zero if the
+  // host cannot report one, in which case CNTFRQ_EL0 stays unimplemented rather
+  // than handing the guest a zero to divide by.
+  uint64_t CycleCounterFrequency {};
+
   FEXCore::HostFeatures HostFeatures;
   FEXCore::HLE::SyscallHandler* SyscallHandler {};
   FEXCore::HLE::SourcecodeResolver* SourcecodeResolver {};
