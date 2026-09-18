@@ -7,7 +7,7 @@ both the POWER9 host and the Raspberry Pi 5.
 | File | Purpose |
 |---|---|
 | `build-alarm-sysroot.sh` | builds the pinned Arch Linux ARM GCC sysroot |
-| `alarm_sysroot.py` | its engine: `resolve`, `fetch`, `extract`, `hash`, `align` |
+| `alarm_sysroot.py` | its engine: `resolve`, `fetch`, `extract`, `hash`, `align`, and `overlay-init` for guest pacman |
 | `alarm-m2.manifest` | the pins: packages, keyring, source tarballs, optional base tarball |
 | `run-in-sysroot.sh` | runs a command natively inside a rootfs (Pi reference side) |
 | `fetch-m2-projects.sh` | downloads the pinned zlib and Lua tarballs |
@@ -254,6 +254,50 @@ Both hashes match the values published on zlib.net and lua.org. Nothing is built
 - **4K KVM guest:** the tree is a plain directory, so share it as-is (virtiofs/9p) or pack it
   (`mkfs.erofs`/`mksquashfs`). Setuid bits are present on some files (e.g. `su`); the toolchain
   doesn't need them.
+
+## Guest pacman in the per-user overlay (`overlay-init`)
+
+The pinned sysroot is read-only for the guest once a writable layer exists next to it:
+POWERarm uses `<rootfs>-overlay` whenever that directory exists (DESIGN §6.2a.1; the
+`POWERARM_ROOTFSOVERLAY` setting names another directory or disables it). Guest changes under
+`/usr`, `/etc`, `/opt` and the pacman state directories land there, so guest `pacman -S` installs
+without touching the base or its content hash.
+
+**Creating the overlay changes what every guest using that rootfs sees.** The M2 builds and the
+a64diff bundles are keyed to the base alone, so run them against a rootfs that has no overlay.
+
+```sh
+base=~/.local/share/powerarm/RootFS/ArchLinuxARM-m2
+mkdir "$base-overlay"
+Scripts/powerarm/rootfs/alarm_sysroot.py overlay-init --dest "$base-overlay" --base "$base" --with-pacman
+# pacman and pacman-key insist on uid 0: run them as root of a user namespace (no privilege).
+unshare -r POWERarm /usr/bin/pacman-key --init
+unshare -r POWERarm /usr/bin/pacman-key --populate archlinuxarm
+unshare -r POWERarm /usr/bin/pacman -Sy
+unshare -r POWERarm /usr/bin/pacman -S tree
+```
+
+`overlay-init`:
+
+1. Fetches and verifies the pinned base packages from the cache, the same way `extract` does.
+2. Writes a pacman local database (`var/lib/pacman/local`, format 9) into the overlay. It has an
+   entry for each of the 90 base packages, built from the tarball's `.PKGINFO`, `.MTREE`,
+   `.INSTALL` and member list. Manifest roots count as explicitly installed and the rest as
+   dependencies. The install date is the build date, so the same pins give the same database.
+   It refuses to run if the database already holds packages.
+3. With `--with-pacman`, it resolves the dependency closure of `pacman` and
+   `archlinuxarm-keyring` against today's `core`, `extra` and `alarm` databases, skipping
+   whatever the base already provides. It checks each package's sha256 against the repo
+   database and its signature against the pinned Arch Linux ARM key. It then extracts the
+   packages into the overlay and registers them. Today that is 36 packages, including `systemd`,
+   which pacman depends on. `--exclude NAME` leaves a dependency out, and it stays unmet in the
+   database. `--package NAME` changes the roots. A package path that runs through one of the
+   base's symlinks (such as `usr/sbin`) is refused, because a real directory of that name in the
+   overlay would hide the link. Install scriptlets are not run (the same as `extract`), and it
+   says which ones it skipped.
+
+The package set is resolved at bootstrap time, not pinned: the mirrors keep only current
+versions. The trust anchor is the same pinned key.
 
 ## Official rootfs tarball as a base layer (evaluated)
 
