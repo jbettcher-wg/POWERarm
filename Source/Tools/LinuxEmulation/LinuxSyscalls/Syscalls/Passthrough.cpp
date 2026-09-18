@@ -1031,8 +1031,17 @@ void RegisterCommon(FEX::HLE::SyscallHandler* Handler) {
   // and then chdir("/var/lib/dpkg/tmp.ci"). fchdir takes a bare fd and needs
   // no translation, so it stays a raw passthrough.
   REGISTER_SYSCALL_IMPL(fchdir, SyscallPassthrough1<SYSCALL_DEF(fchdir)>);
-  REGISTER_SYSCALL_IMPL(fchmod, SyscallPassthrough2<SYSCALL_DEF(fchmod)>);
-  REGISTER_SYSCALL_IMPL(fchown, SyscallPassthrough3<SYSCALL_DEF(fchown)>);
+  // fchmod, fchown, fsetxattr and fremovexattr go through FileManager: a
+  // descriptor onto a base or host file under the rootfs overlay's
+  // guest-owned prefixes changes the overlay copy (RootFSOverlay.h).
+  REGISTER_SYSCALL_IMPL(fchmod, [](FEXCore::Core::CpuStateFrame* Frame, int fd, mode_t mode) -> uint64_t {
+    uint64_t Result = FEX::HLE::_SyscallHandler->FM.Fchmod(fd, mode);
+    SYSCALL_ERRNO();
+  });
+  REGISTER_SYSCALL_IMPL(fchown, [](FEXCore::Core::CpuStateFrame* Frame, int fd, uid_t owner, gid_t group) -> uint64_t {
+    uint64_t Result = FEX::HLE::_SyscallHandler->FM.Fchown(fd, owner, group);
+    SYSCALL_ERRNO();
+  });
   REGISTER_SYSCALL_IMPL(umask, SyscallPassthrough1<SYSCALL_DEF(umask)>);
   REGISTER_SYSCALL_IMPL(getuid, SyscallPassthrough0<SYSCALL_DEF(getuid)>);
   REGISTER_SYSCALL_IMPL(syslog, SyscallPassthrough3<SYSCALL_DEF(syslog)>);
@@ -1077,10 +1086,17 @@ void RegisterCommon(FEX::HLE::SyscallHandler* Handler) {
   REGISTER_SYSCALL_IMPL(swapon, SyscallPassthrough2<SYSCALL_DEF(swapon)>);
   REGISTER_SYSCALL_IMPL(swapoff, SyscallPassthrough1<SYSCALL_DEF(swapoff)>);
   REGISTER_SYSCALL_IMPL(gettid, SyscallPassthrough0<SYSCALL_DEF(gettid)>);
-  REGISTER_SYSCALL_IMPL(fsetxattr, SyscallPassthrough5<SYSCALL_DEF(fsetxattr)>);
+  REGISTER_SYSCALL_IMPL(fsetxattr,
+                        [](FEXCore::Core::CpuStateFrame* Frame, int fd, const char* name, const void* value, size_t size, int flags) -> uint64_t {
+                          uint64_t Result = FEX::HLE::_SyscallHandler->FM.Fsetxattr(fd, name, value, size, flags);
+                          SYSCALL_ERRNO();
+                        });
   REGISTER_SYSCALL_IMPL(fgetxattr, SyscallPassthrough4<SYSCALL_DEF(fgetxattr)>);
   REGISTER_SYSCALL_IMPL(flistxattr, SyscallPassthrough3<SYSCALL_DEF(flistxattr)>);
-  REGISTER_SYSCALL_IMPL(fremovexattr, SyscallPassthrough2<SYSCALL_DEF(fremovexattr)>);
+  REGISTER_SYSCALL_IMPL(fremovexattr, [](FEXCore::Core::CpuStateFrame* Frame, int fd, const char* name) -> uint64_t {
+    uint64_t Result = FEX::HLE::_SyscallHandler->FM.Fremovexattr(fd, name);
+    SYSCALL_ERRNO();
+  });
   REGISTER_SYSCALL_IMPL(tkill, SyscallPassthrough2<SYSCALL_DEF(tkill)>);
   REGISTER_SYSCALL_IMPL(sched_setaffinity, WrappedSchedSetaffinity);
   REGISTER_SYSCALL_IMPL(sched_getaffinity, WrappedSchedGetaffinity);

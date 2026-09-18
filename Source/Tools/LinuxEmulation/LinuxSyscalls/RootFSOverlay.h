@@ -15,12 +15,18 @@ $end_info$
 //
 // Only the guest-owned prefixes are layered: /usr, /etc, /opt, /var/lib/pacman
 // and /var/cache/pacman. Under them a lookup tries the overlay, then the base,
-// then (except for package-manager state) the host path, and every mutation
-// lands in the overlay: a base or host file is copied up before it is
-// modified, and a deleted one is hidden with a whiteout. Everything else is
-// left to FileManager's existing rootfs/host rules. The on-disk format is the
-// OCI layer one: ".wh.<name>" hides <name>, ".wh..wh..opq" hides everything
-// below a directory. Neither is ever visible to the guest.
+// then (except for package-manager state, and in a sealed process) the host
+// path, and every mutation lands in the overlay: a base or host file is copied
+// up before it is modified, and a deleted one is hidden with a whiteout.
+// Everything else is left to FileManager's existing rootfs/host rules. The
+// on-disk format is the OCI layer one: ".wh.<name>" hides <name>,
+// ".wh..wh..opq" hides everything below a directory. Neither is ever visible
+// to the guest.
+//
+// A sealed process (the guest's package manager, by default) sees only the
+// overlay and the base under the guest-owned prefixes: a host file that no
+// layer has does not exist for it, so installing a package that ships the
+// same path as the host is not a file conflict.
 //
 // Every entry point returns std::nullopt when the path is not layered, which
 // includes every call when no overlay directory exists, and the caller then
@@ -58,16 +64,27 @@ public:
   // path to an existing directory.
   static fextl::string ConfiguredPath(const fextl::string& RootFS);
 
+  // Whether the process running ProgramName (the guest program's file name)
+  // is sealed. RootFSOverlaySeal (POWERARM_ROOTFSOVERLAYSEAL): "auto" (the
+  // default) seals the guest's package manager, pacman, and nothing else;
+  // "on"/"1" seals every process; "off"/"0" none.
+  static bool ConfiguredSeal(std::string_view ProgramName);
+
   // For the ELF loader, before any FileManager exists: the host path the guest
   // path GuestPath resolves to through the overlay and the base, or empty when
   // no overlay is configured or the path is not found in either layer.
   static fextl::string LoaderPath(const fextl::string& RootFS, const fextl::string& GuestPath);
 
-  // BaseFD is FileManager's rootfs directory descriptor; it stays owned by the caller.
-  void Init(const fextl::string& RootFS, int BaseFD);
+  // BaseFD is FileManager's rootfs directory descriptor; it stays owned by the
+  // caller. ProgramName decides the seal (ConfiguredSeal).
+  void Init(const fextl::string& RootFS, int BaseFD, std::string_view ProgramName = {});
 
   bool Active() const {
     return UpperFD != -1;
+  }
+  // Host paths never show through the guest-owned prefixes.
+  bool Sealed() const {
+    return Seal;
   }
   const fextl::string& UpperPath() const {
     return Upper;
@@ -106,6 +123,26 @@ public:
     int SetFlags;
   };
   std::optional<uint64_t> Xattr(XattrOp Op, int DirFD, const char* Path, bool Follow, const XattrArgs& Args);
+
+  // A change through a descriptor (fchmod, fchown, futimens, fsetxattr,
+  // fremovexattr, or the *at forms with AT_EMPTY_PATH) whose object is a base
+  // or host file under a guest-owned prefix: the object is copied up and the
+  // change lands on the overlay copy, so neither the base nor the host is ever
+  // modified. The descriptor keeps pointing at the original object. nullopt
+  // when the descriptor is not such an object (the caller changes it as
+  // before). FD may be AT_FDCWD.
+  enum class DescriptorOp { Chmod, Chown, Utimens, SetXattr, RemoveXattr };
+  struct DescriptorArgs {
+    mode_t Mode;
+    uid_t Owner;
+    gid_t Group;
+    const struct timespec* Times;
+    const char* Name;
+    const void* Value;
+    size_t Size;
+    int SetFlags;
+  };
+  std::optional<uint64_t> DescriptorChange(int FD, DescriptorOp Op, const DescriptorArgs& Args);
 
   // execve and friends: the host path to run for an absolute guest path, or
   // nullopt when not layered. A path that is hidden (whited out, or package
@@ -170,6 +207,10 @@ private:
   std::optional<fextl::string> GuestPathOf(int DirFD, const char* Path) const;
   // True when the first component can reach a guest-owned prefix.
   bool IsCandidate(std::string_view AbsPath) const;
+  // True when a name under the guest-owned path Path missing from both layers
+  // is absent, rather than the host's: package-manager state always, and
+  // everything in a sealed process.
+  bool NoFallthrough(std::string_view Path) const;
   Node Resolve(std::string_view AbsPath, bool FollowLast) const;
   // GuestPathOf + Resolve; nullopt when the result is not under a guest-owned prefix.
   std::optional<Node> Lookup(int DirFD, const char* Path, bool FollowLast) const;
@@ -228,6 +269,7 @@ private:
   int BaseFD {-1};
   int UpperFD {-1};
   dev_t UpperDev {};
+  bool Seal {};
   // First components that can lead into a guest-owned prefix: usr, etc, opt,
   // var, plus the base's root-level symlinks into them (bin, sbin, lib).
   fextl::vector<fextl::string> Candidates;

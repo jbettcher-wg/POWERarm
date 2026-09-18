@@ -221,6 +221,19 @@
           "Anything else: an absolute path to an existing directory."
         ]
       },
+      "RootFSOverlaySeal": {
+        "Type": "str",
+        "Default": "auto",
+        "Desc": [
+          "Whether host files show through /usr, /etc and /opt when a RootFSOverlay is active.",
+          "Unsealed, a name that neither the RootFS nor the overlay has is the host's, so host",
+          "tools stay reachable. Sealed, those prefixes hold only the RootFS and the overlay.",
+          "auto (the default): the guest's package manager (pacman) is sealed, so a package",
+          "that ships a file the host also has is not a file conflict; every other program is not.",
+          "on or 1: every program is sealed.",
+          "off or 0: no program is sealed."
+        ]
+      },
       "ThunkHostLibs": {
         "Type": "str",
         "Default": "@HOSTLIBS_DATA_DIRECTORY@/HostThunks",

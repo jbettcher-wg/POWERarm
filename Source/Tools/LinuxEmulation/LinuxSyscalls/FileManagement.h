@@ -101,6 +101,13 @@ public:
   uint64_t LListxattr(const char* path, char* list, size_t size);
   uint64_t Removexattr(const char* path, const char* name);
   uint64_t LRemovexattr(const char* path, const char* name);
+  // Changes through a descriptor. With the rootfs overlay active, one that
+  // holds a base or host file under a guest-owned prefix changes the overlay
+  // copy instead (RootFSOverlay::DescriptorChange).
+  uint64_t Fchmod(int fd, mode_t mode);
+  uint64_t Fchown(int fd, uid_t owner, gid_t group);
+  uint64_t Fsetxattr(int fd, const char* name, const void* value, size_t size, int flags);
+  uint64_t Fremovexattr(int fd, const char* name);
   struct xattr_args {
     uint64_t value;
     uint32_t size;
