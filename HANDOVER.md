@@ -40,6 +40,25 @@ cherry-pick; patches for them go in `docs/powerarm/outgoing-patches/fastppcx86/`
   `sudo sh ~/Development/register-powerarm-binfmt.sh`, because binfmt pins the interpreter's inode
   and the promote gives it a new one. `powerarm-stable.prev` is kept for rollback.
 
+## What POWERarm is for, and the reference workloads
+
+POWERarm runs binaries that are not built for POWER on Jordan's Omarchy ppc64le port. It emulates
+arm64 rather than x86 on purpose: AArch64 is weakly ordered like POWER, so it lowers with fences only
+where the guest asks for them, while x86's TSO needs SAO or fences on essentially every access and
+carries a higher IPC penalty. (fastppcx86 covers x86 -- Steam and the like -- at that cost.) The aim
+is to be well rounded, and the concrete targets are:
+
+1. **Newer Claude Code**: the Bun single binary ships only for x64/arm64 (JSC).
+2. **VS Code**, insurance in case VSCodium is deprecated: Electron, i.e. Chromium plus Node/V8.
+   Today's proxy is code-server (server and extension host); the desktop app needs the GPU thunks.
+3. **arm64-native Linux games**, if any ship: Vulkan through the thunks. Until one exists the
+   proxy is vkcube/vkmark, native against thunked.
+4. **General compiled code**, the well-rounded baseline: the slice and the M2 zlib/Lua builds.
+
+**Measure against this set, not against whatever is at hand.** A result from one runtime is a data
+point, not a priority: 2026-09-17's P7 census was V8-only, and JSC turned out to use acquire/release
+CAS five times as heavily in proportion.
+
 ## The bugs that mattered (and what they teach)
 
 1. **No memory barriers at all** (fixed 2026-09-17). `DMB`/`DSB` decoded as hints; `LDAR`/`STLR`/
@@ -118,11 +137,12 @@ cherry-pick; patches for them go in `docs/powerarm/outgoing-patches/fastppcx86/`
    (~2.2 M per 3.9 s run, so under 1% even with every such fence deleted) but **33.5% of JSC's**
    (Bun, `claude --version`: CAS acquire 7.4 k, CAS release 7.3 k of 44 k). `--version` is too short
    to give JSC's steady-state rate, so the steps are, in order:
-   a. Census a sustained Bun/JSC workload. Rebuild the census: in the A64 frontend, each atomic or
+   a. Census the reference workloads (top of this file) -- a sustained Claude Code run, code-server,
+      the slice -- not V8 alone. Rebuild the census: in the A64 frontend, each atomic or
       barrier translator emits a load/add/store to a counter slot in a MAP_SHARED file named by an
       env var, keyed by variant (A/R bits for LSE, bit 15 for LDXR/STXR, CRm[1:0] for DMB). Never
       commit it; use a fresh code-cache dir per run, since the counter address is baked into code.
-      If acquire/release-only RMWs are not a large share of a sustained run, stop here.
+      If acquire/release-only RMWs are not a large share across the set, stop here.
    b. Extend `unittests/MemoryModel` to RMWs. `diyone7 -arch AArch64 -show edges` lists the Amo
       edges; jingle7 needs lwarx/stwcx. rules, and herd7's PPC handling of reservations (no loop:
       a single attempt, conditioned on success) must be confirmed on a known case first.
