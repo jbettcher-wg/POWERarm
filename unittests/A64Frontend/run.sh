@@ -46,6 +46,14 @@ have_vdso=0
 # arguments (the busybox applet tests); otherwise ./<test> runs bare.
 # <test>.env holds environment one test needs under POWERarm (NAME=value
 # words, e.g. POWERARM_NEEDSSECCOMP=1 for vdso_syscalls); the guest sees it too.
+#
+# hoststack runs with ASLR off and an unlimited stack rlimit. That is the
+# layout in which the ELF loader used to put the guest's main stack flush
+# against the host stack every time, so its nested signal handlers drove host
+# frames into the guest stack. With a hard stack limit below unlimited the
+# layout is not forced and the result says so.
+hoststack_forced=yes
+[ "$(ulimit -Hs)" = unlimited ] || hoststack_forced=no
 run_emu() {
   bin=$1
   args=
@@ -56,6 +64,10 @@ run_emu() {
   # shellcheck disable=SC2086
   (
     [ -n "$envs" ] && export $envs
+    if [ "$1" = hoststack ]; then
+      ulimit -s unlimited 2> /dev/null
+      exec setarch -R "$emu" "./$bin" $args
+    fi
     exec "$emu" "./$bin" $args
   ) > "$1.powerarm" 2> "$1.stderr"
   echo $? > "$1.powerarm.rc"
@@ -202,7 +214,9 @@ for golden in *.golden; do
   elif [ "$(cat "$t.rc")" != "$(cat "$t.powerarm.rc")" ]; then
     report FAIL "$t" "exit status $(cat "$t.powerarm.rc"), Pi $(cat "$t.rc")"
   else
-    report PASS "$t" "$(wc -l < "$golden") lines, exit $(cat "$t.rc")"
+    note=
+    [ "$t" = hoststack ] && [ "$hoststack_forced" = no ] && note=", layout not forced (hard stack limit $(ulimit -Hs))"
+    report PASS "$t" "$(wc -l < "$golden") lines, exit $(cat "$t.rc")$note"
   fi
 done
 
