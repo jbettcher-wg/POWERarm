@@ -197,3 +197,15 @@ CAS five times as heavily in proportion.
    workloads. Warm's cheapest lever is its G2: A64 `CMP` arrives as `SubNZCV`, while
    `CompareBranchFusion` accepts only `OP_SUBWITHFLAGS`, so no A64 compare+branch is ever fused.
    Its §8 specifies the instrumented build a standard agent does before G2-G4 are priced.
+10. **Code cache gaps still open** (found fixing the per-launch recompiles, 63b2b607e):
+    `check-code-cache.sh`'s exec'd children (cc1, as) run on STABLE through binfmt, because the
+    exec'd config id is the same across builds, so those results test stable. It needs
+    `POWERARM_PORTABLE=1`. A code-buffer rotation drops all unsaved blocks. A process killed by a
+    signal saves nothing. lld-linked executables are never cached on 64K hosts (the MapFile 4K
+    offset, cold research G1).
+11. **Game metrics.** MangoHud for aarch64 guests is built by `Scripts/powerarm/mangohud/build-mangohud.sh`
+    into the vk overlay. Its FEX panel (`fex_stats`) reads POWERarm's live stats through
+    `powerarm-stats.patch`. `Scripts/powerarm/shmstats.py` logs the same stats to CSV (JIT time
+    and blocks, SIGBUS, SMC, lookup-cache misses, cache lock time) for any run, with
+    `POWERARM_PROFILESTATS=1` set for it. Desktop FPS moves with contention: POWER9 is SMT4, and
+    a game thread sharing a core with build jobs slows sharply. Compare frames only on a quiet box.

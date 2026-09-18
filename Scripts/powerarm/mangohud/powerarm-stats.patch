@@ -1,0 +1,17 @@
+diff --git i/src/fex.cpp w/src/fex.cpp
+index c4d97a9..0d0f50f 100644
+--- i/src/fex.cpp
++++ w/src/fex.cpp
+@@ -237,6 +237,12 @@ static void init_shm(int pid) {
+     fex_stats_header *header{};
+ 
+     fd = shm_open(f.c_str(), O_RDONLY, 0);
++    if (fd == -1) {
++        // POWERarm (a FEX fork, AArch64 guests on ppc64le) publishes the same
++        // version-2 layout under its own prefix.
++        f = "powerarm-" + std::to_string(pid) + "-stats";
++        fd = shm_open(f.c_str(), O_RDONLY, 0);
++    }
+     if (fd == -1) {
+         fex_status = "Not Found!";
+         goto err;
