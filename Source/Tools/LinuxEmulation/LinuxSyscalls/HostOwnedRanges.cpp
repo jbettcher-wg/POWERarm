@@ -44,7 +44,10 @@ namespace {
       // Add()/the test hook) merge unconditionally with the flags ANDed —
       // CAUTION: an Add() range overlapping [vvar] therefore makes the whole
       // merged span answer EACCES to PROT_WRITE, not just the vvar pages.
-      // Acceptable while Add() has no callers; revisit if that changes.
+      // Acceptable while no Add() range can reach [vvar]: the one caller adds
+      // the main thread's stack and the range it grows into
+      // (Threads::ReserveMainThreadStack), which the kernel keeps clear of
+      // the vdso.
       const bool Adjacent = Out > 0 && Ranges[i].Base == Ranges[Out - 1].End && Ranges[i].MayWrite == Ranges[Out - 1].MayWrite;
       if (Overlapping || Adjacent) {
         Ranges[Out - 1].End = std::max(Ranges[Out - 1].End, Ranges[i].End);
