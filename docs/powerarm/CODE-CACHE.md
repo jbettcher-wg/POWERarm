@@ -130,8 +130,15 @@ the blocks it reaches. Blocks relink on first use, so block linking stays on
 with the cache.
 
 **Writing appends.** At `exit_group`, before `execve`, and every 50000 blocks
-or 60 s, a process writes the blocks it compiled that no segment holds yet. It
-writes a temp file and publishes it with `link(2)` under a shared `flock`. When
+or 60 s, a process writes the blocks it compiled that no segment holds yet.
+Before the guest `munmap`s an executable file mapping (a `dlclose`), it writes
+that file's new blocks, since a pass only reaches files still mapped. A
+periodic pass skips a file with fewer than 8 new blocks and keeps them for a
+later pass. At exit, `execve` and unmap the minimum is waived for a file with no
+cache yet and in a process that has run a periodic pass. Files are tracked as
+code when their mode is executable or they are ELF files (shared libraries are
+often installed 0644). A segment is written to a temp file and published with
+`link(2)` under a shared `flock`. When
 all eight names are taken, the writer merges them into `<name>` under an
 exclusive `flock` (`LOCK_NB`, so it skips if busy). Readers take no lock: a
 mapped segment stays valid if a compaction unlinks it. There is no `fsync`.
@@ -184,6 +191,11 @@ now runs only for `POWERARM_SERVERCODECACHE=1`.
   rejected and the objects are still identical.
 - **SMC:** a guest patches its own code after first use, and before first use,
   in cold and warm runs.
+- **Small libraries:** a warm run of a program that throws a C++ exception
+  (`libgcc_s.so.1`, installed 0644), `dlopen`s and `dlclose`s a library and
+  links libraries it only initialises compiles fewer than 10 blocks. The
+  program closes its stderr before exiting, and the counters still reach the
+  log.
 
 Gates on the merged tree (892c0a2c9):
 

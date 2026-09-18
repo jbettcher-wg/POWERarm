@@ -888,8 +888,9 @@ int main(int argc, char** argv, char** const envp) {
   // Final checkpoint, after every other thread has stopped and before any thread
   // state is torn down. Force it: the periodic trigger only fires from the
   // memory-management syscalls, and a guest that exits shortly after its last
-  // mmap would otherwise throw away everything compiled since.
-  SyscallHandler->SaveCodeCaches(ParentThread->Thread, true);
+  // mmap would otherwise throw away everything compiled since. The image ends
+  // here without exit_group, so print the counters as exit_group would.
+  SyscallHandler->CodeCacheImageExit(ParentThread->Thread);
   FEX::HLE::StartupTimer.Mark(FEX::HLE::StartupTimes::SAVE);
 
   auto ProgramStatus = ParentThread->StatusCode;

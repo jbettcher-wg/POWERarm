@@ -23,6 +23,11 @@
 #              in the file names), same objects.
 #   smc        a guest that patches its own code after the block was cached, and
 #              one that patches it before the cached block is first reached.
+#   smalllib   a program built from small pieces compiles next to nothing warm:
+#              libgcc_s.so.1 (installed 0644) reached through a C++ throw, a
+#              library it dlopens and dlcloses, and DT_NEEDED libraries whose
+#              only code run is their constructors and destructors. It closes
+#              its stderr before exiting, and the counters must still arrive.
 #
 # Uses a private HOME, TMPDIR, cache directory and server socket, so it neither
 # sees nor disturbs any other POWERarmServer or cache.
@@ -236,5 +241,43 @@ for pass in 1 2; do
   [ "$out" = "early 2 " ] && ok "smc pass $pass: patch before first call" || bad "smc pass $pass (early): printed '$out'"
 done
 [ "$(counter loaded "$w/smc2.log")" -gt 0 ] && ok "smc: warm run loaded blocks" || bad "smc: warm run loaded nothing"
+
+# ---------------------------------------------------------------------------
+# smalllib
+cat > "$w/src/smalllib.cc" << 'EOF'
+#include <cstdio>
+#include <dlfcn.h>
+#include <stdexcept>
+__attribute__((noipa)) static int thrower(int x) {
+  if (x > 0) throw std::runtime_error("x");
+  return x;
+}
+int main(int argc, char **) {
+  int r = 0;
+  for (int i = 0; i < 3; ++i) {
+    try { r += thrower(argc); } catch (const std::exception &) { r += 1; }
+  }
+  if (void *h = dlopen("libbz2.so.1", RTLD_NOW)) {
+    r += dlsym(h, "BZ2_bzlibVersion") != nullptr;
+    dlclose(h);
+  }
+  printf("r=%d\n", r);
+  fflush(stdout);
+  fclose(stderr);
+  return 0;
+}
+EOF
+run - -- /usr/bin/g++ -O1 -o smalllib smalllib.cc -Wl,--no-as-needed -lz -ldl ||
+  { echo "check-code-cache: building smalllib failed" >&2; exit 2; }
+for pass in 1 2; do
+  out=$(run "$w/sl" POWERARM_CODEHASHLOG="$w/smalllib$pass.hash" -- ./smalllib 2> "$w/smalllib$pass.log")
+  [ "$out" = "r=4" ] || bad "smalllib pass $pass: printed '$out'"
+done
+# The hash log is created by the first compile: none means none compiled.
+cold=$(cat "$w/smalllib1.hash" 2> /dev/null | wc -l)
+warm=$(cat "$w/smalllib2.hash" 2> /dev/null | wc -l)
+[ "$warm" -lt 10 ] && ok "smalllib: warm run compiled $warm blocks (cold $cold)" || bad "smalllib: warm run compiled $warm blocks (cold $cold)"
+[ "$(counter loaded "$w/smalllib2.log")" -gt 0 ] && ok "smalllib: counters reached the log after the guest closed stderr" ||
+  bad "smalllib: no counters in the log after the guest closed stderr"
 
 exit $fail

@@ -1927,6 +1927,16 @@ static ReadELFHeadersResult ReadELFHeaders(int FD, std::span<std::byte> HeaderDa
   return ReadELFHeadersResult {std::move(Parser.phdrs), std::move(Relocations), HasCodeRelocations};
 }
 
+// True when the file behind FD starts with an ELF header. pread rather than a
+// read through the new mapping: that could fault on a file truncated under it.
+static bool IsELFFile(int FD, const struct stat64& Stat) {
+  if (Stat.st_size < static_cast<off64_t>(sizeof(Elf64_Ehdr))) {
+    return false;
+  }
+  unsigned char Ident[SELFMAG];
+  return ::pread(FD, Ident, SELFMAG, 0) == SELFMAG && std::memcmp(Ident, ELFMAG, SELFMAG) == 0;
+}
+
 // Base path of the cache for one guest file:
 // `<cache dir>/cache/<basename>-<FileId>-<ConfigId>`. FileId identifies the file
 // (CodeCache::ComputeCodeMapId) and ConfigId the FEX build, host features and
@@ -1983,6 +1993,23 @@ bool SyscallHandler::IsPathInCodeCacheScope(std::string_view Path) const {
   return false;
 }
 
+// The save target for one mapped file: all of its mappings. Nothing when the
+// file is out of scope or its blocks cannot be cached. VMATracking.Mutex held.
+static std::optional<FEXCore::CodeCacheSaveTarget> MakeCodeCacheSaveTarget(SyscallHandler& Handler, const VMATracking::MappedResource& Resource) {
+  if (!Resource.MappedFile || !Resource.FirstVMA || Resource.MappedFile->HasUncacheableRelocations) {
+    return std::nullopt;
+  }
+  auto Base = Handler.CodeCacheBasePath(*Resource.MappedFile);
+  if (Base.empty()) {
+    return std::nullopt;
+  }
+  FEXCore::CodeCacheSaveTarget Target {BuildSectionInfo(Resource, Resource.FirstVMA->Base, Resource.FirstVMA->Length), {}, std::move(Base)};
+  for (auto* VMA = Resource.FirstVMA; VMA; VMA = VMA->ResourceNextVMA) {
+    Target.GuestRanges.emplace_back(VMA->Base, VMA->Base + VMA->Length);
+  }
+  return Target;
+}
+
 void SyscallHandler::SaveCodeCaches(FEXCore::Core::InternalThreadState* Thread, bool Force) {
   if (!CodeCacheWriteEnabled() || !Thread) {
     return;
@@ -2002,19 +2029,9 @@ void SyscallHandler::SaveCodeCaches(FEXCore::Core::InternalThreadState* Thread, 
   {
     auto lk = FEXCore::GuardSignalDeferringSection<std::shared_lock>(VMATracking.Mutex, Thread);
     for (const auto& ResourcePair : VMATracking.AllResources()) {
-      const auto& Resource = ResourcePair.second;
-      if (!Resource.MappedFile || !Resource.FirstVMA || Resource.MappedFile->HasUncacheableRelocations) {
-        continue;
+      if (auto Target = MakeCodeCacheSaveTarget(*this, ResourcePair.second)) {
+        Targets.push_back(std::move(*Target));
       }
-      auto Base = CodeCacheBasePath(*Resource.MappedFile);
-      if (Base.empty()) {
-        continue;
-      }
-      FEXCore::CodeCacheSaveTarget Target {BuildSectionInfo(Resource, Resource.FirstVMA->Base, Resource.FirstVMA->Length), {}, std::move(Base)};
-      for (auto* VMA = Resource.FirstVMA; VMA; VMA = VMA->ResourceNextVMA) {
-        Target.GuestRanges.emplace_back(VMA->Base, VMA->Base + VMA->Length);
-      }
-      Targets.push_back(std::move(Target));
     }
   }
 
@@ -2023,7 +2040,46 @@ void SyscallHandler::SaveCodeCaches(FEXCore::Core::InternalThreadState* Thread, 
   // by this thread. The VMATracking lock must be released first: a compiling
   // thread holds CodeBufferWriteMutex while it looks addresses up in VMATracking.
   auto InvalidationLock = FEXCore::GuardSignalDeferringSectionWithFallback<std::shared_lock>(CTX->GetCodeInvalidationMutex(), Thread);
-  CTX->GetCodeCache().SaveNewBlocks(*Thread, Targets);
+  CTX->GetCodeCache().SaveNewBlocks(*Thread, Targets, Force ? FEXCore::CodeCacheSaveKind::Final : FEXCore::CodeCacheSaveKind::Periodic);
+}
+
+void SyscallHandler::SaveCodeCachesBeforeUnmap(FEXCore::Core::InternalThreadState* Thread, uint64_t Start, uint64_t Length) {
+  // A pass builds its targets from the files mapped at that moment, so blocks
+  // of a library the guest dlopens and dlcloses between two passes were never
+  // written: every run compiled its constructors and destructors again.
+  if (!CodeCacheWriteEnabled() || !Thread || Length == 0 || HardwareTSO::Revoked.load(std::memory_order_acquire)) {
+    return;
+  }
+  const uint64_t End = Start + Length < Start ? ~0ULL : Start + Length;
+
+  fextl::vector<FEXCore::CodeCacheSaveTarget> Targets;
+  {
+    auto lk = FEXCore::GuardSignalDeferringSection<std::shared_lock>(VMATracking.Mutex, Thread);
+    fextl::vector<const VMATracking::MappedResource*> Seen;
+    auto It = VMATracking.VMAs.upper_bound(Start);
+    if (It != VMATracking.VMAs.begin()) {
+      if (auto Prev = std::prev(It); Prev->first + Prev->second.Length > Start) {
+        It = Prev;
+      }
+    }
+    for (; It != VMATracking.VMAs.end() && It->first < End; ++It) {
+      const auto* Resource = It->second.Resource;
+      if (!It->second.Prot.Executable || !Resource || !Resource->MappedFile || std::ranges::find(Seen, Resource) != Seen.end()) {
+        continue;
+      }
+      Seen.push_back(Resource);
+      if (auto Target = MakeCodeCacheSaveTarget(*this, *Resource)) {
+        Targets.push_back(std::move(*Target));
+      }
+    }
+  }
+  if (Targets.empty()) {
+    return;
+  }
+
+  // Same locking as SaveCodeCaches.
+  auto InvalidationLock = FEXCore::GuardSignalDeferringSectionWithFallback<std::shared_lock>(CTX->GetCodeInvalidationMutex(), Thread);
+  CTX->GetCodeCache().SaveNewBlocks(*Thread, Targets, FEXCore::CodeCacheSaveKind::Unmap);
 }
 
 void* SyscallHandler::GuestMmap(bool Is64Bit, FEXCore::Core::InternalThreadState* Thread, void* addr, size_t length, int prot, int flags,
@@ -2704,8 +2760,18 @@ SyscallHandler::TrackMmap(FEXCore::Core::InternalThreadState* Thread, uint64_t a
       MaybeRecordMainExeMapping(buf.st_dev, buf.st_ino, addr, addr + Size);
     }
 
-    // Only handle FDs that are backed by regular files that are executable
-    if (PathLength != -1 && S_ISREG(buf.st_mode) && (buf.st_mode & S_IXUSR)) {
+    // Only handle FDs that are backed by regular files that hold code: files
+    // with an executable mode, and ELF files without one. The loader maps a
+    // shared library executable whatever its mode, and distributions install
+    // them 0644 (Debian throughout; Arch's libgcc_s.so.1). Gating on the mode
+    // alone left their code unnamed and never cached, recompiled by every run.
+    // A non-executable file is recognised by the ELF header of its first
+    // mapping, and its later mappings by that resource.
+    bool HoldsCode = PathLength != -1 && S_ISREG(buf.st_mode);
+    if (HoldsCode && !(buf.st_mode & S_IXUSR)) {
+      HoldsCode = Inserted ? (offset == 0 && (prot & PROT_READ) && IsELFFile(fd, buf)) : ResourceIt->second.MappedFile != nullptr;
+    }
+    if (HoldsCode) {
       // ELF files that are mapped multiple times get a separate MappedResource for each base virtual address
       if ((prot & PROT_READ) && Inserted) {
         Resource->MappedFile = fextl::make_shared<FEXCore::ExecutableFileInfo>();
