@@ -175,7 +175,17 @@ CAS five times as heavily in proportion.
    sites multiply.
 6. fastppcx86: patch `0034` for the madvise bug (diagnosis written, patch not yet made).
 7. Thunks, per `docs/powerarm/THUNKS-DESIGN.md` (fastppcx86 already runs them on this GPU).
-   Stage 0 (AArch64 thunk ABI + guest vDSO) in progress 2026-09-17.
+   **Stage 0 landed (f2f9d3cfb):** the AArch64 thunk ABI (HLT #0x0F3F marker, X16/X17, X30 callback
+   return) and a guest vDSO that takes clock_gettime/gettimeofday from 1000/1000 syscalls to 0/1000.
+   **Next, and it is an emulation win, not a library thunk: ship the vDSO.** Today it builds only
+   under `-DBUILD_THUNKS=ON`, which fails overall on the x86-layout host libraries, and nothing
+   installs or promotes it, so no normal build or user gets it. Build `libVDSO-a64-guest.so` by
+   default (it needs thunkgen/libclang and the rootfs gcc under the just-built POWERarm, not the
+   host libs), install it to `GuestThunks/` (DESIGN.md §6.2a), have `promote-powerarm-stable.sh`
+   carry it, and point the default `ThunkGuestLibs` there. The name was changed from
+   `libVDSO-guest.so` on purpose so pre-marker emulators never map it. `run.sh` already gates
+   itself either way (SKIPs the two vDSO tests when a build has none). Host.h's AArch64 stack rule
+   (SP 0 mod 16) must not be cherry-picked to fastppcx86.
 8. **Two-tier rootfs** (`DESIGN.md` §6.2a): designed, and being implemented 2026-09-17. Until it
    lands, guest `pacman` reads the HOST's package DB through fallthrough -- never trust its output.
 9. **Research queued overnight 2026-09-17 (Fable agents, design docs, no code)**, covering the two
