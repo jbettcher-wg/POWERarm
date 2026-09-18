@@ -2764,6 +2764,21 @@
                  "The result is element 0; every other bit of the vector register is zero"
                 ],
         "DestSize": "DstElementSize"
+      },
+      "FPR = A64FArith OpSize:#RegisterSize, OpSize:#ElementSize, FPR:$Vector1, FPR:$Vector2, u8:$Op": {
+        "Desc": ["A64 FPAdd/FPSub/FPMul/FPDiv on every ElementSize lane of RegisterSize",
+                 "Op: 0 Add, 1 Sub, 2 Mul, 3 Div (matches IRBuilder::FPBinaryOp order)",
+                 "NaN rule (FPProcessNaNs): a lane whose Vector1 is a quiet NaN and whose Vector2 is a",
+                 "signalling NaN yields quiet(Vector2) with its payload; every other NaN lane yields",
+                 "quiet(first NaN operand in order Vector1, Vector2). Inf-Inf, 0*Inf, 0/0 and Inf/Inf give",
+                 "the default NaN. Non-NaN lanes are the host result in the host rounding mode",
+                 "FNMUL and FABD are this op followed by VFNeg / VFAbs (FPNeg/FPAbs flip a NaN's sign too)",
+                 "Lowering: one xv{add,sub,mul,div}{dp,sp} plus a two-instruction NaN check branching to",
+                 "an out-of-line cold stub (docs/powerarm/COLD-BLOCK-DESIGN.md); the fast path never",
+                 "enters the stub on ordered data"
+                ],
+        "DestSize": "RegisterSize",
+        "ElementSize": "ElementSize"
       }
     },
     "Crypto": {

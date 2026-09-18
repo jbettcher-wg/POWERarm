@@ -63,11 +63,12 @@ bool IRBuilder::SIMDFloatThreeSame(uint32_t Word, FPBinaryOp Op, bool Scalar) {
 Ref IRBuilder::FPBinaryLanes(FPBinaryOp Op, OpSize ES, Ref A, Ref B) {
   const auto RS = OpSize::i128Bit;
   switch (Op) {
-  case FPBinaryOp::Add: return _VFAdd(RS, ES, PropagateNaNOperand(ES, A, B), B);
-  case FPBinaryOp::Sub: return _VFSub(RS, ES, PropagateNaNOperand(ES, A, B), B);
-  case FPBinaryOp::Mul: return _VFMul(RS, ES, PropagateNaNOperand(ES, A, B), B);
-  case FPBinaryOp::Div: return _VFDiv(RS, ES, PropagateNaNOperand(ES, A, B), B);
-  case FPBinaryOp::NMul: return _VFNeg(RS, ES, _VFMul(RS, ES, PropagateNaNOperand(ES, A, B), B));
+  case FPBinaryOp::Add:
+  case FPBinaryOp::Sub:
+  case FPBinaryOp::Mul:
+  case FPBinaryOp::Div: return A64Arith(ES, A, B, Op);
+  // FPNeg flips a NaN's sign too, so the negation stays outside the op.
+  case FPBinaryOp::NMul: return _VFNeg(RS, ES, A64Arith(ES, A, B, FPBinaryOp::Mul));
   case FPBinaryOp::Min: return FPMinMax(ES, A, B, false, false);
   case FPBinaryOp::Max: return FPMinMax(ES, A, B, true, false);
   case FPBinaryOp::MinNum: return FPMinMax(ES, A, B, false, true);

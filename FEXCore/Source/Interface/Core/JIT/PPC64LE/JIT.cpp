@@ -5113,6 +5113,13 @@ CPUBackend::CompiledCode PPC64JITCore::CompileCode(
   SharedSpillExitUsed = false;
   SharedSpillLinkUsed = false;
   ShortCondBranches.clear();
+  // A64 FP cold blocks: same reason, the stub/join/body labels all carry
+  // fixup-chain indices into the per-compile PendingBranches vector.
+  FPColdStubs.clear();
+  FPNaNFixBody[0] = {};
+  FPNaNFixBody[1] = {};
+  FPNaNFixBodyUsed[0] = false;
+  FPNaNFixBodyUsed[1] = false;
 
   // -------------------------------------------------------------------------
   // Emit entry point
@@ -5791,6 +5798,19 @@ CPUBackend::CompiledCode PPC64JITCore::CompileCode(
         EmitShortCondIsland();
       }
 
+      // A64 FP cold stubs (DEF_OP(A64FArith)): same island point, same age
+      // bound, plus a count bound. The age alone is not enough — the LAST stub
+      // of a flush sits after all the earlier ones, so the reachable window is
+      // the age plus the flush's own stub bytes. At 256 stubs of at most 8
+      // instructions that is 12000 + 8192, comfortably inside the `bc`'s 32764.
+      // Emitting here rather than inside the handler keeps a stub strictly
+      // after its site, so the site's branch is always forward and the stub's
+      // branch back to the join label is always backward and already bound.
+      if (!FPColdStubs.empty() && (FPColdStubs.size() >= kFPColdStubFlushCount ||
+                                   GetOffset() - FPColdStubs.front().SiteOffset > kShortCondIslandAge)) {
+        EmitFPColdStubs(true);
+      }
+
       [[maybe_unused]] const size_t OpStart = GetOffset();
 
       // Any helper call this op emits saves only the dynamic VRs live across
@@ -5913,6 +5933,17 @@ CPUBackend::CompiledCode PPC64JITCore::CompileCode(
   //
   // Emitted BEFORE Align16B/CodeSize capture so the thunk bytes are included
   // in CodeData.Size and in the icache flush below.
+
+  // -------------------------------------------------------------------------
+  // A64 FP cold stubs (DEF_OP(A64FArith)) that no island flushed. Nothing
+  // executes past this point in the unit's own code, so no `b over` guard is
+  // needed; the stubs are only ever entered by their sites' `bc`. Emitted
+  // before the unbound-short check and the thunk loop so that a stub is still
+  // a reachable `bc` target and so its bytes land in CodeData.Size and the
+  // icache flush below.
+  // -------------------------------------------------------------------------
+  EmitFPColdStubs(false);
+
   if (!ShortCondBranches.empty()) {
     ERROR_AND_DIE_FMT("PPC64 JIT: {} short conditional branches left unbound in the unit at {:#x}", ShortCondBranches.size(), Entry);
   }

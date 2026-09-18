@@ -132,6 +132,17 @@ Ref IRBuilder::DoubleToHalf(Ref D, bool ApplyFZ16) {
   return _A64FToF(OpSize::i16Bit, OpSize::i64Bit, Flushed);
 }
 
+Ref IRBuilder::A64Arith(OpSize ElementSize, Ref A, Ref B, FPBinaryOp Op) {
+  // A64FArith's Op field is documented in IR.json as FPBinaryOp's order, and
+  // only the four arithmetic kinds are valid there.
+  static_assert(static_cast<uint8_t>(FPBinaryOp::Add) == 0);
+  static_assert(static_cast<uint8_t>(FPBinaryOp::Sub) == 1);
+  static_assert(static_cast<uint8_t>(FPBinaryOp::Mul) == 2);
+  static_assert(static_cast<uint8_t>(FPBinaryOp::Div) == 3);
+  LOGMAN_THROW_A_FMT(Op <= FPBinaryOp::Div, "A64Arith: not an arithmetic kind");
+  return _A64FArith(OpSize::i128Bit, ElementSize, A, B, static_cast<uint8_t>(Op));
+}
+
 Ref IRBuilder::PropagateNaNOperand(OpSize ElementSize, Ref A, Ref B) {
   // Lanes where A is a quiet NaN and B a signalling NaN take B for A.
   // POWERARM-M1-TODO(fpu): this adds about a dozen vector instructions to every scalar FP arithmetic op; a fused A64 arithmetic IR op (or a NaN check branching to the fixup) would make the common non-NaN path free.
@@ -381,11 +392,13 @@ bool IRBuilder::FPTwoRegister(uint32_t Word, FPBinaryOp Op) {
 
   Ref Result {};
   switch (Op) {
-  case FPBinaryOp::Add: Result = _VFAdd(RS, Size, PropagateNaNOperand(Size, A, B), B); break;
-  case FPBinaryOp::Sub: Result = _VFSub(RS, Size, PropagateNaNOperand(Size, A, B), B); break;
-  case FPBinaryOp::Mul: Result = _VFMul(RS, Size, PropagateNaNOperand(Size, A, B), B); break;
-  case FPBinaryOp::Div: Result = _VFDiv(RS, Size, PropagateNaNOperand(Size, A, B), B); break;
-  case FPBinaryOp::NMul: Result = _VFNeg(RS, Size, _VFMul(RS, Size, PropagateNaNOperand(Size, A, B), B)); break;
+  case FPBinaryOp::Add:
+  case FPBinaryOp::Sub:
+  case FPBinaryOp::Mul:
+  case FPBinaryOp::Div: Result = A64Arith(Size, A, B, Op); break;
+  // FPNeg flips a NaN's sign too, so the negation must follow the arithmetic
+  // rather than being folded into a host negating form (checklist B1).
+  case FPBinaryOp::NMul: Result = _VFNeg(RS, Size, A64Arith(Size, A, B, FPBinaryOp::Mul)); break;
   case FPBinaryOp::Min: Result = FPMinMax(Size, A, B, false, false); break;
   case FPBinaryOp::Max: Result = FPMinMax(Size, A, B, true, false); break;
   case FPBinaryOp::MinNum: Result = FPMinMax(Size, A, B, false, true); break;
@@ -704,7 +717,7 @@ bool IRBuilder::FPAbsoluteDifference(uint32_t Word, bool Scalar) {
   const auto RS = OpSize::i128Bit;
   Ref A = LoadV(Bits(Word, 9, 5));
   Ref B = LoadV(Bits(Word, 20, 16));
-  Ref Result = _VFAbs(RS, ES, _VFSub(RS, ES, PropagateNaNOperand(ES, A, B), B));
+  Ref Result = _VFAbs(RS, ES, A64Arith(ES, A, B, FPBinaryOp::Sub));
   if (Scalar) {
     StoreVSized(Bits(Word, 4, 0), ES, Result);
   } else {

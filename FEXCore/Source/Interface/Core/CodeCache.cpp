@@ -582,6 +582,15 @@ uint64_t ComputeCodeCacheConfigId() {
       // moves the destination-RIP constant and its `std State.rip` from below
       // the block-link patch site back to above it, so the emitted exit differs.
       Hasher.Add(static_cast<uint64_t>(getenv("FEX_NOSINKEXITRIP") != nullptr));
+      // A64 FP cold blocks (JITClass.h FPColdEnabled, DEF_OP(A64FArith)).
+      // Value-DISABLED with "0", mirroring JITClass.h's parse. It is a
+      // diagnostic control that deliberately emits WRONG code — the NaN check
+      // without the branch to the fix-up — so a cache built under it must never
+      // be served to a session without it.
+      {
+        const char* FPColdEnv = getenv("POWERARM_FPCOLD");
+        Hasher.Add(static_cast<uint64_t>(!(FPColdEnv && FPColdEnv[0] == '0')));
+      }
       // P5.0.2 re-zero policy at block exits (BranchOps.cpp R0ZeroMode).
       // Three-way: elide (default) / always emit `li r0,0` / emit `tdnei r0,0`.
       // All three differ in emitted bytes, and the trap arm differs in
