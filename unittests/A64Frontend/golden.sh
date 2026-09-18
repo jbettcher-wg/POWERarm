@@ -53,6 +53,10 @@ echo POWERARM_NEEDSSECCOMP=1 > vdso_syscalls.env
 # thunk_callback falls back to direct calls where no thunk host exists (the
 # Pi); under POWERarm the host path is required.
 echo THUNK_CALLBACK_REQUIRE_HOST=1 > thunk_callback.env
+# The rootfs overlay test: natively it runs inside a scratch copy of its own
+# fixture (OVT_ROOT); run.sh runs it under POWERarm with that fixture as the
+# base rootfs.
+gcc -static -O2 -o rootfs_overlay "$here/rootfs_overlay.c"
 
 run_golden() {
   set +e
@@ -76,6 +80,11 @@ done
 for t in $corpus; do
   run_golden "./$t"
 done
+t=rootfs_overlay
+rm -rf "$out/ovt-native"
+./rootfs_overlay --make-fixture "$out/ovt-native"
+run_golden env OVT_ROOT="$out/ovt-native" ./rootfs_overlay
+rm -rf "$out/ovt-native"
 
 # Busybox applets on a fixed input. <test>.bin names the binary and
 # <test>.args its arguments for run.sh.

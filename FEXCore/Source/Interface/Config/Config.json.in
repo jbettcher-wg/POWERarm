@@ -209,6 +209,18 @@
           "\teg: $HOME/.local/share/powerarm/RootFS/<RootFS name>/"
         ]
       },
+      "RootFSOverlay": {
+        "Type": "str",
+        "Default": "",
+        "Desc": [
+          "Per-user writable layer over a directory RootFS",
+          "Guest writes under /usr, /etc, /opt and the pacman state directories land here;",
+          "the RootFS itself is never written.",
+          "Empty (the default): '<RootFS>-overlay' next to the RootFS, when that directory exists.",
+          "0, off or none: no overlay.",
+          "Anything else: an absolute path to an existing directory."
+        ]
+      },
       "ThunkHostLibs": {
         "Type": "str",
         "Default": "@HOSTLIBS_DATA_DIRECTORY@/HostThunks",

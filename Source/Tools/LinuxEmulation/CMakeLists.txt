@@ -13,6 +13,7 @@ add_library(LinuxEmulation STATIC
   LinuxSyscalls/FaultSafeUserMemAccess.cpp
   LinuxSyscalls/FileManagement.cpp
   LinuxSyscalls/LinuxAllocator.cpp
+  LinuxSyscalls/RootFSOverlay.cpp
   LinuxSyscalls/Seccomp/SeccompEmulator.cpp
   LinuxSyscalls/Seccomp/BPFInterpreter.cpp
   LinuxSyscalls/Seccomp/Dumper.cpp

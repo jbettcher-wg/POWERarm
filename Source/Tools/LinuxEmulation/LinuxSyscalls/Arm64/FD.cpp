@@ -141,6 +141,12 @@ void RegisterFD(FEX::HLE::SyscallHandler* Handler) {
   });
 
   REGISTER_SYSCALL_IMPL(getdents64, [](FEXCore::Core::CpuStateFrame* Frame, int fd, void* dirp, uint32_t count) -> uint64_t {
+    // A directory in the rootfs overlay lists its merged overlay + base
+    // contents, whiteouts applied.
+    if (auto Merged = FEX::HLE::_SyscallHandler->FM.OverlayGetdents64(fd, dirp, count)) {
+      uint64_t Result = *Merged;
+      SYSCALL_ERRNO();
+    }
     // linux_dirent64 is the same on both; only the RootFS entries are hidden.
     uint64_t Result = ::syscall(SYSCALL_DEF(getdents64), static_cast<uint64_t>(fd), dirp, static_cast<uint64_t>(count));
     if (Result != static_cast<uint64_t>(-1)) {

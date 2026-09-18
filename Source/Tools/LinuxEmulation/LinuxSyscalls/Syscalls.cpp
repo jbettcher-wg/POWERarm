@@ -398,6 +398,10 @@ uint64_t ExecveHandler(FEXCore::Core::CpuStateFrame* Frame, const char* pathname
   } else {
     // For absolute paths, check the rootfs first (if available)
     if (pathname[0] == '/') {
+      // Deleted in the rootfs overlay: the guest must not reach a host copy.
+      if (SyscallHandler->FM.IsOverlayHidden(pathname)) {
+        return -ENOENT;
+      }
       auto Path = SyscallHandler->FM.GetEmulatedPath(pathname, true);
       if (!Path.empty() && FHU::Filesystem::Exists(Path)) {
         Filename = std::move(Path);

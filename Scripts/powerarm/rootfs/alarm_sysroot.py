@@ -10,6 +10,9 @@ Subcommands (see README.md next to this file):
   extract  extract the pinned packages into a sysroot directory
   hash     content hash of a tree (sorted paths, sha256, modes, symlink targets)
   align    PT_LOAD p_align distribution of every ELF file in a tree
+  overlay-init  prepare a per-user rootfs overlay for guest pacman: a local package
+           database describing the pinned base, and (--with-pacman) pacman, its
+           missing dependencies and the Arch Linux ARM keyring extracted into it
 
 Needs only Python 3 (stdlib), curl or urllib, zstd (for .zst packages) and gpg/gpgv
 (for signature checks).  Never needs root.
@@ -649,6 +652,272 @@ def cmd_align(a):
         print(f"  {rel} {t} " + ",".join(f"{x:#x}" for x in al))
 
 
+# --------------------------------------------------------------------------- overlay-init
+
+# The per-user overlay (docs/powerarm/DESIGN.md section 6.2a) is where guest pacman
+# installs. pacman needs a local database describing what is already installed, or
+# it would try to install glibc and the rest over the base. The base is extracted
+# from pinned packages, not installed by pacman, so this builds that database from
+# the same cached package files. The base tree itself is never touched: everything
+# is written below --dest, and the base's content hash does not change.
+
+ALPM_DB_VERSION = "9"
+META_MEMBERS = {".PKGINFO", ".MTREE", ".INSTALL", ".BUILDINFO", ".CHANGELOG"}
+
+
+def parse_pkginfo(text):
+    info = collections.defaultdict(list)
+    for line in text.splitlines():
+        if line.startswith("#") or " = " not in line:
+            continue
+        key, value = line.split(" = ", 1)
+        info[key.strip()].append(value.strip())
+    return info
+
+
+def read_package(path, dest=None, base=None):
+    """A package's .PKGINFO, file list, backup md5s, .MTREE and .INSTALL.
+
+    With dest, the package's files are also extracted below dest (existing
+    directories are kept, files and symlinks replaced). With base, a package
+    path that runs through a symlink of the base (usr/sbin -> bin, say) is
+    refused: a real directory of that name in the overlay would hide the link."""
+    info = {}
+    files = []
+    md5s = {}
+    mtree = install = None
+    links = []
+    dirmodes = {}
+    for mem, fobj in iter_pkg(path):
+        rel = safe_rel(mem.name)
+        if not rel:
+            continue
+        if rel in META_MEMBERS:
+            data = fobj.read() if fobj else b""
+            if rel == ".PKGINFO":
+                info = parse_pkginfo(data.decode())
+            elif rel == ".MTREE":
+                mtree = data
+            elif rel == ".INSTALL":
+                install = data
+            continue
+        files.append(rel + "/" if mem.isdir() else rel)
+        # makepkg puts .PKGINFO before the payload; until it is seen, hash everything.
+        want_md5 = mem.isreg() and (not info or rel in info.get("backup", []))
+        if dest is None:
+            if want_md5:
+                md5s[rel] = hashlib.md5(fobj.read()).hexdigest()
+            continue
+        full = os.path.join(dest, rel)
+        if base:
+            parts = rel.split("/")
+            for i in range(1, len(parts) + (1 if mem.isdir() else 0)):
+                prefix = "/".join(parts[:i])
+                if os.path.islink(os.path.join(base, prefix)) and not os.path.lexists(os.path.join(dest, prefix)):
+                    die(f"{os.path.basename(path)}: {rel} runs through the base's symlink {prefix}")
+        ensure_parent(dest, rel, dirmodes)
+        if mem.isdir():
+            if not os.path.isdir(full) or os.path.islink(full):
+                if os.path.lexists(full):
+                    die(f"{path}: {rel} is a directory in the package but not in {dest}")
+                os.mkdir(full, 0o700)
+                dirmodes[rel] = mem.mode & 0o7777
+            continue
+        if os.path.lexists(full):
+            if os.path.isdir(full) and not os.path.islink(full):
+                die(f"{path}: {rel} is a directory in {dest}")
+            os.unlink(full)
+        if mem.issym():
+            os.symlink(mem.linkname, full)
+        elif mem.islnk():
+            links.append((safe_rel(mem.linkname), rel, mem.mode & 0o7777))
+        elif mem.isreg():
+            h = hashlib.md5()
+            with open(full, "wb") as f:
+                for chunk in iter(lambda: fobj.read(1 << 20), b""):
+                    h.update(chunk)
+                    f.write(chunk)
+            if want_md5:
+                md5s[rel] = h.hexdigest()
+            os.chmod(full, mem.mode & 0o7777)
+            os.utime(full, (mem.mtime, mem.mtime))
+        else:
+            log(f"  skipped special file {rel} ({os.path.basename(path)}, type {mem.type!r})")
+    if dest is not None:
+        for target, rel, mode in links:
+            full = os.path.join(dest, rel)
+            if os.path.lexists(full):
+                os.unlink(full)
+            shutil.copy2(os.path.join(dest, target), full)
+            os.chmod(full, mode)
+        for rel in sorted(dirmodes, key=lambda r: -r.count("/")):
+            os.chmod(os.path.join(dest, rel), dirmodes[rel])
+    if not info:
+        die(f"{path}: no .PKGINFO")
+    return info, files, md5s, mtree, install
+
+
+def write_local_entry(local, info, files, md5s, mtree, install, explicit):
+    """One package's entry in a pacman local database (libalpm be_local.c, version 9)."""
+    name, version = info["pkgname"][0], info["pkgver"][0]
+    entry = os.path.join(local, f"{name}-{version}")
+    os.makedirs(entry, exist_ok=True)
+
+    def section(key, values):
+        values = [v for v in values if v]
+        return f"%{key}%\n" + "".join(v + "\n" for v in values) + "\n" if values else ""
+
+    builddate = info.get("builddate", ["0"])
+    desc = "".join([
+        section("NAME", [name]), section("VERSION", [version]), section("BASE", info.get("pkgbase", [])),
+        section("DESC", info.get("pkgdesc", [])), section("URL", info.get("url", [])),
+        section("ARCH", info.get("arch", [])), section("BUILDDATE", builddate),
+        # The build date, not now: the same pins always give the same database.
+        section("INSTALLDATE", builddate), section("PACKAGER", info.get("packager", [])),
+        section("SIZE", info.get("size", [])), section("REASON", [] if explicit else ["1"]),
+        section("GROUPS", info.get("group", [])), section("LICENSE", info.get("license", [])),
+        section("VALIDATION", ["pgp"]), section("REPLACES", info.get("replaces", [])),
+        section("DEPENDS", info.get("depend", [])), section("OPTDEPENDS", info.get("optdepend", [])),
+        section("CONFLICTS", info.get("conflict", [])), section("PROVIDES", info.get("provides", [])),
+        section("XDATA", info.get("xdata", [])),
+    ])
+    backup = [f"{b}\t{md5s[b]}" for b in info.get("backup", []) if b in md5s]
+    # libalpm looks files up by binary search, so the list is byte-sorted.
+    listing = section("FILES", sorted(set(files), key=lambda s: s.encode("utf-8", "surrogateescape"))) + section("BACKUP", backup)
+    with open(os.path.join(entry, "desc"), "w") as f:
+        f.write(desc)
+    with open(os.path.join(entry, "files"), "w", encoding="utf-8", errors="surrogateescape") as f:
+        f.write(listing)
+    if mtree is not None:
+        with open(os.path.join(entry, "mtree"), "wb") as f:
+            f.write(mtree)
+    if install is not None:
+        with open(os.path.join(entry, "install"), "wb") as f:
+            f.write(install)
+    return name
+
+
+def bootstrap_packages(a, m, dest, local, installed):
+    """Install pacman's missing dependency closure into the overlay, from today's repos."""
+    mirrors = mirrors_of(a, m)
+    dbs = []
+    for repo in a.repos.split(","):
+        p = os.path.join(a.cache, f"{repo}.db")
+        for mir in mirrors:
+            try:
+                download(f"{mir}/{repo}/{repo}.db", p)
+                break
+            except Exception as e:
+                log(f"  {mir}: {e}")
+        else:
+            die(f"{repo}.db: not downloadable from any mirror")
+        dbs.append(parse_db(p, repo))
+    byname = {}
+    for db in dbs:
+        for name, e in db.items():
+            byname.setdefault(name, e)
+    provides = collections.defaultdict(list)
+    for name in sorted(byname):
+        for pv in byname[name]["provides"]:
+            provides[depname(pv)].append(name)
+
+    have = set()
+    for name, info in installed.items():
+        have.add(name)
+        have.update(depname(pv) for pv in info.get("provides", []))
+    exclude = set(a.exclude or [])
+    selected, unmet = [], []
+    queue = list(a.packages)
+    while queue:
+        dep = queue.pop(0)
+        n = depname(dep)
+        if n in have:
+            continue
+        if n in exclude:
+            unmet.append(dep)
+            continue
+        pick = n if n in byname else (provides.get(n) or [None])[0]
+        if pick is None:
+            die(f"unresolvable dependency {dep!r}")
+        if pick in have:
+            continue
+        have.add(pick)
+        have.update(depname(pv) for pv in byname[pick]["provides"])
+        selected.append(pick)
+        queue.extend(byname[pick]["depends"])
+
+    sig = not a.no_verify_signatures
+    ver = None
+    if sig:
+        kp = fetch_one(mirrors, m.keyring["repo"], m.keyring["filename"], m.keyring["sha256"], a.cache, True)
+        ver = Verifier(m, a.cache, kp)
+    log(f"bootstrapping {len(selected)} packages into {dest}: {' '.join(selected)}")
+    for name in selected:
+        e = byname[name]
+        path = fetch_one(mirrors, e["repo"], e["filename"], e["sha256"], a.cache, sig)
+        if ver:
+            ver.verify(path)
+        info, files, md5s, mtree, install = read_package(path, dest, a.base)
+        write_local_entry(local, info, files, md5s, mtree, install, explicit=name in a.packages)
+        if install is not None:
+            log(f"  {name}: install scriptlet NOT run")
+    if ver:
+        ver.close()
+    if unmet:
+        log(f"  not installed (--exclude), left unmet in the local database: {' '.join(sorted(set(unmet)))}")
+    return selected
+
+
+def adjust_pacman_conf(dest):
+    """pacman.conf as the pacman package ships it, minus what the guest lacks."""
+    conf = os.path.join(dest, "etc", "pacman.conf")
+    if not os.path.exists(conf):
+        return
+    with open(conf) as f:
+        lines = f.read().split("\n")
+    out = []
+    for line in lines:
+        # Downloads run as user alpm, which pacman's sysusers entry creates; install
+        # scriptlets and sysusers do not run here, so there is no such user.
+        if line.startswith("DownloadUser"):
+            out.append("# POWERarm overlay: no alpm user (sysusers did not run), downloads stay as the caller")
+            out.append("#" + line)
+            continue
+        out.append(line)
+    with open(conf, "w") as f:
+        f.write("\n".join(out))
+
+
+def cmd_overlay_init(a):
+    m = Manifest.load(a.manifest)
+    dest = os.path.abspath(a.dest)
+    if not os.path.isdir(dest):
+        die(f"{dest}: no such directory (create the overlay directory first)")
+    local = os.path.join(dest, "var", "lib", "pacman", "local")
+    if os.path.isdir(local) and set(os.listdir(local)) - {"ALPM_DB_VERSION"}:
+        die(f"{local} already holds packages; refusing to register the base twice")
+    os.makedirs(local, exist_ok=True)
+    for sub in (("var", "lib", "pacman", "sync"), ("var", "cache", "pacman", "pkg")):
+        os.makedirs(os.path.join(dest, *sub), exist_ok=True)
+    with open(os.path.join(local, "ALPM_DB_VERSION"), "w") as f:
+        f.write(ALPM_DB_VERSION + "\n")
+
+    paths = do_fetch(a, m)
+    roots = set(m.roots)
+    installed = {}
+    log(f"registering {len(paths)} base packages in {local}")
+    for p, path in paths:
+        info, files, md5s, mtree, install = read_package(path)
+        installed[write_local_entry(local, info, files, md5s, mtree, install, explicit=p["name"] in roots)] = info
+    added = []
+    if a.with_pacman:
+        added = bootstrap_packages(a, m, dest, local, installed)
+        adjust_pacman_conf(dest)
+    print(f"overlay {dest}")
+    print(f"base packages registered {len(paths)}")
+    print(f"packages installed {len(added)}{': ' + ' '.join(added) if added else ''}")
+
+
 # --------------------------------------------------------------------------- main
 
 def main():
@@ -697,9 +966,25 @@ def main():
     p.add_argument("--threshold", type=lambda s: int(s, 0), default=0x10000)
     p.set_defaults(fn=cmd_align)
 
+    p = sub.add_parser("overlay-init")
+    common(p)
+    p.add_argument("--dest", required=True, help="the overlay directory (must exist)")
+    p.add_argument("--base", default=os.path.join(xdg_data, "powerarm", "RootFS", "ArchLinuxARM-m2"),
+                   help="the base rootfs the overlay sits on (only read)")
+    p.add_argument("--no-verify-signatures", action="store_true")
+    p.add_argument("--with-pacman", action="store_true",
+                   help="also install pacman's missing dependency closure from today's repos")
+    p.add_argument("--package", dest="packages", action="append",
+                   help="closure root for --with-pacman (repeatable; default pacman, archlinuxarm-keyring)")
+    p.add_argument("--exclude", action="append", help="dependency to leave uninstalled (repeatable)")
+    p.add_argument("--repos", default="core,extra,alarm")
+    p.set_defaults(fn=cmd_overlay_init)
+
     a = ap.parse_args()
     if a.cmd == "resolve" and a.mirror:
         a.mirror = a.mirror[0]
+    if a.cmd == "overlay-init" and not a.packages:
+        a.packages = ["pacman", "archlinuxarm-keyring"]
     a.fn(a)
 
 

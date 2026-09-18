@@ -26,6 +26,7 @@ $end_info$
 #include <unistd.h>
 
 #include "LinuxSyscalls/EmulatedFiles/EmulatedFiles.h"
+#include "LinuxSyscalls/RootFSOverlay.h"
 
 namespace FEXCore::Context {
 class Context;
@@ -114,6 +115,21 @@ public:
   // vfs
   uint64_t Statfs(const char* path, void* buf);
 
+  // The per-user rootfs overlay (RootFSOverlay.h). Inactive when no overlay
+  // directory exists, and then every entry point below behaves exactly as
+  // the raw syscall.
+  bool OverlayActive() const {
+    return Overlay.Active();
+  }
+  uint64_t Mknodat(int dirfd, const char* pathname, mode_t mode, dev_t dev);
+  // nullopt: not an overlay directory / not an overlay working directory.
+  std::optional<uint64_t> OverlayGetdents64(int fd, void* dirp, uint32_t count);
+  std::optional<uint64_t> OverlayGetcwd(char* buf, size_t size);
+  // bind/connect of an AF_UNIX pathname socket under a guest-owned prefix.
+  std::optional<uint64_t> OverlaySocket(bool Bind, int fd, const void* addr, uint32_t addrlen);
+  // True when the guest must see ENOENT for an absolute path the overlay hides.
+  bool IsOverlayHidden(const char* pathname) const;
+
   void UpdatePID(uint32_t PID);
   // Helper to detect FEX-internal files from their inode and parent directory FD.
   // This is useful to deal with Chromium/CEF, which closes any FDs reported in /proc/self/fd/.
@@ -201,6 +217,9 @@ private:
   bool IsSelfNoFollow(const char* Pathname, int flags) const;
 
   bool RootFSPathExists(const char* Filepath) const;
+  // The overlay handles a path only when it is active and the thunk overlays
+  // do not redirect that path.
+  bool UseOverlay(int DirFD, const char* Path) const;
   bool IsThunkRedirectableLibraryDir(const char* Path) const;
   size_t GetRootFSPrefixLen(const char* pathname, size_t len, bool AliasedOnly) const;
   ssize_t StripRootFSPrefix(char* pathname, ssize_t len, bool leaky) const;
@@ -230,6 +249,8 @@ private:
   uint32_t CurrentPID {};
   int RootFSFD {AT_FDCWD};
   int ProcFD {0};
+  RootFSOverlay Overlay;
+  int64_t OverlayFDInode = 0;
   int64_t RootFSFDInode = 0;
   int64_t ProcFDInode = 0;
   int64_t CodeMapInode = 0;

@@ -985,11 +985,24 @@ void RegisterCommon(FEX::HLE::SyscallHandler* Handler) {
   // from x86); registered in x64/x32 Semaphore.cpp.
   REGISTER_SYSCALL_IMPL(getpid, SyscallPassthrough0<SYSCALL_DEF(getpid)>);
   REGISTER_SYSCALL_IMPL(socket, SyscallPassthrough3<SYSCALL_DEF(socket)>);
-  REGISTER_SYSCALL_IMPL(connect, SyscallPassthrough3<SYSCALL_DEF(connect)>);
+  // A unix socket path under a guest-owned prefix resolves through the rootfs overlay.
+  REGISTER_SYSCALL_IMPL(connect, [](FEXCore::Core::CpuStateFrame* Frame, int sockfd, const void* addr, uint32_t addrlen) -> uint64_t {
+    if (auto Layered = FEX::HLE::_SyscallHandler->FM.OverlaySocket(false, sockfd, addr, addrlen)) {
+      uint64_t Result = *Layered;
+      SYSCALL_ERRNO();
+    }
+    return SyscallPassthrough3<SYSCALL_DEF(connect)>(Frame, sockfd, reinterpret_cast<uint64_t>(addr), addrlen);
+  });
   REGISTER_SYSCALL_IMPL(sendto, SyscallPassthrough6<SYSCALL_DEF(sendto)>);
   REGISTER_SYSCALL_IMPL(recvfrom, SyscallPassthrough6<SYSCALL_DEF(recvfrom)>);
   REGISTER_SYSCALL_IMPL(shutdown, SyscallPassthrough2<SYSCALL_DEF(shutdown)>);
-  REGISTER_SYSCALL_IMPL(bind, SyscallPassthrough3<SYSCALL_DEF(bind)>);
+  REGISTER_SYSCALL_IMPL(bind, [](FEXCore::Core::CpuStateFrame* Frame, int sockfd, const void* addr, uint32_t addrlen) -> uint64_t {
+    if (auto Layered = FEX::HLE::_SyscallHandler->FM.OverlaySocket(true, sockfd, addr, addrlen)) {
+      uint64_t Result = *Layered;
+      SYSCALL_ERRNO();
+    }
+    return SyscallPassthrough3<SYSCALL_DEF(bind)>(Frame, sockfd, reinterpret_cast<uint64_t>(addr), addrlen);
+  });
   REGISTER_SYSCALL_IMPL(listen, SyscallPassthrough2<SYSCALL_DEF(listen)>);
   REGISTER_SYSCALL_IMPL(getsockname, SyscallPassthrough3<SYSCALL_DEF(getsockname)>);
   REGISTER_SYSCALL_IMPL(getpeername, SyscallPassthrough3<SYSCALL_DEF(getpeername)>);
@@ -1004,7 +1017,14 @@ void RegisterCommon(FEX::HLE::SyscallHandler* Handler) {
   REGISTER_SYSCALL_IMPL(flock, SyscallPassthrough2<SYSCALL_DEF(flock)>);
   REGISTER_SYSCALL_IMPL(fsync, SyscallPassthrough1<SYSCALL_DEF(fsync)>);
   REGISTER_SYSCALL_IMPL(fdatasync, SyscallPassthrough1<SYSCALL_DEF(fdatasync)>);
-  REGISTER_SYSCALL_IMPL(getcwd, SyscallPassthrough2<SYSCALL_DEF(getcwd)>);
+  REGISTER_SYSCALL_IMPL(getcwd, [](FEXCore::Core::CpuStateFrame* Frame, char* buf, size_t size) -> uint64_t {
+    // A working directory inside the rootfs overlay reads as its guest path.
+    if (auto Guest = FEX::HLE::_SyscallHandler->FM.OverlayGetcwd(buf, size)) {
+      uint64_t Result = *Guest;
+      SYSCALL_ERRNO();
+    }
+    return SyscallPassthrough2<SYSCALL_DEF(getcwd)>(Frame, reinterpret_cast<uint64_t>(buf), size);
+  });
   // chdir goes through FileManager for path translation — the raw passthrough
   // that used to live here missed the rootfs remap and broke dpkg -i, which
   // creates its workdir via mkdirat(rootfs_dirfd, "var/lib/dpkg/tmp.ci", ...)
@@ -1084,7 +1104,18 @@ void RegisterCommon(FEX::HLE::SyscallHandler* Handler) {
   REGISTER_SYSCALL_IMPL(inotify_add_watch, SyscallPassthrough3<SYSCALL_DEF(inotify_add_watch)>);
   REGISTER_SYSCALL_IMPL(inotify_rm_watch, SyscallPassthrough2<SYSCALL_DEF(inotify_rm_watch)>);
   REGISTER_SYSCALL_IMPL(migrate_pages, SyscallPassthrough4<SYSCALL_DEF(migrate_pages)>);
-  REGISTER_SYSCALL_IMPL(mknodat, SyscallPassthrough4<SYSCALL_DEF(mknodat)>);
+  REGISTER_SYSCALL_IMPL(mknodat, [](FEXCore::Core::CpuStateFrame* Frame, int dirfd, const char* pathname, mode_t mode, dev_t dev) -> uint64_t {
+    // Under a guest-owned prefix a new node goes to the rootfs overlay.
+    if (FEX::HLE::_SyscallHandler->FM.OverlayActive()) {
+      GuestPath Guest_pathname(pathname);
+      if (Guest_pathname.error()) {
+        return Guest_pathname.error();
+      }
+      uint64_t Result = FEX::HLE::_SyscallHandler->FM.Mknodat(dirfd, Guest_pathname.c_str(), mode, dev);
+      SYSCALL_ERRNO();
+    }
+    return SyscallPassthrough4<SYSCALL_DEF(mknodat)>(Frame, dirfd, reinterpret_cast<uint64_t>(pathname), mode, dev);
+  });
   REGISTER_SYSCALL_IMPL(unshare, SyscallPassthrough1<SYSCALL_DEF(unshare)>);
   REGISTER_SYSCALL_IMPL(splice, SyscallPassthrough6<SYSCALL_DEF(splice)>);
   REGISTER_SYSCALL_IMPL(tee, SyscallPassthrough4<SYSCALL_DEF(tee)>);

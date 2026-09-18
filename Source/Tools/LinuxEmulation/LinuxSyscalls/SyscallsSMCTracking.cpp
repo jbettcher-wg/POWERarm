@@ -1504,8 +1504,16 @@ bool SyscallHandler::ResolveMainExeIdentity() {
     }
 
     // Check RootFS first, then the plain path -- same precedence
-    // OpenCodeMapFile uses for the same guest-path/host-path ambiguity.
-    int FD = open((RootFSPath() + ProgramName.value()->c_str()).c_str(), O_RDONLY);
+    // OpenCodeMapFile uses for the same guest-path/host-path ambiguity. A
+    // program in the rootfs overlay is that copy, not a host file of the
+    // same name.
+    int FD = -1;
+    if (auto Layered = RootFSOverlay::LoaderPath(RootFSPath(), ProgramName.value()->c_str()); !Layered.empty()) {
+      FD = open(Layered.c_str(), O_RDONLY);
+    }
+    if (FD == -1) {
+      FD = open((RootFSPath() + ProgramName.value()->c_str()).c_str(), O_RDONLY);
+    }
     if (FD == -1) {
       FD = open(ProgramName.value()->c_str(), O_RDONLY);
     }
@@ -2343,8 +2351,14 @@ int SyscallHandler::OpenCodeMapFile() {
   auto ProgramName = FEXCore::Config::Get(FEXCore::Config::CONFIG_APP_FILENAME);
   LOGMAN_THROW_A_FMT(ProgramName && ProgramName.value()->c_str()[0] == '/', "");
 
-  // Check RootFS first, then the plain path
-  auto ProgramFD = open((RootFSPath() + ProgramName.value()->c_str()).c_str(), O_RDONLY);
+  // Check the rootfs overlay, then RootFS, then the plain path
+  int ProgramFD = -1;
+  if (auto Layered = RootFSOverlay::LoaderPath(RootFSPath(), ProgramName.value()->c_str()); !Layered.empty()) {
+    ProgramFD = open(Layered.c_str(), O_RDONLY);
+  }
+  if (ProgramFD == -1) {
+    ProgramFD = open((RootFSPath() + ProgramName.value()->c_str()).c_str(), O_RDONLY);
+  }
   if (ProgramFD == -1) {
     ProgramFD = open(ProgramName.value()->c_str(), O_RDONLY);
   }
