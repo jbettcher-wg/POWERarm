@@ -103,17 +103,34 @@ cherry-pick; patches for them go in `docs/powerarm/outgoing-patches/fastppcx86/`
 
 ## Open items, roughly in order
 
-1. Memory-ordering (litmus) differential tests with Pi goldens. Fold in the one path the LSE
-   work could not cover: `AtomicMinMax`'s CAS retry loop never takes its back edge single
-   threaded, because with no competing writer the CAS always wins first time.
+1. ~~Memory-ordering (litmus) differential tests with Pi goldens.~~ **Done:**
+   `unittests/A64Frontend/litmus.c` (hardware, Pi golden; its contended LDUMAX/LDSMIN counters
+   also exercise `AtomicMinMax`'s retry back edge) and `unittests/MemoryModel/check.sh` (herd7,
+   by model, a regression gate). Read both headers before trusting a PASS: POWER9 never shows
+   store->store reordering, so release-side changes can only be validated by the model.
 2. Make `POWERARM_PORTABLE=1` plus a named rootfs fail loudly.
-3. `MRS` of `CNTVCT_EL0` and `CNTFRQ_EL0` — V8's clock source, and the first thing code-server's
-   Node dies on (`0xd53be040`). Exactly those two: the Pi SIGILLs on `CNTPCT_EL0`,
-   `CNTVCTSS`/`CNTPCTSS` and `CNTKCTL_EL1`, so they must stay unimplemented to keep faulting like
-   the reference. Report the real host timebase in `CNTFRQ`, not the Pi's 54 MHz.
-4. P7 (lightest correct fence per case) is a live optimization target now that the barriers are
-   real. (The "re-measure the compile baseline" half of this item was dropped 2026-09-17: it is
-   re-deriving numbers already on disk.)
+3. ~~`MRS` of `CNTVCT_EL0` and `CNTFRQ_EL0`~~ **Done** (9fa8983a7); code-server now serves.
+4. **P7, last lever: acquire-only and release-only LSE RMWs. A standard-agent task.** Relaxed
+   RMWs and acquire fences are done (d96394b3d, 147903303) and trailing-sync is formally rejected
+   (35f48f28b); see the checklist P7 row. What remains is the full hwsync/isync bracket still
+   paid by RMWs with exactly one of acquire/release. Its value depends on the runtime. A census
+   of executed variants (a throwaway counting build; see below) put them at ~6% of V8's atomics
+   (~2.2 M per 3.9 s run, so under 1% even with every such fence deleted) but **33.5% of JSC's**
+   (Bun, `claude --version`: CAS acquire 7.4 k, CAS release 7.3 k of 44 k). `--version` is too short
+   to give JSC's steady-state rate, so the steps are, in order:
+   a. Census a sustained Bun/JSC workload. Rebuild the census: in the A64 frontend, each atomic or
+      barrier translator emits a load/add/store to a counter slot in a MAP_SHARED file named by an
+      env var, keyed by variant (A/R bits for LSE, bit 15 for LDXR/STXR, CRm[1:0] for DMB). Never
+      commit it; use a fresh code-cache dir per run, since the counter address is baked into code.
+      If acquire/release-only RMWs are not a large share of a sustained run, stop here.
+   b. Extend `unittests/MemoryModel` to RMWs. `diyone7 -arch AArch64 -show edges` lists the Amo
+      edges; jingle7 needs lwarx/stwcx. rules, and herd7's PPC handling of reservations (no loop:
+      a single attempt, conditioned on success) must be confirmed on a known case first.
+   c. Candidate mapping. Release-only RMW: lwsync; loop. Acquire-only RMW: probably KEEPS the
+      leading hwsync -- under the leading-sync convention that is what orders a preceding release
+      before it (RCsc), exactly as LDAR keeps its own. Let the model decide, not reasoning.
+   d. Implement it like the Relaxed flag (IR.json defaulted field, AtomicOps.cpp, the three LSE
+      translators); gate with check.sh, litmus.c and the three-mode suite; measure once.
 5. **An FP-heavy benchmark. This now blocks the rest of the F series.** F1 landed with the
    cold-block mechanism (`docs/powerarm/COLD-BLOCK-DESIGN.md`, `A64FArith`), and its only
    measurable effect on the workloads we have is a slice regression: cold 23.90 -> 24.58 s
@@ -125,4 +142,10 @@ cherry-pick; patches for them go in `docs/powerarm/outgoing-patches/fastppcx86/`
    landings on inference; they share the same stubs and bodies, so the per-unit cost amortises as
    sites multiply.
 6. fastppcx86: patch `0034` for the madvise bug (diagnosis written, patch not yet made).
-7. Thunks (GL/Vulkan first, then OpenSSL), per `DESIGN.md` §6.
+7. Thunks, per `docs/powerarm/THUNKS-DESIGN.md` (fastppcx86 already runs them on this GPU).
+   Stage 0 (AArch64 thunk ABI + guest vDSO) in progress 2026-09-17.
+8. **Two-tier rootfs** (`DESIGN.md` §6.2a): designed, and being implemented 2026-09-17. Until it
+   lands, guest `pacman` reads the HOST's package DB through fallthrough -- never trust its output.
+9. **Research queued overnight 2026-09-17 (Fable agents, design docs, no code):** cold translation
+   cost (`docs/powerarm/research/cold-translation/`) and code footprint / icache
+   (`docs/powerarm/research/code-footprint/`). Each returns a ranked top five.
