@@ -1,0 +1,9 @@
+# trailing.map is the REJECTED trailing-sync proposal: move LDAR's leading hwsync to the
+# release side (STLR = lwsync; stw; sync, LDAR = lwz; lwsync). It would have cut hwsyncs
+# roughly tenfold on the V8 workload, but it is unsound for SC-IRIW1: STLR writers with
+# LDAR;LDAR readers, which is exactly what C++ seq_cst atomics compile to on AArch64, and
+# which C++ forbids. That matches the published trailing-sync counterexample for C/C++ on
+# Power (Manerkar, Trippel, Lustig, Pellauer, Martonosi, 2016).
+#
+# Nothing is listed below on purpose, so `check.sh trailing` reports every divergence
+# against it. Kept as a record of why LDAR keeps its leading hwsync.

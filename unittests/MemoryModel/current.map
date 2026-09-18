@@ -1,0 +1,11 @@
+AArch64 to PPC
+
+"MOV %r,&c" -> "li %r,&c"
+"STR %r,[%a]" -> "stw %r,0(%a)"
+"LDR %r,[%a]" -> "lwz %r,0(%a)"
+"STLR %r,[%a]" -> "sync; stw %r,0(%a)"
+"LDAR %r,[%a]" -> "sync; lwz %r,0(%a); lwsync"
+"LDAPR %r,[%a]" -> "lwz %r,0(%a); lwsync"
+"DMB SY" -> "sync"
+"DMB LD" -> "lwsync"
+"DMB ST" -> "lwsync"

@@ -1,0 +1,26 @@
+# Divergences between AArch64 and POWERarm's CURRENT lowering (current.map) that are
+# accepted on purpose. check.sh fails on any unsound test NOT listed here.
+#
+# All six are IRIW: two writers, two readers that must agree on the order of the
+# writes. AArch64 is other-multi-copy-atomic and forbids the readers disagreeing once
+# each reader's two loads are ordered at all. Power is not multi-copy-atomic and only
+# forbids it when a hwsync sits between the two loads. Here the loads are separated
+# by an lwsync only: DMB LD lowers to lwsync, and an LDAR's or LDAPR's trailing
+# acquire fence is lwsync.
+#
+# Why accepted: no C or C++ program can depend on these. C++ forbids IRIW only when all
+# four accesses are seq_cst, which on AArch64 is STLR writers and LDAR;LDAR readers
+# (SC-IRIW1) -- and that case IS forbidden here, by the second LDAR's leading hwsync.
+# Every case below has at least one reader load that is not seq_cst. Only hand-written
+# AArch64 assembly relying on multi-copy atomicity could observe them.
+#
+# Cost of closing them: an hwsync between those loads, i.e. DMB LD -> hwsync and the
+# LDAR/LDAPR trailing fence -> hwsync. LDAR alone runs ~17 M times in a 3.9 s V8 run
+# (checklist P7), so that would roughly double the dominant fence cost for shapes nothing
+# compiled can rely on. Revisit if a real program is ever found to need it.
+IRIW000   plain writers, readers LDR; DMB LD; LDR
+IRIW008   plain writers, readers LDAR; LDR
+IRIW012   plain writers, readers LDAPR; LDR
+SC-IRIW2  release writers, readers LDAR; LDR
+SC-IRIW3  release writers, readers LDAPR; LDR
+SC-IRIW4  release writers, readers LDR; DMB LD; LDR
