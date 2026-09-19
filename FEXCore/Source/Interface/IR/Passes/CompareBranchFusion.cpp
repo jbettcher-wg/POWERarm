@@ -400,8 +400,8 @@ void CompareFusion::Run(IREmitter* IREmit, IRListView& IR, Ref Block, bool NZCVL
       if (Fused) {
         Consumers.push_back({
           .Node = CodeNode,
-          .Cmp1 = IR.GetNode(Cur.Op->Args[0]),
-          .Cmp2 = Cur.IsAdd ? nullptr : IR.GetNode(Cur.Op->Args[1]),
+          .Producer = Cur.Node,
+          .AgainstNegatedConst = Cur.IsAdd,
           .NegatedConst = Cur.NegatedConst,
           .CompareSize = Cur.Op->Size,
           .Cond = *Fused,
@@ -434,15 +434,27 @@ void CompareFusion::Run(IREmitter* IREmit, IRListView& IR, Ref Block, bool NZCVL
     }
 
     auto IROp = IR.GetOp<IROp_Header>(C.Node);
-    Ref Cmp2 = C.Cmp2;
-    if (!Cmp2) {
+    // The producer's operands as they are NOW. Recording them when the
+    // consumer was found was the Firefox miscompile: in
+    //     cmp x9, x1 ; csel x9, x9, x1, hi ; cmp x9, x2 ; csel x9, x9, x2, lo
+    // the second compare reads the first CSEL's result as its SSA value (the
+    // frontend's cache of context-backed X registers hands it straight on),
+    // and rewriting that CSEL replaces its node. ReplaceUsesWithAfter updates
+    // the second compare but not a Ref copied out of it, so the second Select
+    // compared a removed node: whatever register the allocator left there.
+    auto ProducerOp = IR.GetOp<IROp_Header>(C.Producer);
+    Ref Cmp1 = IR.GetNode(ProducerOp->Args[0]);
+    Ref Cmp2 {};
+    if (C.AgainstNegatedConst) {
       IREmit->SetWriteCursorBefore(C.Node);
       Cmp2 = IREmit->_InlineConstant(C.NegatedConst);
+    } else {
+      Cmp2 = IR.GetNode(ProducerOp->Args[1]);
     }
 
     if (IROp->Op == OP_CONDJUMP) {
       auto Op = IROp->CW<IROp_CondJump>();
-      IREmit->ReplaceNodeArgument(C.Node, 0, C.Cmp1);
+      IREmit->ReplaceNodeArgument(C.Node, 0, Cmp1);
       IREmit->ReplaceNodeArgument(C.Node, 1, Cmp2);
       Op->CompareSize = C.CompareSize;
       Op->Cond = C.Cond;
@@ -453,7 +465,7 @@ void CompareFusion::Run(IREmitter* IREmit, IRListView& IR, Ref Block, bool NZCVL
       // neither CR0 nor XER (see the comment there, which points back here).
       auto Op = IROp->C<IROp_NZCVSelect>();
       IREmit->SetWriteCursorBefore(C.Node);
-      Ref NewSelect = IREmit->_Select(IROp->Size, C.CompareSize, C.Cond, C.Cmp1, Cmp2, IR.GetNode(Op->TrueVal), IR.GetNode(Op->FalseVal));
+      Ref NewSelect = IREmit->_Select(IROp->Size, C.CompareSize, C.Cond, Cmp1, Cmp2, IR.GetNode(Op->TrueVal), IR.GetNode(Op->FalseVal));
       IREmit->ReplaceUsesWithAfter(C.Node, NewSelect, C.Node);
       IREmit->Remove(C.Node);
     }

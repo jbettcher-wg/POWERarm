@@ -711,6 +711,69 @@ def gen_cmpbranch(p):
         p.case(body, {7: start, 9: 0x7FFFFFFC if "w9" in ins else 0xFFFFFFFFFFFFFFF8})
 
 
+# Chains of compares in one block where a compare reads the result of the
+# select before it: clamps, min/max of three, `csel ; subs ; csel` reductions.
+# Compare fusion rewrites each CSEL into a new Select node, so a later compare's
+# operand changes identity while the block is being rewritten; a fused consumer
+# that kept the old operand compared a removed node (Firefox, 2026-09-18). The
+# compare reads the CSEL's own SSA value when the register is context-backed
+# and 64-bit (the frontend's GPR cache), so the accumulator is one of those in
+# half the cases. The last consumer is a CSEL-family select or a B.cond; the
+# chain's flags are either killed at the end (every compare can go) or left for
+# the dump.
+CB_CONTEXT_REGS = [9, 10, 15, 18, 25, 28]
+
+
+def gen_cmpchain(p):
+    cb = CmpBranch(p)
+    rng = p.rng
+    for _ in range(600):
+        is64 = rng.random() < 0.6
+        rn = x if is64 else w
+        acc, a, b, c, t = rng.sample(CB_REGS, 5)
+        if rng.random() < 0.5 and acc not in CB_CONTEXT_REGS:
+            acc = rng.choice([r for r in CB_CONTEXT_REGS if r not in (a, b, c, t)])
+        loads = {r: cb.dirty(rng.choice(CB_EDGE_X if is64 else CB_EDGE_W + [p.value()]), is64) for r in (acc, a, b, c, t)}
+        others = [a, b, c]
+        body = []
+        steps = rng.randrange(2, 5)
+        for step in range(steps):
+            o = rng.choice(others)
+            imm, sh = rng.choice(CB_IMMS)
+            shs = f", lsl #{sh}" if sh else ""
+            kind = rng.randrange(7)
+            if kind == 0:
+                body.append(f"cmp {rn(acc)}, {rn(o)}")
+            elif kind == 1:
+                body.append(f"cmp {rn(o)}, {rn(acc)}")
+            elif kind == 2:
+                body.append(f"cmp {rn(acc)}, #{imm}{shs}")
+            elif kind == 3:
+                body.append(f"cmn {rn(acc)}, #{imm}{shs}")
+            elif kind == 4:
+                body.append(f"subs {rn(t)}, {rn(acc)}, {rn(o)}")
+            elif kind == 5:
+                body.append(f"adds {rn(t)}, {rn(acc)}, #{imm}{shs}")
+            else:
+                body.append(f"cmp {rn(acc)}, {rn(o)}, lsr #{rng.choice([1, 3])}")
+            cond = cb.cond()
+            last = step == steps - 1
+            if last and rng.random() < 0.3:
+                body += ["mov x5, #1", f"b.{cond} 7f", "mov x5, #2", "7:"]
+                break
+            op = rng.choice(["csel", "csel", "csinc", "csinv", "csneg", "cset"])
+            src = rng.choice([o, t])
+            if op == "cset":
+                body.append(f"cset {rn(acc)}, {cond}")
+            elif rng.random() < 0.5:
+                body.append(f"{op} {rn(acc)}, {rn(acc)}, {rn(src)}, {cond}")
+            else:
+                body.append(f"{op} {rn(acc)}, {rn(src)}, {rn(acc)}, {cond}")
+        if rng.random() < 0.5:
+            body.append("cmp x5, #0x33")
+        p.case(body, loads)
+
+
 GROUPS = {
     "addsub": gen_addsub,
     "adc": gen_adc,
@@ -726,6 +789,7 @@ GROUPS = {
     "loadstore": gen_loadstore,
     "dczva": gen_dczva,
     "cmpbranch": gen_cmpbranch,
+    "cmpchain": gen_cmpchain,
 }
 
 
