@@ -114,8 +114,9 @@ DEF_OP(VectorImm) {
 
   switch (ElemSz) {
   case IR::OpSize::i8Bit:
-    if (val >= 0x80) {
-      // vspltisb is signed, range -16..15 only.
+    // vspltisb takes a 5-bit signed immediate (-16..15). 0x10..0x7F used to
+    // take it too and lost their high bits (0x55 splatted as 0xF5).
+    if ((int8_t)val < -16 || (int8_t)val > 15) {
       // mtvsrd lands the GPR in BE-dword 0 (BE-bytes 0..7) and leaves BE-dword 1
       // (BE-bytes 8..15) undefined per ISA. SplatByteIdx(0)=15 reads from the
       // undefined half. Duplicate dword 0 into both halves first (same fix as
