@@ -319,3 +319,14 @@ CAS five times as heavily in proportion.
     with `hyprctl clients`; unwind cores with `coredumpctl dump <pid>` + gdb `bt -30`.
     Never pattern-kill: the orchestrator's shell got killed three times by patterns matching its
     own command line.
+22. **NEON gap closure landed** (b1a10d960, 6 new Pi-golden tests, 9,460 cases): FRECPE/FRSQRTE/
+    FRECPS/FRSQRTS/URECPE/URSQRTE/FRECPX bit-exact; SDOT/UDOT by element, FMULX, PMUL; the
+    saturating shifts by register, SUQADD/USQADD, SQDMULL/SQDMLAL/SQDMLSL; FCVTXN; the whole FP16
+    vector/scalar group (exact but slow, one lane at a time through double; ISA 3.0
+    xvcvhpsp/xvcvsphp if an FP16-heavy workload appears); scalar SLI/SRI/SSRA/USRA and
+    SQRSHRN/UQRSHRN/SQRSHRUN. **Still missing, found by that agent:** LDXP/STXP/LDAXP/STLXP
+    (exclusive pairs, base ARMv8.0, decoded but no handler, TranslateExclusive.cpp);
+    SQRDMLAH/SQRDMLSH (on the A76, commented out, asimdrdm not advertised). FEAT_DotProd now fully
+    passes against the Pi, so asimddp can be advertised (ELFCodeLoader.h HWCap,
+    SystemRegisters.h ISAR0.DP, cpuinfo, the sysreg test). FCADD/FCMLA and SHA-512/SHA-3/SM3/SM4
+    are not on the A76 and not advertised.
