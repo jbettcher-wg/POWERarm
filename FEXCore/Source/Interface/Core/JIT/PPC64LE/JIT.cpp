@@ -6204,15 +6204,22 @@ CPUBackend::CompiledCode PPC64JITCore::CompileCode(
   auto* EntryLoc = reinterpret_cast<uint8_t*>(Tail) + sizeof(CPUBackend::JITCodeTail);
   auto* EntryBase = EntryLoc;
   uintptr_t PrevPCOffset  = 0;
-  uintptr_t PrevRIPOffset = 0;
+  int64_t PrevRIPOffset = 0;
   for (const auto& GuestOpcode : DebugData->GuestOpcodes) {
     LOGMAN_THROW_A_FMT(static_cast<uintptr_t>(GuestOpcode.HostEntryOffset) >= PrevPCOffset,
                        "GuestOpcodes must be in ascending host order for vl64pair delta walk");
+    // A guest offset is relative to the unit's entry and travels through the
+    // IR as a u32 (IROp_GuestOpcode / IROp_CodeBlock::GuestEntryOffset). A
+    // block the decoder placed below the entry (its region reaches back
+    // RegionWindow bytes) has a negative offset, so read it back as signed:
+    // zero-extended, the delta decoded to Entry + 2^32 - k and every signal
+    // or fault in such a block reported a guest PC with bit 32 set.
+    const int64_t RIPOffset = static_cast<int32_t>(static_cast<uint32_t>(GuestOpcode.GuestEntryOffset));
     const uint64_t HostDelta  = static_cast<uintptr_t>(GuestOpcode.HostEntryOffset) - PrevPCOffset;
-    const uint64_t GuestDelta = static_cast<uintptr_t>(GuestOpcode.GuestEntryOffset) - PrevRIPOffset;
+    const uint64_t GuestDelta = static_cast<uint64_t>(RIPOffset - PrevRIPOffset);
     EntryLoc += FEXCore::Utils::vl64pair::Encode(EntryLoc, HostDelta, GuestDelta);
     PrevPCOffset  = static_cast<uintptr_t>(GuestOpcode.HostEntryOffset);
-    PrevRIPOffset = static_cast<uintptr_t>(GuestOpcode.GuestEntryOffset);
+    PrevRIPOffset = RIPOffset;
   }
   const size_t EntriesSize = static_cast<size_t>(EntryLoc - EntryBase);
   const size_t TailAndEntries = sizeof(CPUBackend::JITCodeTail) + EntriesSize;
