@@ -40,6 +40,16 @@ cherry-pick; patches for them go in `docs/powerarm/outgoing-patches/fastppcx86/`
   launch no longer recompiles the blocks of small, 0644 or dlclose'd libraries (item 10). The
   guest main stack can no longer sit where the host stack grows (item 12). getcwd inside the
   rootfs returns guest paths.
+- **VS Code 1.138.0 (arm64 Electron 42) runs** (2026-09-18, dev build): the workbench, the
+  extension host (up in ~4 s) and the built-in git/GitHub extensions. It lives at
+  `~/Development/vscode-arm64/<version>`; its 61 library packages (gtk3, nss, cups, ...) are in
+  the vk overlay. Launch: `POWERARM_PORTABLE=1 POWERARM_ROOTFS=<vk> <POWERarm> <dir>/code
+  --no-sandbox` (or plain `POWERARM_ROOTFS=<vk> <dir>/code --no-sandbox` through binfmt once
+  stable has 0e4825b60 and 84ffbdcf8). The two fixes: `/proc`, `/sys` and `/dev` are host-only
+  (the zygote and GPU process died on Chromium's `fstatat(proc_fd, "self/task/")`), and
+  FMAXV/FMINV/FMAXNMV/FMINNMV (the renderer died on FMINV). Remaining unimplemented-instruction
+  reports are all feature probes that also SIGILL on an A76 (GCS/TPIDR2 MRS, MTE, SVE `cnt`,
+  SME).
 - **Stable promoted to `c632e0bca`** (2026-09-18, binfmt re-registered, `check-binfmt-inode.sh`
   OK), so binfmt-launched programs and guest children now have everything in the bullet above.
   The first launches after the promote are cold (new cache config id).
@@ -234,3 +244,18 @@ CAS five times as heavily in proportion.
     Regression test: `hoststack` (run.sh forces the layout). Still on the stack, harmless now but
     82 KiB each on every call: the 64 KiB EXDEV copy buffers in `FileManager::Linkat` and
     `FileManager::Renameat2`.
+13. **Guest self-signals read as host faults.** Chromium's crash handler re-raises a caught
+    SIGILL on itself with `rt_tgsigqueueinfo` (si_code ILL_ILLOPC, si_addr = the guest pc). It
+    arrives while the passthrough syscall is in a deferred-signal section, so POWERarm reports
+    "FATAL host fault" and terminates instead of delivering it to the guest. A thread sending a
+    signal to itself should mark that window so the classifier treats the signal as the guest's.
+14. **FPCR.DN and FPCR.FZ have no effect** (`TranslateFP.cpp` POWERARM-M1-TODO(fpu)). No test
+    sets them. Apps that enable flush-to-zero or default-NaN (audio DSP, some engines) get IEEE
+    results instead.
+15. **FP16 vector coverage vs the `asimdhp` claim.** Several half-precision vector encodings are
+    still commented out in `a64.inc` (FMAXV_1, FMAXNMP_vec_1, ...), while HWCAP advertises
+    asimdhp. Audit with `gap_census.py`, implement the missing ones against Pi goldens, or stop
+    advertising asimdhp until they exist.
+16. **Chromium sandbox.** VS Code runs with `--no-sandbox`. The real sandbox needs user
+    namespaces and seccomp-bpf filters over arm64 syscall numbers; seccomp emulation is opt-in
+    (`POWERARM_NEEDSSECCOMP`).

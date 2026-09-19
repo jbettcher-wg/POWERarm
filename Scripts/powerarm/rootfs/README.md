@@ -271,6 +271,9 @@ base=~/.local/share/powerarm/RootFS/ArchLinuxARM-m2
 mkdir "$base-overlay"
 Scripts/powerarm/rootfs/alarm_sysroot.py overlay-init --dest "$base-overlay" --base "$base" --with-pacman
 # pacman and pacman-key insist on uid 0: run them as root of a user namespace (no privilege).
+# POWERARM_PORTABLE=1 is required there: otherwise POWERarm looks for its server socket under
+# the namespace's uid 0 and fails ("Couldn't connect to POWERarmServer socket").
+export POWERARM_PORTABLE=1 POWERARM_ROOTFS="$base"
 unshare -r POWERarm /usr/bin/pacman-key --init
 unshare -r POWERarm /usr/bin/pacman-key --populate archlinuxarm
 unshare -r POWERarm /usr/bin/pacman -Sy
