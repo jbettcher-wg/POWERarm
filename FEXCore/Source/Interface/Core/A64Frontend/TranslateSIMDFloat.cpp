@@ -385,11 +385,14 @@ bool IRBuilder::FCVTAS_2(uint32_t Word) { return SIMDFloatToInt(Word, ROUND_TIEA
 bool IRBuilder::FCVTAU_2(uint32_t Word) { return SIMDFloatToInt(Word, ROUND_TIEAWAY, false, true); }
 
 bool IRBuilder::SIMDFixedConvert(uint32_t Word, bool ToFloat, bool Signed, bool Scalar) {
-  // SCVTF/UCVTF/FCVTZS/FCVTZU with fbits = 2 * esize - immh:immb. immh 01xx
-  // is single precision, 1xxx double; smaller immh are unallocated here (the
-  // half-precision forms are not presented).
+  // SCVTF/UCVTF/FCVTZS/FCVTZU with fbits = 2 * esize - immh:immb. immh 001x
+  // is half precision (TranslateSIMDHalf.cpp), 01xx single, 1xxx double;
+  // immh 0001 is unallocated.
   const uint32_t Immh = Bits(Word, 22, 19);
   const bool Q = Scalar || Bit(Word, 30);
+  if ((Immh & 0b1110) == 0b0010) {
+    return SIMDHalfFixedConvert(Word, ToFloat, Signed, Scalar);
+  }
   if ((Immh & 0b1100) == 0 || (!Q && (Immh & 0b1000))) {
     return false;
   }

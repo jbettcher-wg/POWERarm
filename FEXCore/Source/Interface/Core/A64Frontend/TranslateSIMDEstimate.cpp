@@ -3,7 +3,9 @@
 // A64 reciprocal and reciprocal square root estimates and their
 // Newton-Raphson steps, on single and double precision lanes (vector and
 // scalar SIMD forms): FRECPE, FRSQRTE, FRECPX, FRECPS, FRSQRTS, and the
-// unsigned fixed-point estimates URECPE and URSQRTE.
+// unsigned fixed-point estimates URECPE and URSQRTE. The half-precision
+// FRECPE/FRSQRTE/FRECPX are here too; the half-precision steps are with the
+// rest of the FP16 group (TranslateSIMDHalf.cpp).
 //
 // The estimates are the architecture's 8-bit tables (RecipEstimate,
 // RecipSqrtEstimate), which no host instruction reproduces. Each table entry
@@ -37,7 +39,11 @@ namespace FEXCore::A64 {
 using namespace FEXCore::IR;
 
 namespace {
-  // The IEEE layout of a single or double precision lane.
+  // The IEEE layout of an operand in a lane of Bits bits. Half precision
+  // operands of the estimates are held in the top 16 bits of 32-bit lanes,
+  // so that the sign is the lane's sign bit: their fraction field starts 16
+  // bits up (FracBits 26 with the low 16 bits zero), and their table is
+  // computed in single precision, TableShift bits below the fraction.
   struct FloatLayout {
     unsigned Bits;
     unsigned FracBits;
@@ -48,12 +54,17 @@ namespace {
     uint64_t Inf;
     uint64_t MaxNormal;
     uint64_t DefaultNaN;
-    // The biased exponent field of 2^8 and 2^9.
+    // 2 * bias - 1 and 3 * bias - 1: the FRECPE and FRSQRTE result exponents
+    // are K - exp and (C - exp) / 2.
+    uint64_t K;
+    uint64_t C;
+    unsigned TableShift;
+    // The biased exponent fields of 2^8 and 2^9 in the table's precision.
     uint64_t Exp256;
     uint64_t Exp512;
   };
 
-  FloatLayout LayoutFor(OpSize ES) {
+  FloatLayout LayoutFor(OpSize ES, bool HalfInWord = false) {
     if (ES == OpSize::i64Bit) {
       return {64,
               52,
@@ -64,11 +75,21 @@ namespace {
               0x7FF0000000000000ULL,
               0x7FEFFFFFFFFFFFFFULL,
               0x7FF8000000000000ULL,
+              2045,
+              3068,
+              0,
               (1023ULL + 8) << 52,
               (1023ULL + 9) << 52};
     }
-    return {32, 23, 1ULL << 31, 0xFFULL << 23, (1ULL << 23) - 1, 1ULL << 22, 0x7F800000ULL,
-            0x7F7FFFFFULL, 0x7FC00000ULL, (127ULL + 8) << 23, (127ULL + 9) << 23};
+    if (ES == OpSize::i16Bit) {
+      return {16, 10, 0x8000, 0x7C00, 0x3FF, 0x200, 0x7C00, 0x7BFF, 0x7E00, 29, 44, 0, 0, 0};
+    }
+    if (HalfInWord) {
+      return {32,         26,         1ULL << 31, 0x7C00ULL << 16, ((1ULL << 10) - 1) << 16, 0x200ULL << 16, 0x7C00ULL << 16,
+              0x7BFFULL << 16, 0x7E00ULL << 16, 29, 44, 3, (127ULL + 8) << 23, (127ULL + 9) << 23};
+    }
+    return {32, 23, 1ULL << 31, 0xFFULL << 23, (1ULL << 23) - 1, 1ULL << 22, 0x7F800000ULL, 0x7F7FFFFFULL, 0x7FC00000ULL, 253, 380, 0,
+            (127ULL + 8) << 23, (127ULL + 9) << 23};
   }
 
   // A floating-point constant of the lane's precision.
@@ -145,10 +166,15 @@ Ref IRBuilder::OverflowToInfinityMask(OpSize ES, Ref X) {
   return _VBSL(RS, _VCMPLTZ(RS, ES, X), _VDupFromGPR(RS, ES, NegInf), _VDupFromGPR(RS, ES, PosInf));
 }
 
-Ref IRBuilder::FPRecipEstimateLanes(OpSize ES, Ref X) {
+// X holds single or double operands in ES lanes, or with HalfInWord half
+// precision operands in the top 16 bits of 32-bit lanes (FPCR.FZ16 then
+// applies: denormals read as zeros, and results that would be denormal
+// flush to zero).
+Ref IRBuilder::FPRecipEstimateLanes(OpSize ES, Ref X, bool HalfInWord) {
   const auto RS = OpSize::i128Bit;
-  const auto L = LayoutFor(ES);
+  const auto L = LayoutFor(ES, HalfInWord);
   const unsigned F = L.FracBits;
+  const unsigned TF = F - L.TableShift;
   Ref Sign = _VAnd(RS, RS, X, LaneConstant(L.Sign, ES));
   Ref Frac = _VAnd(RS, RS, X, LaneConstant(L.FracMask, ES));
   Ref ExpBits = _VAnd(RS, RS, X, LaneConstant(L.ExpField, ES));
@@ -165,22 +191,39 @@ Ref IRBuilder::FPRecipEstimateLanes(OpSize ES, Ref X) {
 
   // Table input 2 * (256 + frac<top 8>) + 1 = 2^9 * (1 + (frac<top 8> : 1) / 2^9).
   const uint64_t Top8 = 0xFFULL << (F - 8);
-  Ref A = _VOr(RS, RS, _VAnd(RS, RS, TableFrac, LaneConstant(Top8, ES)), LaneConstant(L.Exp512 | (1ULL << (F - 9)), ES));
-  Ref Estimate = _VAnd(RS, RS, RecipEstimateTable(ES, A), LaneConstant(Top8, ES));
+  Ref Index = _VAnd(RS, RS, TableFrac, LaneConstant(Top8, ES));
+  if (L.TableShift) {
+    Index = _VUShrI(RS, ES, Index, L.TableShift);
+  }
+  Ref A = _VOr(RS, RS, Index, LaneConstant(L.Exp512 | (1ULL << (TF - 9)), ES));
+  Ref Estimate = _VAnd(RS, RS, RecipEstimateTable(ES, A), LaneConstant(0xFFULL << (TF - 8), ES));
+  if (L.TableShift) {
+    Estimate = _VShlI(RS, ES, Estimate, L.TableShift);
+  }
 
-  // Result exponent K - exp (K = 253 / 2045), in -1..K+1. Exponents 0 and -1
-  // are denormal results: the significand 1.estimate shifted right once more.
-  const uint64_t K = F == 52 ? 2045 : 253;
-  Ref Normal = _VOr(RS, RS, _VShlI(RS, ES, _VSub(RS, ES, LaneConstant(K, ES), Exp), F), Estimate);
+  // Result exponent K - exp, in -1..K+1. Exponents 0 and -1 are denormal
+  // results: the significand 1.estimate shifted right once more.
+  Ref Normal = _VOr(RS, RS, _VShlI(RS, ES, _VSub(RS, ES, LaneConstant(L.K, ES), Exp), F), Estimate);
   Ref Significand = _VOr(RS, RS, Estimate, LaneConstant(1ULL << F, ES));
-  Ref Magnitude = _VBSL(RS, _VCMPEQ(RS, ES, Exp, LaneConstant(K, ES)), _VUShrI(RS, ES, Significand, 1), Normal);
-  Magnitude = _VBSL(RS, _VCMPEQ(RS, ES, Exp, LaneConstant(K + 1, ES)), _VUShrI(RS, ES, Significand, 2), Magnitude);
+  Ref Magnitude = _VBSL(RS, _VCMPEQ(RS, ES, Exp, LaneConstant(L.K, ES)), _VUShrI(RS, ES, Significand, 1), Normal);
+  Magnitude = _VBSL(RS, _VCMPEQ(RS, ES, Exp, LaneConstant(L.K + 1, ES)), _VUShrI(RS, ES, Significand, 2), Magnitude);
   Ref Result = _VOr(RS, RS, Sign, Magnitude);
 
-  // |x| < 2^-128 (2^-1024): the reciprocal overflows.
+  // |x| < 2^-128 (2^-1024, 2^-16): the reciprocal overflows.
   Ref IsZero = _VCMPEQZ(RS, ES, _VShlI(RS, ES, X, 1));
   Ref Tiny = _VAndn(RS, RS, _VAnd(RS, RS, IsDenormal, _VCMPEQZ(RS, ES, _VUShrI(RS, ES, Frac, F - 2))), IsZero);
-  Ref Overflow = _VOr(RS, RS, Sign, _VSub(RS, ES, LaneConstant(L.MaxNormal, ES), OverflowToInfinityMask(ES, X)));
+  if (HalfInWord) {
+    // FZ16: a denormal operand is a zero, and |x| >= 2^14 gives a zero
+    // (the reciprocal would be denormal).
+    Ref FZ16 = FZ16Mask();
+    IsZero = _VOr(RS, RS, IsZero, _VAnd(RS, RS, IsDenormal, FZ16));
+    Tiny = _VAndn(RS, RS, Tiny, FZ16);
+    Ref Large = _VAnd(RS, RS, _VCMPGT(RS, ES, ExpBits, LaneConstant(28ULL << F, ES)), FZ16);
+    Result = _VBSL(RS, Large, Sign, Result);
+  }
+  // The largest finite value, or one unit more: the infinity.
+  Ref Unit = LaneConstant(HalfInWord ? 1ULL << 16 : 1, ES);
+  Ref Overflow = _VOr(RS, RS, Sign, _VAdd(RS, ES, LaneConstant(L.MaxNormal, ES), _VAnd(RS, RS, OverflowToInfinityMask(ES, X), Unit)));
   Result = _VBSL(RS, Tiny, Overflow, Result);
   Result = _VBSL(RS, IsZero, _VOr(RS, RS, Sign, LaneConstant(L.Inf, ES)), Result);
   Ref InfOrNaN = _VCMPEQ(RS, ES, ExpBits, LaneConstant(L.ExpField, ES));
@@ -189,17 +232,18 @@ Ref IRBuilder::FPRecipEstimateLanes(OpSize ES, Ref X) {
   return _VBSL(RS, _VAndn(RS, RS, InfOrNaN, FracZero), _VOr(RS, RS, X, LaneConstant(L.Quiet, ES)), Result);
 }
 
-Ref IRBuilder::FPRSqrtEstimateLanes(OpSize ES, Ref X) {
+Ref IRBuilder::FPRSqrtEstimateLanes(OpSize ES, Ref X, bool HalfInWord) {
   const auto RS = OpSize::i128Bit;
-  const auto L = LayoutFor(ES);
+  const auto L = LayoutFor(ES, HalfInWord);
   const unsigned F = L.FracBits;
+  const unsigned TF = F - L.TableShift;
   const unsigned ExpWidthPlusSign = L.Bits - F;
   Ref Frac = _VAnd(RS, RS, X, LaneConstant(L.FracMask, ES));
   Ref ExpBits = _VAnd(RS, RS, X, LaneConstant(L.ExpField, ES));
   Ref IsDenormal = _VCMPEQZ(RS, ES, ExpBits);
 
   // A denormal operand is normalised: exponent -lz, the fraction shifted
-  // past its leading one (lz leading zeros in the F-bit fraction).
+  // past its leading one (lz leading zeros in the fraction field).
   Ref Clz = _VCLZ(RS, ES, Frac);
   Ref Shift = _VSub(RS, ES, Clz, LaneConstant(ExpWidthPlusSign - 1, ES));
   Ref DenormalFrac = _VAnd(RS, RS, _VUShl(RS, ES, Frac, Shift, true), LaneConstant(L.FracMask, ES));
@@ -210,22 +254,30 @@ Ref IRBuilder::FPRSqrtEstimateLanes(OpSize ES, Ref X) {
   // [0.25, 0.5) with frac<top 7>, a' = 2 * (128 + frac<top 7>) + 1; an even
   // one into [0.5, 1) with frac<top 8>, a' = 2 * ((256 + frac<top 8>) | 1).
   // Both as floats.
-  const uint64_t Top7 = 0x7FULL << (F - 7);
-  const uint64_t Top8 = 0xFFULL << (F - 8);
-  const uint64_t LowOne = 1ULL << (F - 8);
-  Ref Quarter = _VOr(RS, RS, _VAnd(RS, RS, TableFrac, LaneConstant(Top7, ES)), LaneConstant(L.Exp256 | LowOne, ES));
-  Ref Half = _VOr(RS, RS, _VAnd(RS, RS, TableFrac, LaneConstant(Top8, ES)), LaneConstant(L.Exp512 | LowOne, ES));
+  auto TableBits = [&](uint64_t Mask) -> Ref {
+    Ref Bits = _VAnd(RS, RS, TableFrac, LaneConstant(Mask, ES));
+    return L.TableShift ? _VUShrI(RS, ES, Bits, L.TableShift).Node : Bits;
+  };
+  const uint64_t LowOne = 1ULL << (TF - 8);
+  Ref Quarter = _VOr(RS, RS, TableBits(0x7FULL << (F - 7)), LaneConstant(L.Exp256 | LowOne, ES));
+  Ref Half = _VOr(RS, RS, TableBits(0xFFULL << (F - 8)), LaneConstant(L.Exp512 | LowOne, ES));
   Ref IsOdd = _VSShrI(RS, ES, _VShlI(RS, ES, Exp, L.Bits - 1), L.Bits - 1);
   Ref A = _VBSL(RS, IsOdd, Quarter, Half);
-  Ref Estimate = _VAnd(RS, RS, RecipSqrtEstimateTable(ES, A), LaneConstant(Top8, ES));
+  Ref Estimate = _VAnd(RS, RS, RecipSqrtEstimateTable(ES, A), LaneConstant(0xFFULL << (TF - 8), ES));
+  if (L.TableShift) {
+    Estimate = _VShlI(RS, ES, Estimate, L.TableShift);
+  }
 
-  // Result exponent (C - exp) / 2, C = 380 / 3068, always a normal exponent.
-  const uint64_t C = F == 52 ? 3068 : 380;
-  Ref ResultExp = _VSShrI(RS, ES, _VSub(RS, ES, LaneConstant(C, ES), Exp), 1);
+  // Result exponent (C - exp) / 2, always a normal exponent.
+  Ref ResultExp = _VSShrI(RS, ES, _VSub(RS, ES, LaneConstant(L.C, ES), Exp), 1);
   Ref Result = _VOr(RS, RS, _VShlI(RS, ES, ResultExp, F), Estimate);
 
   Ref Sign = _VAnd(RS, RS, X, LaneConstant(L.Sign, ES));
   Ref IsZero = _VCMPEQZ(RS, ES, _VShlI(RS, ES, X, 1));
+  if (HalfInWord) {
+    // FZ16: a denormal operand is a zero.
+    IsZero = _VOr(RS, RS, IsZero, _VAnd(RS, RS, IsDenormal, FZ16Mask()));
+  }
   Ref InfOrNaN = _VCMPEQ(RS, ES, ExpBits, LaneConstant(L.ExpField, ES));
   Ref FracZero = _VCMPEQZ(RS, ES, Frac);
   Ref IsNaN = _VAndn(RS, RS, InfOrNaN, FracZero);
@@ -242,7 +294,26 @@ bool IRBuilder::SIMDFloatEstimate(uint32_t Word, bool Sqrt, bool Scalar) {
     return false;
   }
   Ref X = LoadV(Bits(Word, 9, 5));
-  StoreFloatLanes(Word, Scalar, ES, Sqrt ? FPRSqrtEstimateLanes(ES, X) : FPRecipEstimateLanes(ES, X));
+  StoreFloatLanes(Word, Scalar, ES, Sqrt ? FPRSqrtEstimateLanes(ES, X, false) : FPRecipEstimateLanes(ES, X, false));
+  return true;
+}
+
+// Half precision: each 16-bit lane moves to the top of a 32-bit lane.
+bool IRBuilder::SIMDHalfEstimate(uint32_t Word, bool Sqrt, bool Scalar) {
+  const auto RS = OpSize::i128Bit;
+  const auto W = OpSize::i32Bit;
+  Ref X = LoadV(Bits(Word, 9, 5));
+  auto Estimate = [&](Ref Words) -> Ref {
+    return Sqrt ? FPRSqrtEstimateLanes(W, Words, true) : FPRecipEstimateLanes(W, Words, true);
+  };
+  if (Scalar) {
+    StoreVSized(Bits(Word, 4, 0), OpSize::i16Bit, _VUShrI(RS, W, Estimate(_VShlI(RS, W, X, 16)), 16));
+    return true;
+  }
+  const bool Q = Bit(Word, 30);
+  Ref Low = Estimate(_VShlI(RS, W, _VUXTL(RS, OpSize::i16Bit, X), 16));
+  Ref High = Q ? Estimate(_VShlI(RS, W, _VUXTL2(RS, OpSize::i16Bit, X), 16)) : Low;
+  StoreVQ(Bits(Word, 4, 0), Q, _VUnZip2(RS, OpSize::i16Bit, Low, High));
   return true;
 }
 
@@ -250,11 +321,14 @@ bool IRBuilder::FRECPE_2(uint32_t Word) { return SIMDFloatEstimate(Word, false, 
 bool IRBuilder::FRECPE_4(uint32_t Word) { return SIMDFloatEstimate(Word, false, false); }
 bool IRBuilder::FRSQRTE_2(uint32_t Word) { return SIMDFloatEstimate(Word, true, true); }
 bool IRBuilder::FRSQRTE_4(uint32_t Word) { return SIMDFloatEstimate(Word, true, false); }
+bool IRBuilder::FRECPE_1(uint32_t Word) { return SIMDHalfEstimate(Word, false, true); }
+bool IRBuilder::FRECPE_3(uint32_t Word) { return SIMDHalfEstimate(Word, false, false); }
+bool IRBuilder::FRSQRTE_1(uint32_t Word) { return SIMDHalfEstimate(Word, true, true); }
+bool IRBuilder::FRSQRTE_3(uint32_t Word) { return SIMDHalfEstimate(Word, true, false); }
 
 // FRECPX: the sign, the exponent field inverted (a zero or denormal operand
 // gets the largest finite exponent) and a zero fraction; NaNs are quieted.
-bool IRBuilder::FRECPX_2(uint32_t Word) {
-  const auto ES = Bit(Word, 22) ? OpSize::i64Bit : OpSize::i32Bit;
+bool IRBuilder::SIMDFloatRecpX(uint32_t Word, OpSize ES) {
   const auto RS = OpSize::i128Bit;
   const auto L = LayoutFor(ES);
   Ref X = LoadV(Bits(Word, 9, 5));
@@ -267,6 +341,9 @@ bool IRBuilder::FRECPX_2(uint32_t Word) {
   StoreVSized(Bits(Word, 4, 0), ES, _VBSL(RS, IsNaN, _VOr(RS, RS, X, LaneConstant(L.Quiet, ES)), Result));
   return true;
 }
+
+bool IRBuilder::FRECPX_1(uint32_t Word) { return SIMDFloatRecpX(Word, OpSize::i16Bit); }
+bool IRBuilder::FRECPX_2(uint32_t Word) { return SIMDFloatRecpX(Word, Bit(Word, 22) ? OpSize::i64Bit : OpSize::i32Bit); }
 
 // ---------------------------------------------------------------------------
 // URECPE, URSQRTE

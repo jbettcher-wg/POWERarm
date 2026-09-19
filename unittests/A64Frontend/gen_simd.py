@@ -1866,6 +1866,138 @@ def gen_simd_fcvtxn(p):
             p.vcase([f"fcvtxn s{d}, d{n}"], v, fpcr=fpcr)
 
 
+NAN_PAIRS16 = [
+    (0x7E03, 0x7C02), (0x7C01, 0x7E04), (0x7E03, 0x7E04), (0x7C01, 0x7C02), (0x3C00, 0x7C02), (0x7C01, 0x3C00),
+    (0x3C00, 0x7E04), (0x7E03, 0x3C00), (0x0000, 0x8000), (0x8000, 0x0000), (0x7C00, 0xFC00), (0x0000, 0x7C00),
+    (0xFE05, 0x7D06), (0x8000, 0xFC00),
+]
+
+
+def gen_simd_half(p):
+    """The FP16 Advanced SIMD group (asimdhp) on 4H/8H vectors and H scalars: arithmetic, min/max,
+    FABD, FMULX, FMLA/FMLS (vector and by element), FRECPS/FRSQRTS, compares (register and zero,
+    absolute), pairwise and across-lane forms, by-element FMUL/FMULX, FRINT*, FSQRT, FRECPE/FRSQRTE
+    (every table entry) and FRECPX, conversions to and from 16-bit integers and fixed point, FMOV
+    immediates; NaN pairs lined up lane by lane, every edge value, every rounding mode with and
+    without FZ16."""
+    fpcrs = [rm | fz for rm in RMODES for fz in (0, 0x80000)]
+
+    def f16():
+        r = p.rng.random()
+        if r < 0.4:
+            return p.rng.choice(F16_EDGE)
+        if r < 0.7:
+            # Moderate magnitudes, so that sums, products and quotients stay finite and round.
+            return (p.rng.getrandbits(1) << 15) | (p.rng.randrange(8, 23) << 10) | p.rng.getrandbits(10)
+        return p.rng.getrandbits(16)
+
+    def hvec_pair():
+        a, b = [], []
+        for _ in range(8):
+            r = p.rng.random()
+            if r < 0.25:
+                x, y = p.rng.choice(NAN_PAIRS16)
+            else:
+                x, y = f16(), f16()
+                if r < 0.33:
+                    y = x
+                elif r < 0.4:
+                    y = x ^ 0x8000
+            a.append(x)
+            b.append(y)
+        return lanes_reg(a, 16), lanes_reg(b, 16)
+
+    low =[r for r in VREGS if r < 16]
+    to_int = ["fcvtns", "fcvtnu", "fcvtps", "fcvtpu", "fcvtms", "fcvtmu", "fcvtzs", "fcvtzu", "fcvtas", "fcvtau"]
+    three = ["fadd", "fsub", "fmul", "fdiv", "fmin", "fmax", "fminnm", "fmaxnm", "fmulx", "fabd", "frecps", "frsqrts",
+             "faddp", "fmaxp", "fminp", "fmaxnmp", "fminnmp", "fcmeq", "fcmge", "fcmgt", "facge", "facgt"]
+    three_scalar = ["fmulx", "fabd", "frecps", "frsqrts", "fcmeq", "fcmge", "fcmgt", "facge", "facgt"]
+    misc = ["frintn", "frintp", "frintm", "frintz", "frinta", "frintx", "frinti", "fsqrt", "frecpe", "frsqrte"] + to_int
+    zcmp = ["fcmeq", "fcmge", "fcmgt", "fcmle", "fcmlt"]
+    for _ in range(2400):
+        d, n, m = p.vregs(3)
+        t = p.rng.choice(["4h", "8h"])
+        vn, vm = hvec_pair()
+        v = {d: p.vec(), n: vn, m: vm}
+        fpcr = p.rng.choice(fpcrs)
+        kind = p.rng.randrange(12)
+        if kind <= 2:
+            op = p.rng.choice(three)
+            p.vcase([f"{op} v{d}.{t}, v{n}.{t}, v{m}.{t}"], v, fpcr=fpcr)
+        elif kind == 3:
+            op = p.rng.choice(three_scalar)
+            p.vcase([f"{op} h{d}, h{n}, h{m}"], v, fpcr=fpcr)
+        elif kind == 4:
+            op = p.rng.choice(["fmla", "fmls"])
+            v[d], _ = hvec_pair()
+            p.vcase([f"{op} v{d}.{t}, v{n}.{t}, v{m}.{t}"], v, fpcr=fpcr)
+        elif kind == 5:
+            op = p.rng.choice(["fmla", "fmls", "fmul", "fmulx"])
+            mr = p.rng.choice([r for r in low if r not in (d, n)])
+            v[mr] = vm
+            if op in ("fmla", "fmls"):
+                v[d], _ = hvec_pair()
+            idx = p.rng.randrange(8)
+            if p.rng.random() < 0.5:
+                p.vcase([f"{op} v{d}.{t}, v{n}.{t}, v{mr}.h[{idx}]"], v, fpcr=fpcr)
+            else:
+                p.vcase([f"{op} h{d}, h{n}, v{mr}.h[{idx}]"], v, fpcr=fpcr)
+        elif kind == 6:
+            op = p.rng.choice(misc)
+            p.vcase([f"{op} v{d}.{t}, v{n}.{t}"], v, fpcr=fpcr)
+        elif kind == 7:
+            op = p.rng.choice(zcmp)
+            if p.rng.random() < 0.5:
+                p.vcase([f"{op} v{d}.{t}, v{n}.{t}, #0.0"], v, fpcr=fpcr)
+            else:
+                p.vcase([f"{op} h{d}, h{n}, #0.0"], v, fpcr=fpcr)
+        elif kind == 8:
+            op = p.rng.choice(to_int + ["frecpe", "frecpx", "frsqrte"])
+            p.vcase([f"{op} h{d}, h{n}"], v, fpcr=fpcr)
+        elif kind == 9:
+            if p.rng.random() < 0.5:
+                op = p.rng.choice(["fmaxv", "fminv", "fmaxnmv", "fminnmv"])
+                p.vcase([f"{op} h{d}, v{n}.{t}"], v, fpcr=fpcr)
+            else:
+                op = p.rng.choice(["faddp", "fmaxp", "fminp", "fmaxnmp", "fminnmp"])
+                p.vcase([f"{op} h{d}, v{n}.2h"], v, fpcr=fpcr)
+        elif kind == 10:
+            # Integer and fixed-point conversions.
+            op = p.rng.choice(["scvtf", "ucvtf", "fcvtzs", "fcvtzu"])
+            if op in ("scvtf", "ucvtf"):
+                v[n] = lane_vec(p, 16)
+            fb = p.rng.choice([None, 1, 2, 8, 15, 16, p.rng.randrange(1, 17)])
+            suffix = f", #{fb}" if fb else ""
+            if p.rng.random() < 0.6:
+                p.vcase([f"{op} v{d}.{t}, v{n}.{t}{suffix}"], v, fpcr=fpcr)
+            else:
+                p.vcase([f"{op} h{d}, h{n}{suffix}"], v, fpcr=fpcr)
+        else:
+            imm = p.rng.choice(["1.5", "-0.25", "2.0", "0.125", "-16.0", "31.0", "0.1875", "-7.75", "1.0", "-1.9375"])
+            p.vcase([f"fmov v{d}.{t}, #{imm}"], v)
+    # Every table entry of FRECPE/FRSQRTE: the top 8 fraction bits and the exponent's parity.
+    for idx in range(0, 512, 8):
+        lanes = []
+        for j in range(8):
+            e = idx + j
+            parity, top = e >> 8, e & 0xFF
+            exp = p.rng.randrange(1, 15) * 2 + parity
+            lanes.append((exp << 10) | (top << 2) | p.rng.getrandbits(2))
+        d1, d2, n = p.vregs(3)
+        p.vcase([f"frecpe v{d1}.8h, v{n}.8h", f"frsqrte v{d2}.8h, v{n}.8h"],
+                {d1: p.vec(), d2: p.vec(), n: lanes_reg(lanes, 16)}, fpcr=p.rng.choice(fpcrs))
+    # Every edge value, both signs, through the estimates and the unary operations in every mode.
+    extra = [0x00FF, 0x0100, 0x01FF, 0x0300, 0x77FF, 0x7800, 0x7400, 0x73FF, 0x7BFF, 0x0401]
+    vals = [x | s for x in F16_EDGE + extra for s in (0, 0x8000)]
+    for fpcr in fpcrs:
+        for i in range(0, len(vals), 8):
+            chunk = vals[i:i + 8]
+            chunk += [p.rng.choice(vals) for _ in range(8 - len(chunk))]
+            p.vcase(["frecpe v1.8h, v20.8h", "frsqrte v2.8h, v20.8h", "frecpx h3, h20", "fsqrt v5.8h, v20.8h",
+                     "frinta v7.8h, v20.8h", "fcvtns v12.8h, v20.8h", "fcvtzu v16.8h, v20.8h", "fmaxnmv h17, v20.8h"],
+                    {20: lanes_reg(chunk, 16)}, fpcr=fpcr)
+
+
 GROUPS = {
     "simd_loadstore": gen_simd_loadstore,
     "simd_copy": gen_simd_copy,
@@ -1894,6 +2026,7 @@ GROUPS = {
     "simd_dotmul": gen_simd_dotmul,
     "simd_shiftsat": gen_simd_shiftsat,
     "simd_fcvtxn": gen_simd_fcvtxn,
+    "simd_half": gen_simd_half,
 }
 
 
