@@ -84,6 +84,12 @@ struct ThreadStateObject : public FEXCore::Allocator::FEXAllocOperators {
     uint64_t SavedStackLen;
     // Set when a guest syscall saw the guest SP above the frame.
     bool KnownAbandoned;
+    // The thread's guest-syscall state (SignalInfo.InGuestSyscall and the
+    // result override) when the handler was entered; rt_sigreturn puts it
+    // back when it resumes the interrupted context.
+    bool InGuestSyscall;
+    bool HasSyscallResultOverride;
+    uint64_t SyscallResultOverride;
   };
 
   FEXCore::Core::InternalThreadState* Thread;
@@ -152,6 +158,19 @@ struct ThreadStateObject : public FEXCore::Allocator::FEXAllocOperators {
     // fault page poke: the interrupted host code has finished its deferred
     // section, so its stack may be saved and put back.
     bool DeliveringDrainedSignal {};
+
+    // Set while HandleSyscall runs a guest syscall. A delivery saves it with
+    // its handler level and clears it for the handler; rt_sigreturn restores it
+    // when it resumes the interrupted context, and clears it when the guest is
+    // resumed elsewhere (the syscall's host frames are abandoned then).
+    bool InGuestSyscall {};
+    // X0 left by a handler that returned into the syscall at the same PC:
+    // HandleSyscall returns it instead of the syscall's result, as on arm64
+    // Linux, where the result is already in X0 when the frame is built and the
+    // handler's value replaces it (SignalDelegator::RestoreFrame_Arm64). Saved
+    // and restored with InGuestSyscall.
+    bool HasSyscallResultOverride {};
+    uint64_t SyscallResultOverride {};
 
     // Queue of thread local signal frames that have been deferred.
     // Async signals aren't guaranteed to be delivered in any particular order, but FEX treats them as FILO.

@@ -4,7 +4,9 @@
 // (arch/arm64/include/uapi/asm/sigcontext.h, ucontext.h; asm-generic signal.h).
 // These are what a guest handler sees through its ucontext_t* argument.
 //
-// POWERARM-M0-TODO(signals): SetupFrame_Arm64/RestoreFrame_Arm64 do not yet build or consume the __reserved[] records (fpsimd_context, esr_context).
+// SetupFrame_Arm64 puts an fpsimd_context record in __reserved[] and
+// RestoreFrame_Arm64 reads it back.
+// POWERARM-M0-TODO(signals): no esr_context record yet (the kernel adds one for faults with an ESR, e.g. data aborts).
 #pragma once
 
 #include <FEXCore/Utils/CompilerDefs.h>
@@ -60,6 +62,27 @@ struct sigcontext {
 static_assert(offsetof(sigcontext, pstate) == 272, "arm64 sigcontext layout");
 static_assert(offsetof(sigcontext, __reserved) == 288, "arm64 sigcontext __reserved is 16-byte aligned");
 static_assert(sizeof(sigcontext) == 4384, "arm64 sigcontext is 4384 bytes");
+
+// The fpsimd_context record in a frame's __reserved[] list, or nullptr when the
+// list has none or is malformed. The list is the guest's memory: every record
+// must fit, and a record's size is a multiple of 16, as the kernel's
+// parse_user_sigframe requires. The walk stops at the terminating null record.
+inline const fpsimd_context* FindFPSIMDContext(const sigcontext& sc) {
+  constexpr size_t Limit = sizeof(sigcontext::__reserved);
+  size_t Offset = 0;
+  while (Offset + sizeof(_aarch64_ctx) <= Limit) {
+    _aarch64_ctx Head;
+    memcpy(&Head, sc.__reserved + Offset, sizeof(Head));
+    if (Head.magic == 0 || Head.size < sizeof(Head) || Head.size % 16 != 0 || Head.size > Limit - Offset) {
+      return nullptr;
+    }
+    if (Head.magic == FPSIMD_MAGIC) {
+      return Head.size == sizeof(fpsimd_context) ? reinterpret_cast<const fpsimd_context*>(sc.__reserved + Offset) : nullptr;
+    }
+    Offset += Head.size;
+  }
+  return nullptr;
+}
 
 struct ucontext_t {
   uint64_t uc_flags;

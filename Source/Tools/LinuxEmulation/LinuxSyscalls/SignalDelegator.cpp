@@ -788,12 +788,10 @@ void SignalDelegator::RestoreThreadState(FEXCore::Core::InternalThreadState* Thr
       }
       const auto* uc = &reinterpret_cast<const FEXCore::arm64::rt_sigframe*>(RTSigFrame)->uc;
       auto Frame = Thread->CurrentFrame;
-      auto& State = Frame->State;
-      memcpy(State.x, uc->uc_mcontext.regs, sizeof(State.x));
-      State.sp = uc->uc_mcontext.sp;
-      State.pc = uc->uc_mcontext.pc;
-      State.nzcv = static_cast<uint32_t>(uc->uc_mcontext.pstate) & 0xF000'0000U;
+      LoadFrameForDispatcher_Arm64(Frame, uc, ucontext);
       Frame->InSyscallInfo = 0;
+      SignalInfo.InGuestSyscall = false;
+      SignalInfo.HasSyscallResultOverride = false;
       SignalInfo.CurrentSignalMask.Val = uc->uc_sigmask & ~((1ULL << (SIGKILL - 1)) | (1ULL << (SIGSTOP - 1)));
       ArchHelpers::Context::SetPc(ucontext, Config.AbsoluteLoopTopAddressFillSRA);
       ArchHelpers::Context::SetFillSRASingleInst(ucontext, false);
@@ -853,11 +851,23 @@ void SignalDelegator::RestoreThreadState(FEXCore::Core::InternalThreadState* Thr
 
     // rt_sigreturn restores the mask from the frame, which the handler may
     // have changed.
+    auto& SignalInfo = ThreadObject->SignalInfo;
     const auto* GuestUContext = reinterpret_cast<const FEXCore::arm64::ucontext_t*>(Context->UContextLocation);
-    ThreadObject->SignalInfo.CurrentSignalMask.Val =
-      GuestUContext->uc_sigmask & ~((1ULL << (SIGKILL - 1)) | (1ULL << (SIGSTOP - 1)));
+    SignalInfo.CurrentSignalMask.Val = GuestUContext->uc_sigmask & ~((1ULL << (SIGKILL - 1)) | (1ULL << (SIGSTOP - 1)));
 
-    Redirected = RestoreFrame_Arm64(Thread, Context, Frame, ucontext);
+    // The interrupted context's guest-syscall state, which the delivery set
+    // aside for the handler. Level is set: only TYPE_PAUSE has none, and it
+    // builds no frame.
+    SignalInfo.InGuestSyscall = Level->InGuestSyscall;
+    SignalInfo.HasSyscallResultOverride = Level->HasSyscallResultOverride;
+    SignalInfo.SyscallResultOverride = Level->SyscallResultOverride;
+
+    Redirected = RestoreFrame_Arm64(Thread, Context, Frame, ucontext, Level->InGuestSyscall);
+    if (Redirected) {
+      // Whatever syscall the signal interrupted is abandoned with its host frames.
+      SignalInfo.InGuestSyscall = false;
+      SignalInfo.HasSyscallResultOverride = false;
+    }
 
     CheckForPendingSignals(ThreadObject);
   }
@@ -1064,6 +1074,13 @@ bool SignalDelegator::HandleDispatcherGuestSignal(FEXCore::Core::InternalThreadS
     Level->SavedStackAddr = Placement.SaveLo;
     Level->SavedStackLen = Placement.SaveHi - Placement.SaveLo;
     Level->KnownAbandoned = false;
+    // The handler is not in the syscall this may have interrupted; its own
+    // syscalls start from a clean state.
+    Level->InGuestSyscall = SignalInfo.InGuestSyscall;
+    Level->HasSyscallResultOverride = SignalInfo.HasSyscallResultOverride;
+    Level->SyscallResultOverride = SignalInfo.SyscallResultOverride;
+    SignalInfo.InGuestSyscall = false;
+    SignalInfo.HasSyscallResultOverride = false;
     SignalInfo.InnermostHandler = Level;
     ++SignalInfo.HandlerLevels;
   }
