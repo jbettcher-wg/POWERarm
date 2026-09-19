@@ -1998,6 +1998,24 @@ def gen_simd_half(p):
                     {20: lanes_reg(chunk, 16)}, fpcr=fpcr)
 
 
+def gen_simd_scalarshift(p):
+    """Scalar SLI/SRI/SSRA/USRA (D) and SQRSHRN/UQRSHRN/SQRSHRUN (B/H/S from H/S/D): every shift
+    amount at the ends of the range and random ones, over lane boundary values; FPSR.QC cleared first."""
+    for _ in range(600):
+        d, n = p.vregs(2)
+        if p.rng.random() < 0.5:
+            op = p.rng.choice(["sli", "sri", "ssra", "usra"])
+            sh = p.rng.choice([0, 1, 63, p.rng.randrange(64)] if op == "sli" else [1, 2, 63, 64, p.rng.randrange(1, 65)])
+            p.vcase([f"{op} d{d}, d{n}, #{sh}"], {d: lane_vec(p, 64), n: lane_vec(p, 64)})
+        else:
+            op = p.rng.choice(["sqrshrn", "uqrshrn", "sqrshrun"])
+            bits = p.rng.choice([8, 16, 32])
+            rn = {8: "b", 16: "h", 32: "s"}[bits]
+            rw = {8: "h", 16: "s", 32: "d"}[bits]
+            sh = p.rng.choice([1, 2, bits - 1, bits, p.rng.randrange(1, bits + 1)])
+            p.vcase(["msr fpsr, xzr", f"{op} {rn}{d}, {rw}{n}, #{sh}"], {d: p.vec(), n: lane_vec(p, bits * 2)})
+
+
 GROUPS = {
     "simd_loadstore": gen_simd_loadstore,
     "simd_copy": gen_simd_copy,
@@ -2027,6 +2045,7 @@ GROUPS = {
     "simd_shiftsat": gen_simd_shiftsat,
     "simd_fcvtxn": gen_simd_fcvtxn,
     "simd_half": gen_simd_half,
+    "simd_scalarshift": gen_simd_scalarshift,
 }
 
 

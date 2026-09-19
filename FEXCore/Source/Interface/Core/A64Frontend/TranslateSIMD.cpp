@@ -808,7 +808,7 @@ bool IRBuilder::SSHL_2(uint32_t Word) { return SIMDShiftRegister(Word, true, fal
 bool IRBuilder::USHL_1(uint32_t Word) { return SIMDShiftRegister(Word, false, true); }
 bool IRBuilder::SSHL_1(uint32_t Word) { return SIMDShiftRegister(Word, true, true); }
 
-bool IRBuilder::SIMDShiftInsertAccumulate(uint32_t Word, ShiftInsertOp Op) {
+bool IRBuilder::SIMDShiftInsertAccumulate(uint32_t Word, ShiftInsertOp Op, bool Scalar) {
   const bool Q = Bit(Word, 30);
   const uint32_t Immh = Bits(Word, 22, 19);
   const uint32_t ImmhImmb = Bits(Word, 22, 16);
@@ -816,7 +816,8 @@ bool IRBuilder::SIMDShiftInsertAccumulate(uint32_t Word, ShiftInsertOp Op) {
     return false;
   }
   const uint32_t SizeLog2 = 31 - std::countl_zero(Immh);
-  if (!Q && SizeLog2 == 3) {
+  // The scalar forms exist only for D (immh 1xxx).
+  if ((!Q && SizeLog2 == 3) || (Scalar && SizeLog2 != 3)) {
     return false;
   }
   const uint32_t ElementBits = 8U << SizeLog2;
@@ -842,14 +843,18 @@ bool IRBuilder::SIMDShiftInsertAccumulate(uint32_t Word, ShiftInsertOp Op) {
   case ShiftInsertOp::Usra: Result = _VAdd(RS, ES, D, _VUShrI(RS, ES, V, RightShift)); break;
   case ShiftInsertOp::Ssra: Result = _VAdd(RS, ES, D, _VSShrI(RS, ES, V, RightShift)); break;
   }
-  StoreVQ(Rd, Q, Result);
+  StoreVQ(Rd, Q && !Scalar, Result);
   return true;
 }
 
-bool IRBuilder::SRI_2(uint32_t Word) { return SIMDShiftInsertAccumulate(Word, ShiftInsertOp::Sri); }
-bool IRBuilder::SLI_2(uint32_t Word) { return SIMDShiftInsertAccumulate(Word, ShiftInsertOp::Sli); }
-bool IRBuilder::USRA_2(uint32_t Word) { return SIMDShiftInsertAccumulate(Word, ShiftInsertOp::Usra); }
-bool IRBuilder::SSRA_2(uint32_t Word) { return SIMDShiftInsertAccumulate(Word, ShiftInsertOp::Ssra); }
+bool IRBuilder::SRI_2(uint32_t Word) { return SIMDShiftInsertAccumulate(Word, ShiftInsertOp::Sri, false); }
+bool IRBuilder::SRI_1(uint32_t Word) { return SIMDShiftInsertAccumulate(Word, ShiftInsertOp::Sri, true); }
+bool IRBuilder::SLI_2(uint32_t Word) { return SIMDShiftInsertAccumulate(Word, ShiftInsertOp::Sli, false); }
+bool IRBuilder::SLI_1(uint32_t Word) { return SIMDShiftInsertAccumulate(Word, ShiftInsertOp::Sli, true); }
+bool IRBuilder::USRA_2(uint32_t Word) { return SIMDShiftInsertAccumulate(Word, ShiftInsertOp::Usra, false); }
+bool IRBuilder::USRA_1(uint32_t Word) { return SIMDShiftInsertAccumulate(Word, ShiftInsertOp::Usra, true); }
+bool IRBuilder::SSRA_2(uint32_t Word) { return SIMDShiftInsertAccumulate(Word, ShiftInsertOp::Ssra, false); }
+bool IRBuilder::SSRA_1(uint32_t Word) { return SIMDShiftInsertAccumulate(Word, ShiftInsertOp::Ssra, true); }
 
 // ---------------------------------------------------------------------------
 // Pairwise long adds, multiplies, misc

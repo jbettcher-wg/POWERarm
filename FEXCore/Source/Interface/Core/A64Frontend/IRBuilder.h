@@ -279,6 +279,8 @@ public:
   bool RSHRN(uint32_t Word); bool SQSHRN_2(uint32_t Word); bool SQRSHRN_2(uint32_t Word); bool UQSHRN_2(uint32_t Word);
   bool UQRSHRN_2(uint32_t Word); bool SQSHRUN_2(uint32_t Word); bool SQRSHRUN_2(uint32_t Word);
   bool SQSHRN_1(uint32_t Word); bool UQSHRN_1(uint32_t Word); bool SQSHRUN_1(uint32_t Word);
+  bool SQRSHRN_1(uint32_t Word); bool UQRSHRN_1(uint32_t Word); bool SQRSHRUN_1(uint32_t Word);
+  bool SRI_1(uint32_t Word); bool SLI_1(uint32_t Word); bool USRA_1(uint32_t Word); bool SSRA_1(uint32_t Word);
   bool SRSHR_2(uint32_t Word); bool URSHR_2(uint32_t Word); bool SRSRA_2(uint32_t Word); bool URSRA_2(uint32_t Word);
   bool SRSHR_1(uint32_t Word); bool URSHR_1(uint32_t Word); bool SRSRA_1(uint32_t Word); bool URSRA_1(uint32_t Word);
   bool SQSHL_imm_2(uint32_t Word); bool UQSHL_imm_2(uint32_t Word); bool SQSHLU_2(uint32_t Word);
@@ -409,7 +411,7 @@ private:
   bool SIMDShiftImm(uint32_t Word, ShiftImmOp Op, bool Scalar);
   bool SIMDPermute(uint32_t Word, PermuteOp Op);
   bool SIMDShiftRegister(uint32_t Word, bool Signed, bool Scalar);
-  bool SIMDShiftInsertAccumulate(uint32_t Word, ShiftInsertOp Op);
+  bool SIMDShiftInsertAccumulate(uint32_t Word, ShiftInsertOp Op, bool Scalar);
   bool SIMDAddLongPairwise(uint32_t Word, bool Signed, bool Accumulate);
   bool SIMDMultiply(uint32_t Word, int Accumulate);
   bool FPVectorUnary(uint32_t Word, bool IsNeg);

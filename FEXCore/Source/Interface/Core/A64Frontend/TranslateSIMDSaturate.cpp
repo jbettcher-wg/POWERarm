@@ -308,6 +308,9 @@ bool IRBuilder::SQRSHRUN_2(uint32_t Word) { return SIMDShiftRightNarrow(Word, Na
 bool IRBuilder::SQSHRN_1(uint32_t Word) { return SIMDShiftRightNarrow(Word, NarrowKind::SignedToSigned, false, true, true); }
 bool IRBuilder::UQSHRN_1(uint32_t Word) { return SIMDShiftRightNarrow(Word, NarrowKind::UnsignedToUnsigned, false, false, true); }
 bool IRBuilder::SQSHRUN_1(uint32_t Word) { return SIMDShiftRightNarrow(Word, NarrowKind::SignedToUnsigned, false, true, true); }
+bool IRBuilder::SQRSHRN_1(uint32_t Word) { return SIMDShiftRightNarrow(Word, NarrowKind::SignedToSigned, true, true, true); }
+bool IRBuilder::UQRSHRN_1(uint32_t Word) { return SIMDShiftRightNarrow(Word, NarrowKind::UnsignedToUnsigned, true, false, true); }
+bool IRBuilder::SQRSHRUN_1(uint32_t Word) { return SIMDShiftRightNarrow(Word, NarrowKind::SignedToUnsigned, true, true, true); }
 
 bool IRBuilder::SIMDRoundingShiftRight(uint32_t Word, bool Signed, bool Accumulate, bool Scalar) {
   const bool Q = Scalar || Bit(Word, 30);
