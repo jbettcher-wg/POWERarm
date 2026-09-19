@@ -283,7 +283,7 @@ CAS five times as heavily in proportion.
     instructions 1.4% but cost 1.2-2.6% cycles. G2 also fixed two signal bugs (RIP table zero-
     extended negative offsets; a back-edge drain point reported the branch, not its target).
     Tests: cmpbranch (1954 cases), sigpreempt.
-19. **Signal handler register edits are ignored when the handler leaves the PC unchanged**
+19. ~~Signal handler register edits are ignored when the handler leaves the PC unchanged~~ **Fixed** (7d1bc2e39; test sigedit).
     (`RestoreFrame_Arm64`, found by the G2 agent, not fixed). A handler that fixes up registers
     and resumes at the same PC (emulating an instruction, or patching x0 after a fault) loses its
     edits. It's a correctness bug for runtimes with SIGSEGV/SIGILL handlers (JVMs, V8/JSC guard
@@ -330,3 +330,8 @@ CAS five times as heavily in proportion.
     passes against the Pi, so asimddp can be advertised (ELFCodeLoader.h HWCap,
     SystemRegisters.h ISAR0.DP, cpuinfo, the sysreg test). FCADD/FCMLA and SHA-512/SHA-3/SM3/SM4
     are not on the A76 and not advertised.
+23. **Signal-frame fidelity, still open** (found fixing item 19): a signal delivered during a syscall
+    shows X0 as the syscall's first argument, not its result, so a handler that moves the PC
+    resumes with that stale X0. There's no `esr_context` record. UDF/BRK set `fault_address`
+    to the PC, where the kernel gives 0. `uc_stack` isn't read back at sigreturn. The frame
+    has carried `fpsimd_context` (V0-V31, FPSR, FPCR) since 7d1bc2e39.
