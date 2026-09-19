@@ -260,3 +260,16 @@ CAS five times as heavily in proportion.
 16. **Chromium sandbox.** VS Code runs with `--no-sandbox`. The real sandbox needs user
     namespaces and seccomp-bpf filters over arm64 syscall numbers; seccomp emulation is opt-in
     (`POWERARM_NEEDSSECCOMP`).
+17. **Desktop rootfs installer script (Jordan's direction, 2026-09-18).** Tonight's vk setup should
+    become one reproducible script (e.g. `Scripts/powerarm/rootfs/setup-desktop.sh <rootfs>`):
+    overlay-init with pacman; the app package sets (VS Code's 61, Firefox's 60); host fonts
+    (`~/.local/share/powerarm/host-fonts -> /usr/share/fonts`, plus the guest fontconfig snippet
+    `/etc/fonts/conf.d/60-powerarm-host-fonts.conf` with `<dir prefix="xdg">powerarm/host-fonts</dir>`,
+    which takes the guest from 36 to 848 fonts); re-running from the guest root the hooks guest
+    pacman gets wrong; and the `~/.local/bin` launchers (`code`, plus `firefox` after the next promote).
+    **Hook fidelity bug:** `40-fontconfig-config` reported success but linked nothing. It tests
+    relative paths (`usr/share/fontconfig/conf.default/*`), and under POWERarm pacman's
+    chroot("/") + chdir("/") doesn't leave the hook's cwd at the guest root. Re-run by hand with
+    `cd /` in the guest it links all 21, and `sans-serif`/`serif`/`monospace` resolve to
+    Noto Sans/Noto Serif/JetBrainsMono like the host. Harmless failures in a user namespace:
+    sysusers, the systemctl reloads, and fc-cache's system cache (host `/var/cache`).
