@@ -44,9 +44,11 @@ if [ -n "${MUSL_ROOT:-}" ]; then
   done
   corpus="$corpus musl_hello musl_printf_float musl_strmem musl_fpmath"
 fi
-# glibc only (ucontext): guest call/return shapes for the link-stack pairing.
+# glibc only (ucontext): guest call/return shapes for the link-stack pairing,
+# and signal handlers that move the guest PC.
 gcc -static -O2 -o callret "$here/callret.c"
-corpus="$corpus callret"
+gcc -static -O2 -o sigpreempt "$here/sigpreempt.c"
+corpus="$corpus callret sigpreempt"
 # POWERarm configuration for run.sh (<test>.env): vdso_syscalls counts
 # syscalls with a seccomp filter, and seccomp emulation is opt-in there.
 echo POWERARM_NEEDSSECCOMP=1 > vdso_syscalls.env

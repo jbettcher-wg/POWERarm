@@ -75,10 +75,11 @@ class Program:
         self.emit(f"        mov     x17, #0x{nzcv << 28:x}")
         self.emit("        msr     nzcv, x17")
 
-    def case(self, body, loads=None, nzcv=None, dumpbuf=False):
-        """body: list of instruction lines. loads: {reg: value}."""
+    def case(self, body, loads=None, nzcv=None, dumpbuf=False, desc=None):
+        """body: list of instruction lines. loads: {reg: value}. desc: the
+        case's comment, when the body is too long to spell out."""
         self.cases += 1
-        self.emit(f"        // case {self.cases}: {' ; '.join(body)}")
+        self.emit(f"        // case {self.cases}: {desc or ' ; '.join(body)}")
         for reg, value in (loads or {}).items():
             self.load(reg, value)
         self.flags(nzcv)
@@ -492,6 +493,224 @@ def gen_dczva(p):
         p.case([f"add x3, x19, #{off}", "dc zva, x3"], dumpbuf=True)
 
 
+# Compare-and-branch fusion (IR/Passes/CompareBranchFusion.cpp). A compare's
+# consumer may be rewritten into a direct compare of the operands, the compare
+# itself dropped when nothing else reads its flags, and a compare recomputed
+# on a branch leg that leaves the compile unit. Each of those is wrong in a
+# data-dependent way if a case table entry is, so every condition is run after
+# CMP/CMN/SUBS/ADDS at both sizes against immediates and registers (plain,
+# shifted, extended, SP, ZR), on the signed, unsigned, carry and overflow
+# boundaries, with W operands carrying garbage in bits 63:32. The flags are
+# also read after the branch: by CSEL/CSET/CSINC/ADC/MRS/B.cond in the next
+# block, across a far exit that leaves the unit (`far` code sits 8 KiB away,
+# past the decoder's region window), and by the dump, and are killed before
+# the dump in other cases so that the compare can be dropped.
+CB_REGS = [0, 1, 2, 3, 4, 9, 10, 15, 18, 19, 22, 25, 28, 29]
+CB_CONDS = CONDS[:14]
+CB_EDGE_W = [0, 1, 2, 0x7FFFFFFE, 0x7FFFFFFF, 0x80000000, 0x80000001, 0xFFFFFFFE, 0xFFFFFFFF]
+CB_EDGE_X = [0, 1, 2, 0x7FFFFFFFFFFFFFFE, 0x7FFFFFFFFFFFFFFF, 0x8000000000000000, 0x8000000000000001,
+             0xFFFFFFFFFFFFFFFE, 0xFFFFFFFFFFFFFFFF, 0x7FFFFFFF, 0x80000000, 0xFFFFFFFF, 0x100000000]
+CB_IMMS = [(0, 0), (1, 0), (2, 0), (0x7FF, 0), (0x800, 0), (0xFFF, 0), (1, 12), (0xFFF, 12)]
+
+
+class CmpBranch:
+    def __init__(self, p):
+        self.p = p
+        self.rng = p.rng
+        self.far = 0
+
+    def dirty(self, v, is64):
+        """A W operand with garbage above bit 31 half the time."""
+        v &= (1 << 64) - 1 if is64 else 0xFFFFFFFF
+        if not is64 and self.rng.random() < 0.5:
+            v |= self.rng.getrandbits(32) << 32
+        return v
+
+    def imm_values(self, c, is64, add):
+        """Operand values on the boundaries of `a - c` (or `a + c` for add)."""
+        bits = 64 if is64 else 32
+        mask = (1 << bits) - 1
+        smax = (1 << (bits - 1)) - 1
+        smin = 1 << (bits - 1)
+        if add:
+            vals = [-c, -c - 1, -c + 1, smax - c, smax - c + 1, 0, mask, smin]
+        else:
+            vals = [c - 1, c, c + 1, 0, smax, smin, smin + c - 1, smin + c, mask]
+        vals.append(self.rng.getrandbits(bits))
+        return [v & mask for v in vals]
+
+    def operand_pair(self, is64):
+        edge = CB_EDGE_X if is64 else CB_EDGE_W
+        r = self.rng.random()
+        if r < 0.6:
+            return self.rng.choice(edge), self.rng.choice(edge)
+        if r < 0.8:
+            v = self.rng.choice(edge + [self.p.value()])
+            return v, v
+        return self.p.value(), self.p.value()
+
+    def compare(self, is64=None, kind=None):
+        """A random flag-setting compare: (instruction, {reg: value})."""
+        rng = self.rng
+        if is64 is None:
+            is64 = rng.random() < 0.5
+        rn = x if is64 else w
+        n, m, d = rng.sample(CB_REGS, 3)
+        if kind is None:
+            kind = rng.choice(["cmp_imm", "cmn_imm", "cmp_reg", "cmn_reg", "cmp_shift", "cmp_ext", "cmn_ext",
+                               "subs_imm", "adds_imm", "subs_reg", "adds_reg", "subs_self", "cmp_sp", "cmp_zr", "tst"])
+        if kind in ("cmp_imm", "cmn_imm", "subs_imm", "adds_imm", "subs_self"):
+            imm, sh = rng.choice(CB_IMMS)
+            add = kind in ("cmn_imm", "adds_imm")
+            a = rng.choice(self.imm_values(imm << sh, is64, add))
+            shs = f", lsl #{sh}" if sh else ""
+            if kind in ("cmp_imm", "cmn_imm"):
+                return f"{kind[:3]} {rn(n)}, #{imm}{shs}", {n: self.dirty(a, is64)}
+            if kind == "subs_self":
+                return f"subs {rn(n)}, {rn(n)}, #{imm}{shs}", {n: self.dirty(a, is64)}
+            return f"{kind[:4]} {rn(d)}, {rn(n)}, #{imm}{shs}", {n: self.dirty(a, is64), d: self.p.value()}
+        a, b = self.operand_pair(is64)
+        loads = {n: self.dirty(a, is64), m: self.dirty(b, is64)}
+        if kind in ("cmp_reg", "cmn_reg"):
+            return f"{kind[:3]} {rn(n)}, {rn(m)}", loads
+        if kind in ("subs_reg", "adds_reg"):
+            loads[d] = self.p.value()
+            return f"{kind[:4]} {rn(d)}, {rn(n)}, {rn(m)}", loads
+        if kind == "cmp_shift":
+            amt = rng.choice([1, 3, 31] + ([32, 63] if is64 else []))
+            return f"cmp {rn(n)}, {rn(m)}, {rng.choice(SHIFTS)} #{amt}", loads
+        if kind in ("cmp_ext", "cmn_ext"):
+            ext = rng.choice(EXTENDS)
+            src = x(m) if is64 and ext in ("uxtx", "sxtx") else w(m)
+            return f"{kind[:3]} {rn(n)}, {src}, {ext} #{rng.randrange(5)}", loads
+        if kind == "cmp_sp":
+            # SP is the private static stack: the same value on both machines.
+            if rng.random() < 0.5:
+                return f"cmp {'sp' if is64 else 'wsp'}, #{rng.choice([0, 16, 0xFFF])}", {}
+            return f"cmp {'sp' if is64 else 'wsp'}, {w(m)}, uxtw #{rng.randrange(5)}", {m: rng.getrandbits(12)}
+        if kind == "cmp_zr":
+            # A zero register on either side: the Src1 form is not fusable, the
+            # Src2 form compares against zero (MI/PL fuse there).
+            if rng.random() < 0.5:
+                return f"cmp {rn(n)}, {'xzr' if is64 else 'wzr'}", loads
+            return f"cmp {'xzr' if is64 else 'wzr'}, {rn(m)}", loads
+        return f"tst {rn(n)}, {rn(m)}", loads
+
+    def far_block(self, body):
+        """Code in .text.far, out of reach of the decoder's region window."""
+        self.p.emit("        .pushsection .text.far, \"ax\"")
+        if self.far == 0:
+            self.p.emit("        .skip   8192")
+        self.far += 1
+        for line in body:
+            self.p.emit(f"{line}")
+        self.p.emit("        .popsection")
+
+    def cond(self):
+        return self.rng.choice(CB_CONDS)
+
+    def consumers(self, n, m):
+        """NZCV readers after a branch, results into x6-x8, x11, x12."""
+        c = [self.cond() for _ in range(4)]
+        return [f"cset x6, {c[0]}", f"csinc x7, {x(n)}, {x(m)}, {c[1]}", f"adc x8, {x(n)}, {x(m)}",
+                "mrs x12, nzcv", f"b.{c[2]} 8f", "mov x11, #3", "8:"]
+
+
+def gen_cmpbranch(p):
+    cb = CmpBranch(p)
+    rng = p.rng
+
+    def chain(ins, loads):
+        # Every condition, each fused (or not) against its own copy of the
+        # compare; the next copy kills the previous one's flags. X5 collects
+        # one bit per condition, set when the branch falls through.
+        body = ["mov x5, #0"]
+        for i, c in enumerate(CB_CONDS):
+            body += [ins, f"b.{c} 7f", f"orr x5, x5, #{1 << i}", "7:"]
+        p.case(body, loads, desc=f"{ins} ; b.<each condition>, x5 = fall-through mask")
+
+    # Immediates on every boundary, both sizes, CMP and CMN.
+    for is64 in (False, True):
+        rn = x if is64 else w
+        for op in ("cmp", "cmn"):
+            for imm, sh in CB_IMMS:
+                for a in cb.imm_values(imm << sh, is64, op == "cmn"):
+                    n = rng.choice(CB_REGS)
+                    shs = f", lsl #{sh}" if sh else ""
+                    chain(f"{op} {rn(n)}, #{imm}{shs}", {n: cb.dirty(a, is64)})
+    # Register operands: every edge pair, both sizes, CMP and CMN.
+    for is64 in (False, True):
+        rn = x if is64 else w
+        edge = CB_EDGE_X if is64 else CB_EDGE_W
+        for op in ("cmp", "cmn"):
+            for a in edge:
+                for b in edge:
+                    n, m = rng.sample(CB_REGS, 2)
+                    chain(f"{op} {rn(n)}, {rn(m)}", {n: cb.dirty(a, is64), m: cb.dirty(b, is64)})
+    # Every other compare form.
+    for _ in range(160):
+        chain(*cb.compare())
+
+    # A branch within the unit, the flags then read in the next block.
+    for _ in range(300):
+        ins, loads = cb.compare()
+        n, m = rng.sample(CB_REGS, 2)
+        p.case(["mov x5, #1", ins, f"b.{cb.cond()} 7f", "mov x5, #2", "7:"] + cb.consumers(n, m), loads)
+
+    # A branch that leaves the unit: its leg recomputes the flags, read at the
+    # far target; the fall-through kills them (so the compare can go) or not.
+    for i in range(300):
+        ins, loads = cb.compare()
+        n, m = rng.sample(CB_REGS, 2)
+        kill = ["cmp x5, #0x33"] if rng.random() < 0.5 else []
+        body = ["mov x5, #1", ins, f"b.{cb.cond()} far{i}", "mov x5, #2"] + kill + [f"back{i}:"]
+        p.case(body, loads)
+        cb.far_block([f"far{i}:", "        mov x5, #3"] + [f"        {l}" for l in cb.consumers(n, m)] + [f"        b back{i}"])
+
+    # The same with the unit exit on the fall-through leg.
+    for i in range(300, 380):
+        ins, loads = cb.compare()
+        n, m = rng.sample(CB_REGS, 2)
+        body = ["mov x5, #1", ins, f"b.{cb.cond()} 7f", f"b far{i}", "7: mov x5, #2", "cmp x5, #0x44", f"back{i}:"]
+        p.case(body, loads)
+        cb.far_block([f"far{i}:", "        mov x5, #3"] + [f"        {l}" for l in cb.consumers(n, m)] + [f"        b back{i}"])
+
+    # Selects in the compare's own block, then a branch or a kill.
+    for _ in range(300):
+        ins, loads = cb.compare()
+        n, m = rng.sample(CB_REGS, 2)
+        c = [cb.cond() for _ in range(5)]
+        body = [ins, f"csel x6, {x(n)}, {x(m)}, {c[0]}", f"cset w7, {c[1]}", f"csinv x8, {x(n)}, {x(m)}, {c[2]}",
+                f"csneg w11, {w(n)}, {w(m)}, {c[3]}", f"csetm x12, {c[4]}"]
+        tail = rng.randrange(3)
+        if tail == 0:
+            body += [f"b.{cb.cond()} 7f", "mov x5, #9", "7:"]
+        elif tail == 1:
+            body += ["cmn x6, #1"]
+        p.case(body, loads)
+
+    # Loops: the compare and its branch on the back edge.
+    loops = [
+        ("subs w7, w7, #1", "ne", 0xDEAD000000000006),
+        ("cmp x7, #3", "gt", 12),
+        ("cmp w7, #0x7FE", "hi", 0x802),
+        ("cmp x7, #0", "ge", 4),
+        ("cmn x7, #3", "lt", 0xFFFFFFFFFFFFFFF6),
+        ("cmn w7, #1", "ne", 0xFFFFFFF8),
+        ("cmp w7, w9", "ls", 0x7FFFFFF8),
+        ("cmp x7, x9", "lo", 0xFFFFFFFFFFFFFFF0),
+        ("cmp w7, #0", "pl", 0x7),
+        ("cmp w7, #1", "cs", 0x80000005),
+    ]
+    for ins, cond, start in loops:
+        step = "add" if cond in ("lt", "ne") and ins.startswith("cmn") else "sub"
+        if ins.startswith("cmp w7, w9") or ins.startswith("cmp x7, x9"):
+            step = "add"
+        upd = [] if ins.startswith("subs") else [f"{step} x7, x7, #1"]
+        body = ["mov x6, #0", "7: add x6, x6, #1"] + upd + [ins, f"b.{cond} 7b"]
+        p.case(body, {7: start, 9: 0x7FFFFFFC if "w9" in ins else 0xFFFFFFFFFFFFFFF8})
+
+
 GROUPS = {
     "addsub": gen_addsub,
     "adc": gen_adc,
@@ -506,6 +725,7 @@ GROUPS = {
     "adr": gen_adr,
     "loadstore": gen_loadstore,
     "dczva": gen_dczva,
+    "cmpbranch": gen_cmpbranch,
 }
 
 

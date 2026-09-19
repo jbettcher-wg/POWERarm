@@ -1337,7 +1337,7 @@ DEF_OP(CondJump) {
       const Cond ToForward = TrueBackward ? InvertCond(CC) : CC;
       PPC64Emitter::Label Skip {};
       bc(ToForward, ForwardID == NextBlockID ? &Skip : ShortCondLabel(ForwardID));
-      EmitSuspendInterruptCheck();
+      EmitEdgeSuspendInterruptCheck(TrueBackward ? Op->TrueBlock : Op->FalseBlock);
       b(TrueBackward ? TrueTarget : FalseTarget);
       Bind(&Skip);
       return;
@@ -1357,7 +1357,7 @@ DEF_OP(CondJump) {
     bc(CC, &TakeFall);
     auto FalseTarget = JumpTarget(Op->FalseBlock);
     if (FalseTarget->bound) {
-      EmitSuspendInterruptCheck();
+      EmitEdgeSuspendInterruptCheck(Op->FalseBlock);
     }
     EmitSpinEdgeHint(Op->FalseBlock);
     b(FalseTarget);
@@ -1374,7 +1374,7 @@ DEF_OP(CondJump) {
   // poke-free.
   auto TrueTarget = JumpTarget(Op->TrueBlock);
   if (TrueTarget->bound) {
-    EmitSuspendInterruptCheck();
+    EmitEdgeSuspendInterruptCheck(Op->TrueBlock);
   }
   // Spin-loop SMT priority hints, per edge (see AnalyzeSpinLoops). Emitted
   // inside each leg so the hint executes exactly when that edge is taken.
@@ -1389,7 +1389,7 @@ DEF_OP(CondJump) {
   }
   auto FalseTarget = JumpTarget(Op->FalseBlock);
   if (FalseTarget->bound) {
-    EmitSuspendInterruptCheck();
+    EmitEdgeSuspendInterruptCheck(Op->FalseBlock);
   }
   EmitSpinEdgeHint(Op->FalseBlock);
   b(FalseTarget);

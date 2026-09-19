@@ -1206,6 +1206,11 @@ private:
   // signal queued (and the host mask left at the handler's sa_mask).
   void EmitSuspendInterruptCheck();
 
+  // The same poke on a branch edge whose target is TargetBlock, preceded by a
+  // RIP-table entry naming the target's first guest instruction, so that a
+  // signal drained here is reported at the target rather than at the branch.
+  void EmitEdgeSuspendInterruptCheck(IR::OrderedNodeWrapper TargetBlock);
+
   // Emit (or elide, or replace with a trap) the P5.0.2 `li r0, 0` at a block
   // exit. UnitR0Dirty must be the emitter's R0Dirty() sampled BEFORE the
   // enclosing exit handler emitted anything, or the handler's own re-zero

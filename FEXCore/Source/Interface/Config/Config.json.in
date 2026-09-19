@@ -1038,13 +1038,13 @@
         "Type": "bool",
         "Default": "false",
         "Desc": [
-          "Kill switch for the CompareBranchFusion IR pass (POWERARM_DISABLECMPBRANCHFUSION=1 turns the pass OFF).",
-          "x86 'cmp a,b; jcc' arrives as SubWithFlags + a FromNZCV CondJump, and the PPC64LE lowering of that branch has to rebuild C/V out of",
-          "XER (mfxer + rlwinm + mtocrf + a cr-logical composite before the bc); mfxer serialises on POWER8 and this sits on every hot loop",
-          "backedge. The pass rewrites the branch into the backend's existing direct-compare form (cmp into cr7 + bc) when the NZCV it reads",
-          "provably comes from a SubWithFlags earlier in the same block, letting DeadFlagCalculationElimination then drop the flag computation.",
-          "Only the ten register-comparable conditions are fused (EQ/NEQ/UGE/ULT/UGT/ULE/SGE/SLT/SGT/SLE); MI/PL and VS/VC are excluded because",
-          "the compare form cannot reproduce N-alone or V. A mis-fused branch is a wrong-direction conditional jump -- silent and",
+          "Kill switch for compare fusion (POWERARM_DISABLECMPBRANCHFUSION=1 turns it OFF), which DeadFlagCalculationElimination runs",
+          "(IR/Passes/CompareBranchFusion.cpp). A64 'cmp a,b; b.cc' arrives as SubNZCV (CMN/SUBS/ADDS: AddNZCV/SubWithFlags/AddWithFlags) +",
+          "a FromNZCV CondJump, and the PPC64LE lowering reads C/V out of XER (mcrxrx + a cr-logical composite before the bc) after a",
+          "subfco. on pre-shifted operands. Fusion rewrites the branch, or a CSEL/CSET, into the backend's direct-compare form (cmp into cr7 +",
+          "bc/isel) when the NZCV it reads provably comes from such a compare earlier in the same block, and drops the compare when no other",
+          "reader needs its flags. Only the ten register-comparable conditions are fused (plus MI/PL against zero); VS/VC are excluded because",
+          "the compare form cannot reproduce V. A mis-fused branch is a wrong-direction conditional jump -- silent and",
           "data-dependent -- hence a field kill switch of its own."
         ]
       },

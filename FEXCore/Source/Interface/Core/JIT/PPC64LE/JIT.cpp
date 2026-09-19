@@ -2929,6 +2929,40 @@ void PPC64JITCore::EmitSuspendInterruptCheck() {
   stb(r(0), 0, TMP1);
 }
 
+// A drain point on a branch edge runs after the branch has resolved: every
+// guest instruction up to and including the branch is complete and the next
+// one is the target's first. Without an entry of its own the poke's host PC
+// falls in the branch's RIP-table range, so a signal drained here is reported
+// at the branch, and a handler that resumes the guest through the dispatcher
+// (Go's asynchronous preemption injects a call and returns to the reported
+// PC) re-executes the branch from the signal frame's NZCV. That is only right
+// while the flags the branch reads were actually computed -- not after compare
+// fusion has turned a B.cond into a direct compare and dropped the compare
+// (CompareBranchFusion.cpp). Reporting the target is right either way.
+//
+// Only a target that begins at a guest instruction boundary gets an entry. A
+// block that starts in the middle of an instruction (the retry loop of an LSE
+// min/max, TranslateExclusive.cpp) has no GuestOpcode of its own; its edge
+// keeps the branch's attribution, which is the instruction being retried.
+void PPC64JITCore::EmitEdgeSuspendInterruptCheck(IR::OrderedNodeWrapper TargetBlock) {
+  for (auto [CodeNode, IROp] : IR->GetCode(IR->GetNode(TargetBlock))) {
+    switch (IROp->Op) {
+    case IR::OP_DUMMY:
+    case IR::OP_BEGINBLOCK:
+    case IR::OP_INVALIDATEFLAGS:
+    case IR::OP_INLINECONSTANT:
+    case IR::OP_INLINEENTRYPOINTOFFSET: continue;
+    case IR::OP_GUESTOPCODE:
+      DebugData->GuestOpcodes.push_back({IROp->C<IR::IROp_GuestOpcode>()->GuestEntryOffset,
+                                         GetCursorAddress<uint8_t*>() - CodeData.BlockBegin});
+      break;
+    default: break;
+    }
+    break;
+  }
+  EmitSuspendInterruptCheck();
+}
+
 // ---------------------------------------------------------------------------
 // Code-buffer reserve constants
 // ---------------------------------------------------------------------------
@@ -6204,15 +6238,22 @@ CPUBackend::CompiledCode PPC64JITCore::CompileCode(
   auto* EntryLoc = reinterpret_cast<uint8_t*>(Tail) + sizeof(CPUBackend::JITCodeTail);
   auto* EntryBase = EntryLoc;
   uintptr_t PrevPCOffset  = 0;
-  uintptr_t PrevRIPOffset = 0;
+  int64_t PrevRIPOffset = 0;
   for (const auto& GuestOpcode : DebugData->GuestOpcodes) {
     LOGMAN_THROW_A_FMT(static_cast<uintptr_t>(GuestOpcode.HostEntryOffset) >= PrevPCOffset,
                        "GuestOpcodes must be in ascending host order for vl64pair delta walk");
+    // A guest offset is relative to the unit's entry and travels through the
+    // IR as a u32 (IROp_GuestOpcode / IROp_CodeBlock::GuestEntryOffset). A
+    // block the decoder placed below the entry (its region reaches back
+    // RegionWindow bytes) has a negative offset, so read it back as signed:
+    // zero-extended, the delta decoded to Entry + 2^32 - k and every signal
+    // or fault in such a block reported a guest PC with bit 32 set.
+    const int64_t RIPOffset = static_cast<int32_t>(static_cast<uint32_t>(GuestOpcode.GuestEntryOffset));
     const uint64_t HostDelta  = static_cast<uintptr_t>(GuestOpcode.HostEntryOffset) - PrevPCOffset;
-    const uint64_t GuestDelta = static_cast<uintptr_t>(GuestOpcode.GuestEntryOffset) - PrevRIPOffset;
+    const uint64_t GuestDelta = static_cast<uint64_t>(RIPOffset - PrevRIPOffset);
     EntryLoc += FEXCore::Utils::vl64pair::Encode(EntryLoc, HostDelta, GuestDelta);
     PrevPCOffset  = static_cast<uintptr_t>(GuestOpcode.HostEntryOffset);
-    PrevRIPOffset = static_cast<uintptr_t>(GuestOpcode.GuestEntryOffset);
+    PrevRIPOffset = RIPOffset;
   }
   const size_t EntriesSize = static_cast<size_t>(EntryLoc - EntryBase);
   const size_t TailAndEntries = sizeof(CPUBackend::JITCodeTail) + EntriesSize;

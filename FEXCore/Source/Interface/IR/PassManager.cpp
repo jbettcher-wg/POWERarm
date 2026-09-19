@@ -69,23 +69,16 @@ void PassManager::Finalize() {
 void PassManager::AddDefaultPasses(FEXCore::Context::ContextImpl* ctx) {
   FEX_CONFIG_OPT(DisablePasses, O0);
   FEX_CONFIG_OPT(DisableDFCE, DISABLEDFCE);
-  FEX_CONFIG_OPT(DisableCmpBranchFusion, DISABLECMPBRANCHFUSION);
   FEX_CONFIG_OPT(DisableScalarSplatChain, DISABLESCALARSPLATCHAIN);
 
   if (!DisablePasses()) {
-    // Must precede DFCE: fusion turns a FromNZCV CondJump into a direct
-    // register compare, and it is DFCE that then observes the branch no longer
-    // reads NZCV and demotes/removes the SubWithFlags feeding it. Running it
-    // the other way round would leave the flag computation emitted. It must
-    // also precede RA, since it adds two operand uses to the branch.
+    // Compare-and-branch fusion is no longer a pass of its own: DFCE runs it
+    // (CompareBranchFusion.cpp) once its flag liveness has converged, since
+    // whether a fusion pays and whether the compare can then be dropped both
+    // depend on that liveness. It keeps its own kill switch,
+    // POWERARM_DISABLECMPBRANCHFUSION=1, and POWERARM_DISABLEDFCE=1 turns it
+    // off along with DFCE.
     //
-    // Same kill-switch reasoning as DFCE below -- a mis-fused branch is a
-    // wrong-direction conditional jump, silent and data-dependent:
-    //     FEX_DISABLECMPBRANCHFUSION=1
-    if (!DisableCmpBranchFusion()) {
-      InsertPass(CreateCompareBranchFusion());
-    }
-
     // DeadFlagCalculationElimination was disabled on PPC64LE from 2026-05-11
     // (8774c7dda) to 2026-08-05. The diagnosis recorded at the time -- "the
     // Replacement rewrite leaves stale operand-class metadata that RA

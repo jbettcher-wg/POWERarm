@@ -16,12 +16,14 @@ class Pass;
 class RegisterAllocationPass;
 struct IROp_Header;
 
-// Does this IR op write any bit of the packed NZCV state? Defined next to
-// DeadFlagCalculationElimination's flag classification table and derived from
-// it, so the two passes cannot disagree about what a flag writer is.
+// Does this IR op write any / every bit of the packed NZCV state, or read any?
+// Defined next to DeadFlagCalculationElimination's flag classification table
+// and derived from it, so DFCE and compare fusion (which DFCE runs) cannot
+// disagree about what a flag writer or reader is.
 bool IROpWritesNZCV(IROp_Header* IROp);
+bool IROpWritesAllNZCV(IROp_Header* IROp);
+bool IROpReadsNZCV(IROp_Header* IROp);
 
-fextl::unique_ptr<FEXCore::IR::Pass> CreateCompareBranchFusion();
 fextl::unique_ptr<FEXCore::IR::Pass> CreateDeadFlagCalculationEliminination();
 fextl::unique_ptr<FEXCore::IR::Pass> CreateScalarSplatChain();
 fextl::unique_ptr<FEXCore::IR::RegisterAllocationPass> CreateRegisterAllocationPass();
