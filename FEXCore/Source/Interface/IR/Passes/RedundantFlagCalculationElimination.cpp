@@ -9,6 +9,7 @@ $end_info$
 #include "Interface/IR/IREmitter.h"
 #include "Interface/IR/PassManager.h"
 #include "Interface/IR/Passes.h"
+#include "Interface/IR/Passes/CompareBranchFusion.h"
 
 #include <FEXCore/Config/Config.h>
 #include <FEXCore/IR/IR.h>
@@ -165,6 +166,7 @@ public:
 
 private:
   FEX_CONFIG_OPT(DisableDFCEStoreElim, DISABLEDFCESTOREELIM);
+  FEX_CONFIG_OPT(DisableCmpBranchFusion, DISABLECMPBRANCHFUSION);
 
 public:
   // Stateless, and shared with CompareBranchFusion via IROpWritesNZCV below.
@@ -175,6 +177,7 @@ private:
   // Reused across compiles; see ControlFlowGraph::BlockMap.
   ControlFlowGraph CFG {};
   fextl::deque<uint32_t> Worklist;
+  CompareFusion Fusion;
 
   bool EliminateDeadCode(IREmitter* IREmit, Ref CodeNode, IROp_Header* IROp);
   void FoldBranch(IREmitter* IREmit, IRListView& CurrentIR, IROp_CondJump* Op, Ref CodeNode);
@@ -474,13 +477,21 @@ FlagInfo DeadFlagCalculationEliminination::Classify(IROp_Header* IROp) {
   FEX_UNREACHABLE;
 }
 
-// Exported for CompareBranchFusion, which must walk backwards past everything
-// that is NOT a flag writer to find the compare feeding a branch. An op missing
-// from a private copy of that set would let it walk past a real NZCV write and
-// fuse the wrong compare -- silent and data-dependent -- so the answer is
-// derived from the table above rather than restated.
+// Exported for CompareBranchFusion, which tracks which compare each NZCV
+// reader reads. An op missing from a private copy of these sets would let it
+// walk past a real NZCV write (and fuse the wrong compare) or past a real read
+// (and drop a compare someone needs) -- silent and data-dependent -- so the
+// answers are derived from the table above rather than restated.
 bool IROpWritesNZCV(IROp_Header* IROp) {
   return (ClassifyFast(IROp).Write() & FLAG_NZCV) != 0;
+}
+
+bool IROpWritesAllNZCV(IROp_Header* IROp) {
+  return (ClassifyFast(IROp).Write() & FLAG_NZCV) == FLAG_NZCV;
+}
+
+bool IROpReadsNZCV(IROp_Header* IROp) {
+  return (ClassifyFast(IROp).Read() & FLAG_NZCV) != 0;
 }
 
 // General purpose dead code elimination. Returns whether flag handling should
@@ -828,6 +839,33 @@ void DeadFlagCalculationEliminination::Run(IREmitter* IREmit) {
       for (auto Pred : Info->Predecessors) {
         CFG.AddWorklist(Worklist, Pred);
       }
+    }
+  }
+
+  // Compare fusion (CompareBranchFusion.cpp) needs the converged liveness:
+  // whether a fused consumer pays, and whether the compare can then go, both
+  // depend on who else reads the compare's flags. It only removes reads, so
+  // the liveness it is given stays valid while it runs block by block: a
+  // compare it drops wrote every NZCV bit, and nothing read them afterwards.
+  //
+  // Own kill switch (fusion used to be a pass of its own) -- a mis-fused
+  // branch is a wrong-direction conditional jump, silent and data-dependent:
+  //     POWERARM_DISABLECMPBRANCHFUSION=1
+  if (!DisableCmpBranchFusion()) {
+    for (auto [Block, _] : CurrentIR.GetBlocks()) {
+      // Flags live out of the block, as ProcessBlock seeds them.
+      auto BlockIROp = CurrentIR.GetOp<IR::IROp_CodeBlock>(Block);
+      auto CodeLast = CurrentIR.at(BlockIROp->Last);
+      --CodeLast;
+      auto [ExitNode, ExitOp] = CodeLast();
+      uint32_t FlagsOut = FLAG_ALL;
+      if (ExitOp->Op == IR::OP_CONDJUMP) {
+        auto Op = ExitOp->CW<IR::IROp_CondJump>();
+        FlagsOut = CFG.Get(Op->TrueBlock)->Flags | CFG.Get(Op->FalseBlock)->Flags;
+      } else if (ExitOp->Op == IR::OP_JUMP) {
+        FlagsOut = CFG.Get(ExitOp->Args[0])->Flags;
+      }
+      Fusion.Run(IREmit, CurrentIR, Block, (FlagsOut & FLAG_NZCV) != 0, !DisableDFCEStoreElim());
     }
   }
 
