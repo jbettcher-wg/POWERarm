@@ -275,7 +275,10 @@ CAS five times as heavily in proportion.
     (`~/.local/share/powerarm/host-fonts -> /usr/share/fonts`, plus the guest fontconfig snippet
     `/etc/fonts/conf.d/60-powerarm-host-fonts.conf` with `<dir prefix="xdg">powerarm/host-fonts</dir>`,
     which takes the guest from 36 to 848 fonts); re-running from the guest root the hooks guest
-    pacman gets wrong; and the `~/.local/bin` launchers (`code`, plus `firefox` after the next promote).
+    pacman gets wrong; and the `~/.local/bin` launchers plus `~/.local/share/applications/*-arm64.desktop` entries.
+    They exist by hand as of 2026-09-19: `code`, `firefox` (own profile ~/.mozilla/firefox-arm64) and
+    `factorio` (~/Development/factorio-arm64/current -> 2.1.19). Each sets `POWERARM_ROOTFS=<vk>`
+    and runs through binfmt.
     **Hook fidelity bug:** `40-fontconfig-config` reported success but linked nothing. It tests
     relative paths (`usr/share/fontconfig/conf.default/*`), and under POWERarm pacman's
     chroot("/") + chdir("/") doesn't leave the hook's cwd at the guest root. Re-run by hand with
@@ -357,3 +360,10 @@ CAS five times as heavily in proportion.
     resumes with that stale X0. There's no `esr_context` record. UDF/BRK set `fault_address`
     to the PC, where the kernel gives 0. `uc_stack` isn't read back at sigreturn. The frame
     has carried `fpsimd_context` (V0-V31, FPSR, FPCR) since 7d1bc2e39.
+24. **Factorio 2.1.19 (linux-arm64) runs** (2026-09-19, promoted stable): native Wayland or X11, OpenGL 4.6
+    on radeonsi, PulseAudio, auth TLS OK. fastppcx86's graphics benchmark (`--benchmark-graphics
+    bench_default.zip --benchmark-ticks 2000 --benchmark-runs 4 --output-perf-stats`, save copied
+    from ~/Development/fexrootfs/factorio-backup/saves, SDL x11, taskset 0-87, one run on a cold
+    cache): cpu-frame median 16.67 ms (the 60 fps cap), 12.0 ms of CPU work without sleep, 76% of
+    frames at 60 fps and 93.5% with idle time left. fastppcx86's x86-64 2.0.77 on the same box and
+    save: 19.6 ms, CPU-bound. Factorio versions and Mesa differ, and x86 was SMT2.
