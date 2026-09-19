@@ -37,6 +37,8 @@ $end_info$
 #include <fcntl.h>
 #include <functional>
 #include <linux/futex.h>
+#include <setjmp.h>
+#include <unwind.h>
 #include <syscall.h>
 #include <sys/mman.h>
 #include <sys/signalfd.h>
@@ -87,6 +89,156 @@ static FEX::HLE::ThreadStateObject* GetThreadFromAltStack(const stack_t& alt_sta
   memcpy(&ThreadObject, reinterpret_cast<void*>(reinterpret_cast<uint64_t>(alt_stack.ss_sp) - 8), sizeof(void*));
   return ThreadObject;
 }
+
+// The fatal host-fault report (HandleSignal, the host-fault gate) must survive
+// faults of its own. The unwinder behind backtrace() faulted on the state a
+// fault left behind, and with SA_NODEFER that fault re-entered the handler,
+// which reported and unwound again, dozens of levels deep, until the alt stack
+// ran out: the one line that mattered was buried and the core truncated. So
+// the line is formatted by hand and written first, and FatalReportTid names
+// the one thread writing a report. A fault on that thread while it unwinds or
+// prints the backtrace (GuardedFatalReportStep) jumps back into the report
+// (FatalReportStepJump), which skips the rest of that step and finishes; any
+// other fault on it gets one line and the default disposition.
+namespace {
+  std::atomic<uint32_t> FatalReportTid {0};
+  sigjmp_buf FatalReportStepJump;
+  volatile sig_atomic_t FatalReportStepActive = 0;
+  // POWERARM_HOSTFAULTTOGUEST, read by the SignalDelegator constructor rather
+  // than by the handler.
+  bool HostFaultToGuest = false;
+
+  // A line built in a stack buffer and written with write(2): safe in any
+  // signal context, and truncated rather than overrun.
+  struct SignalSafeLine {
+    char Buf[768];
+    size_t Len = 0;
+
+    void Char(char C) {
+      if (Len < sizeof(Buf)) {
+        Buf[Len++] = C;
+      }
+    }
+    void Str(const char* S) {
+      while (*S) {
+        Char(*S++);
+      }
+    }
+    void Dec(uint64_t V) {
+      char Tmp[20];
+      int N = 0;
+      do {
+        Tmp[N++] = static_cast<char>('0' + V % 10);
+        V /= 10;
+      } while (V);
+      while (N) {
+        Char(Tmp[--N]);
+      }
+    }
+    void SDec(int64_t V) {
+      if (V < 0) {
+        Char('-');
+        Dec(static_cast<uint64_t>(0) - static_cast<uint64_t>(V));
+      } else {
+        Dec(static_cast<uint64_t>(V));
+      }
+    }
+    void Hex(uint64_t V) {
+      char Tmp[16];
+      int N = 0;
+      do {
+        const int D = static_cast<int>(V & 0xf);
+        Tmp[N++] = static_cast<char>(D < 10 ? '0' + D : 'a' + D - 10);
+        V >>= 4;
+      } while (V);
+      while (N) {
+        Char(Tmp[--N]);
+      }
+    }
+    void Write(int FD) const {
+      size_t Off = 0;
+      while (Off < Len) {
+        const ssize_t W = ::write(FD, Buf + Off, Len - Off);
+        if (W <= 0) {
+          if (W < 0 && errno == EINTR) {
+            continue;
+          }
+          return;
+        }
+        Off += static_cast<size_t>(W);
+      }
+    }
+  };
+
+  void* FatalReportFrames[48];
+  volatile int FatalReportFrameCount = 0;
+
+  _Unwind_Reason_Code CollectFatalReportFrame(struct _Unwind_Context* Context, void*) {
+    const int Count = FatalReportFrameCount;
+    if (Count >= static_cast<int>(std::size(FatalReportFrames))) {
+      return _URC_END_OF_STACK;
+    }
+    FatalReportFrames[Count] = reinterpret_cast<void*>(_Unwind_GetIP(Context));
+    FatalReportFrameCount = Count + 1;
+    return _URC_NO_REASON;
+  }
+
+  // Runs one step of the report that may fault. False if it did: the fault
+  // came back through SignalHandlerThunk and FaultInFatalReport. The fault
+  // signals are unblocked for the step, or a fault with the signal blocked
+  // (a handler without SA_NODEFER) would end the process on the spot, the
+  // core showing the unwinder instead of the fault. The jump restores the
+  // mask sigsetjmp saved.
+  bool GuardedFatalReportStep(void (*Step)()) {
+    if (sigsetjmp(FatalReportStepJump, 1) != 0) {
+      return false;
+    }
+    sigset_t Faults;
+    sigemptyset(&Faults);
+    for (int FaultSignal : {SIGSEGV, SIGBUS, SIGILL, SIGFPE, SIGTRAP}) {
+      sigaddset(&Faults, FaultSignal);
+    }
+    sigset_t Previous;
+    ::pthread_sigmask(SIG_UNBLOCK, &Faults, &Previous);
+    FatalReportStepActive = 1;
+    Step();
+    FatalReportStepActive = 0;
+    ::pthread_sigmask(SIG_SETMASK, &Previous, nullptr);
+    return true;
+  }
+
+  void RestoreDefaultDisposition(int Signal) {
+    struct sigaction sa {};
+    sa.sa_handler = SIG_DFL;
+    sigemptyset(&sa.sa_mask);
+    sigaction(Signal, &sa, nullptr);
+  }
+
+  // SignalHandlerThunk, first thing, while a report is being written: true if
+  // this signal is a fault of the reporting thread itself, now dealt with.
+  // Does not return when the fault is in the report's unwinder.
+  bool FaultInFatalReport(int Signal, const siginfo_t* Info) {
+    const bool SyncFault = (Signal == SIGSEGV || Signal == SIGBUS || Signal == SIGILL || Signal == SIGFPE || Signal == SIGTRAP) && Info->si_code > 0;
+    if (!SyncFault || FatalReportTid.load(std::memory_order_acquire) != FHU::Syscalls::gettid()) {
+      return false;
+    }
+    if (FatalReportStepActive) {
+      FatalReportStepActive = 0;
+      siglongjmp(FatalReportStepJump, 1);
+    }
+    SignalSafeLine Line;
+    Line.Str("POWERarm: signal ");
+    Line.SDec(Signal);
+    Line.Str(" (si_code ");
+    Line.SDec(Info->si_code);
+    Line.Str(", addr 0x");
+    Line.Hex(reinterpret_cast<uint64_t>(Info->si_addr));
+    Line.Str(") inside the fatal host-fault report; terminating.\n");
+    Line.Write(STDERR_FILENO);
+    RestoreDefaultDisposition(Signal);
+    return true;
+  }
+} // namespace
 
 // 2026-05-14 diagnostic: capture host PC + si_addr for every sync fault
 // (SIGSEGV/SIGBUS/SIGILL/SIGFPE) BEFORE FEX hands it to the guest.  Steam
@@ -332,6 +484,11 @@ static void TraceSyncSignal(int Signal, siginfo_t* Info, ucontext_t* _context) {
 }
 
 static void SignalHandlerThunk(int Signal, siginfo_t* Info, void* UContext) {
+  if (FatalReportTid.load(std::memory_order_relaxed) != 0) [[unlikely]] {
+    if (FaultInFatalReport(Signal, Info)) {
+      return;
+    }
+  }
   ucontext_t* _context = (ucontext_t*)UContext;
   // Diagnostic: log the raw kernel-delivered context before any FEX/guest
   // handler runs.  Steam's breakpad clobbers this in the post-mortem
@@ -1546,38 +1703,82 @@ void SignalDelegator::HandleGuestSignal(FEX::HLE::ThreadStateObject* ThreadObjec
       }
     }
     if (Region) [[unlikely]] {
-      static const bool DeliverAnyway = getenv("FEX_HOSTFAULTTOGUEST") != nullptr;
-      char Buf[640];
-      const int N = ::snprintf(Buf, sizeof(Buf),
-                               "POWERarm: FATAL host fault: signal %d (si_code %d, addr 0x%lx) at host nip 0x%lx lr 0x%lx, raised in %s; tid %u; "
-                               "guest rip 0x%lx (block-boundary value, may be stale); DeferredSignalRefCount %lu; InSyscallInfo 0x%lx. "
-                               "%s\n",
-                               Signal, SigInfo.si_code, reinterpret_cast<unsigned long>(SigInfo.si_addr), (unsigned long)HostPC,
-                               (unsigned long)_context->uc_mcontext.regs->link, Region, FHU::Syscalls::gettid(),
-                               (unsigned long)Thread->CurrentFrame->State.pc,
-                               (unsigned long)Thread->CurrentFrame->State.DeferredSignalRefCount.Load(),
-                               (unsigned long)Thread->CurrentFrame->InSyscallInfo,
-                               DeliverAnyway ? "POWERARM_HOSTFAULTTOGUEST is set: delivering it to the guest anyway." :
-                                               "Not delivered to the guest (the host frame and any locks it holds would be abandoned); "
-                                               "terminating with the default disposition. POWERARM_HOSTFAULTTOGUEST=1 delivers it instead.");
-      ::write(STDERR_FILENO, Buf, N > 0 ? static_cast<size_t>(N) : 0);
+      // One report per process, and the line before anything that can fault
+      // (see FatalReportTid). Formatted by hand: nothing here allocates.
+      const uint32_t Tid = FHU::Syscalls::gettid();
+      uint32_t Reporter = 0;
+      if (!FatalReportTid.compare_exchange_strong(Reporter, Tid, std::memory_order_acq_rel)) {
+        SignalSafeLine Line;
+        Line.Str("POWERarm: FATAL host fault: signal ");
+        Line.SDec(Signal);
+        Line.Str(" at host nip 0x");
+        Line.Hex(HostPC);
+        Line.Str(" on tid ");
+        Line.Dec(Tid);
+        Line.Str(" too, while tid ");
+        Line.Dec(Reporter);
+        Line.Str(" reports one; terminating.\n");
+        Line.Write(STDERR_FILENO);
+        RestoreDefaultDisposition(Signal);
+        return;
+      }
+      const bool DeliverAnyway = HostFaultToGuest;
       {
-        void* Frames[48];
-        const int Count = ::backtrace(Frames, 48);
-        static const char Hdr[] = "POWERarm: host backtrace (this handler first, the faulting frame follows the kernel sigtramp):\n";
-        ::write(STDERR_FILENO, Hdr, sizeof(Hdr) - 1);
-        ::backtrace_symbols_fd(Frames, Count, STDERR_FILENO);
+        SignalSafeLine Line;
+        Line.Str("POWERarm: FATAL host fault: signal ");
+        Line.SDec(Signal);
+        Line.Str(" (si_code ");
+        Line.SDec(SigInfo.si_code);
+        Line.Str(", addr 0x");
+        Line.Hex(reinterpret_cast<uint64_t>(SigInfo.si_addr));
+        Line.Str(") at host nip 0x");
+        Line.Hex(HostPC);
+        Line.Str(" lr 0x");
+        Line.Hex(_context->uc_mcontext.regs->link);
+        Line.Str(", raised in ");
+        Line.Str(Region);
+        Line.Str("; tid ");
+        Line.Dec(Tid);
+        Line.Str("; guest rip 0x");
+        Line.Hex(Thread->CurrentFrame->State.pc);
+        Line.Str(" (block-boundary value, may be stale); DeferredSignalRefCount ");
+        Line.Dec(Thread->CurrentFrame->State.DeferredSignalRefCount.Load());
+        Line.Str("; InSyscallInfo 0x");
+        Line.Hex(Thread->CurrentFrame->InSyscallInfo);
+        Line.Str(DeliverAnyway ? ". POWERARM_HOSTFAULTTOGUEST is set: delivering it to the guest anyway.\n" :
+                                 ". Not delivered to the guest (the host frame and any locks it holds would be abandoned); "
+                                 "terminating with the default disposition. POWERARM_HOSTFAULTTOGUEST=1 delivers it instead.\n");
+        Line.Write(STDERR_FILENO);
+      }
+      // The backtrace unwinds through whatever state the fault left, and can
+      // fault itself. Frames are kept as they are found, so a fault in the
+      // unwinder still leaves those above it to print.
+      FatalReportFrameCount = 0;
+      const bool Unwound = GuardedFatalReportStep([] { _Unwind_Backtrace(CollectFatalReportFrame, nullptr); });
+      static const char Hdr[] = "POWERarm: host backtrace (this handler first, the faulting frame follows the kernel sigtramp):\n";
+      ::write(STDERR_FILENO, Hdr, sizeof(Hdr) - 1);
+      const bool Printed =
+        GuardedFatalReportStep([] { ::backtrace_symbols_fd(FatalReportFrames, FatalReportFrameCount, STDERR_FILENO); });
+      if (!Unwound || !Printed) {
+        SignalSafeLine Line;
+        Line.Str(Unwound ? "\nPOWERarm: printing the host backtrace faulted; abandoned.\n" :
+                           "POWERarm: the host backtrace faulted in the unwinder after ");
+        if (!Unwound) {
+          Line.Dec(FatalReportFrameCount);
+          Line.Str(" frames; the rest abandoned.\n");
+        }
+        Line.Write(STDERR_FILENO);
       }
       if (FEX::HLE::_SyscallHandler && FEX::HLE::_SyscallHandler->VMATracking.Mutex.WriteHeldBySelfDiag()) {
         FEX::HLE::_SyscallHandler->VMATracking.Mutex.ReportAcquirerDiag();
       }
       if (!DeliverAnyway) {
-        struct sigaction sa {};
-        sa.sa_handler = SIG_DFL;
-        sigemptyset(&sa.sa_mask);
-        sigaction(Signal, &sa, nullptr);
+        // FatalReportTid stays set: the kernel re-raises the fault as this
+        // returns, and the process ends.
+        RestoreDefaultDisposition(Signal);
         return;
       }
+      FatalReportTid.store(0, std::memory_order_release);
     }
   }
 #endif
@@ -2014,6 +2215,11 @@ SignalDelegator::SignalDelegator(FEXCore::Context::Context* _CTX, const std::str
   : CTX {_CTX}
   , ApplicationName {ApplicationName}
   , SupportsAVX {SupportsAVX} {
+  HostFaultToGuest = getenv("FEX_HOSTFAULTTOGUEST") != nullptr;
+  // The unwinder initialises itself on first use (pthread_once, the FDE
+  // lookup caches); the fatal-fault report must not be that first use.
+  _Unwind_Backtrace([](struct _Unwind_Context*, void*) { return _URC_END_OF_STACK; }, nullptr);
+
   // Signal zero isn't real
   HostHandlers[0].Installed = true;
 

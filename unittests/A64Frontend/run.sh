@@ -52,6 +52,9 @@ have_vdso=0
 # against the host stack every time, so its nested signal handlers drove host
 # frames into the guest stack. With a hard stack limit below unlimited the
 # layout is not forced and the result says so.
+#
+# forkexec runs with POWERARM_PORTABLE, the code cache on and a fresh cache
+# directory of its own (see forkexec.c).
 hoststack_forced=yes
 [ "$(ulimit -Hs)" = unlimited ] || hoststack_forced=no
 run_emu() {
@@ -67,6 +70,17 @@ run_emu() {
     if [ "$1" = hoststack ]; then
       ulimit -s unlimited 2> /dev/null
       exec setarch -R "$emu" "./$bin" $args
+    fi
+    if [ "$1" = forkexec ]; then
+      # Its children exec it again, which must stay on this build
+      # (POWERARM_PORTABLE), and save, fill and compact a code cache of their
+      # own on every run.
+      fecache=$(mktemp -d "${TMPDIR:-/tmp}/forkexec-cache.XXXXXX")
+      POWERARM_PORTABLE=1 POWERARM_ENABLECODECACHINGWIP=1 POWERARM_CODECACHESCOPE=all POWERARM_APP_CACHE_LOCATION="$fecache/" \
+        "$emu" "./$bin" $args
+      rc=$?
+      rm -rf "$fecache"
+      exit $rc
     fi
     exec "$emu" "./$bin" $args
   ) > "$1.powerarm" 2> "$1.stderr"
@@ -250,6 +264,36 @@ if [ -f hello.golden ]; then
     report PASS rlimit_as "hello under RLIMIT_AS=4 GB"
   else
     report FAIL rlimit_as "hello under RLIMIT_AS=4 GB: rc=$(cat rlimit_as.powerarm.rc)"
+  fi
+fi
+
+# The fatal host-fault report survives a fault of its own. hostfault makes
+# POWERarm fault in its own syscall body (POWERARM_HOSTFAULT_INJECT, 173 is
+# getppid) under a return address the unwinder cannot read, once with fault
+# handlers like a crash reporter's (SA_NODEFER) and once without. Each run
+# must print the report's line first and once, and the unwinder's fault note,
+# never run the guest's handler, and end with the original SIGSEGV. The report
+# used to re-enter itself through the unwinder's fault, or die in it.
+if [ -f hostfault.golden ]; then
+  hf_fail=
+  for variant in handlers --no-handlers; do
+    set --
+    [ "$variant" = --no-handlers ] && set -- --no-handlers
+    # (The braces keep the shell's own "Segmentation fault" notice off the output.)
+    { (ulimit -c 0 && POWERARM_HOSTFAULT_INJECT=173,segv,unwind exec "$emu" ./hostfault "$@") > hostfault_report.powerarm 2> hostfault_report.stderr; } 2> /dev/null
+    rc=$?
+    lines=$(grep -c 'FATAL host fault' hostfault_report.stderr)
+    first=$(head -1 hostfault_report.stderr | cut -c1-37)
+    if [ "$rc" != 139 ] || [ "$lines" != 1 ] || [ "$first" != "POWERarm: FATAL host fault: signal 11" ] ||
+      ! grep -q 'host backtrace faulted in the unwinder after' hostfault_report.stderr ||
+      grep -q -e 'guest handler' -e 'getppid' hostfault_report.powerarm; then
+      hf_fail="$hf_fail $variant: rc=$rc report lines=$lines first=[$first];"
+    fi
+  done
+  if [ -z "$hf_fail" ]; then
+    report PASS hostfault_report "one report line first, unwinder fault survived, with and without SA_NODEFER handlers"
+  else
+    report FAIL hostfault_report "${hf_fail% ;}"
   fi
 fi
 

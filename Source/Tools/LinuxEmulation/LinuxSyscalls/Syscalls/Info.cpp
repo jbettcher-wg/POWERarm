@@ -10,6 +10,7 @@ $end_info$
 
 #include <FEXCore/IR/IR.h>
 #include <FEXCore/Utils/LogManager.h>
+#include <FEXHeaderUtils/Syscalls.h>
 
 #include <cstring>
 #include <linux/kcmp.h>
@@ -32,6 +33,41 @@ $end_info$
 namespace FEX::HLE {
 using cap_user_header_t = void*;
 using cap_user_data_t = void*;
+
+// RLIMIT_AS of the calling process goes through
+// SyscallHandler::GuestAddressSpaceLimit, which holds it until the next
+// execve; every other resource, and every other process, is the host's. Like
+// the kernel, a new limit is copied in first and the old one copied out after
+// it is set (so a bad old pointer is EFAULT with the new limit in place).
+static uint64_t AddressSpaceLimit(const struct rlimit* GuestNew, struct rlimit* GuestOld) {
+  struct rlimit New {};
+  struct rlimit Old {};
+  if (GuestNew && FaultSafeUserMemAccess::CopyFromUser(&New, GuestNew, sizeof(New)) != 0) {
+    return -EFAULT;
+  }
+  const int Result = FEX::HLE::_SyscallHandler->GuestAddressSpaceLimit(GuestNew ? &New : nullptr, GuestOld ? &Old : nullptr);
+  if (Result != 0) {
+    return Result;
+  }
+  if (GuestOld && FaultSafeUserMemAccess::CopyToUser(GuestOld, &Old, sizeof(Old)) != 0) {
+    return -EFAULT;
+  }
+  return 0;
+}
+
+// prlimit64's pid names this process when it is 0, the process id, or the id
+// of any of its threads (rlimits belong to the thread group).
+static bool IsThisProcess(pid_t Pid) {
+  if (Pid == 0 || Pid == ::getpid() || Pid == static_cast<pid_t>(FHU::Syscalls::gettid())) {
+    return true;
+  }
+  if (Pid < 0) {
+    return false;
+  }
+  char TaskPath[64];
+  snprintf(TaskPath, sizeof(TaskPath), "/proc/self/task/%d", Pid);
+  return ::access(TaskPath, F_OK) == 0;
+}
 
 void RegisterInfo(FEX::HLE::SyscallHandler* Handler) {
   using namespace FEXCore::IR;
@@ -142,5 +178,28 @@ void RegisterInfo(FEX::HLE::SyscallHandler* Handler) {
       // We don't support this
       return -EPERM;
     });
+
+  REGISTER_SYSCALL_IMPL(getrlimit, [](FEXCore::Core::CpuStateFrame* Frame, uint32_t resource, struct rlimit* rlim) -> uint64_t {
+    if (resource == RLIMIT_AS) {
+      return rlim ? AddressSpaceLimit(nullptr, rlim) : -EFAULT;
+    }
+    uint64_t Result = ::syscall(SYSCALL_DEF(getrlimit), resource, rlim);
+    SYSCALL_ERRNO();
+  });
+  REGISTER_SYSCALL_IMPL(setrlimit, [](FEXCore::Core::CpuStateFrame* Frame, uint32_t resource, const struct rlimit* rlim) -> uint64_t {
+    if (resource == RLIMIT_AS) {
+      return rlim ? AddressSpaceLimit(rlim, nullptr) : -EFAULT;
+    }
+    uint64_t Result = ::syscall(SYSCALL_DEF(setrlimit), resource, rlim);
+    SYSCALL_ERRNO();
+  });
+  REGISTER_SYSCALL_IMPL(prlimit_64, [](FEXCore::Core::CpuStateFrame* Frame, pid_t pid, uint32_t resource, const struct rlimit* new_limit,
+                                       struct rlimit* old_limit) -> uint64_t {
+    if (resource == RLIMIT_AS && IsThisProcess(pid)) {
+      return AddressSpaceLimit(new_limit, old_limit);
+    }
+    uint64_t Result = ::syscall(SYSCALL_DEF(prlimit_64), pid, resource, new_limit, old_limit);
+    SYSCALL_ERRNO();
+  });
 }
 } // namespace FEX::HLE

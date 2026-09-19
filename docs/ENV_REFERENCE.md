@@ -94,7 +94,7 @@ Absorb-by-default behaviours; setting these makes them loud.
 | `FEX_NOEXEC_ABORT` | Abort on the entry-block NoExec tripwire instead of absorbing. |
 | `FEX_EXITLINK_ABORT` | Abort on a suspect `ExitFunctionLink` instead of absorbing. |
 | `FEX_EXITLINK_NOBYPASS` | Disable the `ExitFunctionLink` bypass. |
-| `FEX_HOSTFAULT_INJECT` | `=<guest syscall nr>[,segv]`. Raises a fault inside FEX's own syscall body (a `trap`, or a null store with `,segv`) whenever the guest makes that syscall; drives the host-fault gate test (`hostfault_gate`). |
+| `FEX_HOSTFAULT_INJECT` | `=<guest syscall nr>[,segv][,unwind]`. Raises a fault inside FEX's own syscall body (a `trap`, or a null store with `,segv`) whenever the guest makes that syscall; drives the host-fault gate test (`hostfault_gate`). `,unwind` (PPC64LE) makes it the null store under an unmapped return address, so the fatal-fault report's own backtrace faults too (`run.sh`'s `hostfault_report`). |
 | `FEX_ABORT_TRIPWIRE` | Log every guest-delivered fatal-class sync signal with `si_addr`/`si_code` and the guest RIP. |
 | `FEX_TRIPWIRE_PROBE` | Post-mortem probe of memory pointed at by SRA-reconstructed block-entry GPRs. Written for RimWorld's UnityPlayer fault. |
 | `FEX_SIGRIPWATCH` | Signals arriving while the guest is in JIT code with static registers live; reports host PC and loop registers. |
