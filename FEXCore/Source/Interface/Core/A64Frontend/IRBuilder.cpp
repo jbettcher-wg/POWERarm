@@ -141,7 +141,7 @@ const IRBuilder::HandlerEntry IRBuilder::HandlerTable[] = {
   {"LD4R_1", &IRBuilder::SIMDSingleStructure}, {"LD4R_2", &IRBuilder::SIMDSingleStructure},
   // Advanced SIMD. The translated set is the subset measured in
   // docs/powerarm/M1b-SIMD-SUBSET.md plus its cheap neighbours.
-  // POWERARM-M1-TODO(simd): no translator yet for SQSHL/UQSHL/SRSHL/URSHL/SQRSHL/UQRSHL by register, SUQADD/USQADD, SQDMULL/SQDMLAL/SQDMLSL, PMUL, SDOT, FMULX, FRECPE/FRSQRTE/FRECPS/FRSQRTS, URECPE/URSQRTE, FCVTXN, FMOV of a half-precision vector immediate and the half-precision vector arithmetic, FCADD/FCMLA, and the SHA-512/SHA-3/SM3/SM4 entries (the last not on the reference A76).
+  // POWERARM-M1-TODO(simd): no translator yet for SQSHL/UQSHL/SRSHL/URSHL/SQRSHL/UQRSHL by register, SUQADD/USQADD, SQDMULL/SQDMLAL/SQDMLSL, PMUL, SDOT, FMULX, FCVTXN, FMOV of a half-precision vector immediate and the half-precision vector arithmetic, FCADD/FCMLA, and the SHA-512/SHA-3/SM3/SM4 entries (the last not on the reference A76).
   // Advanced SIMD: copy.
   {"DUP_gen", &IRBuilder::DUP_gen}, {"DUP_elt_1", &IRBuilder::DUP_elt_1}, {"DUP_elt_2", &IRBuilder::DUP_elt_2},
   {"UMOV", &IRBuilder::UMOV}, {"SMOV", &IRBuilder::SMOV}, {"INS_gen", &IRBuilder::INS_gen}, {"INS_elt", &IRBuilder::INS_elt},
@@ -218,6 +218,9 @@ const IRBuilder::HandlerEntry IRBuilder::HandlerTable[] = {
   {"FCVTNS_4", &IRBuilder::FCVTNS_4}, {"FCVTNU_4", &IRBuilder::FCVTNU_4}, {"FCVTPS_4", &IRBuilder::FCVTPS_4}, {"FCVTPU_4", &IRBuilder::FCVTPU_4}, {"FCVTMS_4", &IRBuilder::FCVTMS_4}, {"FCVTMU_4", &IRBuilder::FCVTMU_4}, {"FCVTZS_int_4", &IRBuilder::FCVTZS_int_4}, {"FCVTZU_int_4", &IRBuilder::FCVTZU_int_4}, {"FCVTAS_4", &IRBuilder::FCVTAS_4}, {"FCVTAU_4", &IRBuilder::FCVTAU_4},
   {"FCVTNS_2", &IRBuilder::FCVTNS_2}, {"FCVTNU_2", &IRBuilder::FCVTNU_2}, {"FCVTPS_2", &IRBuilder::FCVTPS_2}, {"FCVTPU_2", &IRBuilder::FCVTPU_2}, {"FCVTMS_2", &IRBuilder::FCVTMS_2}, {"FCVTMU_2", &IRBuilder::FCVTMU_2}, {"FCVTAS_2", &IRBuilder::FCVTAS_2}, {"FCVTAU_2", &IRBuilder::FCVTAU_2},
   {"SCVTF_fix_2", &IRBuilder::SCVTF_fix_2}, {"UCVTF_fix_2", &IRBuilder::UCVTF_fix_2}, {"FCVTZS_fix_2", &IRBuilder::FCVTZS_fix_2}, {"FCVTZU_fix_2", &IRBuilder::FCVTZU_fix_2}, {"SCVTF_fix_1", &IRBuilder::SCVTF_fix_1}, {"UCVTF_fix_1", &IRBuilder::UCVTF_fix_1}, {"FCVTZS_fix_1", &IRBuilder::FCVTZS_fix_1}, {"FCVTZU_fix_1", &IRBuilder::FCVTZU_fix_1},
+  // Advanced SIMD: estimates and Newton-Raphson steps.
+  {"FRECPE_2", &IRBuilder::FRECPE_2}, {"FRECPE_4", &IRBuilder::FRECPE_4}, {"FRSQRTE_2", &IRBuilder::FRSQRTE_2}, {"FRSQRTE_4", &IRBuilder::FRSQRTE_4}, {"FRECPX_2", &IRBuilder::FRECPX_2}, {"URECPE", &IRBuilder::URECPE}, {"URSQRTE", &IRBuilder::URSQRTE},
+  {"FRECPS_2", &IRBuilder::FRECPS_2}, {"FRECPS_4", &IRBuilder::FRECPS_4}, {"FRSQRTS_2", &IRBuilder::FRSQRTS_2}, {"FRSQRTS_4", &IRBuilder::FRSQRTS_4},
   // Scalar floating point.
   {"FMOV_float_gen", &IRBuilder::FMOV_float_gen}, {"FMOV_float", &IRBuilder::FMOV_float}, {"FMOV_float_imm", &IRBuilder::FMOV_float_imm},
   {"FABS_float", &IRBuilder::FABS_float}, {"FNEG_float", &IRBuilder::FNEG_float}, {"FSQRT_float", &IRBuilder::FSQRT_float},

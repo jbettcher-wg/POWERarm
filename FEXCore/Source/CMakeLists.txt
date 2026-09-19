@@ -32,6 +32,7 @@ set(SRCS
   Interface/Core/A64Frontend/TranslateFP.cpp
   Interface/Core/A64Frontend/TranslateLoadStore.cpp
   Interface/Core/A64Frontend/TranslateSIMD.cpp
+  Interface/Core/A64Frontend/TranslateSIMDEstimate.cpp
   Interface/Core/A64Frontend/TranslateSIMDFloat.cpp
   Interface/Core/A64Frontend/TranslateSIMDSaturate.cpp
   Interface/Core/A64Frontend/TranslateSIMDLoadStore.cpp)

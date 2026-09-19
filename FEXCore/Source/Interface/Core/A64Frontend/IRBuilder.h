@@ -233,6 +233,10 @@ public:
   bool FCVTMS_2(uint32_t Word); bool FCVTMU_2(uint32_t Word); bool FCVTAS_2(uint32_t Word); bool FCVTAU_2(uint32_t Word);
   bool SCVTF_fix_2(uint32_t Word); bool UCVTF_fix_2(uint32_t Word); bool FCVTZS_fix_2(uint32_t Word); bool FCVTZU_fix_2(uint32_t Word);
   bool SCVTF_fix_1(uint32_t Word); bool UCVTF_fix_1(uint32_t Word); bool FCVTZS_fix_1(uint32_t Word); bool FCVTZU_fix_1(uint32_t Word);
+  // Advanced SIMD estimates and Newton-Raphson steps (TranslateSIMDEstimate.cpp).
+  bool FRECPE_2(uint32_t Word); bool FRECPE_4(uint32_t Word); bool FRSQRTE_2(uint32_t Word); bool FRSQRTE_4(uint32_t Word);
+  bool FRECPX_2(uint32_t Word); bool URECPE(uint32_t Word); bool URSQRTE(uint32_t Word);
+  bool FRECPS_2(uint32_t Word); bool FRECPS_4(uint32_t Word); bool FRSQRTS_2(uint32_t Word); bool FRSQRTS_4(uint32_t Word);
   // Advanced SIMD saturating, rounding and halving families (TranslateSIMDSaturate.cpp).
   bool SQADD_2(uint32_t Word); bool SQSUB_2(uint32_t Word); bool UQADD_2(uint32_t Word); bool UQSUB_2(uint32_t Word);
   bool SQADD_1(uint32_t Word); bool SQSUB_1(uint32_t Word); bool UQADD_1(uint32_t Word);
@@ -427,6 +431,17 @@ private:
   bool SIMDHalfSign(uint32_t Word, bool IsNeg);
   bool SIMDFloatToInt(uint32_t Word, uint8_t Rounding, bool Signed, bool Scalar);
   bool SIMDFixedConvert(uint32_t Word, bool ToFloat, bool Signed, bool Scalar);
+
+  // Estimates and steps (TranslateSIMDEstimate.cpp).
+  Ref RecipEstimateTable(OpSize ES, Ref A);
+  Ref RecipSqrtEstimateTable(OpSize ES, Ref A);
+  Ref OverflowToInfinityMask(OpSize ES, Ref X);
+  Ref FPRecipEstimateLanes(OpSize ES, Ref X);
+  Ref FPRSqrtEstimateLanes(OpSize ES, Ref X);
+  Ref FPStepFusedLanes(OpSize ES, Ref Op1, Ref Op2, bool Sqrt);
+  bool SIMDFloatEstimate(uint32_t Word, bool Sqrt, bool Scalar);
+  bool SIMDUnsignedEstimate(uint32_t Word, bool Sqrt);
+  bool SIMDFloatStep(uint32_t Word, bool Sqrt, bool Scalar);
 
   bool CRC32Common(uint32_t Word, bool Castagnoli);
   // Advanced SIMD saturating families (TranslateSIMDSaturate.cpp).
