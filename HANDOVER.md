@@ -43,9 +43,10 @@ cherry-pick; patches for them go in `docs/powerarm/outgoing-patches/fastppcx86/`
 - **VS Code 1.138.0 (arm64 Electron 42) runs** (2026-09-18, dev build): the workbench, the
   extension host (up in ~4 s) and the built-in git/GitHub extensions. It lives at
   `~/Development/vscode-arm64/<version>`; its 61 library packages (gtk3, nss, cups, ...) are in
-  the vk overlay. Launch: `POWERARM_PORTABLE=1 POWERARM_ROOTFS=<vk> <POWERarm> <dir>/code
-  --no-sandbox` (or plain `POWERARM_ROOTFS=<vk> <dir>/code --no-sandbox` through binfmt once
-  stable has 0e4825b60 and 84ffbdcf8). The two fixes: `/proc`, `/sys` and `/dev` are host-only
+  the vk overlay. `~/.local/bin/code` launches it through binfmt: vk rootfs, `--no-sandbox`,
+  `~/Development/vscode-arm64/current` -> the version dir. It needs a stable with 0e4825b60 and
+  84ffbdcf8. An undocumented x86 VS Code under fastppcx86 from 2026-09-12 (it never worked) was
+  removed, and its launcher replaced. The two fixes: `/proc`, `/sys` and `/dev` are host-only
   (the zygote and GPU process died on Chromium's `fstatat(proc_fd, "self/task/")`), and
   FMAXV/FMINV/FMAXNMV/FMINNMV (the renderer died on FMINV). Remaining unimplemented-instruction
   reports are all feature probes that also SIGILL on an A76 (GCS/TPIDR2 MRS, MTE, SVE `cnt`,

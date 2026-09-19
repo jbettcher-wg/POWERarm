@@ -31,11 +31,19 @@ against a real Cortex-A76 (Raspberry Pi 5), on both 64K and 4K page-size POWER k
 | **M2:** Arch Linux ARM's own GCC builds zlib and Lua | ✅ every object and binary byte-identical to the reference |
 | Optimization round 1 (branches, register use, code shape, translation speed, code cache, startup) | ✅ merged |
 | Larger real-world programs: JIT-based language runtimes | ✅ the aarch64 Claude Code CLI (Bun / JavaScriptCore) runs day to day, and code-server 4.137 (VS Code on Node 24 / V8) serves its workbench and runs its extension host |
+| Desktop apps: VS Code | ✅ Microsoft's arm64 VS Code 1.138 (Electron 42, Chromium 148, Node 24): the workbench, extensions and the integrated terminal. Chromium's sandbox is off (`--no-sandbox`) for now |
 | GPU | ✅ Vulkan and OpenGL run unthunked through the guest's own Mesa (RADV, radeonsi). `vkcube` matches the native frame rate |
 | Games | ✅ SuperTuxKart, Arch Linux ARM's aarch64 build, runs its benchmark at around 100 fps on an RX 7900 XTX. MangoHud for guests shows frame rate, GPU load and live JIT statistics |
 | Two-tier root filesystem | ✅ a read-only base plus a per-user writable layer; the guest's own `pacman` installs packages into it |
 | Library thunks (Vulkan, GL, libc string and math routines) | 🔄 the guest-to-host call path and callbacks have landed; shipping the guest vDSO by default is next |
 | Further performance work (code shape, flags, translation speed, code cache coverage) | 🔄 in progress; ranked goals in [`docs/powerarm/research/`](docs/powerarm/research/) |
+
+<p align="center">
+  <img src="docs/powerarm/assets/screenshots/vscode-arm64-on-power9.png" alt="Microsoft's arm64 VS Code running on a POWER9 host under POWERarm" width="900">
+</p>
+<p align="center"><sub>Microsoft's arm64 VS Code on a POWER9 workstation (Omarchy, RX 7900 XTX), editing the
+JavaScriptCore PPC64 assembler. The About box reports <code>Linux arm64</code>; <code>uname</code> in the native
+terminal beside it reports <code>ppc64le</code>.</sub></p>
 
 **Presented CPU:** Cortex-A76 class, with
 `fp asimd aes pmull sha1 sha2 crc32 atomics fphp asimdhp cpuid`. FEAT_LSE atomics are implemented
