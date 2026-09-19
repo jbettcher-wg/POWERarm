@@ -204,7 +204,7 @@ public:
   bool SCVTF_float_int(uint32_t Word); bool UCVTF_float_int(uint32_t Word); bool SCVTF_float_fix(uint32_t Word); bool UCVTF_float_fix(uint32_t Word);
   bool FCVTZS_float_fix(uint32_t Word); bool FCVTZU_float_fix(uint32_t Word);
   bool FCVTZS_int_2(uint32_t Word); bool FCVTZU_int_2(uint32_t Word); bool SCVTF_int_2(uint32_t Word); bool UCVTF_int_2(uint32_t Word);
-  bool FCVTL(uint32_t Word); bool FCVTN(uint32_t Word);
+  bool FCVTL(uint32_t Word); bool FCVTN(uint32_t Word); bool FCVTXN_1(uint32_t Word); bool FCVTXN_2(uint32_t Word);
   // Advanced SIMD floating point (TranslateSIMDFloat.cpp).
   bool FADD_2(uint32_t Word); bool FSUB_2(uint32_t Word); bool FMUL_vec_2(uint32_t Word); bool FDIV_2(uint32_t Word);
   bool FMIN_2(uint32_t Word); bool FMAX_2(uint32_t Word); bool FMINNM_2(uint32_t Word); bool FMAXNM_2(uint32_t Word);
@@ -233,6 +233,43 @@ public:
   bool FCVTMS_2(uint32_t Word); bool FCVTMU_2(uint32_t Word); bool FCVTAS_2(uint32_t Word); bool FCVTAU_2(uint32_t Word);
   bool SCVTF_fix_2(uint32_t Word); bool UCVTF_fix_2(uint32_t Word); bool FCVTZS_fix_2(uint32_t Word); bool FCVTZU_fix_2(uint32_t Word);
   bool SCVTF_fix_1(uint32_t Word); bool UCVTF_fix_1(uint32_t Word); bool FCVTZS_fix_1(uint32_t Word); bool FCVTZU_fix_1(uint32_t Word);
+  // Advanced SIMD estimates and Newton-Raphson steps (TranslateSIMDEstimate.cpp).
+  bool FRECPE_2(uint32_t Word); bool FRECPE_4(uint32_t Word); bool FRSQRTE_2(uint32_t Word); bool FRSQRTE_4(uint32_t Word);
+  bool FRECPX_2(uint32_t Word); bool URECPE(uint32_t Word); bool URSQRTE(uint32_t Word);
+  bool FRECPE_1(uint32_t Word); bool FRECPE_3(uint32_t Word); bool FRSQRTE_1(uint32_t Word); bool FRSQRTE_3(uint32_t Word);
+  bool FRECPX_1(uint32_t Word);
+  bool FRECPS_2(uint32_t Word); bool FRECPS_4(uint32_t Word); bool FRSQRTS_2(uint32_t Word); bool FRSQRTS_4(uint32_t Word);
+  // Advanced SIMD half precision (TranslateSIMDHalf.cpp).
+  bool FADD_1(uint32_t Word); bool FSUB_1(uint32_t Word); bool FMUL_vec_1(uint32_t Word); bool FDIV_1(uint32_t Word);
+  bool FMIN_1(uint32_t Word); bool FMAX_1(uint32_t Word); bool FMINNM_1(uint32_t Word); bool FMAXNM_1(uint32_t Word);
+  bool FMULX_vec_3(uint32_t Word); bool FMULX_vec_1(uint32_t Word); bool FABD_3(uint32_t Word); bool FABD_1(uint32_t Word);
+  bool FRECPS_3(uint32_t Word); bool FRECPS_1(uint32_t Word); bool FRSQRTS_3(uint32_t Word); bool FRSQRTS_1(uint32_t Word);
+  bool FMLA_vec_1(uint32_t Word); bool FMLS_vec_1(uint32_t Word); bool FMLA_elt_3(uint32_t Word); bool FMLS_elt_3(uint32_t Word);
+  bool FMLA_elt_1(uint32_t Word); bool FMLS_elt_1(uint32_t Word); bool FMUL_elt_3(uint32_t Word); bool FMUL_elt_1(uint32_t Word);
+  bool FMULX_elt_3(uint32_t Word); bool FMULX_elt_1(uint32_t Word);
+  bool FADDP_vec_1(uint32_t Word); bool FMAXP_vec_1(uint32_t Word); bool FMINP_vec_1(uint32_t Word);
+  bool FMAXNMP_vec_1(uint32_t Word); bool FMINNMP_vec_1(uint32_t Word);
+  bool FADDP_pair_1(uint32_t Word); bool FMAXP_pair_1(uint32_t Word); bool FMINP_pair_1(uint32_t Word);
+  bool FMAXNMP_pair_1(uint32_t Word); bool FMINNMP_pair_1(uint32_t Word);
+  bool FMAXV_1(uint32_t Word); bool FMINV_1(uint32_t Word); bool FMAXNMV_1(uint32_t Word); bool FMINNMV_1(uint32_t Word);
+  bool FCMEQ_reg_3(uint32_t Word); bool FCMGE_reg_3(uint32_t Word); bool FCMGT_reg_3(uint32_t Word);
+  bool FACGE_3(uint32_t Word); bool FACGT_3(uint32_t Word);
+  bool FCMEQ_zero_3(uint32_t Word); bool FCMGE_zero_3(uint32_t Word); bool FCMGT_zero_3(uint32_t Word);
+  bool FCMLE_3(uint32_t Word); bool FCMLT_3(uint32_t Word);
+  bool FCMEQ_reg_1(uint32_t Word); bool FCMGE_reg_1(uint32_t Word); bool FCMGT_reg_1(uint32_t Word);
+  bool FACGE_1(uint32_t Word); bool FACGT_1(uint32_t Word);
+  bool FCMEQ_zero_1(uint32_t Word); bool FCMGE_zero_1(uint32_t Word); bool FCMGT_zero_1(uint32_t Word);
+  bool FCMLE_1(uint32_t Word); bool FCMLT_1(uint32_t Word);
+  bool FRINTN_1(uint32_t Word); bool FRINTP_1(uint32_t Word); bool FRINTM_1(uint32_t Word); bool FRINTZ_1(uint32_t Word);
+  bool FRINTA_1(uint32_t Word); bool FRINTX_1(uint32_t Word); bool FRINTI_1(uint32_t Word); bool FSQRT_1(uint32_t Word);
+  bool FCVTNS_3(uint32_t Word); bool FCVTNU_3(uint32_t Word); bool FCVTPS_3(uint32_t Word); bool FCVTPU_3(uint32_t Word);
+  bool FCVTMS_3(uint32_t Word); bool FCVTMU_3(uint32_t Word); bool FCVTZS_int_3(uint32_t Word); bool FCVTZU_int_3(uint32_t Word);
+  bool FCVTAS_3(uint32_t Word); bool FCVTAU_3(uint32_t Word);
+  bool FCVTNS_1(uint32_t Word); bool FCVTNU_1(uint32_t Word); bool FCVTPS_1(uint32_t Word); bool FCVTPU_1(uint32_t Word);
+  bool FCVTMS_1(uint32_t Word); bool FCVTMU_1(uint32_t Word); bool FCVTZS_int_1(uint32_t Word); bool FCVTZU_int_1(uint32_t Word);
+  bool FCVTAS_1(uint32_t Word); bool FCVTAU_1(uint32_t Word);
+  bool SCVTF_int_3(uint32_t Word); bool UCVTF_int_3(uint32_t Word); bool SCVTF_int_1(uint32_t Word); bool UCVTF_int_1(uint32_t Word);
+  bool FMOV_3(uint32_t Word);
   // Advanced SIMD saturating, rounding and halving families (TranslateSIMDSaturate.cpp).
   bool SQADD_2(uint32_t Word); bool SQSUB_2(uint32_t Word); bool UQADD_2(uint32_t Word); bool UQSUB_2(uint32_t Word);
   bool SQADD_1(uint32_t Word); bool SQSUB_1(uint32_t Word); bool UQADD_1(uint32_t Word);
@@ -242,6 +279,8 @@ public:
   bool RSHRN(uint32_t Word); bool SQSHRN_2(uint32_t Word); bool SQRSHRN_2(uint32_t Word); bool UQSHRN_2(uint32_t Word);
   bool UQRSHRN_2(uint32_t Word); bool SQSHRUN_2(uint32_t Word); bool SQRSHRUN_2(uint32_t Word);
   bool SQSHRN_1(uint32_t Word); bool UQSHRN_1(uint32_t Word); bool SQSHRUN_1(uint32_t Word);
+  bool SQRSHRN_1(uint32_t Word); bool UQRSHRN_1(uint32_t Word); bool SQRSHRUN_1(uint32_t Word);
+  bool SRI_1(uint32_t Word); bool SLI_1(uint32_t Word); bool USRA_1(uint32_t Word); bool SSRA_1(uint32_t Word);
   bool SRSHR_2(uint32_t Word); bool URSHR_2(uint32_t Word); bool SRSRA_2(uint32_t Word); bool URSRA_2(uint32_t Word);
   bool SRSHR_1(uint32_t Word); bool URSHR_1(uint32_t Word); bool SRSRA_1(uint32_t Word); bool URSRA_1(uint32_t Word);
   bool SQSHL_imm_2(uint32_t Word); bool UQSHL_imm_2(uint32_t Word); bool SQSHLU_2(uint32_t Word);
@@ -258,6 +297,16 @@ public:
   bool SMLSL_elt(uint32_t Word); bool UMLSL_elt(uint32_t Word);
   bool UADDLV(uint32_t Word); bool SADDLV(uint32_t Word); bool SMAXV(uint32_t Word); bool SMINV(uint32_t Word);
   bool CLZ_asimd(uint32_t Word); bool CLS_asimd(uint32_t Word); bool UDOT_vec(uint32_t Word); bool SHLL(uint32_t Word);
+  bool SDOT_vec(uint32_t Word); bool UDOT_elt(uint32_t Word); bool SDOT_elt(uint32_t Word); bool PMUL(uint32_t Word);
+  bool SQSHL_reg_2(uint32_t Word); bool UQSHL_reg_2(uint32_t Word); bool SRSHL_2(uint32_t Word); bool URSHL_2(uint32_t Word);
+  bool SQRSHL_2(uint32_t Word); bool UQRSHL_2(uint32_t Word);
+  bool SQSHL_reg_1(uint32_t Word); bool UQSHL_reg_1(uint32_t Word); bool SRSHL_1(uint32_t Word); bool URSHL_1(uint32_t Word);
+  bool SQRSHL_1(uint32_t Word); bool UQRSHL_1(uint32_t Word);
+  bool SUQADD_1(uint32_t Word); bool SUQADD_2(uint32_t Word); bool USQADD_1(uint32_t Word); bool USQADD_2(uint32_t Word);
+  bool SQDMULL_vec_1(uint32_t Word); bool SQDMULL_vec_2(uint32_t Word); bool SQDMLAL_vec_1(uint32_t Word); bool SQDMLAL_vec_2(uint32_t Word);
+  bool SQDMLSL_vec_1(uint32_t Word); bool SQDMLSL_vec_2(uint32_t Word); bool SQDMULL_elt_1(uint32_t Word); bool SQDMULL_elt_2(uint32_t Word);
+  bool SQDMLAL_elt_1(uint32_t Word); bool SQDMLAL_elt_2(uint32_t Word); bool SQDMLSL_elt_1(uint32_t Word); bool SQDMLSL_elt_2(uint32_t Word);
+  bool FMULX_vec_2(uint32_t Word); bool FMULX_vec_4(uint32_t Word); bool FMULX_elt_2(uint32_t Word); bool FMULX_elt_4(uint32_t Word);
   // Cryptographic extension and CRC32 (TranslateCrypto.cpp).
   bool AESE(uint32_t Word); bool AESD(uint32_t Word); bool AESMC(uint32_t Word); bool AESIMC(uint32_t Word);
   bool PMULL(uint32_t Word);
@@ -362,7 +411,7 @@ private:
   bool SIMDShiftImm(uint32_t Word, ShiftImmOp Op, bool Scalar);
   bool SIMDPermute(uint32_t Word, PermuteOp Op);
   bool SIMDShiftRegister(uint32_t Word, bool Signed, bool Scalar);
-  bool SIMDShiftInsertAccumulate(uint32_t Word, ShiftInsertOp Op);
+  bool SIMDShiftInsertAccumulate(uint32_t Word, ShiftInsertOp Op, bool Scalar);
   bool SIMDAddLongPairwise(uint32_t Word, bool Signed, bool Accumulate);
   bool SIMDMultiply(uint32_t Word, int Accumulate);
   bool FPVectorUnary(uint32_t Word, bool IsNeg);
@@ -407,6 +456,7 @@ private:
   // Element 0 double -> half precision with one rounding, and the FZ16
   // output flush unless it is an FP-to-FP conversion.
   Ref DoubleToHalf(Ref D, bool ApplyFZ16);
+  bool SIMDConvertRoundToOdd(uint32_t Word, bool Scalar);
   // Host rounding mode <- FPCR.RMode of the given FPCR value.
   void SyncHostRoundingMode(Ref FPCR);
 
@@ -427,6 +477,39 @@ private:
   bool SIMDHalfSign(uint32_t Word, bool IsNeg);
   bool SIMDFloatToInt(uint32_t Word, uint8_t Rounding, bool Signed, bool Scalar);
   bool SIMDFixedConvert(uint32_t Word, bool ToFloat, bool Signed, bool Scalar);
+  Ref FPMulXLanes(OpSize ES, Ref A, Ref B);
+  bool SIMDFloatMulX(uint32_t Word, bool Scalar, bool ByElement);
+
+  // Estimates and steps (TranslateSIMDEstimate.cpp).
+  Ref RecipEstimateTable(OpSize ES, Ref A);
+  Ref RecipSqrtEstimateTable(OpSize ES, Ref A);
+  Ref OverflowToInfinityMask(OpSize ES, Ref X);
+  Ref FPRecipEstimateLanes(OpSize ES, Ref X, bool HalfInWord);
+  Ref FPRSqrtEstimateLanes(OpSize ES, Ref X, bool HalfInWord);
+  Ref FPStepFusedLanes(OpSize ES, Ref Op1, Ref Op2, bool Sqrt);
+  bool SIMDFloatEstimate(uint32_t Word, bool Sqrt, bool Scalar);
+
+  // Half precision (TranslateSIMDHalf.cpp).
+  enum class HalfOp { Add, Sub, Mul, Div, Min, Max, MinNum, MaxNum, MulX, Abd, RecipStep, RSqrtStep };
+  template<typename F>
+  Ref HalfLanes(uint32_t Lanes, std::array<Ref, 3> Operands, bool KeepSignalling, F&& Body);
+  void StoreHalfLanes(uint32_t Word, bool Scalar, Ref Result);
+  Ref HalfBinaryLane(HalfOp Op, Ref A, Ref B);
+  Ref HalfElementOperand(uint32_t Word);
+  bool SIMDHalfThreeSame(uint32_t Word, HalfOp Op, bool Scalar);
+  bool SIMDHalfMulElement(uint32_t Word, HalfOp Op, bool Scalar);
+  bool SIMDHalfMulAccumulate(uint32_t Word, bool Subtract, bool ByElement, bool Scalar);
+  bool SIMDHalfPairwise(uint32_t Word, HalfOp Op, bool Scalar);
+  bool SIMDHalfAcrossLanes(uint32_t Word, HalfOp Op);
+  bool SIMDHalfCompare(uint32_t Word, FloatCompareKind Kind, bool Scalar);
+  bool SIMDHalfRound(uint32_t Word, FPRounding Mode);
+  bool SIMDHalfToInt(uint32_t Word, uint8_t Rounding, bool Signed, bool Scalar, uint32_t FBits);
+  bool SIMDIntToHalf(uint32_t Word, bool Signed, bool Scalar, uint32_t FBits);
+  bool SIMDHalfFixedConvert(uint32_t Word, bool ToFloat, bool Signed, bool Scalar);
+  bool SIMDHalfEstimate(uint32_t Word, bool Sqrt, bool Scalar);
+  bool SIMDFloatRecpX(uint32_t Word, OpSize ES);
+  bool SIMDUnsignedEstimate(uint32_t Word, bool Sqrt);
+  bool SIMDFloatStep(uint32_t Word, bool Sqrt, bool Scalar);
 
   bool CRC32Common(uint32_t Word, bool Castagnoli);
   // Advanced SIMD saturating families (TranslateSIMDSaturate.cpp).
@@ -460,6 +543,10 @@ private:
   bool SIMDAddLongAcrossLanes(uint32_t Word, bool Signed);
   bool SIMDSignedAcrossLanesMinMax(uint32_t Word, bool IsMax);
   bool SIMDCountLeading(uint32_t Word, bool Sign);
+  bool SIMDDotProduct(uint32_t Word, bool Signed, bool ByElement);
+  bool SIMDShiftByRegister(uint32_t Word, bool Signed, bool Rounding, bool Saturating, bool Scalar);
+  bool SIMDSaturatingAccumulate(uint32_t Word, bool SignedAcc, bool Scalar);
+  bool SIMDDoublingMultiplyLong(uint32_t Word, int Accumulate, bool Scalar, bool ByElement);
 
   struct JumpTargetInfo {
     Ref BlockEntry;

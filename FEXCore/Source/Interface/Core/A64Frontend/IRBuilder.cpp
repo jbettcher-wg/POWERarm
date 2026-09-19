@@ -141,7 +141,7 @@ const IRBuilder::HandlerEntry IRBuilder::HandlerTable[] = {
   {"LD4R_1", &IRBuilder::SIMDSingleStructure}, {"LD4R_2", &IRBuilder::SIMDSingleStructure},
   // Advanced SIMD. The translated set is the subset measured in
   // docs/powerarm/M1b-SIMD-SUBSET.md plus its cheap neighbours.
-  // POWERARM-M1-TODO(simd): no translator yet for SQSHL/UQSHL/SRSHL/URSHL/SQRSHL/UQRSHL by register, SUQADD/USQADD, SQDMULL/SQDMLAL/SQDMLSL, PMUL, SDOT, FMULX, FRECPE/FRSQRTE/FRECPS/FRSQRTS, URECPE/URSQRTE, FCVTXN, FMOV of a half-precision vector immediate and the half-precision vector arithmetic, FCADD/FCMLA, and the SHA-512/SHA-3/SM3/SM4 entries (the last not on the reference A76).
+  // POWERARM-M1-TODO(simd): no translator yet for FCADD/FCMLA and the SHA-512/SHA-3/SM3/SM4 entries (neither on the reference A76).
   // Advanced SIMD: copy.
   {"DUP_gen", &IRBuilder::DUP_gen}, {"DUP_elt_1", &IRBuilder::DUP_elt_1}, {"DUP_elt_2", &IRBuilder::DUP_elt_2},
   {"UMOV", &IRBuilder::UMOV}, {"SMOV", &IRBuilder::SMOV}, {"INS_gen", &IRBuilder::INS_gen}, {"INS_elt", &IRBuilder::INS_elt},
@@ -199,13 +199,21 @@ const IRBuilder::HandlerEntry IRBuilder::HandlerTable[] = {
   // Advanced SIMD: saturating, rounding, halving, by-element and across-lane families.
   {"SQADD_2", &IRBuilder::SQADD_2}, {"SQSUB_2", &IRBuilder::SQSUB_2}, {"UQADD_2", &IRBuilder::UQADD_2}, {"UQSUB_2", &IRBuilder::UQSUB_2}, {"SQADD_1", &IRBuilder::SQADD_1}, {"SQSUB_1", &IRBuilder::SQSUB_1}, {"UQADD_1", &IRBuilder::UQADD_1}, {"SQABS_2", &IRBuilder::SQABS_2}, {"SQNEG_2", &IRBuilder::SQNEG_2}, {"SQABS_1", &IRBuilder::SQABS_1}, {"SQNEG_1", &IRBuilder::SQNEG_1},
   {"SQXTN_2", &IRBuilder::SQXTN_2}, {"UQXTN_2", &IRBuilder::UQXTN_2}, {"SQXTUN_2", &IRBuilder::SQXTUN_2}, {"SQXTN_1", &IRBuilder::SQXTN_1}, {"UQXTN_1", &IRBuilder::UQXTN_1}, {"SQXTUN_1", &IRBuilder::SQXTUN_1},
-  {"RSHRN", &IRBuilder::RSHRN}, {"SQSHRN_2", &IRBuilder::SQSHRN_2}, {"SQRSHRN_2", &IRBuilder::SQRSHRN_2}, {"UQSHRN_2", &IRBuilder::UQSHRN_2}, {"UQRSHRN_2", &IRBuilder::UQRSHRN_2}, {"SQSHRUN_2", &IRBuilder::SQSHRUN_2}, {"SQRSHRUN_2", &IRBuilder::SQRSHRUN_2}, {"SQSHRN_1", &IRBuilder::SQSHRN_1}, {"UQSHRN_1", &IRBuilder::UQSHRN_1}, {"SQSHRUN_1", &IRBuilder::SQSHRUN_1},
+  {"RSHRN", &IRBuilder::RSHRN}, {"SQSHRN_2", &IRBuilder::SQSHRN_2}, {"SQRSHRN_2", &IRBuilder::SQRSHRN_2}, {"UQSHRN_2", &IRBuilder::UQSHRN_2}, {"UQRSHRN_2", &IRBuilder::UQRSHRN_2}, {"SQSHRUN_2", &IRBuilder::SQSHRUN_2}, {"SQRSHRUN_2", &IRBuilder::SQRSHRUN_2}, {"SQSHRN_1", &IRBuilder::SQSHRN_1}, {"UQSHRN_1", &IRBuilder::UQSHRN_1}, {"SQSHRUN_1", &IRBuilder::SQSHRUN_1}, {"SQRSHRN_1", &IRBuilder::SQRSHRN_1}, {"UQRSHRN_1", &IRBuilder::UQRSHRN_1}, {"SQRSHRUN_1", &IRBuilder::SQRSHRUN_1},
+  {"SRI_1", &IRBuilder::SRI_1}, {"SLI_1", &IRBuilder::SLI_1}, {"USRA_1", &IRBuilder::USRA_1}, {"SSRA_1", &IRBuilder::SSRA_1},
   {"SRSHR_2", &IRBuilder::SRSHR_2}, {"URSHR_2", &IRBuilder::URSHR_2}, {"SRSRA_2", &IRBuilder::SRSRA_2}, {"URSRA_2", &IRBuilder::URSRA_2}, {"SRSHR_1", &IRBuilder::SRSHR_1}, {"URSHR_1", &IRBuilder::URSHR_1}, {"SRSRA_1", &IRBuilder::SRSRA_1}, {"URSRA_1", &IRBuilder::URSRA_1},
   {"SQSHL_imm_2", &IRBuilder::SQSHL_imm_2}, {"UQSHL_imm_2", &IRBuilder::UQSHL_imm_2}, {"SQSHLU_2", &IRBuilder::SQSHLU_2}, {"SQSHL_imm_1", &IRBuilder::SQSHL_imm_1}, {"UQSHL_imm_1", &IRBuilder::UQSHL_imm_1}, {"SQSHLU_1", &IRBuilder::SQSHLU_1},
   {"UHADD", &IRBuilder::UHADD}, {"SHADD", &IRBuilder::SHADD}, {"URHADD", &IRBuilder::URHADD}, {"SRHADD", &IRBuilder::SRHADD}, {"UHSUB", &IRBuilder::UHSUB}, {"SHSUB", &IRBuilder::SHSUB}, {"UABD", &IRBuilder::UABD}, {"SABD", &IRBuilder::SABD}, {"UABA", &IRBuilder::UABA}, {"SABA", &IRBuilder::SABA}, {"UABDL", &IRBuilder::UABDL}, {"SABDL", &IRBuilder::SABDL}, {"UABAL", &IRBuilder::UABAL}, {"SABAL", &IRBuilder::SABAL}, {"RADDHN", &IRBuilder::RADDHN}, {"RSUBHN", &IRBuilder::RSUBHN},
   {"SQDMULH_vec_2", &IRBuilder::SQDMULH_vec_2}, {"SQRDMULH_vec_2", &IRBuilder::SQRDMULH_vec_2}, {"SQDMULH_vec_1", &IRBuilder::SQDMULH_vec_1}, {"SQRDMULH_vec_1", &IRBuilder::SQRDMULH_vec_1}, {"SQDMULH_elt_2", &IRBuilder::SQDMULH_elt_2}, {"SQRDMULH_elt_2", &IRBuilder::SQRDMULH_elt_2}, {"SQDMULH_elt_1", &IRBuilder::SQDMULH_elt_1}, {"SQRDMULH_elt_1", &IRBuilder::SQRDMULH_elt_1},
   {"MLA_elt", &IRBuilder::MLA_elt}, {"MLS_elt", &IRBuilder::MLS_elt}, {"SMULL_elt", &IRBuilder::SMULL_elt}, {"UMULL_elt", &IRBuilder::UMULL_elt}, {"SMLAL_elt", &IRBuilder::SMLAL_elt}, {"UMLAL_elt", &IRBuilder::UMLAL_elt}, {"SMLSL_elt", &IRBuilder::SMLSL_elt}, {"UMLSL_elt", &IRBuilder::UMLSL_elt},
   {"UADDLV", &IRBuilder::UADDLV}, {"SADDLV", &IRBuilder::SADDLV}, {"SMAXV", &IRBuilder::SMAXV}, {"SMINV", &IRBuilder::SMINV}, {"CLZ_asimd", &IRBuilder::CLZ_asimd}, {"CLS_asimd", &IRBuilder::CLS_asimd}, {"UDOT_vec", &IRBuilder::UDOT_vec}, {"SHLL", &IRBuilder::SHLL},
+  {"SDOT_vec", &IRBuilder::SDOT_vec}, {"UDOT_elt", &IRBuilder::UDOT_elt}, {"SDOT_elt", &IRBuilder::SDOT_elt}, {"PMUL", &IRBuilder::PMUL},
+  {"SQSHL_reg_2", &IRBuilder::SQSHL_reg_2}, {"UQSHL_reg_2", &IRBuilder::UQSHL_reg_2}, {"SRSHL_2", &IRBuilder::SRSHL_2}, {"URSHL_2", &IRBuilder::URSHL_2}, {"SQRSHL_2", &IRBuilder::SQRSHL_2}, {"UQRSHL_2", &IRBuilder::UQRSHL_2},
+  {"SQSHL_reg_1", &IRBuilder::SQSHL_reg_1}, {"UQSHL_reg_1", &IRBuilder::UQSHL_reg_1}, {"SRSHL_1", &IRBuilder::SRSHL_1}, {"URSHL_1", &IRBuilder::URSHL_1}, {"SQRSHL_1", &IRBuilder::SQRSHL_1}, {"UQRSHL_1", &IRBuilder::UQRSHL_1},
+  {"SUQADD_1", &IRBuilder::SUQADD_1}, {"SUQADD_2", &IRBuilder::SUQADD_2}, {"USQADD_1", &IRBuilder::USQADD_1}, {"USQADD_2", &IRBuilder::USQADD_2},
+  {"SQDMULL_vec_1", &IRBuilder::SQDMULL_vec_1}, {"SQDMULL_vec_2", &IRBuilder::SQDMULL_vec_2}, {"SQDMLAL_vec_1", &IRBuilder::SQDMLAL_vec_1}, {"SQDMLAL_vec_2", &IRBuilder::SQDMLAL_vec_2}, {"SQDMLSL_vec_1", &IRBuilder::SQDMLSL_vec_1}, {"SQDMLSL_vec_2", &IRBuilder::SQDMLSL_vec_2},
+  {"SQDMULL_elt_1", &IRBuilder::SQDMULL_elt_1}, {"SQDMULL_elt_2", &IRBuilder::SQDMULL_elt_2}, {"SQDMLAL_elt_1", &IRBuilder::SQDMLAL_elt_1}, {"SQDMLAL_elt_2", &IRBuilder::SQDMLAL_elt_2}, {"SQDMLSL_elt_1", &IRBuilder::SQDMLSL_elt_1}, {"SQDMLSL_elt_2", &IRBuilder::SQDMLSL_elt_2},
+  {"FMULX_vec_2", &IRBuilder::FMULX_vec_2}, {"FMULX_vec_4", &IRBuilder::FMULX_vec_4}, {"FMULX_elt_2", &IRBuilder::FMULX_elt_2}, {"FMULX_elt_4", &IRBuilder::FMULX_elt_4},
   // Cryptographic extension and CRC32.
   {"AESE", &IRBuilder::AESE}, {"AESD", &IRBuilder::AESD}, {"AESMC", &IRBuilder::AESMC}, {"AESIMC", &IRBuilder::AESIMC}, {"PMULL", &IRBuilder::PMULL}, {"SHA1C", &IRBuilder::SHA1C}, {"SHA1M", &IRBuilder::SHA1M}, {"SHA1P", &IRBuilder::SHA1P}, {"SHA1H", &IRBuilder::SHA1H}, {"SHA1SU0", &IRBuilder::SHA1SU0}, {"SHA1SU1", &IRBuilder::SHA1SU1},
   {"SHA256H", &IRBuilder::SHA256H}, {"SHA256H2", &IRBuilder::SHA256H2}, {"SHA256SU0", &IRBuilder::SHA256SU0}, {"SHA256SU1", &IRBuilder::SHA256SU1}, {"CRC32", &IRBuilder::CRC32}, {"CRC32C", &IRBuilder::CRC32C},
@@ -218,6 +226,26 @@ const IRBuilder::HandlerEntry IRBuilder::HandlerTable[] = {
   {"FCVTNS_4", &IRBuilder::FCVTNS_4}, {"FCVTNU_4", &IRBuilder::FCVTNU_4}, {"FCVTPS_4", &IRBuilder::FCVTPS_4}, {"FCVTPU_4", &IRBuilder::FCVTPU_4}, {"FCVTMS_4", &IRBuilder::FCVTMS_4}, {"FCVTMU_4", &IRBuilder::FCVTMU_4}, {"FCVTZS_int_4", &IRBuilder::FCVTZS_int_4}, {"FCVTZU_int_4", &IRBuilder::FCVTZU_int_4}, {"FCVTAS_4", &IRBuilder::FCVTAS_4}, {"FCVTAU_4", &IRBuilder::FCVTAU_4},
   {"FCVTNS_2", &IRBuilder::FCVTNS_2}, {"FCVTNU_2", &IRBuilder::FCVTNU_2}, {"FCVTPS_2", &IRBuilder::FCVTPS_2}, {"FCVTPU_2", &IRBuilder::FCVTPU_2}, {"FCVTMS_2", &IRBuilder::FCVTMS_2}, {"FCVTMU_2", &IRBuilder::FCVTMU_2}, {"FCVTAS_2", &IRBuilder::FCVTAS_2}, {"FCVTAU_2", &IRBuilder::FCVTAU_2},
   {"SCVTF_fix_2", &IRBuilder::SCVTF_fix_2}, {"UCVTF_fix_2", &IRBuilder::UCVTF_fix_2}, {"FCVTZS_fix_2", &IRBuilder::FCVTZS_fix_2}, {"FCVTZU_fix_2", &IRBuilder::FCVTZU_fix_2}, {"SCVTF_fix_1", &IRBuilder::SCVTF_fix_1}, {"UCVTF_fix_1", &IRBuilder::UCVTF_fix_1}, {"FCVTZS_fix_1", &IRBuilder::FCVTZS_fix_1}, {"FCVTZU_fix_1", &IRBuilder::FCVTZU_fix_1},
+  // Advanced SIMD: estimates and Newton-Raphson steps.
+  {"FRECPE_2", &IRBuilder::FRECPE_2}, {"FRECPE_4", &IRBuilder::FRECPE_4}, {"FRSQRTE_2", &IRBuilder::FRSQRTE_2}, {"FRSQRTE_4", &IRBuilder::FRSQRTE_4}, {"FRECPX_2", &IRBuilder::FRECPX_2}, {"URECPE", &IRBuilder::URECPE}, {"URSQRTE", &IRBuilder::URSQRTE},
+  {"FRECPS_2", &IRBuilder::FRECPS_2}, {"FRECPS_4", &IRBuilder::FRECPS_4}, {"FRSQRTS_2", &IRBuilder::FRSQRTS_2}, {"FRSQRTS_4", &IRBuilder::FRSQRTS_4},
+  // Advanced SIMD: half precision.
+  {"FRECPE_1", &IRBuilder::FRECPE_1}, {"FRECPE_3", &IRBuilder::FRECPE_3}, {"FRSQRTE_1", &IRBuilder::FRSQRTE_1}, {"FRSQRTE_3", &IRBuilder::FRSQRTE_3}, {"FRECPX_1", &IRBuilder::FRECPX_1},
+  {"FADD_1", &IRBuilder::FADD_1}, {"FSUB_1", &IRBuilder::FSUB_1}, {"FMUL_vec_1", &IRBuilder::FMUL_vec_1}, {"FDIV_1", &IRBuilder::FDIV_1}, {"FMIN_1", &IRBuilder::FMIN_1}, {"FMAX_1", &IRBuilder::FMAX_1}, {"FMINNM_1", &IRBuilder::FMINNM_1}, {"FMAXNM_1", &IRBuilder::FMAXNM_1},
+  {"FMULX_vec_3", &IRBuilder::FMULX_vec_3}, {"FMULX_vec_1", &IRBuilder::FMULX_vec_1}, {"FABD_3", &IRBuilder::FABD_3}, {"FABD_1", &IRBuilder::FABD_1}, {"FRECPS_3", &IRBuilder::FRECPS_3}, {"FRECPS_1", &IRBuilder::FRECPS_1}, {"FRSQRTS_3", &IRBuilder::FRSQRTS_3}, {"FRSQRTS_1", &IRBuilder::FRSQRTS_1},
+  {"FMLA_vec_1", &IRBuilder::FMLA_vec_1}, {"FMLS_vec_1", &IRBuilder::FMLS_vec_1}, {"FMLA_elt_3", &IRBuilder::FMLA_elt_3}, {"FMLS_elt_3", &IRBuilder::FMLS_elt_3}, {"FMLA_elt_1", &IRBuilder::FMLA_elt_1}, {"FMLS_elt_1", &IRBuilder::FMLS_elt_1},
+  {"FMUL_elt_3", &IRBuilder::FMUL_elt_3}, {"FMUL_elt_1", &IRBuilder::FMUL_elt_1}, {"FMULX_elt_3", &IRBuilder::FMULX_elt_3}, {"FMULX_elt_1", &IRBuilder::FMULX_elt_1},
+  {"FADDP_vec_1", &IRBuilder::FADDP_vec_1}, {"FMAXP_vec_1", &IRBuilder::FMAXP_vec_1}, {"FMINP_vec_1", &IRBuilder::FMINP_vec_1}, {"FMAXNMP_vec_1", &IRBuilder::FMAXNMP_vec_1}, {"FMINNMP_vec_1", &IRBuilder::FMINNMP_vec_1},
+  {"FADDP_pair_1", &IRBuilder::FADDP_pair_1}, {"FMAXP_pair_1", &IRBuilder::FMAXP_pair_1}, {"FMINP_pair_1", &IRBuilder::FMINP_pair_1}, {"FMAXNMP_pair_1", &IRBuilder::FMAXNMP_pair_1}, {"FMINNMP_pair_1", &IRBuilder::FMINNMP_pair_1},
+  {"FMAXV_1", &IRBuilder::FMAXV_1}, {"FMINV_1", &IRBuilder::FMINV_1}, {"FMAXNMV_1", &IRBuilder::FMAXNMV_1}, {"FMINNMV_1", &IRBuilder::FMINNMV_1},
+  {"FCMEQ_reg_3", &IRBuilder::FCMEQ_reg_3}, {"FCMGE_reg_3", &IRBuilder::FCMGE_reg_3}, {"FCMGT_reg_3", &IRBuilder::FCMGT_reg_3}, {"FACGE_3", &IRBuilder::FACGE_3}, {"FACGT_3", &IRBuilder::FACGT_3},
+  {"FCMEQ_zero_3", &IRBuilder::FCMEQ_zero_3}, {"FCMGE_zero_3", &IRBuilder::FCMGE_zero_3}, {"FCMGT_zero_3", &IRBuilder::FCMGT_zero_3}, {"FCMLE_3", &IRBuilder::FCMLE_3}, {"FCMLT_3", &IRBuilder::FCMLT_3},
+  {"FCMEQ_reg_1", &IRBuilder::FCMEQ_reg_1}, {"FCMGE_reg_1", &IRBuilder::FCMGE_reg_1}, {"FCMGT_reg_1", &IRBuilder::FCMGT_reg_1}, {"FACGE_1", &IRBuilder::FACGE_1}, {"FACGT_1", &IRBuilder::FACGT_1},
+  {"FCMEQ_zero_1", &IRBuilder::FCMEQ_zero_1}, {"FCMGE_zero_1", &IRBuilder::FCMGE_zero_1}, {"FCMGT_zero_1", &IRBuilder::FCMGT_zero_1}, {"FCMLE_1", &IRBuilder::FCMLE_1}, {"FCMLT_1", &IRBuilder::FCMLT_1},
+  {"FRINTN_1", &IRBuilder::FRINTN_1}, {"FRINTP_1", &IRBuilder::FRINTP_1}, {"FRINTM_1", &IRBuilder::FRINTM_1}, {"FRINTZ_1", &IRBuilder::FRINTZ_1}, {"FRINTA_1", &IRBuilder::FRINTA_1}, {"FRINTX_1", &IRBuilder::FRINTX_1}, {"FRINTI_1", &IRBuilder::FRINTI_1}, {"FSQRT_1", &IRBuilder::FSQRT_1},
+  {"FCVTNS_3", &IRBuilder::FCVTNS_3}, {"FCVTNU_3", &IRBuilder::FCVTNU_3}, {"FCVTPS_3", &IRBuilder::FCVTPS_3}, {"FCVTPU_3", &IRBuilder::FCVTPU_3}, {"FCVTMS_3", &IRBuilder::FCVTMS_3}, {"FCVTMU_3", &IRBuilder::FCVTMU_3}, {"FCVTZS_int_3", &IRBuilder::FCVTZS_int_3}, {"FCVTZU_int_3", &IRBuilder::FCVTZU_int_3}, {"FCVTAS_3", &IRBuilder::FCVTAS_3}, {"FCVTAU_3", &IRBuilder::FCVTAU_3},
+  {"FCVTNS_1", &IRBuilder::FCVTNS_1}, {"FCVTNU_1", &IRBuilder::FCVTNU_1}, {"FCVTPS_1", &IRBuilder::FCVTPS_1}, {"FCVTPU_1", &IRBuilder::FCVTPU_1}, {"FCVTMS_1", &IRBuilder::FCVTMS_1}, {"FCVTMU_1", &IRBuilder::FCVTMU_1}, {"FCVTZS_int_1", &IRBuilder::FCVTZS_int_1}, {"FCVTZU_int_1", &IRBuilder::FCVTZU_int_1}, {"FCVTAS_1", &IRBuilder::FCVTAS_1}, {"FCVTAU_1", &IRBuilder::FCVTAU_1},
+  {"SCVTF_int_3", &IRBuilder::SCVTF_int_3}, {"UCVTF_int_3", &IRBuilder::UCVTF_int_3}, {"SCVTF_int_1", &IRBuilder::SCVTF_int_1}, {"UCVTF_int_1", &IRBuilder::UCVTF_int_1}, {"FMOV_3", &IRBuilder::FMOV_3},
   // Scalar floating point.
   {"FMOV_float_gen", &IRBuilder::FMOV_float_gen}, {"FMOV_float", &IRBuilder::FMOV_float}, {"FMOV_float_imm", &IRBuilder::FMOV_float_imm},
   {"FABS_float", &IRBuilder::FABS_float}, {"FNEG_float", &IRBuilder::FNEG_float}, {"FSQRT_float", &IRBuilder::FSQRT_float},
@@ -244,7 +272,7 @@ const IRBuilder::HandlerEntry IRBuilder::HandlerTable[] = {
   {"FCVTZS_float_fix", &IRBuilder::FCVTZS_float_fix}, {"FCVTZU_float_fix", &IRBuilder::FCVTZU_float_fix},
   {"FCVTZS_int_2", &IRBuilder::FCVTZS_int_2}, {"FCVTZU_int_2", &IRBuilder::FCVTZU_int_2},
   {"SCVTF_int_2", &IRBuilder::SCVTF_int_2}, {"UCVTF_int_2", &IRBuilder::UCVTF_int_2},
-  {"FCVTL", &IRBuilder::FCVTL}, {"FCVTN", &IRBuilder::FCVTN},
+  {"FCVTL", &IRBuilder::FCVTL}, {"FCVTN", &IRBuilder::FCVTN}, {"FCVTXN_1", &IRBuilder::FCVTXN_1}, {"FCVTXN_2", &IRBuilder::FCVTXN_2},
 };
 // clang-format on
 

@@ -5,7 +5,7 @@
 // narrows (SQXTN, SQSHRN, RSHRN, ...), rounding and saturating shifts by
 // immediate, halving adds, absolute differences, rounding high narrows, the
 // doubling multiplies (SQDMULH/SQRDMULH), by-element multiplies,
-// across-lane long adds and signed min/max, CLZ/CLS and UDOT.
+// across-lane long adds and signed min/max, CLZ/CLS and the dot products.
 //
 // Saturating operations set the cumulative FPSR.QC (bit 27) when any lane
 // they write saturated, computed from the lanes that differ between the
@@ -159,6 +159,50 @@ bool IRBuilder::SQNEG_2(uint32_t Word) { return SIMDSaturatingAbsNeg(Word, true,
 bool IRBuilder::SQABS_1(uint32_t Word) { return SIMDSaturatingAbsNeg(Word, false, true); }
 bool IRBuilder::SQNEG_1(uint32_t Word) { return SIMDSaturatingAbsNeg(Word, true, true); }
 
+// SUQADD: Rd (signed) + Rn (unsigned) with signed saturation. USQADD: Rd
+// (unsigned) + Rn (signed) with unsigned saturation. Scalar and vector.
+bool IRBuilder::SIMDSaturatingAccumulate(uint32_t Word, bool SignedAcc, bool Scalar) {
+  const bool Q = Bit(Word, 30);
+  const uint32_t Size = Bits(Word, 23, 22);
+  if (!Scalar && Size == 3 && !Q) {
+    return false;
+  }
+  const auto ES = LaneSize(Size);
+  const auto RS = OpSize::i128Bit;
+  const uint32_t Rd = Bits(Word, 4, 0);
+  Ref D = LoadV(Rd);
+  Ref N = LoadV(Bits(Word, 9, 5));
+  // SUQADD: the addend's top bit; USQADD: a negative addend.
+  Ref TopSet = _VCMPLTZ(RS, ES, N);
+  Ref Unused {};
+  Ref Result {};
+  if (SignedAcc) {
+    // An addend below 2^(W-1) is an ordinary signed saturating add. A
+    // larger one makes the sum non-negative: (d + 2^(W-1)) + (n - 2^(W-1))
+    // in unsigned saturating arithmetic, capped at the signed maximum.
+    Ref Flip = LaneConstant(1ULL << (IR::OpSizeAsBits(ES) - 1), ES);
+    Ref Small = SaturatingAddSub(ES, D, N, false, true, &Unused);
+    Ref Offset = SaturatingAddSub(ES, _VXor(RS, RS, D, Flip), _VXor(RS, RS, N, Flip), false, false, &Unused);
+    Ref Large = _VUMin(RS, ES, Offset, LaneConstant(LaneMask(ES) >> 1, ES));
+    Result = _VBSL(RS, TopSet, Large, Small);
+  } else {
+    // A negative addend subtracts its magnitude, saturating at 0 (-MIN
+    // wraps to 2^(W-1), which is its magnitude as an unsigned value).
+    Ref Add = SaturatingAddSub(ES, D, N, false, false, &Unused);
+    Ref Sub = SaturatingAddSub(ES, D, _VNeg(RS, ES, N), true, false, &Unused);
+    Result = _VBSL(RS, TopSet, Sub, Add);
+  }
+  // A saturated lane never equals the wrapped sum.
+  SetQCIfAny(UsedLanes(_VXor(RS, RS, Result, _VAdd(RS, ES, D, N)), Scalar, Q, ES));
+  StoreIntLanes(Word, Scalar, ES, Result);
+  return true;
+}
+
+bool IRBuilder::SUQADD_1(uint32_t Word) { return SIMDSaturatingAccumulate(Word, true, true); }
+bool IRBuilder::SUQADD_2(uint32_t Word) { return SIMDSaturatingAccumulate(Word, true, false); }
+bool IRBuilder::USQADD_1(uint32_t Word) { return SIMDSaturatingAccumulate(Word, false, true); }
+bool IRBuilder::USQADD_2(uint32_t Word) { return SIMDSaturatingAccumulate(Word, false, false); }
+
 // ---------------------------------------------------------------------------
 // Saturating narrows
 // ---------------------------------------------------------------------------
@@ -264,6 +308,9 @@ bool IRBuilder::SQRSHRUN_2(uint32_t Word) { return SIMDShiftRightNarrow(Word, Na
 bool IRBuilder::SQSHRN_1(uint32_t Word) { return SIMDShiftRightNarrow(Word, NarrowKind::SignedToSigned, false, true, true); }
 bool IRBuilder::UQSHRN_1(uint32_t Word) { return SIMDShiftRightNarrow(Word, NarrowKind::UnsignedToUnsigned, false, false, true); }
 bool IRBuilder::SQSHRUN_1(uint32_t Word) { return SIMDShiftRightNarrow(Word, NarrowKind::SignedToUnsigned, false, true, true); }
+bool IRBuilder::SQRSHRN_1(uint32_t Word) { return SIMDShiftRightNarrow(Word, NarrowKind::SignedToSigned, true, true, true); }
+bool IRBuilder::UQRSHRN_1(uint32_t Word) { return SIMDShiftRightNarrow(Word, NarrowKind::UnsignedToUnsigned, true, false, true); }
+bool IRBuilder::SQRSHRUN_1(uint32_t Word) { return SIMDShiftRightNarrow(Word, NarrowKind::SignedToUnsigned, true, true, true); }
 
 bool IRBuilder::SIMDRoundingShiftRight(uint32_t Word, bool Signed, bool Accumulate, bool Scalar) {
   const bool Q = Scalar || Bit(Word, 30);
@@ -359,6 +406,66 @@ bool IRBuilder::SQSHLU_2(uint32_t Word) { return SIMDSaturatingShiftLeft(Word, S
 bool IRBuilder::SQSHL_imm_1(uint32_t Word) { return SIMDSaturatingShiftLeft(Word, ShiftLeftKind::Signed, true); }
 bool IRBuilder::UQSHL_imm_1(uint32_t Word) { return SIMDSaturatingShiftLeft(Word, ShiftLeftKind::Unsigned, true); }
 bool IRBuilder::SQSHLU_1(uint32_t Word) { return SIMDSaturatingShiftLeft(Word, ShiftLeftKind::SignedToUnsigned, true); }
+
+// SQSHL/UQSHL/SRSHL/URSHL/SQRSHL/UQRSHL (register), vector and scalar. The
+// count is the signed low byte of each lane of Rm. A non-negative count
+// shifts left, saturating for the Q forms (FPSR.QC) and keeping the low bits
+// for SRSHL/URSHL; a negative count shifts right by its magnitude, rounded
+// to nearest with ties up for the R forms. A right shift never saturates.
+bool IRBuilder::SIMDShiftByRegister(uint32_t Word, bool Signed, bool Rounding, bool Saturating, bool Scalar) {
+  const bool Q = Bit(Word, 30);
+  const uint32_t Size = Bits(Word, 23, 22);
+  if (Scalar ? (!Saturating && Size != 3) : (Size == 3 && !Q)) {
+    return false;
+  }
+  const auto ES = LaneSize(Size);
+  const auto RS = OpSize::i128Bit;
+  const unsigned W = 8U << Size;
+  Ref V = LoadV(Bits(Word, 9, 5));
+  Ref Count = LoadV(Bits(Word, 20, 16));
+  if (W > 8) {
+    Count = _VSShrI(RS, ES, _VShlI(RS, ES, Count, W - 8), W - 8);
+  }
+  Ref Negative = _VCMPLTZ(RS, ES, Count);
+  auto ShiftRight = [&](Ref X, Ref Amount) -> Ref {
+    // Amounts of the lane width or more leave 0, or the sign when signed.
+    return Signed ? _VSShr(RS, ES, X, Amount, true).Node : _VUShr(RS, ES, X, Amount, true).Node;
+  };
+  // Right by -count (1..128). Rounding adds bit (-count - 1) of V, the sign
+  // beyond the lane: (V >> s) + ((V >> (s - 1)) & 1) cannot overflow.
+  Ref Right = ShiftRight(V, _VNeg(RS, ES, Count));
+  if (Rounding) {
+    Right = _VAdd(RS, ES, Right, _VAnd(RS, RS, ShiftRight(V, _VNot(RS, ES, Count)), LaneConstant(1, ES)));
+  }
+  // Left by count, 0 at the lane width or more.
+  Ref Left = _VUShl(RS, ES, V, Count, true);
+  if (Saturating) {
+    // Saturated where shifting back does not recover V.
+    Ref Sat = _VAndn(RS, RS, _VNot(RS, ES, _VCMPEQ(RS, ES, ShiftRight(Left, Count), V)), Negative);
+    if (Signed) {
+      Ref Bound = _VXor(RS, RS, _VSShrI(RS, ES, V, W - 1), LaneConstant(LaneMask(ES) >> 1, ES));
+      Left = _VBSL(RS, Sat, Bound, Left);
+    } else {
+      Left = _VOr(RS, RS, Left, Sat);
+    }
+    SetQCIfAny(UsedLanes(Sat, Scalar, Q, ES));
+  }
+  StoreIntLanes(Word, Scalar, ES, _VBSL(RS, Negative, Right, Left));
+  return true;
+}
+
+bool IRBuilder::SQSHL_reg_2(uint32_t Word) { return SIMDShiftByRegister(Word, true, false, true, false); }
+bool IRBuilder::UQSHL_reg_2(uint32_t Word) { return SIMDShiftByRegister(Word, false, false, true, false); }
+bool IRBuilder::SRSHL_2(uint32_t Word) { return SIMDShiftByRegister(Word, true, true, false, false); }
+bool IRBuilder::URSHL_2(uint32_t Word) { return SIMDShiftByRegister(Word, false, true, false, false); }
+bool IRBuilder::SQRSHL_2(uint32_t Word) { return SIMDShiftByRegister(Word, true, true, true, false); }
+bool IRBuilder::UQRSHL_2(uint32_t Word) { return SIMDShiftByRegister(Word, false, true, true, false); }
+bool IRBuilder::SQSHL_reg_1(uint32_t Word) { return SIMDShiftByRegister(Word, true, false, true, true); }
+bool IRBuilder::UQSHL_reg_1(uint32_t Word) { return SIMDShiftByRegister(Word, false, false, true, true); }
+bool IRBuilder::SRSHL_1(uint32_t Word) { return SIMDShiftByRegister(Word, true, true, false, true); }
+bool IRBuilder::URSHL_1(uint32_t Word) { return SIMDShiftByRegister(Word, false, true, false, true); }
+bool IRBuilder::SQRSHL_1(uint32_t Word) { return SIMDShiftByRegister(Word, true, true, true, true); }
+bool IRBuilder::UQRSHL_1(uint32_t Word) { return SIMDShiftByRegister(Word, false, true, true, true); }
 
 // ---------------------------------------------------------------------------
 // Halving add/subtract, absolute difference, rounding high narrow
@@ -548,6 +655,59 @@ bool IRBuilder::SQRDMULH_elt_2(uint32_t Word) { return SIMDDoublingMultiplyHigh(
 bool IRBuilder::SQDMULH_elt_1(uint32_t Word) { return SIMDDoublingMultiplyHigh(Word, false, true, true); }
 bool IRBuilder::SQRDMULH_elt_1(uint32_t Word) { return SIMDDoublingMultiplyHigh(Word, true, true, true); }
 
+// SQDMULL/SQDMLAL/SQDMLSL (vector, scalar, by element; the "2" forms take
+// the upper half of the sources): 2 * n * m saturated to the double-width
+// lane (only MIN * MIN saturates), then for SQDMLAL/SQDMLSL added to or
+// subtracted from Rd with saturation again. Either saturation sets FPSR.QC.
+bool IRBuilder::SIMDDoublingMultiplyLong(uint32_t Word, int Accumulate, bool Scalar, bool ByElement) {
+  const bool Upper = !Scalar && Bit(Word, 30);
+  const uint32_t Size = Bits(Word, 23, 22);
+  if (Size != 1 && Size != 2) {
+    return false;
+  }
+  const auto ES = LaneSize(Size);
+  const auto WideES = LaneSize(Size + 1);
+  const auto RS = OpSize::i128Bit;
+  const uint32_t Rd = Bits(Word, 4, 0);
+  Ref B {};
+  if (ByElement) {
+    if (!IntElementOperand(Word, &B)) {
+      return false;
+    }
+  } else {
+    B = LoadV(Bits(Word, 20, 16));
+  }
+  Ref A = LoadV(Bits(Word, 9, 5));
+  Ref Product = Upper ? _VSMull2(RS, ES, A, B).Node : _VSMull(RS, ES, A, B).Node;
+  Ref Sat {};
+  Ref Result = SaturatingAddSub(WideES, Product, Product, false, true, &Sat);
+  if (Accumulate != 0) {
+    Ref AccSat {};
+    Result = SaturatingAddSub(WideES, LoadV(Rd), Result, Accumulate < 0, true, &AccSat);
+    Sat = _VOr(RS, RS, Sat, AccSat);
+  }
+  SetQCIfAny(Scalar ? _VMov(WideES, Sat).Node : Sat);
+  if (Scalar) {
+    StoreVSized(Rd, WideES, Result);
+  } else {
+    StoreV(Rd, Result);
+  }
+  return true;
+}
+
+bool IRBuilder::SQDMULL_vec_1(uint32_t Word) { return SIMDDoublingMultiplyLong(Word, 0, true, false); }
+bool IRBuilder::SQDMULL_vec_2(uint32_t Word) { return SIMDDoublingMultiplyLong(Word, 0, false, false); }
+bool IRBuilder::SQDMLAL_vec_1(uint32_t Word) { return SIMDDoublingMultiplyLong(Word, 1, true, false); }
+bool IRBuilder::SQDMLAL_vec_2(uint32_t Word) { return SIMDDoublingMultiplyLong(Word, 1, false, false); }
+bool IRBuilder::SQDMLSL_vec_1(uint32_t Word) { return SIMDDoublingMultiplyLong(Word, -1, true, false); }
+bool IRBuilder::SQDMLSL_vec_2(uint32_t Word) { return SIMDDoublingMultiplyLong(Word, -1, false, false); }
+bool IRBuilder::SQDMULL_elt_1(uint32_t Word) { return SIMDDoublingMultiplyLong(Word, 0, true, true); }
+bool IRBuilder::SQDMULL_elt_2(uint32_t Word) { return SIMDDoublingMultiplyLong(Word, 0, false, true); }
+bool IRBuilder::SQDMLAL_elt_1(uint32_t Word) { return SIMDDoublingMultiplyLong(Word, 1, true, true); }
+bool IRBuilder::SQDMLAL_elt_2(uint32_t Word) { return SIMDDoublingMultiplyLong(Word, 1, false, true); }
+bool IRBuilder::SQDMLSL_elt_1(uint32_t Word) { return SIMDDoublingMultiplyLong(Word, -1, true, true); }
+bool IRBuilder::SQDMLSL_elt_2(uint32_t Word) { return SIMDDoublingMultiplyLong(Word, -1, false, true); }
+
 bool IRBuilder::SIMDMultiplyElement(uint32_t Word, int Accumulate) {
   // MLA/MLS by element (Accumulate +1/-1).
   const uint32_t Size = Bits(Word, 23, 22);
@@ -692,13 +852,47 @@ bool IRBuilder::SHLL(uint32_t Word) {
   return true;
 }
 
-bool IRBuilder::UDOT_vec(uint32_t Word) {
+// UDOT/SDOT (vector and by element): each 32-bit lane of Rd accumulates the
+// four products of the corresponding bytes, modulo 2^32. VUDot (vmsumubm)
+// multiplies unsigned bytes. The signed form offsets both operands into the
+// unsigned range, a' = a ^ 0x80 = a + 128, and removes the offset terms:
+// sum(a * b) = sum(a' * b') - 128 * (sum a' + sum b') + 4 * 128 * 128.
+bool IRBuilder::SIMDDotProduct(uint32_t Word, bool Signed, bool ByElement) {
   if (Bits(Word, 23, 22) != 2) {
     return false;
   }
+  const auto RS = OpSize::i128Bit;
   const uint32_t Rd = Bits(Word, 4, 0);
-  StoreVQ(Rd, Bit(Word, 30), _VUDot(OpSize::i128Bit, LoadV(Bits(Word, 9, 5)), LoadV(Bits(Word, 20, 16)), LoadV(Rd)));
+  Ref A = LoadV(Bits(Word, 9, 5));
+  Ref B {};
+  if (ByElement) {
+    // The element is a group of four bytes: Rm<index> as a 32-bit lane.
+    if (!IntElementOperand(Word, &B)) {
+      return false;
+    }
+  } else {
+    B = LoadV(Bits(Word, 20, 16));
+  }
+  Ref Acc = LoadV(Rd);
+  Ref Result {};
+  if (!Signed) {
+    Result = _VUDot(RS, A, B, Acc);
+  } else {
+    Ref Flip = LaneConstant(0x80, OpSize::i8Bit);
+    Ref Ones = LaneConstant(1, OpSize::i8Bit);
+    Ref UA = _VXor(RS, RS, A, Flip);
+    Ref UB = _VXor(RS, RS, B, Flip);
+    Ref Sums = _VUDot(RS, UB, Ones, _VUDot(RS, UA, Ones, _VectorImm(RS, OpSize::i8Bit, 0)));
+    Ref Products = _VUDot(RS, UA, UB, _VAdd(RS, OpSize::i32Bit, Acc, LaneConstant(4 * 128 * 128, OpSize::i32Bit)));
+    Result = _VSub(RS, OpSize::i32Bit, Products, _VShlI(RS, OpSize::i32Bit, Sums, 7));
+  }
+  StoreVQ(Rd, Bit(Word, 30), Result);
   return true;
 }
+
+bool IRBuilder::UDOT_vec(uint32_t Word) { return SIMDDotProduct(Word, false, false); }
+bool IRBuilder::SDOT_vec(uint32_t Word) { return SIMDDotProduct(Word, true, false); }
+bool IRBuilder::UDOT_elt(uint32_t Word) { return SIMDDotProduct(Word, false, true); }
+bool IRBuilder::SDOT_elt(uint32_t Word) { return SIMDDotProduct(Word, true, true); }
 
 } // namespace FEXCore::A64

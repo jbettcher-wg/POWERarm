@@ -798,6 +798,45 @@ bool IRBuilder::FCVTN(uint32_t Word) {
   return true;
 }
 
+// FCVTXN/FCVTXN2 (vector) and FCVTXN (scalar): double -> single rounded to
+// odd. The conversion is rounded in whatever mode FPCR holds; widening the
+// result back (exact) and comparing magnitudes tells whether it was inexact
+// and on which side. A result rounded away from zero steps back to the
+// truncation (one unit less in magnitude: an infinity becomes the largest
+// finite value), and every inexact result gets its low bit set. A NaN or an
+// exact result compares neither way and is kept.
+bool IRBuilder::SIMDConvertRoundToOdd(uint32_t Word, bool Scalar) {
+  if (!Bit(Word, 22)) {
+    return false;
+  }
+  const auto RS = OpSize::i128Bit;
+  const auto ES = OpSize::i64Bit;
+  Ref V = LoadV(Bits(Word, 9, 5));
+  Ref Narrow = _VectorImm(RS, OpSize::i8Bit, 0);
+  const uint8_t Count = Scalar ? 1 : 2;
+  for (uint8_t i = 0; i < Count; ++i) {
+    Ref X = i == 0 ? V : _VDupElement(RS, ES, V, i).Node;
+    Ref Y = _A64FToF(OpSize::i32Bit, OpSize::i64Bit, X);
+    Ref AbsX = _VFAbs(RS, ES, X);
+    Ref AbsY = _VFAbs(RS, ES, _A64FToF(OpSize::i64Bit, OpSize::i32Bit, Y));
+    // 64-bit masks, whose low 32 bits cover the single-precision result.
+    Ref Away = _VFCMPLT(RS, ES, AbsX, AbsY);
+    Ref Inexact = _VOr(RS, RS, Away, _VFCMPLT(RS, ES, AbsY, AbsX));
+    Y = _VAdd(RS, OpSize::i32Bit, Y, Away);
+    Y = _VOr(RS, RS, Y, _VAnd(RS, RS, Inexact, FPConstant(1, OpSize::i32Bit)));
+    Narrow = _VInsElement(RS, OpSize::i32Bit, i, 0, Narrow, Y);
+  }
+  if (Scalar) {
+    StoreVSized(Bits(Word, 4, 0), OpSize::i32Bit, Narrow);
+  } else {
+    StoreNarrow(Bits(Word, 4, 0), Bit(Word, 30), Narrow);
+  }
+  return true;
+}
+
+bool IRBuilder::FCVTXN_1(uint32_t Word) { return SIMDConvertRoundToOdd(Word, true); }
+bool IRBuilder::FCVTXN_2(uint32_t Word) { return SIMDConvertRoundToOdd(Word, false); }
+
 // ---------------------------------------------------------------------------
 // FPCR
 // ---------------------------------------------------------------------------

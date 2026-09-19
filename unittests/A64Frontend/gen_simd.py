@@ -1568,6 +1568,454 @@ def gen_simd_shll(p):
             p.vcase([f"shll2 v{d}.{wt}, v{n}.{nt2}, #{bits}"], v)
 
 
+def lanes_reg(lanes, bits):
+    """A V register (lo, hi) from lane values of the given width, lane 0 lowest."""
+    full = 0
+    for i, v in enumerate(lanes):
+        full |= (v & ((1 << bits) - 1)) << (bits * i)
+    return (full & M64, full >> 64)
+
+
+# Operands at the edges of the estimate special cases: tiny denormals (no
+# finite reciprocal), denormals that reach the table with exponent 0 and -1,
+# the smallest normal, the exponents whose reciprocal is denormal, and the
+# largest finite value; positive and negative.
+RECIP_EDGE32 = [
+    0x00000001, 0x000ABCDE, 0x001FFFFF, 0x00200000, 0x0028F5C3, 0x003FFFFF, 0x00400000, 0x0055AA55,
+    0x007FFFFF, 0x00800000, 0x00800001, 0x3F800000, 0x3FFFFFFF, 0x7E000000, 0x7E7FFFFF, 0x7E800000,
+    0x7EC00000, 0x7EFFFFFF, 0x7F000000, 0x7F400000, 0x7F7FFFFF, 0x7F800000, 0x7FC00000, 0x7F800001,
+    0x7FA00ABC, 0x00000000,
+]
+RECIP_EDGE64 = [
+    0x0000000000000001, 0x0001234567890ABC, 0x0003FFFFFFFFFFFF, 0x0004000000000000, 0x0006789ABCDEF012,
+    0x0007FFFFFFFFFFFF, 0x0008000000000000, 0x000ABCDEF0123456, 0x000FFFFFFFFFFFFF, 0x0010000000000000,
+    0x0010000000000001, 0x3FF0000000000000, 0x3FFFFFFFFFFFFFFF, 0x7FC0000000000000, 0x7FCFFFFFFFFFFFFF,
+    0x7FD0000000000000, 0x7FD8000000000000, 0x7FDFFFFFFFFFFFFF, 0x7FE0000000000000, 0x7FE8000000000000,
+    0x7FEFFFFFFFFFFFFF, 0x7FF0000000000000, 0x7FF8000000000000, 0x7FF0000000000001, 0x7FF4000000000ABC,
+    0x0000000000000000,
+]
+
+
+def gen_simd_recip(p):
+    """FRECPE/FRSQRTE (vector and scalar, single and double) against the architecture's estimate
+    tables, every table entry; URECPE/URSQRTE every table entry; FRECPX; the special cases (zeros,
+    infinities, NaNs, denormals, overflow by rounding mode); FRECPS/FRSQRTS with NaN pairs, inf*0,
+    cancellation to zero and overflow, in every rounding mode."""
+    # Every table entry: FRECPE indexes with the top 8 fraction bits, FRSQRTE with the exponent's
+    # parity and the top 7 or 8 bits. Low fraction bits and exponents are random.
+    for idx in range(0, 512, 4):
+        lanes = []
+        for j in range(4):
+            e = idx + j
+            parity, top = e >> 8, e & 0xFF
+            exp = p.rng.randrange(1, 126) * 2 + parity
+            lanes.append((exp << 23) | (top << 15) | p.rng.getrandbits(15))
+        d1, d2, n = p.vregs(3)
+        p.vcase([f"frecpe v{d1}.4s, v{n}.4s", f"frsqrte v{d2}.4s, v{n}.4s"],
+                {d1: p.vec(), d2: p.vec(), n: lanes_reg(lanes, 32)}, fpcr=p.rng.choice(RMODES))
+    for idx in range(0, 512, 2):
+        lanes = []
+        for j in range(2):
+            e = idx + j
+            parity, top = e >> 8, e & 0xFF
+            exp = p.rng.randrange(1, 1022) * 2 + parity
+            lanes.append((exp << 52) | (top << 44) | p.rng.getrandbits(44))
+        d1, d2, n = p.vregs(3)
+        p.vcase([f"frecpe v{d1}.2d, v{n}.2d", f"frsqrte v{d2}.2d, v{n}.2d"],
+                {d1: p.vec(), d2: p.vec(), n: lanes_reg(lanes, 64)}, fpcr=p.rng.choice(RMODES))
+    # URECPE/URSQRTE: every value of bits 31:23.
+    for idx in range(0, 512, 4):
+        lanes = [((idx + j) << 23) | p.rng.getrandbits(23) for j in range(4)]
+        d1, d2, n = p.vregs(3)
+        t = p.rng.choice(["2s", "4s"])
+        p.vcase([f"urecpe v{d1}.{t}, v{n}.{t}", f"ursqrte v{d2}.{t}, v{n}.{t}"],
+                {d1: p.vec(), d2: p.vec(), n: lanes_reg(lanes, 32)})
+    # Special cases, both signs, in every rounding mode (the tiny operands of FRECPE overflow to
+    # infinity or the largest finite value by mode and sign).
+    for bits, edges in ((32, RECIP_EDGE32 + F32_EDGE), (64, RECIP_EDGE64 + F64_EDGE)):
+        vals = [v | s for v in edges for s in (0, 1 << (bits - 1))]
+        per = 128 // bits
+        t = "4s" if bits == 32 else "2d"
+        for rmode in RMODES:
+            for i in range(0, len(vals), per):
+                chunk = vals[i:i + per]
+                chunk += [p.rng.choice(vals) for _ in range(per - len(chunk))]
+                d1, d2, n = p.vregs(3)
+                p.vcase([f"frecpe v{d1}.{t}, v{n}.{t}", f"frsqrte v{d2}.{t}, v{n}.{t}"],
+                        {d1: p.vec(), d2: p.vec(), n: lanes_reg(chunk, bits)}, fpcr=rmode)
+    # Scalar forms, FRECPX, and vector forms on random and edge operands.
+    for _ in range(400):
+        d, n = p.vregs(2)
+        is64 = p.rng.random() < 0.5
+        edges = RECIP_EDGE64 if is64 else RECIP_EDGE32
+        if p.rng.random() < 0.4:
+            val = p.rng.choice(edges) | (p.rng.getrandbits(1) << (63 if is64 else 31))
+            vn = (val, p.rng.getrandbits(64)) if is64 else ((p.rng.getrandbits(32) << 32) | val, p.rng.getrandbits(64))
+        else:
+            vn = p.fp(is64)
+        r = "d" if is64 else "s"
+        op = p.rng.choice(["frecpe", "frsqrte", "frecpx"])
+        p.vcase([f"{op} {r}{d}, {r}{n}"], {d: p.vec(), n: vn}, fpcr=p.rng.choice(RMODES))
+    for _ in range(200):
+        d, n = p.vregs(2)
+        t, e, is64, _ = ftype(p)
+        vn, _ = fvec_pair(p, is64)
+        op = p.rng.choice(["frecpe", "frsqrte"])
+        p.vcase([f"{op} v{d}.{t}, v{n}.{t}"], {d: p.vec(), n: vn}, fpcr=p.rng.choice(RMODES))
+    # FRECPS (2 - n*m) and FRSQRTS ((3 - n*m) / 2).
+    special = {
+        32: [0x00000000, 0x80000000, 0x7F800000, 0xFF800000, 0x00000001, 0x80000001, 0x7F7FFFFF,
+             0xFF7FFFFF, 0x3F800000, 0x40000000, 0x3FC00000, 0x40400000, 0x5F800000, 0x5FC00000],
+        64: [0x0000000000000000, 0x8000000000000000, 0x7FF0000000000000, 0xFFF0000000000000,
+             0x0000000000000001, 0x8000000000000001, 0x7FEFFFFFFFFFFFFF, 0xFFEFFFFFFFFFFFFF,
+             0x3FF0000000000000, 0x4000000000000000, 0x3FF8000000000000, 0x4008000000000000,
+             0x5FF0000000000000, 0x5FF8000000000000],
+    }
+    for _ in range(900):
+        d, n, m = p.vregs(3)
+        t, e, is64, scalar = ftype(p, True)
+        bits = 64 if is64 else 32
+        kind = p.rng.randrange(4)
+        if kind == 0:
+            vn, vm = fvec_pair(p, is64)
+        else:
+            ln, lm = [], []
+            for _ in range(128 // bits):
+                r = p.rng.random()
+                if kind == 1 or r < 0.3:
+                    # Specials against each other: inf*0, huge products, tiny products.
+                    x, y = p.rng.choice(special[bits]), p.rng.choice(special[bits])
+                    x |= p.rng.getrandbits(1) << (bits - 1)
+                    y |= p.rng.getrandbits(1) << (bits - 1)
+                else:
+                    # n*m close to 2 or 3 (FRECPS/FRSQRTS cancel), or overflowing.
+                    fmt = "<d" if is64 else "<f"
+                    ifmt = "<Q" if is64 else "<I"
+                    x = p.f64() if is64 else p.f32()
+                    xv = struct.unpack(fmt, struct.pack(ifmt, x))[0]
+                    target = p.rng.choice([2.0, 3.0, -2.0, -3.0, 1e308 if is64 else 3e38])
+                    if xv != xv or xv == 0 or abs(xv) == float("inf"):
+                        y = p.f64() if is64 else p.f32()
+                    else:
+                        yv = target / xv
+                        try:
+                            y = struct.unpack(ifmt, struct.pack(fmt, yv))[0]
+                        except OverflowError:
+                            y = p.f64() if is64 else p.f32()
+                        y = (y + p.rng.choice([-1, 0, 0, 1])) & ((1 << bits) - 1)
+                ln.append(x)
+                lm.append(y)
+            vn, vm = lanes_reg(ln, bits), lanes_reg(lm, bits)
+        rd = f"{e}{d}" if scalar else f"v{d}.{t}"
+        rn = f"{e}{n}" if scalar else f"v{n}.{t}"
+        rm = f"{e}{m}" if scalar else f"v{m}.{t}"
+        op = p.rng.choice(["frecps", "frsqrts"])
+        p.vcase([f"{op} {rd}, {rn}, {rm}"], {d: p.vec(), n: vn, m: vm}, fpcr=p.rng.choice(RMODES))
+
+
+def gen_simd_dotmul(p):
+    """SDOT/UDOT (vector and by element), FMULX (vector, scalar, by element) and PMUL."""
+    # FMULX lanes: inf*0 of every sign pairing next to the NaN pairs and edge values.
+    infzero = {
+        32: [(0x7F800000, 0x00000000), (0xFF800000, 0x00000000), (0x00000000, 0xFF800000),
+             (0x80000000, 0x7F800000), (0x80000000, 0xFF800000), (0x7F800000, 0x80000000)],
+        64: [(0x7FF0000000000000, 0x0000000000000000), (0xFFF0000000000000, 0x0000000000000000),
+             (0x0000000000000000, 0xFFF0000000000000), (0x8000000000000000, 0x7FF0000000000000),
+             (0x8000000000000000, 0xFFF0000000000000), (0x7FF0000000000000, 0x8000000000000000)],
+    }
+    for _ in range(1200):
+        d, n, m = p.vregs(3)
+        kind = p.rng.randrange(6)
+        if kind <= 1:
+            op = p.rng.choice(["sdot", "udot"])
+            q = p.rng.random() < 0.5
+            ta, tb = ("4s", "16b") if q else ("2s", "8b")
+            v = {d: lane_vec(p, 32), n: lane_vec(p, 8), m: lane_vec(p, 8)}
+            if kind == 0:
+                p.vcase([f"{op} v{d}.{ta}, v{n}.{tb}, v{m}.{tb}"], v)
+            else:
+                p.vcase([f"{op} v{d}.{ta}, v{n}.{tb}, v{m}.4b[{p.rng.randrange(4)}]"], v)
+        elif kind <= 4:
+            t, e, is64, scalar = ftype(p, True)
+            bits = 64 if is64 else 32
+            vn, vm = fvec_pair(p, is64)
+            if p.rng.random() < 0.4:
+                ln, lm = [], []
+                for i in range(128 // bits):
+                    x, y = p.rng.choice(infzero[bits])
+                    if p.rng.random() < 0.5:
+                        x, y = y, x
+                    ln.append(x)
+                    lm.append(y)
+                vn, vm = lanes_reg(ln, bits), lanes_reg(lm, bits)
+            fpcr = p.rng.choice(RMODES)
+            rd = f"{e}{d}" if scalar else f"v{d}.{t}"
+            rn = f"{e}{n}" if scalar else f"v{n}.{t}"
+            if kind == 4:
+                p.vcase([f"fmulx {rd}, {rn}, v{m}.{e}[{p.rng.randrange(128 // bits)}]"], {d: p.vec(), n: vn, m: vm}, fpcr=fpcr)
+            else:
+                rm = f"{e}{m}" if scalar else f"v{m}.{t}"
+                p.vcase([f"fmulx {rd}, {rn}, {rm}"], {d: p.vec(), n: vn, m: vm}, fpcr=fpcr)
+        else:
+            t = p.rng.choice(["8b", "16b"])
+            p.vcase([f"pmul v{d}.{t}, v{n}.{t}, v{m}.{t}"], {d: p.vec(), n: lane_vec(p, 8), m: p.vec()})
+
+
+def shift_count_vec(p, bits):
+    """Rm for a shift by register: each lane's signed low byte is a count around the lane width
+    (and the byte's extremes); the bits above the low byte are random and must be ignored."""
+    counts = [-128, -bits - 1, -bits, -bits + 1, -1, 0, 1, 2, bits - 2, bits - 1, bits, bits + 1, 127]
+    lanes = []
+    for _ in range(128 // bits):
+        c = p.rng.choice(counts) if p.rng.random() < 0.7 else p.rng.randrange(-128, 128)
+        upper = p.rng.getrandbits(bits - 8) << 8 if bits > 8 else 0
+        lanes.append(upper | (c & 0xFF))
+    return lanes_reg(lanes, bits)
+
+
+def gen_simd_shiftsat(p):
+    """SQSHL/UQSHL/SRSHL/URSHL/SQRSHL/UQRSHL by register (vector and scalar), SUQADD/USQADD, and
+    SQDMULL/SQDMLAL/SQDMLSL (vector, scalar, by element, the "2" forms). FPSR.QC is cleared before
+    every case, so each saturation (and each lane that must not saturate) is checked."""
+    clr = "msr fpsr, xzr"
+    scal = [("b", 8), ("h", 16), ("s", 32), ("d", 64)]
+    for _ in range(2000):
+        d, n, m = p.vregs(3)
+        kind = p.rng.randrange(5)
+        if kind <= 1:
+            op = p.rng.choice(["sqshl", "uqshl", "srshl", "urshl", "sqrshl", "uqrshl"])
+            scalar = p.rng.random() < 0.3
+            if scalar:
+                r, bits = ("d", 64) if op in ("srshl", "urshl") else p.rng.choice(scal)
+                v = {d: p.vec(), n: lane_vec(p, bits), m: shift_count_vec(p, bits)}
+                p.vcase([clr, f"{op} {r}{d}, {r}{n}, {r}{m}"], v)
+            else:
+                vt, bits, q = vtypes(p)
+                v = {d: p.vec(), n: lane_vec(p, bits), m: shift_count_vec(p, bits)}
+                p.vcase([clr, f"{op} v{d}.{vt}, v{n}.{vt}, v{m}.{vt}"], v)
+        elif kind == 2:
+            op = p.rng.choice(["suqadd", "usqadd"])
+            if p.rng.random() < 0.3:
+                r, bits = p.rng.choice(scal)
+                p.vcase([clr, f"{op} {r}{d}, {r}{n}"], {d: lane_vec(p, bits), n: lane_vec(p, bits)})
+            else:
+                vt, bits, q = vtypes(p)
+                p.vcase([clr, f"{op} v{d}.{vt}, v{n}.{vt}"], {d: lane_vec(p, bits), n: lane_vec(p, bits)})
+        else:
+            op = p.rng.choice(["sqdmull", "sqdmlal", "sqdmlsl"])
+            bits = p.rng.choice([16, 32])
+            e, we = ("h", "s") if bits == 16 else ("s", "d")
+            nt, nt2, wt = {16: ("4h", "8h", "4s"), 32: ("2s", "4s", "2d")}[bits]
+            mreg = p.rng.choice([r for r in VREGS if r < 16]) if bits == 16 else m
+            if mreg in (d, n):
+                mreg = [r for r in VREGS if r < 16 and r not in (d, n)][0]
+            idx = p.rng.randrange(128 // bits)
+            v = {d: lane_vec(p, bits * 2), n: lane_vec(p, bits), m: lane_vec(p, bits), mreg: lane_vec(p, bits)}
+            form = p.rng.randrange(6)
+            if form == 0:
+                p.vcase([clr, f"{op} v{d}.{wt}, v{n}.{nt}, v{m}.{nt}"], v)
+            elif form == 1:
+                p.vcase([clr, f"{op}2 v{d}.{wt}, v{n}.{nt2}, v{m}.{nt2}"], v)
+            elif form == 2:
+                p.vcase([clr, f"{op} {we}{d}, {e}{n}, {e}{m}"], v)
+            elif form == 3:
+                p.vcase([clr, f"{op} v{d}.{wt}, v{n}.{nt}, v{mreg}.{e}[{idx}]"], v)
+            elif form == 4:
+                p.vcase([clr, f"{op}2 v{d}.{wt}, v{n}.{nt2}, v{mreg}.{e}[{idx}]"], v)
+            else:
+                p.vcase([clr, f"{op} {we}{d}, {e}{n}, v{mreg}.{e}[{idx}]"], v)
+
+
+def gen_simd_fcvtxn(p):
+    """FCVTXN/FCVTXN2 (vector) and FCVTXN (scalar): double to single rounded to odd, which ignores
+    FPCR.RMode, checked in every mode: exact values, halfway and near-halfway values, the overflow
+    boundary (to the largest finite value, never infinity), the denormal range and doubles far below
+    it, infinities and NaNs."""
+    edge = [
+        0x47EFFFFFE0000000, 0x47EFFFFFE0000001, 0x47EFFFFFF0000000, 0x47EFFFFFFFFFFFFF, 0x47F0000000000000,
+        0x7FEFFFFFFFFFFFFF, 0x3810000000000000, 0x380FFFFFFFFFFFFF, 0x36A0000000000000, 0x36A0000000000001,
+        0x3690000000000000, 0x369FFFFFFFFFFFFF, 0x0000000000000001, 0x0010000000000000, 0x3FF0000010000000,
+        0x3FF0000008000000, 0x3FF0000018000000, 0x3FF0000000000001, 0x3FF000001FFFFFFF, 0x3FF0000020000000,
+    ] + F64_EDGE
+    vals = [v | s for v in edge for s in (0, 1 << 63)]
+    for rmode in RMODES:
+        for i in range(0, len(vals), 2):
+            d, n = p.vregs(2)
+            p.vcase([f"fcvtxn v{d}.2s, v{n}.2d"], {d: p.vec(), n: (vals[i], vals[(i + 1) % len(vals)])}, fpcr=rmode)
+    for _ in range(500):
+        d, n = p.vregs(2)
+        lanes = []
+        for _ in range(2):
+            r = p.rng.random()
+            if r < 0.3:
+                lanes.append(p.rng.choice(vals))
+            elif r < 0.6:
+                # Single-precision range, with the bits below the single's fraction random.
+                v = struct.unpack("<Q", struct.pack("<d", p.rng.uniform(-1, 1) * 2.0 ** p.rng.randrange(-150, 129)))[0]
+                lanes.append(v ^ p.rng.getrandbits(29))
+            else:
+                lanes.append(p.f64())
+        form = p.rng.randrange(3)
+        fpcr = p.rng.choice(RMODES)
+        v = {d: p.vec(), n: (lanes[0], lanes[1])}
+        if form == 0:
+            p.vcase([f"fcvtxn v{d}.2s, v{n}.2d"], v, fpcr=fpcr)
+        elif form == 1:
+            p.vcase([f"fcvtxn2 v{d}.4s, v{n}.2d"], v, fpcr=fpcr)
+        else:
+            p.vcase([f"fcvtxn s{d}, d{n}"], v, fpcr=fpcr)
+
+
+NAN_PAIRS16 = [
+    (0x7E03, 0x7C02), (0x7C01, 0x7E04), (0x7E03, 0x7E04), (0x7C01, 0x7C02), (0x3C00, 0x7C02), (0x7C01, 0x3C00),
+    (0x3C00, 0x7E04), (0x7E03, 0x3C00), (0x0000, 0x8000), (0x8000, 0x0000), (0x7C00, 0xFC00), (0x0000, 0x7C00),
+    (0xFE05, 0x7D06), (0x8000, 0xFC00),
+]
+
+
+def gen_simd_half(p):
+    """The FP16 Advanced SIMD group (asimdhp) on 4H/8H vectors and H scalars: arithmetic, min/max,
+    FABD, FMULX, FMLA/FMLS (vector and by element), FRECPS/FRSQRTS, compares (register and zero,
+    absolute), pairwise and across-lane forms, by-element FMUL/FMULX, FRINT*, FSQRT, FRECPE/FRSQRTE
+    (every table entry) and FRECPX, conversions to and from 16-bit integers and fixed point, FMOV
+    immediates; NaN pairs lined up lane by lane, every edge value, every rounding mode with and
+    without FZ16."""
+    fpcrs = [rm | fz for rm in RMODES for fz in (0, 0x80000)]
+
+    def f16():
+        r = p.rng.random()
+        if r < 0.4:
+            return p.rng.choice(F16_EDGE)
+        if r < 0.7:
+            # Moderate magnitudes, so that sums, products and quotients stay finite and round.
+            return (p.rng.getrandbits(1) << 15) | (p.rng.randrange(8, 23) << 10) | p.rng.getrandbits(10)
+        return p.rng.getrandbits(16)
+
+    def hvec_pair():
+        a, b = [], []
+        for _ in range(8):
+            r = p.rng.random()
+            if r < 0.25:
+                x, y = p.rng.choice(NAN_PAIRS16)
+            else:
+                x, y = f16(), f16()
+                if r < 0.33:
+                    y = x
+                elif r < 0.4:
+                    y = x ^ 0x8000
+            a.append(x)
+            b.append(y)
+        return lanes_reg(a, 16), lanes_reg(b, 16)
+
+    low =[r for r in VREGS if r < 16]
+    to_int = ["fcvtns", "fcvtnu", "fcvtps", "fcvtpu", "fcvtms", "fcvtmu", "fcvtzs", "fcvtzu", "fcvtas", "fcvtau"]
+    three = ["fadd", "fsub", "fmul", "fdiv", "fmin", "fmax", "fminnm", "fmaxnm", "fmulx", "fabd", "frecps", "frsqrts",
+             "faddp", "fmaxp", "fminp", "fmaxnmp", "fminnmp", "fcmeq", "fcmge", "fcmgt", "facge", "facgt"]
+    three_scalar = ["fmulx", "fabd", "frecps", "frsqrts", "fcmeq", "fcmge", "fcmgt", "facge", "facgt"]
+    misc = ["frintn", "frintp", "frintm", "frintz", "frinta", "frintx", "frinti", "fsqrt", "frecpe", "frsqrte"] + to_int
+    zcmp = ["fcmeq", "fcmge", "fcmgt", "fcmle", "fcmlt"]
+    for _ in range(2400):
+        d, n, m = p.vregs(3)
+        t = p.rng.choice(["4h", "8h"])
+        vn, vm = hvec_pair()
+        v = {d: p.vec(), n: vn, m: vm}
+        fpcr = p.rng.choice(fpcrs)
+        kind = p.rng.randrange(12)
+        if kind <= 2:
+            op = p.rng.choice(three)
+            p.vcase([f"{op} v{d}.{t}, v{n}.{t}, v{m}.{t}"], v, fpcr=fpcr)
+        elif kind == 3:
+            op = p.rng.choice(three_scalar)
+            p.vcase([f"{op} h{d}, h{n}, h{m}"], v, fpcr=fpcr)
+        elif kind == 4:
+            op = p.rng.choice(["fmla", "fmls"])
+            v[d], _ = hvec_pair()
+            p.vcase([f"{op} v{d}.{t}, v{n}.{t}, v{m}.{t}"], v, fpcr=fpcr)
+        elif kind == 5:
+            op = p.rng.choice(["fmla", "fmls", "fmul", "fmulx"])
+            mr = p.rng.choice([r for r in low if r not in (d, n)])
+            v[mr] = vm
+            if op in ("fmla", "fmls"):
+                v[d], _ = hvec_pair()
+            idx = p.rng.randrange(8)
+            if p.rng.random() < 0.5:
+                p.vcase([f"{op} v{d}.{t}, v{n}.{t}, v{mr}.h[{idx}]"], v, fpcr=fpcr)
+            else:
+                p.vcase([f"{op} h{d}, h{n}, v{mr}.h[{idx}]"], v, fpcr=fpcr)
+        elif kind == 6:
+            op = p.rng.choice(misc)
+            p.vcase([f"{op} v{d}.{t}, v{n}.{t}"], v, fpcr=fpcr)
+        elif kind == 7:
+            op = p.rng.choice(zcmp)
+            if p.rng.random() < 0.5:
+                p.vcase([f"{op} v{d}.{t}, v{n}.{t}, #0.0"], v, fpcr=fpcr)
+            else:
+                p.vcase([f"{op} h{d}, h{n}, #0.0"], v, fpcr=fpcr)
+        elif kind == 8:
+            op = p.rng.choice(to_int + ["frecpe", "frecpx", "frsqrte"])
+            p.vcase([f"{op} h{d}, h{n}"], v, fpcr=fpcr)
+        elif kind == 9:
+            if p.rng.random() < 0.5:
+                op = p.rng.choice(["fmaxv", "fminv", "fmaxnmv", "fminnmv"])
+                p.vcase([f"{op} h{d}, v{n}.{t}"], v, fpcr=fpcr)
+            else:
+                op = p.rng.choice(["faddp", "fmaxp", "fminp", "fmaxnmp", "fminnmp"])
+                p.vcase([f"{op} h{d}, v{n}.2h"], v, fpcr=fpcr)
+        elif kind == 10:
+            # Integer and fixed-point conversions.
+            op = p.rng.choice(["scvtf", "ucvtf", "fcvtzs", "fcvtzu"])
+            if op in ("scvtf", "ucvtf"):
+                v[n] = lane_vec(p, 16)
+            fb = p.rng.choice([None, 1, 2, 8, 15, 16, p.rng.randrange(1, 17)])
+            suffix = f", #{fb}" if fb else ""
+            if p.rng.random() < 0.6:
+                p.vcase([f"{op} v{d}.{t}, v{n}.{t}{suffix}"], v, fpcr=fpcr)
+            else:
+                p.vcase([f"{op} h{d}, h{n}{suffix}"], v, fpcr=fpcr)
+        else:
+            imm = p.rng.choice(["1.5", "-0.25", "2.0", "0.125", "-16.0", "31.0", "0.1875", "-7.75", "1.0", "-1.9375"])
+            p.vcase([f"fmov v{d}.{t}, #{imm}"], v)
+    # Every table entry of FRECPE/FRSQRTE: the top 8 fraction bits and the exponent's parity.
+    for idx in range(0, 512, 8):
+        lanes = []
+        for j in range(8):
+            e = idx + j
+            parity, top = e >> 8, e & 0xFF
+            exp = p.rng.randrange(1, 15) * 2 + parity
+            lanes.append((exp << 10) | (top << 2) | p.rng.getrandbits(2))
+        d1, d2, n = p.vregs(3)
+        p.vcase([f"frecpe v{d1}.8h, v{n}.8h", f"frsqrte v{d2}.8h, v{n}.8h"],
+                {d1: p.vec(), d2: p.vec(), n: lanes_reg(lanes, 16)}, fpcr=p.rng.choice(fpcrs))
+    # Every edge value, both signs, through the estimates and the unary operations in every mode.
+    extra = [0x00FF, 0x0100, 0x01FF, 0x0300, 0x77FF, 0x7800, 0x7400, 0x73FF, 0x7BFF, 0x0401]
+    vals = [x | s for x in F16_EDGE + extra for s in (0, 0x8000)]
+    for fpcr in fpcrs:
+        for i in range(0, len(vals), 8):
+            chunk = vals[i:i + 8]
+            chunk += [p.rng.choice(vals) for _ in range(8 - len(chunk))]
+            p.vcase(["frecpe v1.8h, v20.8h", "frsqrte v2.8h, v20.8h", "frecpx h3, h20", "fsqrt v5.8h, v20.8h",
+                     "frinta v7.8h, v20.8h", "fcvtns v12.8h, v20.8h", "fcvtzu v16.8h, v20.8h", "fmaxnmv h17, v20.8h"],
+                    {20: lanes_reg(chunk, 16)}, fpcr=fpcr)
+
+
+def gen_simd_scalarshift(p):
+    """Scalar SLI/SRI/SSRA/USRA (D) and SQRSHRN/UQRSHRN/SQRSHRUN (B/H/S from H/S/D): every shift
+    amount at the ends of the range and random ones, over lane boundary values; FPSR.QC cleared first."""
+    for _ in range(600):
+        d, n = p.vregs(2)
+        if p.rng.random() < 0.5:
+            op = p.rng.choice(["sli", "sri", "ssra", "usra"])
+            sh = p.rng.choice([0, 1, 63, p.rng.randrange(64)] if op == "sli" else [1, 2, 63, 64, p.rng.randrange(1, 65)])
+            p.vcase([f"{op} d{d}, d{n}, #{sh}"], {d: lane_vec(p, 64), n: lane_vec(p, 64)})
+        else:
+            op = p.rng.choice(["sqrshrn", "uqrshrn", "sqrshrun"])
+            bits = p.rng.choice([8, 16, 32])
+            rn = {8: "b", 16: "h", 32: "s"}[bits]
+            rw = {8: "h", 16: "s", 32: "d"}[bits]
+            sh = p.rng.choice([1, 2, bits - 1, bits, p.rng.randrange(1, bits + 1)])
+            p.vcase(["msr fpsr, xzr", f"{op} {rn}{d}, {rw}{n}, #{sh}"], {d: p.vec(), n: lane_vec(p, bits * 2)})
+
+
 GROUPS = {
     "simd_loadstore": gen_simd_loadstore,
     "simd_copy": gen_simd_copy,
@@ -1592,6 +2040,12 @@ GROUPS = {
     "simd_shll": gen_simd_shll,
     "simd_facross": gen_simd_facross,
     "simd_rbit": gen_simd_rbit,
+    "simd_recip": gen_simd_recip,
+    "simd_dotmul": gen_simd_dotmul,
+    "simd_shiftsat": gen_simd_shiftsat,
+    "simd_fcvtxn": gen_simd_fcvtxn,
+    "simd_half": gen_simd_half,
+    "simd_scalarshift": gen_simd_scalarshift,
 }
 
 
