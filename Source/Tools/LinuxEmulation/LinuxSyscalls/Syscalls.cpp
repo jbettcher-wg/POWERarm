@@ -1500,6 +1500,30 @@ static const bool HostFaultInjectSegv = [] {
   const char* Env = getenv("FEX_HOSTFAULT_INJECT");
   return Env && strstr(Env, ",segv") != nullptr;
 }();
+[[maybe_unused]] static const bool HostFaultInjectUnwind = [] {
+  const char* Env = getenv("FEX_HOSTFAULT_INJECT");
+  return Env && strstr(Env, ",unwind") != nullptr;
+}();
+
+#ifdef ARCHITECTURE_ppc64le
+// FEX_HOSTFAULT_INJECT's ",unwind": the null store, from a frame whose return
+// address is unmapped, so that the fatal-fault report's backtrace faults too:
+// libgcc has no FDE for that address and its ELFv2 fallback reads the
+// instructions there, looking for a signal trampoline. That is the shape of the
+// unwinder faults that used to recurse through the report. Whichever of the
+// saved slot and LR this frame's CFI names, both hold the bad address.
+[[gnu::noinline]] static void InjectHostFaultUnderUnmappedReturn() {
+  uint64_t SP;
+  asm volatile("mr %0, 1" : "=r"(SP));
+  // ELFv2: 0(r1) is the back chain, and a function's return address is saved
+  // 16 bytes into its caller's frame.
+  auto* const CallerFrame = reinterpret_cast<volatile uint64_t*>(*reinterpret_cast<volatile uint64_t*>(SP));
+  CallerFrame[2] = 0x10;
+  asm volatile("li 0, 0x10\n\tmtlr 0" ::: "r0", "lr");
+  *reinterpret_cast<volatile uint32_t*>(8) = 0;
+  __builtin_unreachable();
+}
+#endif
 
 uint64_t SyscallHandler::HandleSyscallImpl(FEXCore::Core::CpuStateFrame* Frame, FEXCore::HLE::SyscallArguments* Args, uint64_t JITPC) {
   // Phase 3 of signal-cluster fix: defer async signals across the entire
@@ -1540,9 +1564,16 @@ uint64_t SyscallHandler::HandleSyscallImpl(FEXCore::Core::CpuStateFrame* Frame, 
   // inside this deferred-signal section, whenever the guest makes that
   // syscall: a `trap` (SIGTRAP, the shape of every FEX assert) or, with
   // ",segv", a store through a null pointer (SIGSEGV). unittests/FEXLinuxTests
-  // signal/hostfault_gate.cpp drives it with getppid. One load and one
+  // signal/hostfault_gate.cpp drives it with getppid. ",unwind" (PPC64LE) is
+  // the null store with an unmapped return address above it, so the report's
+  // own backtrace faults (run.sh's hostfault_report). One load and one
   // predictable compare per syscall when unset.
   if (Args->Argument[0] == HostFaultInjectSyscall) [[unlikely]] {
+#ifdef ARCHITECTURE_ppc64le
+    if (HostFaultInjectUnwind) {
+      InjectHostFaultUnderUnmappedReturn();
+    }
+#endif
     if (HostFaultInjectSegv) {
       *reinterpret_cast<volatile uint32_t*>(8) = 0;
     } else {

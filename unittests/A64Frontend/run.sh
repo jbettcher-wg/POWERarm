@@ -267,6 +267,36 @@ if [ -f hello.golden ]; then
   fi
 fi
 
+# The fatal host-fault report survives a fault of its own. hostfault makes
+# POWERarm fault in its own syscall body (POWERARM_HOSTFAULT_INJECT, 173 is
+# getppid) under a return address the unwinder cannot read, once with fault
+# handlers like a crash reporter's (SA_NODEFER) and once without. Each run
+# must print the report's line first and once, and the unwinder's fault note,
+# never run the guest's handler, and end with the original SIGSEGV. The report
+# used to re-enter itself through the unwinder's fault, or die in it.
+if [ -f hostfault.golden ]; then
+  hf_fail=
+  for variant in handlers --no-handlers; do
+    set --
+    [ "$variant" = --no-handlers ] && set -- --no-handlers
+    # (The braces keep the shell's own "Segmentation fault" notice off the output.)
+    { (ulimit -c 0 && POWERARM_HOSTFAULT_INJECT=173,segv,unwind exec "$emu" ./hostfault "$@") > hostfault_report.powerarm 2> hostfault_report.stderr; } 2> /dev/null
+    rc=$?
+    lines=$(grep -c 'FATAL host fault' hostfault_report.stderr)
+    first=$(head -1 hostfault_report.stderr | cut -c1-37)
+    if [ "$rc" != 139 ] || [ "$lines" != 1 ] || [ "$first" != "POWERarm: FATAL host fault: signal 11" ] ||
+      ! grep -q 'host backtrace faulted in the unwinder after' hostfault_report.stderr ||
+      grep -q -e 'guest handler' -e 'getppid' hostfault_report.powerarm; then
+      hf_fail="$hf_fail $variant: rc=$rc report lines=$lines first=[$first];"
+    fi
+  done
+  if [ -z "$hf_fail" ]; then
+    report PASS hostfault_report "one report line first, unwinder fault survived, with and without SA_NODEFER handlers"
+  else
+    report FAIL hostfault_report "${hf_fail% ;}"
+  fi
+fi
+
 if [ "$skip" -gt 0 ]; then
   echo "passed $pass, failed $fail, skipped $skip"
 else
