@@ -2233,6 +2233,24 @@ void SyscallHandler::FinishTrackedMmap(FEXCore::Core::InternalThreadState* Threa
   MaybeSaveCodeCaches(Thread);
 }
 
+void SyscallHandler::TrackFileBackedCopy(FEXCore::Core::InternalThreadState* Thread, void* addr, size_t length, int prot, int flags,
+                                         int fd, off_t offset) {
+  // The same tracking GranuleMemory::Mmap gives a sub-granule file mapping it
+  // emulated: the host memory is already in place (and was invalidated when it
+  // was mapped), so only the VMA's identity changes. TrackVMARange replaces the
+  // anonymous entries the copy was made in.
+  if (!length || fd < 0) {
+    return;
+  }
+  std::optional<LateApplyExtendedVolatileMetadata> LateMetadata;
+  std::optional<FEXCore::ExecutableFileSectionInfo> CachedSection;
+  {
+    auto lk = FEXCore::GuardSignalDeferringSectionWithFallback(VMATracking.Mutex, Thread);
+    LateMetadata = TrackMmap(Thread, reinterpret_cast<uint64_t>(addr), length, prot, flags & ~MAP_ANONYMOUS, fd, offset, CachedSection);
+  }
+  FinishTrackedMmap(Thread, std::move(LateMetadata), CachedSection);
+}
+
 uint64_t SyscallHandler::GuestMunmap(bool Is64Bit, FEXCore::Core::InternalThreadState* Thread, void* addr, uint64_t length) {
   // Whatever a 64K fallback recorded here is gone with the mapping.
   FEX::HostPageMapping::ForgetFallbackRange(reinterpret_cast<uint64_t>(addr), length);

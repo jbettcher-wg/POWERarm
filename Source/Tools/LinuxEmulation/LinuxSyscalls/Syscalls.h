@@ -246,6 +246,13 @@ public:
   // segment's real protection, and both have to be visible to VMA/SMC tracking
   // the same way the mmap it replaces would have been.
   virtual uint64_t GuestMprotect(FEXCore::Core::InternalThreadState* Thread, void* addr, size_t len, int prot) = 0;
+
+  // 64K: the ELF loader has already put the bytes of a private file mapping it
+  // could not ask the host for (an offset the host page cannot represent) into
+  // [addr, addr + length) itself. Track that range as the file mapping it stands
+  // in for, so it keeps its file identity (code-cache naming, /proc maps).
+  virtual void TrackFileBackedCopy(FEXCore::Core::InternalThreadState* Thread, void* addr, size_t length, int prot, int flags, int fd,
+                                   off_t offset) {}
 };
 
 class SyscallHandler : public FEXCore::HLE::SyscallHandler,
@@ -465,6 +472,8 @@ public:
   uint64_t GuestMremap(bool Is64Bit, FEXCore::Core::InternalThreadState*, void* old_address, size_t old_size, size_t new_size, int flags,
                        void* new_address);
   uint64_t GuestMprotect(FEXCore::Core::InternalThreadState*, void* addr, size_t len, int prot) override;
+  void TrackFileBackedCopy(FEXCore::Core::InternalThreadState* Thread, void* addr, size_t length, int prot, int flags, int fd,
+                           off_t offset) override;
   uint64_t GuestShmat(bool Is64Bit, FEXCore::Core::InternalThreadState*, int shmid, const void* shmaddr, int shmflg);
   uint64_t GuestShmdt(bool Is64Bit, FEXCore::Core::InternalThreadState*, const void* shmaddr);
 
