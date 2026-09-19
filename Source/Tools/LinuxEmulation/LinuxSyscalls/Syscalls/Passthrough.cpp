@@ -1143,7 +1143,6 @@ void RegisterCommon(FEX::HLE::SyscallHandler* Handler) {
   REGISTER_SYSCALL_IMPL(inotify_init1, SyscallPassthrough1<SYSCALL_DEF(inotify_init1)>);
   REGISTER_SYSCALL_IMPL(fanotify_init, SyscallPassthrough2<SYSCALL_DEF(fanotify_init)>);
   REGISTER_SYSCALL_IMPL(fanotify_mark, SyscallPassthrough5<SYSCALL_DEF(fanotify_mark)>);
-  REGISTER_SYSCALL_IMPL(prlimit_64, SyscallPassthrough4<SYSCALL_DEF(prlimit_64)>);
   REGISTER_SYSCALL_IMPL(name_to_handle_at, SyscallPassthrough5<SYSCALL_DEF(name_to_handle_at)>);
   REGISTER_SYSCALL_IMPL(open_by_handle_at, SyscallPassthrough3<SYSCALL_DEF(open_by_handle_at)>);
   REGISTER_SYSCALL_IMPL(syncfs, SyscallPassthrough1<SYSCALL_DEF(syncfs)>);
@@ -1290,7 +1289,6 @@ void RegisterPassthrough(FEX::HLE::SyscallHandler* Handler) {
   REGISTER_SYSCALL_IMPL(semop, SyscallPassthrough3<SYSCALL_DEF(semop)>);
 #endif
   REGISTER_SYSCALL_IMPL(gettimeofday, VDSOGetTimeOfDay);
-  REGISTER_SYSCALL_IMPL(getrlimit, SyscallPassthrough2<SYSCALL_DEF(getrlimit)>);
   REGISTER_SYSCALL_IMPL(getrusage, SyscallPassthrough2<SYSCALL_DEF(getrusage)>);
   REGISTER_SYSCALL_IMPL(sysinfo, SyscallPassthrough1<SYSCALL_DEF(sysinfo)>);
   REGISTER_SYSCALL_IMPL(times, SyscallPassthrough1<SYSCALL_DEF(times)>);
@@ -1299,7 +1297,6 @@ void RegisterPassthrough(FEX::HLE::SyscallHandler* Handler) {
   REGISTER_SYSCALL_IMPL(sched_rr_get_interval, SyscallPassthrough2<SYSCALL_DEF(sched_rr_get_interval)>);
   REGISTER_SYSCALL_IMPL(munlockall, SyscallPassthrough0<SYSCALL_DEF(munlockall)>);
   REGISTER_SYSCALL_IMPL(adjtimex, SyscallPassthrough1<SYSCALL_DEF(adjtimex)>);
-  REGISTER_SYSCALL_IMPL(setrlimit, SyscallPassthrough2<SYSCALL_DEF(setrlimit)>);
   REGISTER_SYSCALL_IMPL(settimeofday, SyscallPassthrough2<SYSCALL_DEF(settimeofday)>);
   REGISTER_SYSCALL_IMPL(readahead, SyscallPassthrough3<SYSCALL_DEF(readahead)>);
   REGISTER_SYSCALL_IMPL(futex, ObservedFutexSyscall);

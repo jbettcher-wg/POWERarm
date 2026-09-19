@@ -49,6 +49,7 @@ $end_info$
 #include <charconv>
 #include <functional>
 #include <linux/audit.h>
+#include <linux/capability.h>
 #include <linux/seccomp.h>
 #include <memory>
 #include <regex>
@@ -374,6 +375,98 @@ static fextl::string GetShebangInterpFilename(const fextl::string& Filename) {
   return Interp;
 }
 
+namespace {
+  // Raising a hard limit takes CAP_SYS_RESOURCE. Only asked when the guest
+  // raises a hard limit held by GuestAddressSpaceLimit, which the host process
+  // never saw lowered and so cannot judge itself.
+  bool HasCapSysResource() {
+    struct __user_cap_header_struct Header {
+      .version = _LINUX_CAPABILITY_VERSION_3, .pid = 0,
+    };
+    struct __user_cap_data_struct Data[_LINUX_CAPABILITY_U32S_3] {};
+    if (::syscall(SYS_capget, &Header, Data) != 0) {
+      return false;
+    }
+    return Data[CAP_TO_INDEX(CAP_SYS_RESOURCE)].effective & CAP_TO_MASK(CAP_SYS_RESOURCE);
+  }
+
+  struct SpinGuard {
+    std::atomic<bool>& Busy;
+    explicit SpinGuard(std::atomic<bool>& Busy_)
+      : Busy {Busy_} {
+      while (Busy.exchange(true, std::memory_order_acquire)) {
+      }
+    }
+    ~SpinGuard() {
+      Busy.store(false, std::memory_order_release);
+    }
+  };
+} // namespace
+
+int SyscallHandler::GuestAddressSpaceLimit(const struct rlimit* New, struct rlimit* Old) {
+  struct rlimit Host {};
+  if (::getrlimit(RLIMIT_AS, &Host) != 0) {
+    return -errno;
+  }
+  SpinGuard Lock {AddressSpaceLimitBusy};
+  const struct rlimit Current = AddressSpaceLimitHeld ? HeldAddressSpaceLimit : Host;
+  if (New) {
+    if (New->rlim_cur > New->rlim_max) {
+      return -EINVAL;
+    }
+    if (New->rlim_max > Current.rlim_max) {
+      if (New->rlim_max > Host.rlim_max) {
+        // Above the host's own hard limit: the host decides, and keeps the
+        // raise, so the limit can be applied at execve.
+        const struct rlimit Raise {Host.rlim_cur, New->rlim_max};
+        if (::setrlimit(RLIMIT_AS, &Raise) != 0) {
+          return -errno;
+        }
+        Host = Raise;
+      } else if (!HasCapSysResource()) {
+        return -EPERM;
+      }
+    }
+  }
+  if (Old) {
+    *Old = Current;
+  }
+  if (New) {
+    AddressSpaceLimitHeld = New->rlim_cur != Host.rlim_cur || New->rlim_max != Host.rlim_max;
+    HeldAddressSpaceLimit = *New;
+  }
+  return 0;
+}
+
+SyscallHandler::HeldAddressSpaceLimitForExec SyscallHandler::ApplyHeldAddressSpaceLimit() {
+  HeldAddressSpaceLimitForExec Result {};
+  struct rlimit Limit {};
+  {
+    SpinGuard Lock {AddressSpaceLimitBusy};
+    if (!AddressSpaceLimitHeld) {
+      return Result;
+    }
+    Limit = HeldAddressSpaceLimit;
+  }
+  if (::getrlimit(RLIMIT_AS, &Result.Host) == 0 && ::setrlimit(RLIMIT_AS, &Limit) == 0) {
+    Result.Applied = true;
+  }
+  return Result;
+}
+
+void SyscallHandler::RestoreAddressSpaceLimitAfterExec(const HeldAddressSpaceLimitForExec& Applied) {
+  if (!Applied.Applied || ::setrlimit(RLIMIT_AS, &Applied.Host) == 0) {
+    return;
+  }
+  // The guest lowered its hard limit, which cannot be raised back without
+  // CAP_SYS_RESOURCE: the most this process can have is the soft limit at it.
+  struct rlimit Now {};
+  if (::getrlimit(RLIMIT_AS, &Now) == 0) {
+    Now.rlim_cur = Now.rlim_max;
+    ::setrlimit(RLIMIT_AS, &Now);
+  }
+}
+
 uint64_t ExecveHandler(FEXCore::Core::CpuStateFrame* Frame, const char* pathname, char* const* argv, char* const* envp, ExecveAtArgs Args) {
   auto SyscallHandler = FEX::HLE::_SyscallHandler;
   Frame->Thread->CTX->FlushAndCloseCodeMap();
@@ -601,7 +694,9 @@ uint64_t ExecveHandler(FEXCore::Core::CpuStateFrame* Frame, const char* pathname
     // Last safe point of this image: keep what it compiled.
     SyscallHandler->CodeCacheImageExit(Frame->Thread);
     FEX::HLE::VForkChildSync();
+    const auto HeldLimit = SyscallHandler->ApplyHeldAddressSpaceLimit();
     Result = ::syscall(SYS_execveat, Args.dirfd, Filename.c_str(), argv, EnvpPtr, Args.flags);
+    SyscallHandler->RestoreAddressSpaceLimitAfterExec(HeldLimit);
     CloseSeccompFD();
     CloseFDExecFD();
     SYSCALL_ERRNO();
@@ -678,7 +773,9 @@ uint64_t ExecveHandler(FEXCore::Core::CpuStateFrame* Frame, const char* pathname
 
   SyscallHandler->CodeCacheImageExit(Frame->Thread);
   FEX::HLE::VForkChildSync();
+  const auto HeldLimit = SyscallHandler->ApplyHeldAddressSpaceLimit();
   Result = ::syscall(SYS_execveat, Args.dirfd, "/proc/self/exe", const_cast<char* const*>(ExecveArgs.data()), EnvpPtr, Args.flags);
+  SyscallHandler->RestoreAddressSpaceLimitAfterExec(HeldLimit);
   CloseSeccompFD();
   CloseFDExecFD();
 
@@ -1567,6 +1664,10 @@ void SyscallHandler::UnlockAfterFork(FEXCore::Core::InternalThreadState* LiveThr
     EnableXIDCheck();
 
     VMATracking.Mutex.StealAndDropActiveLocks();
+
+    // Held only for a few loads and stores, but possibly by a thread that is
+    // not in the child.
+    AddressSpaceLimitBusy.store(false, std::memory_order_relaxed);
   } else {
     VMATracking.Mutex.unlock();
   }

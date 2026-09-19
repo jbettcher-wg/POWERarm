@@ -317,6 +317,14 @@ again:
     void* Ptr;
   };
 
+  // A range was free but the kernel refused to map it: CheckIfRangeFits
+  // returns {Region, -errno}. Under RLIMIT_AS below the process's size (the
+  // guest can set one) every mmap fails ENOMEM, the MAP_FIXED over our own
+  // reservation included.
+  const auto MapFailed = [](const RangeResult& Fits) {
+    return Fits.RegionInsertedInto && reinterpret_cast<uint64_t>(Fits.Ptr) >= static_cast<uint64_t>(-4095);
+  };
+
   auto CheckIfRangeFits = [&AllocatedOffset](LiveVMARegion* Region, uint64_t length, int prot, int flags, int fd, off_t offset,
                                              uint64_t StartingPosition = 0) -> RangeResult {
     uint64_t AllocatedPage {~0ULL};
@@ -374,6 +382,8 @@ again:
         if (Fits.RegionInsertedInto && Fits.Ptr == reinterpret_cast<void*>(Addr)) {
           // We fit correctly
           AllocatedOffset = Addr;
+        } else if (MapFailed(Fits)) {
+          return Fits.Ptr;
         } else {
           // Intersected with something that already existed
           return reinterpret_cast<void*>(-EEXIST);
@@ -400,10 +410,13 @@ again:
       if (Fits.RegionInsertedInto && Fits.Ptr == reinterpret_cast<void*>(Addr)) {
         // We fit correctly
         AllocatedOffset = Addr;
+      } else if (MapFailed(Fits)) {
+        return Fits.Ptr;
       } else {
         // Couldn't fit
         // We can continue past this point still
         LiveRegion = nullptr;
+        AllocatedOffset = 0;
       }
     }
 
@@ -416,8 +429,10 @@ again:
           break;
         }
 
-        // Couldn't fit but mmap gave us an error
-        if (!Fits.RegionInsertedInto && Fits.Ptr) {
+        // The range was free but mmap gave us an error. AllocatedOffset holds
+        // the address that was refused, so this is the last point the error
+        // can be told apart from a success.
+        if (MapFailed(Fits)) {
           return Fits.Ptr;
         }
 
@@ -457,7 +472,9 @@ again:
                        LiveRegion->SlabInfo->RegionSize, length, PagesSet);
   }
 
-  if (!AllocatedOffset) {
+  // Nothing was placed. AllocatedOffset may still hold an address a search
+  // tried and gave up on; it is not a mapping.
+  if (!LiveRegion || !AllocatedOffset) {
     AllocatedOffset = -ENOMEM;
   }
   return reinterpret_cast<void*>(AllocatedOffset);

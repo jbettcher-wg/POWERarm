@@ -43,6 +43,7 @@ $end_info$
 #include <limits.h>
 #include <fcntl.h>
 #include <stdint.h>
+#include <sys/resource.h>
 #include <sys/socket.h>
 #include <type_traits>
 #include <list>
@@ -422,6 +423,28 @@ public:
       CTX->GetCodeCache().DumpStats();
     }
   }
+
+  // RLIMIT_AS of this process as the guest sees it. The guest's own changes
+  // are held here rather than applied to the host process, and applied at its
+  // next execve instead. The emulator's address-space reservation makes the
+  // host process far larger than any guest limit (128 TiB for the 48-bit
+  // allocator), and the kernel refuses every mapping of a process already over
+  // its RLIMIT_AS, even one that only replaces pages it already maps. So a
+  // guest that lowers it before an execve (glycin's image loaders, `ulimit -v`
+  // in a shell) left the emulator unable to allocate a byte until the exec,
+  // while its compiler and the pre-exec code-cache save still had to run.
+  // New and Old are host memory; either may be null. Returns 0 or -errno.
+  int GuestAddressSpaceLimit(const struct rlimit* New, struct rlimit* Old);
+
+  struct HeldAddressSpaceLimitForExec {
+    bool Applied {};
+    struct rlimit Host {};
+  };
+  // Right before the execve syscall: puts the held limit on the host process,
+  // so the new image starts under it.
+  HeldAddressSpaceLimitForExec ApplyHeldAddressSpaceLimit();
+  // After an execve that failed: back to the limit the emulator runs under.
+  void RestoreAddressSpaceLimitAfterExec(const HeldAddressSpaceLimitForExec& Applied);
 
   // Polls the FEXCore-side "enough new blocks / enough time" trigger and saves
   // if it fires. Called from the tails of the memory-management syscalls, which
@@ -1058,6 +1081,13 @@ private:
   uint64_t MainExeIno {};
 
 private:
+  // GuestAddressSpaceLimit's state: the guest's RLIMIT_AS when it is not the
+  // host's. The lock is a flag held for a few loads and stores, and a forked
+  // child clears it (UnlockAfterFork).
+  std::atomic<bool> AddressSpaceLimitBusy {false};
+  bool AddressSpaceLimitHeld {false};
+  struct rlimit HeldAddressSpaceLimit {};
+
   FEX::HLE::SignalDelegator* SignalDelegation;
   FEX::HLE::ThunkHandler* ThunkHandler;
 
