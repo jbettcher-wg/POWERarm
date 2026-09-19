@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 //
 // A64 Advanced SIMD floating point on single and double precision lanes:
-// three-same arithmetic, by-element multiplies, fused multiply-accumulate,
+// three-same arithmetic, FMULX, by-element multiplies, fused multiply-accumulate,
 // minimum/maximum, pairwise forms, compares (register and zero, absolute),
 // rounding, square root, conversions to and from integer and fixed point,
 // and the half-precision sign-bit operations.
@@ -135,6 +135,42 @@ bool IRBuilder::FMLA_elt_4(uint32_t Word) { return SIMDFloatMulElement(Word, 1, 
 bool IRBuilder::FMLA_elt_2(uint32_t Word) { return SIMDFloatMulElement(Word, 1, true); }
 bool IRBuilder::FMLS_elt_4(uint32_t Word) { return SIMDFloatMulElement(Word, -1, false); }
 bool IRBuilder::FMLS_elt_2(uint32_t Word) { return SIMDFloatMulElement(Word, -1, true); }
+
+// FMULX (vector, scalar, by element): FPMulX is FPMul except that an
+// infinity times a zero gives 2.0 with the sign of the product.
+Ref IRBuilder::FPMulXLanes(OpSize ES, Ref A, Ref B) {
+  const auto RS = OpSize::i128Bit;
+  const bool Is64 = ES == OpSize::i64Bit;
+  Ref Inf = FPConstant(Is64 ? 0x7FF0000000000000ULL : 0x7F800000ULL, ES);
+  Ref Zero = _VectorImm(RS, OpSize::i8Bit, 0);
+  Ref InfTimesZero = _VOr(RS, RS, _VAnd(RS, RS, _VFCMPEQ(RS, ES, _VFAbs(RS, ES, A), Inf), _VFCMPEQ(RS, ES, B, Zero)),
+                          _VAnd(RS, RS, _VFCMPEQ(RS, ES, A, Zero), _VFCMPEQ(RS, ES, _VFAbs(RS, ES, B), Inf)));
+  Ref Sign = _VAnd(RS, RS, _VXor(RS, RS, A, B), FPConstant(Is64 ? 0x8000000000000000ULL : 0x80000000ULL, ES));
+  Ref Two = _VOr(RS, RS, Sign, FPConstant(Is64 ? 0x4000000000000000ULL : 0x40000000ULL, ES));
+  return _VBSL(RS, InfTimesZero, Two, A64Arith(ES, A, B, FPBinaryOp::Mul));
+}
+
+bool IRBuilder::SIMDFloatMulX(uint32_t Word, bool Scalar, bool ByElement) {
+  OpSize ES {};
+  if (!FloatLaneSize(Word, Scalar, &ES)) {
+    return false;
+  }
+  Ref B {};
+  if (ByElement) {
+    if (!FloatElementOperand(Word, ES, &B)) {
+      return false;
+    }
+  } else {
+    B = LoadV(Bits(Word, 20, 16));
+  }
+  StoreFloatLanes(Word, Scalar, ES, FPMulXLanes(ES, LoadV(Bits(Word, 9, 5)), B));
+  return true;
+}
+
+bool IRBuilder::FMULX_vec_2(uint32_t Word) { return SIMDFloatMulX(Word, true, false); }
+bool IRBuilder::FMULX_vec_4(uint32_t Word) { return SIMDFloatMulX(Word, false, false); }
+bool IRBuilder::FMULX_elt_2(uint32_t Word) { return SIMDFloatMulX(Word, true, true); }
+bool IRBuilder::FMULX_elt_4(uint32_t Word) { return SIMDFloatMulX(Word, false, true); }
 
 bool IRBuilder::SIMDFloatMulAccumulate(uint32_t Word, bool Subtract) {
   OpSize ES {};

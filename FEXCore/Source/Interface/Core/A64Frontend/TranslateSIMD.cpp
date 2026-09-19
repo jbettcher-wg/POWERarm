@@ -904,6 +904,22 @@ bool IRBuilder::SIMDMultiply(uint32_t Word, int Accumulate) {
   return true;
 }
 
+bool IRBuilder::PMUL(uint32_t Word) {
+  // Polynomial multiply of bytes: the low byte of each carry-less 8x8
+  // product. VPMullB gives the whole 16-bit products of one half.
+  if (Bits(Word, 23, 22) != 0) {
+    return false;
+  }
+  const bool Q = Bit(Word, 30);
+  const auto RS = OpSize::i128Bit;
+  Ref A = LoadV(Bits(Word, 9, 5));
+  Ref B = LoadV(Bits(Word, 20, 16));
+  Ref Low = _VPMullB(RS, A, B, false);
+  Ref High = Q ? _VPMullB(RS, A, B, true).Node : Low;
+  StoreVQ(Bits(Word, 4, 0), Q, _VUnZip(RS, OpSize::i8Bit, Low, High));
+  return true;
+}
+
 bool IRBuilder::MUL_vec(uint32_t Word) { return SIMDMultiply(Word, 0); }
 bool IRBuilder::MLA_vec(uint32_t Word) { return SIMDMultiply(Word, 1); }
 bool IRBuilder::MLS_vec(uint32_t Word) { return SIMDMultiply(Word, -1); }

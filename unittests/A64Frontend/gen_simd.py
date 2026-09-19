@@ -1713,6 +1713,54 @@ def gen_simd_recip(p):
         p.vcase([f"{op} {rd}, {rn}, {rm}"], {d: p.vec(), n: vn, m: vm}, fpcr=p.rng.choice(RMODES))
 
 
+def gen_simd_dotmul(p):
+    """SDOT/UDOT (vector and by element), FMULX (vector, scalar, by element) and PMUL."""
+    # FMULX lanes: inf*0 of every sign pairing next to the NaN pairs and edge values.
+    infzero = {
+        32: [(0x7F800000, 0x00000000), (0xFF800000, 0x00000000), (0x00000000, 0xFF800000),
+             (0x80000000, 0x7F800000), (0x80000000, 0xFF800000), (0x7F800000, 0x80000000)],
+        64: [(0x7FF0000000000000, 0x0000000000000000), (0xFFF0000000000000, 0x0000000000000000),
+             (0x0000000000000000, 0xFFF0000000000000), (0x8000000000000000, 0x7FF0000000000000),
+             (0x8000000000000000, 0xFFF0000000000000), (0x7FF0000000000000, 0x8000000000000000)],
+    }
+    for _ in range(1200):
+        d, n, m = p.vregs(3)
+        kind = p.rng.randrange(6)
+        if kind <= 1:
+            op = p.rng.choice(["sdot", "udot"])
+            q = p.rng.random() < 0.5
+            ta, tb = ("4s", "16b") if q else ("2s", "8b")
+            v = {d: lane_vec(p, 32), n: lane_vec(p, 8), m: lane_vec(p, 8)}
+            if kind == 0:
+                p.vcase([f"{op} v{d}.{ta}, v{n}.{tb}, v{m}.{tb}"], v)
+            else:
+                p.vcase([f"{op} v{d}.{ta}, v{n}.{tb}, v{m}.4b[{p.rng.randrange(4)}]"], v)
+        elif kind <= 4:
+            t, e, is64, scalar = ftype(p, True)
+            bits = 64 if is64 else 32
+            vn, vm = fvec_pair(p, is64)
+            if p.rng.random() < 0.4:
+                ln, lm = [], []
+                for i in range(128 // bits):
+                    x, y = p.rng.choice(infzero[bits])
+                    if p.rng.random() < 0.5:
+                        x, y = y, x
+                    ln.append(x)
+                    lm.append(y)
+                vn, vm = lanes_reg(ln, bits), lanes_reg(lm, bits)
+            fpcr = p.rng.choice(RMODES)
+            rd = f"{e}{d}" if scalar else f"v{d}.{t}"
+            rn = f"{e}{n}" if scalar else f"v{n}.{t}"
+            if kind == 4:
+                p.vcase([f"fmulx {rd}, {rn}, v{m}.{e}[{p.rng.randrange(128 // bits)}]"], {d: p.vec(), n: vn, m: vm}, fpcr=fpcr)
+            else:
+                rm = f"{e}{m}" if scalar else f"v{m}.{t}"
+                p.vcase([f"fmulx {rd}, {rn}, {rm}"], {d: p.vec(), n: vn, m: vm}, fpcr=fpcr)
+        else:
+            t = p.rng.choice(["8b", "16b"])
+            p.vcase([f"pmul v{d}.{t}, v{n}.{t}, v{m}.{t}"], {d: p.vec(), n: lane_vec(p, 8), m: p.vec()})
+
+
 GROUPS = {
     "simd_loadstore": gen_simd_loadstore,
     "simd_copy": gen_simd_copy,
@@ -1738,6 +1786,7 @@ GROUPS = {
     "simd_facross": gen_simd_facross,
     "simd_rbit": gen_simd_rbit,
     "simd_recip": gen_simd_recip,
+    "simd_dotmul": gen_simd_dotmul,
 }
 
 

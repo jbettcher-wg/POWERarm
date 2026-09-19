@@ -5,7 +5,7 @@
 // narrows (SQXTN, SQSHRN, RSHRN, ...), rounding and saturating shifts by
 // immediate, halving adds, absolute differences, rounding high narrows, the
 // doubling multiplies (SQDMULH/SQRDMULH), by-element multiplies,
-// across-lane long adds and signed min/max, CLZ/CLS and UDOT.
+// across-lane long adds and signed min/max, CLZ/CLS and the dot products.
 //
 // Saturating operations set the cumulative FPSR.QC (bit 27) when any lane
 // they write saturated, computed from the lanes that differ between the
@@ -692,13 +692,47 @@ bool IRBuilder::SHLL(uint32_t Word) {
   return true;
 }
 
-bool IRBuilder::UDOT_vec(uint32_t Word) {
+// UDOT/SDOT (vector and by element): each 32-bit lane of Rd accumulates the
+// four products of the corresponding bytes, modulo 2^32. VUDot (vmsumubm)
+// multiplies unsigned bytes. The signed form offsets both operands into the
+// unsigned range, a' = a ^ 0x80 = a + 128, and removes the offset terms:
+// sum(a * b) = sum(a' * b') - 128 * (sum a' + sum b') + 4 * 128 * 128.
+bool IRBuilder::SIMDDotProduct(uint32_t Word, bool Signed, bool ByElement) {
   if (Bits(Word, 23, 22) != 2) {
     return false;
   }
+  const auto RS = OpSize::i128Bit;
   const uint32_t Rd = Bits(Word, 4, 0);
-  StoreVQ(Rd, Bit(Word, 30), _VUDot(OpSize::i128Bit, LoadV(Bits(Word, 9, 5)), LoadV(Bits(Word, 20, 16)), LoadV(Rd)));
+  Ref A = LoadV(Bits(Word, 9, 5));
+  Ref B {};
+  if (ByElement) {
+    // The element is a group of four bytes: Rm<index> as a 32-bit lane.
+    if (!IntElementOperand(Word, &B)) {
+      return false;
+    }
+  } else {
+    B = LoadV(Bits(Word, 20, 16));
+  }
+  Ref Acc = LoadV(Rd);
+  Ref Result {};
+  if (!Signed) {
+    Result = _VUDot(RS, A, B, Acc);
+  } else {
+    Ref Flip = LaneConstant(0x80, OpSize::i8Bit);
+    Ref Ones = LaneConstant(1, OpSize::i8Bit);
+    Ref UA = _VXor(RS, RS, A, Flip);
+    Ref UB = _VXor(RS, RS, B, Flip);
+    Ref Sums = _VUDot(RS, UB, Ones, _VUDot(RS, UA, Ones, _VectorImm(RS, OpSize::i8Bit, 0)));
+    Ref Products = _VUDot(RS, UA, UB, _VAdd(RS, OpSize::i32Bit, Acc, LaneConstant(4 * 128 * 128, OpSize::i32Bit)));
+    Result = _VSub(RS, OpSize::i32Bit, Products, _VShlI(RS, OpSize::i32Bit, Sums, 7));
+  }
+  StoreVQ(Rd, Bit(Word, 30), Result);
   return true;
 }
+
+bool IRBuilder::UDOT_vec(uint32_t Word) { return SIMDDotProduct(Word, false, false); }
+bool IRBuilder::SDOT_vec(uint32_t Word) { return SIMDDotProduct(Word, true, false); }
+bool IRBuilder::UDOT_elt(uint32_t Word) { return SIMDDotProduct(Word, false, true); }
+bool IRBuilder::SDOT_elt(uint32_t Word) { return SIMDDotProduct(Word, true, true); }
 
 } // namespace FEXCore::A64

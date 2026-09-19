@@ -141,7 +141,7 @@ const IRBuilder::HandlerEntry IRBuilder::HandlerTable[] = {
   {"LD4R_1", &IRBuilder::SIMDSingleStructure}, {"LD4R_2", &IRBuilder::SIMDSingleStructure},
   // Advanced SIMD. The translated set is the subset measured in
   // docs/powerarm/M1b-SIMD-SUBSET.md plus its cheap neighbours.
-  // POWERARM-M1-TODO(simd): no translator yet for SQSHL/UQSHL/SRSHL/URSHL/SQRSHL/UQRSHL by register, SUQADD/USQADD, SQDMULL/SQDMLAL/SQDMLSL, PMUL, SDOT, FMULX, FCVTXN, FMOV of a half-precision vector immediate and the half-precision vector arithmetic, FCADD/FCMLA, and the SHA-512/SHA-3/SM3/SM4 entries (the last not on the reference A76).
+  // POWERARM-M1-TODO(simd): no translator yet for SQSHL/UQSHL/SRSHL/URSHL/SQRSHL/UQRSHL by register, SUQADD/USQADD, SQDMULL/SQDMLAL/SQDMLSL, FCVTXN, FMOV of a half-precision vector immediate and the half-precision vector arithmetic, FCADD/FCMLA, and the SHA-512/SHA-3/SM3/SM4 entries (the last not on the reference A76).
   // Advanced SIMD: copy.
   {"DUP_gen", &IRBuilder::DUP_gen}, {"DUP_elt_1", &IRBuilder::DUP_elt_1}, {"DUP_elt_2", &IRBuilder::DUP_elt_2},
   {"UMOV", &IRBuilder::UMOV}, {"SMOV", &IRBuilder::SMOV}, {"INS_gen", &IRBuilder::INS_gen}, {"INS_elt", &IRBuilder::INS_elt},
@@ -206,6 +206,8 @@ const IRBuilder::HandlerEntry IRBuilder::HandlerTable[] = {
   {"SQDMULH_vec_2", &IRBuilder::SQDMULH_vec_2}, {"SQRDMULH_vec_2", &IRBuilder::SQRDMULH_vec_2}, {"SQDMULH_vec_1", &IRBuilder::SQDMULH_vec_1}, {"SQRDMULH_vec_1", &IRBuilder::SQRDMULH_vec_1}, {"SQDMULH_elt_2", &IRBuilder::SQDMULH_elt_2}, {"SQRDMULH_elt_2", &IRBuilder::SQRDMULH_elt_2}, {"SQDMULH_elt_1", &IRBuilder::SQDMULH_elt_1}, {"SQRDMULH_elt_1", &IRBuilder::SQRDMULH_elt_1},
   {"MLA_elt", &IRBuilder::MLA_elt}, {"MLS_elt", &IRBuilder::MLS_elt}, {"SMULL_elt", &IRBuilder::SMULL_elt}, {"UMULL_elt", &IRBuilder::UMULL_elt}, {"SMLAL_elt", &IRBuilder::SMLAL_elt}, {"UMLAL_elt", &IRBuilder::UMLAL_elt}, {"SMLSL_elt", &IRBuilder::SMLSL_elt}, {"UMLSL_elt", &IRBuilder::UMLSL_elt},
   {"UADDLV", &IRBuilder::UADDLV}, {"SADDLV", &IRBuilder::SADDLV}, {"SMAXV", &IRBuilder::SMAXV}, {"SMINV", &IRBuilder::SMINV}, {"CLZ_asimd", &IRBuilder::CLZ_asimd}, {"CLS_asimd", &IRBuilder::CLS_asimd}, {"UDOT_vec", &IRBuilder::UDOT_vec}, {"SHLL", &IRBuilder::SHLL},
+  {"SDOT_vec", &IRBuilder::SDOT_vec}, {"UDOT_elt", &IRBuilder::UDOT_elt}, {"SDOT_elt", &IRBuilder::SDOT_elt}, {"PMUL", &IRBuilder::PMUL},
+  {"FMULX_vec_2", &IRBuilder::FMULX_vec_2}, {"FMULX_vec_4", &IRBuilder::FMULX_vec_4}, {"FMULX_elt_2", &IRBuilder::FMULX_elt_2}, {"FMULX_elt_4", &IRBuilder::FMULX_elt_4},
   // Cryptographic extension and CRC32.
   {"AESE", &IRBuilder::AESE}, {"AESD", &IRBuilder::AESD}, {"AESMC", &IRBuilder::AESMC}, {"AESIMC", &IRBuilder::AESIMC}, {"PMULL", &IRBuilder::PMULL}, {"SHA1C", &IRBuilder::SHA1C}, {"SHA1M", &IRBuilder::SHA1M}, {"SHA1P", &IRBuilder::SHA1P}, {"SHA1H", &IRBuilder::SHA1H}, {"SHA1SU0", &IRBuilder::SHA1SU0}, {"SHA1SU1", &IRBuilder::SHA1SU1},
   {"SHA256H", &IRBuilder::SHA256H}, {"SHA256H2", &IRBuilder::SHA256H2}, {"SHA256SU0", &IRBuilder::SHA256SU0}, {"SHA256SU1", &IRBuilder::SHA256SU1}, {"CRC32", &IRBuilder::CRC32}, {"CRC32C", &IRBuilder::CRC32C},

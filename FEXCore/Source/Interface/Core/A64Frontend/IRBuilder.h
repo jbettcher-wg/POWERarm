@@ -262,6 +262,8 @@ public:
   bool SMLSL_elt(uint32_t Word); bool UMLSL_elt(uint32_t Word);
   bool UADDLV(uint32_t Word); bool SADDLV(uint32_t Word); bool SMAXV(uint32_t Word); bool SMINV(uint32_t Word);
   bool CLZ_asimd(uint32_t Word); bool CLS_asimd(uint32_t Word); bool UDOT_vec(uint32_t Word); bool SHLL(uint32_t Word);
+  bool SDOT_vec(uint32_t Word); bool UDOT_elt(uint32_t Word); bool SDOT_elt(uint32_t Word); bool PMUL(uint32_t Word);
+  bool FMULX_vec_2(uint32_t Word); bool FMULX_vec_4(uint32_t Word); bool FMULX_elt_2(uint32_t Word); bool FMULX_elt_4(uint32_t Word);
   // Cryptographic extension and CRC32 (TranslateCrypto.cpp).
   bool AESE(uint32_t Word); bool AESD(uint32_t Word); bool AESMC(uint32_t Word); bool AESIMC(uint32_t Word);
   bool PMULL(uint32_t Word);
@@ -431,6 +433,8 @@ private:
   bool SIMDHalfSign(uint32_t Word, bool IsNeg);
   bool SIMDFloatToInt(uint32_t Word, uint8_t Rounding, bool Signed, bool Scalar);
   bool SIMDFixedConvert(uint32_t Word, bool ToFloat, bool Signed, bool Scalar);
+  Ref FPMulXLanes(OpSize ES, Ref A, Ref B);
+  bool SIMDFloatMulX(uint32_t Word, bool Scalar, bool ByElement);
 
   // Estimates and steps (TranslateSIMDEstimate.cpp).
   Ref RecipEstimateTable(OpSize ES, Ref A);
@@ -475,6 +479,7 @@ private:
   bool SIMDAddLongAcrossLanes(uint32_t Word, bool Signed);
   bool SIMDSignedAcrossLanesMinMax(uint32_t Word, bool IsMax);
   bool SIMDCountLeading(uint32_t Word, bool Sign);
+  bool SIMDDotProduct(uint32_t Word, bool Signed, bool ByElement);
 
   struct JumpTargetInfo {
     Ref BlockEntry;
