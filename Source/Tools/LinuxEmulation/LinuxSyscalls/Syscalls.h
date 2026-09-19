@@ -246,6 +246,13 @@ public:
   // segment's real protection, and both have to be visible to VMA/SMC tracking
   // the same way the mmap it replaces would have been.
   virtual uint64_t GuestMprotect(FEXCore::Core::InternalThreadState* Thread, void* addr, size_t len, int prot) = 0;
+
+  // 64K: the ELF loader has already put the bytes of a private file mapping it
+  // could not ask the host for (an offset the host page cannot represent) into
+  // [addr, addr + length) itself. Track that range as the file mapping it stands
+  // in for, so it keeps its file identity (code-cache naming, /proc maps).
+  virtual void TrackFileBackedCopy(FEXCore::Core::InternalThreadState* Thread, void* addr, size_t length, int prot, int flags, int fd,
+                                   off_t offset) {}
 };
 
 class SyscallHandler : public FEXCore::HLE::SyscallHandler,
@@ -356,9 +363,14 @@ public:
     // Legacy FEX_ENABLECODECACHINGWIP behaviour: load caches for anything, write
     // nothing (only FEXOfflineCompiler produces cache files).
     Off,
-    // Rootfs system libraries only. Immutable in practice and shared between
-    // titles, so they are the translations worth persisting.
+    // Rootfs system libraries only (the base and its overlay). Immutable in
+    // practice and shared between titles, so they are the translations worth
+    // persisting.
     RootFS,
+    // RootFS plus everything under the user's home directory: the apps a user
+    // installs themselves (the Claude CLI in ~/.local/share/claude, VS Code or
+    // code-server tarballs). The default; see docs/powerarm/CODE-CACHE.md.
+    Home,
     // Everything file-backed, including game-side native libraries.
     All,
   };
@@ -465,6 +477,8 @@ public:
   uint64_t GuestMremap(bool Is64Bit, FEXCore::Core::InternalThreadState*, void* old_address, size_t old_size, size_t new_size, int flags,
                        void* new_address);
   uint64_t GuestMprotect(FEXCore::Core::InternalThreadState*, void* addr, size_t len, int prot) override;
+  void TrackFileBackedCopy(FEXCore::Core::InternalThreadState* Thread, void* addr, size_t length, int prot, int flags, int fd,
+                           off_t offset) override;
   uint64_t GuestShmat(bool Is64Bit, FEXCore::Core::InternalThreadState*, int shmid, const void* shmaddr, int shmflg);
   uint64_t GuestShmdt(bool Is64Bit, FEXCore::Core::InternalThreadState*, const void* shmaddr);
 
@@ -888,6 +902,9 @@ public:
     const auto& Value = CodeCacheScopeStr();
     if (Value == "rootfs") {
       return CodeCacheScopeType::RootFS;
+    }
+    if (Value == "home") {
+      return CodeCacheScopeType::Home;
     }
     if (Value == "all") {
       return CodeCacheScopeType::All;

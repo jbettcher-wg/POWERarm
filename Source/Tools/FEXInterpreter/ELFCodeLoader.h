@@ -13,12 +13,19 @@
 // MapFile's `off = p_offset - PAGE_OFFSET(p_vaddr)` is 4K-congruent by construction
 // and a host mmap requires `offset % hostpage == 0`, so FEX's own loader is the
 // first thing that fails on a host page larger than the guest's (design Part 1
-// finding 3). Stage S4 gives it the anon+pread fallback below
-// (Source/Common/HostPageMapping.h), explicit zeroing of the file tail that the
-// kernel would have zeroed for a real mapping, a host-granular BSS map and a
-// host-granular ASLR slide. Every one of those is behind
-// FEXCore::HostPage::MatchesGuest(), so the 4K build takes the same path it
-// always did.
+// finding 3). On such a host a PT_LOAD takes one of two paths:
+//   - host-congruent (p_vaddr = p_offset mod host page; every AArch64 linker's
+//     default, since they use a 64K max-page-size): a real file mapping from the
+//     host-rounded address and offset, as a 64K kernel's own ELF loader does
+//     (MapFileHostCongruent);
+//   - only 4K-congruent (a -z max-page-size=4096 link): the anon+pread fallback
+//     (MapFileFallback, Source/Common/HostPageMapping.h), which is then tracked
+//     as the file mapping it stands in for, so its code is still named by file
+//     and code-cached.
+// Plus explicit zeroing of the file tail that the kernel would have zeroed for a
+// real mapping, a host-granular BSS map and a host-granular ASLR slide. Every
+// one of those is behind FEXCore::HostPage::MatchesGuest(), so the 4K build
+// takes the same path it always did.
 // ---------------------------------------------------------------------------
 
 #include "ArchHelpers/UContext.h"
@@ -116,10 +123,74 @@ class ELFCodeLoader final : public FEX::CodeLoader {
   uintptr_t HostMappedEnd {};
   int HostTailProt {};
 
-  // The anon+pread emulation of one PT_LOAD, used when `addr` or `off` is not
-  // host-page aligned. Design Part 2 section 3.
+  // A PT_LOAD whose address and file offset agree modulo the host page can be a
+  // real file mapping, however they are aligned to the guest page: map it from
+  // the host page containing p_vaddr and the matching (host-aligned) offset. The
+  // extra head and tail bytes are the same file's own bytes, which is exactly
+  // what a 64K kernel's binfmt_elf maps for the same ELF.
+  //
+  // lld and GNU ld both link AArch64 with a 64K max-page-size, so this is every
+  // ordinary AArch64 ELF. Before it existed only segments whose 4K-rounded
+  // offset happened to be 64K-aligned mapped as files, and the rest went through
+  // MapFileFallback: the Claude CLI's 63 MB text and 146 MB data were anonymous
+  // copies (50 ms of pread at every launch, ~200 MB of private RSS), and its
+  // text had no file behind it for the code cache to name.
+  static bool IsHostCongruent(uintptr_t Base, const Elf64_Phdr& Header) {
+    return FEXCore::HostPage::IsAligned(Base + Header.p_vaddr - Header.p_offset);
+  }
+
+  bool MapFileHostCongruent(const ELFParser& file, uintptr_t Base, const Elf64_Phdr& Header, int prot, int flags,
+                            FEX::HLE::SyscallMmapInterface* const Handler, FEXCore::Core::InternalThreadState* Thread) {
+    const uintptr_t SegStart = Base + Header.p_vaddr;
+    const uintptr_t FileEnd = SegStart + Header.p_filesz;
+    const uintptr_t HostStart = FEXCore::HostPage::AlignDown(SegStart);
+    const uintptr_t HostEnd = FEXCore::HostPage::AlignUp(FileEnd);
+    // Host-aligned, because SegStart - p_offset is.
+    const uint64_t HostOffset = Header.p_offset - (SegStart - HostStart);
+
+    // Host pages an earlier segment of this ELF has materialised keep their
+    // contents: re-mapping one from the file would drop that segment's zeroed
+    // BSS and, for a fallback-loaded neighbour, its bytes.
+    const uintptr_t MapStart = std::clamp(HostMappedEnd, HostStart, HostEnd);
+    if (MapStart < HostEnd) {
+      void* rv = Handler->GuestMmap(Thread, (void*)MapStart, HostEnd - MapStart, prot, flags, file.fd, HostOffset + (MapStart - HostStart));
+      if (FEX::HLE::HasSyscallError(rv)) {
+        LogMan::Msg::EFmt("MapFile: Some elf mapping failed, {}, fd: {}\n", errno, file.fd);
+        return false;
+      }
+    }
+
+    if (HostStart < MapStart) {
+      // The head shares host pages with the previous segment. Put this
+      // segment's own bytes there (the page may hold a different congruence's
+      // bytes or a fallback's zeroed tail) through a write window, then install
+      // the union of both protections, like MapFileFallback does.
+      const uintptr_t ReadEnd = std::min(MapStart, FileEnd);
+      Handler->GuestMprotect(Thread, (void*)HostStart, MapStart - HostStart, PROT_READ | PROT_WRITE);
+      if (!FEX::HostPageMapping::ReadFully(file.fd, (void*)SegStart, ReadEnd - SegStart, Header.p_offset)) {
+        LogMan::Msg::EFmt("MapFile: pread of PT_LOAD head failed, {}, fd: {}\n", errno, file.fd);
+        return false;
+      }
+      Handler->GuestMprotect(Thread, (void*)HostStart, MapStart - HostStart, prot | HostTailProt);
+      // Those bytes are a private copy now; a destructive madvise must put them back.
+      FEX::HostPageMapping::RegisterFallbackRange(SegStart, ReadEnd - SegStart, file.fd, Header.p_offset);
+      // And they are this segment's file bytes, whatever the previous
+      // segment's mapping was.
+      const uintptr_t HeadStart = PAGE_START(SegStart);
+      const uintptr_t HeadEnd = std::min<uintptr_t>(MapStart, PAGE_ALIGN(FileEnd));
+      Handler->TrackFileBackedCopy(Thread, (void*)HeadStart, HeadEnd - HeadStart, prot, flags, file.fd, Header.p_offset - (SegStart - HeadStart));
+    }
+
+    const uintptr_t LastHostPage = HostEnd - FEXCore::HostPage::Size();
+    HostTailProt = (LastHostPage < MapStart) ? (prot | HostTailProt) : prot;
+    HostMappedEnd = std::max(HostMappedEnd, HostEnd);
+    return true;
+  }
+
+  // The anon+pread emulation of one PT_LOAD whose address and file offset are
+  // not congruent modulo the host page. Design Part 2 section 3.
   bool MapFileFallback(const ELFParser& file, uintptr_t Base, const Elf64_Phdr& Header, uintptr_t addr, size_t size, uint64_t off, int prot,
-                       FEX::HLE::SyscallMmapInterface* const Handler, FEXCore::Core::InternalThreadState* Thread) {
+                       int flags, FEX::HLE::SyscallMmapInterface* const Handler, FEXCore::Core::InternalThreadState* Thread) {
     const uintptr_t HostStart = FEXCore::HostPage::AlignDown(addr);
     const uintptr_t HostEnd = FEXCore::HostPage::AlignUp(addr + size);
 
@@ -184,6 +255,15 @@ class ELFCodeLoader final : public FEX::CodeLoader {
     const uintptr_t LastHostPage = HostEnd - FEXCore::HostPage::Size();
     HostTailProt = (LastHostPage < OverlapEnd) ? (prot | HostTailProt) : prot;
     HostMappedEnd = HostEnd;
+
+    // The bytes are anonymous memory, but they stand in for a private file
+    // mapping of [addr, addr + size) at `off`, the one a 4K kernel would have
+    // made. Track them as that: the mapping keeps its file identity, so its code
+    // is named by file and code-cached (the cache keys blocks by guest offset
+    // from the file's load base and checks the guest bytes of every block it
+    // installs, so how the bytes got there does not matter), and /proc/self/maps
+    // shows the file. The host pages around it keep the anonymous tracking.
+    Handler->TrackFileBackedCopy(Thread, (void*)addr, size, prot, flags, file.fd, off);
     return true;
   }
 
@@ -253,33 +333,22 @@ class ELFCodeLoader final : public FEX::CodeLoader {
       return true;
     }
 
-    void* rv;
-    if (FEX::HostPageMapping::RequiresFallback(addr, off, flags | MAP_FIXED, file.fd)) {
-      if (!MapFileFallback(file, Base, Header, addr, size, off, prot, Handler, Thread)) {
-        return false;
-      }
-      rv = (void*)addr;
-    } else {
-      // 64K: ask for the host-rounded length even though  is guest-rounded.
-      // The kernel maps whole host pages regardless; making that explicit keeps the
-      // tracked VMA the same shape as the real mapping, so a later segment sharing
-      // the last host page can mprotect it without straddling a tracking boundary.
-      const size_t MapLength = FEXCore::HostPage::MatchesGuest() ? size : FEXCore::HostPage::AlignUp(addr + size) - addr;
-      rv = Handler->GuestMmap(Thread, (void*)addr, MapLength, prot, flags, file.fd, off);
+    void* rv = (void*)addr;
+    if (FEXCore::HostPage::MatchesGuest()) {
+      rv = Handler->GuestMmap(Thread, (void*)addr, size, prot, flags, file.fd, off);
 
       if (FEX::HLE::HasSyscallError(rv)) {
         // uhoh, something went wrong
         LogMan::Msg::EFmt("MapFile: Some elf mapping failed, {}, fd: {}\n", errno, file.fd);
         return false;
       }
-
-      if (!FEXCore::HostPage::MatchesGuest()) {
-        // The kernel mapped whole host pages even though `size` is guest-rounded.
-        // Record that so the next segment (and the BSS map below) start past them
-        // instead of unmapping the tail of this one.
-        HostMappedEnd = (uintptr_t)rv + MapLength;
-        HostTailProt = prot;
+    } else if (IsHostCongruent(Base, Header)) {
+      // 64K: a real file mapping, whole host pages, head and tail included.
+      if (!MapFileHostCongruent(file, Base, Header, prot, flags, Handler, Thread)) {
+        return false;
       }
+    } else if (!MapFileFallback(file, Base, Header, addr, size, off, prot, flags, Handler, Thread)) {
+      return false;
     }
 
     char Tmp[PATH_MAX];

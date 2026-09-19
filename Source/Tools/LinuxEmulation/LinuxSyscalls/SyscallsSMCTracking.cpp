@@ -40,8 +40,15 @@ $end_info$
 #include "Common/FEXServerClient.h"
 #include "Common/FileMappingBaseAddress.h"
 
+#include <algorithm>
+#include <climits>
+#include <cstdlib>
+#include <dirent.h>
 #include <filesystem>
 #include <sys/file.h>
+#include <sys/stat.h>
+#include <sys/statfs.h>
+#include <sys/syscall.h>
 #include <sys/mman.h>
 #include <sys/personality.h>
 #include <sys/shm.h>
@@ -1966,7 +1973,113 @@ void SyscallHandler::LoadCodeCache(FEXCore::Core::InternalThreadState&, FEXCore:
   // dispatcher miss that would otherwise compile them (CodeCache::TryLoadBlock).
 }
 
+// True when Path is Dir or lies below it. An empty Dir contains nothing (an
+// empty prefix would match every path, the opposite of what a scope asks for),
+// and a path separator is required at the join so "/rootfs" does not contain
+// "/rootfs-backup/lib.so".
+static bool PathIsUnder(std::string_view Path, std::string_view Dir) {
+  if (Dir.empty() || Path.empty() || !Path.starts_with(Dir)) {
+    return false;
+  }
+  return Dir.back() == '/' || Path.size() == Dir.size() || Path[Dir.size()] == '/';
+}
+
+// A symlink target the home scope must not follow: scratch space, where
+// every file is a one-off whose cache would never be read again, and the
+// kernel's pseudo-filesystems. Checked by path and by filesystem type, so a
+// tmpfs mounted anywhere counts.
+static bool IsScratchTarget(std::string_view Target) {
+  for (std::string_view Dir : {"/tmp", "/var/tmp", "/dev", "/proc", "/sys", "/run"}) {
+    if (PathIsUnder(Target, Dir)) {
+      return true;
+    }
+  }
+  struct statfs FS {};
+  if (::statfs(fextl::string {Target}.c_str(), &FS) != 0) {
+    return true;
+  }
+  constexpr decltype(FS.f_type) TmpfsMagic = 0x01021994;
+  constexpr decltype(FS.f_type) RamfsMagic = 0x858458f6;
+  return FS.f_type == TmpfsMagic || FS.f_type == RamfsMagic;
+}
+
+// The directories the home scope covers, resolved once per process on first
+// use (so a process that only runs rootfs code never looks):
+//   - $HOME as set, and its canonical form (cache file names come from
+//     /proc/self/fd, which resolves symlinks);
+//   - the canonical target of each symlink directly in $HOME, unless it is
+//     "/" or scratch space (IsScratchTarget). Users keep their trees behind
+//     such links: on the POWER9, ~/Development is a link to
+//     /mnt/arch/home/jbettcher/Development, where VS Code lives. Links deeper
+//     down resolve inside these trees and need nothing more.
+// Empty when there is no usable home: "/" would turn the home scope into "all".
+static const fextl::vector<fextl::string>& CodeCacheHomeDirs() {
+  static const fextl::vector<fextl::string> Dirs = [] {
+    fextl::vector<fextl::string> Result;
+    const char* Home = getenv("HOME");
+    if (!Home || Home[0] != '/') {
+      return Result;
+    }
+    fextl::string Raw {Home};
+    while (Raw.size() > 1 && Raw.back() == '/') {
+      Raw.pop_back();
+    }
+    if (Raw == "/") {
+      return Result;
+    }
+    Result.push_back(Raw);
+    char Resolved[PATH_MAX];
+    if (realpath(Raw.c_str(), Resolved) && std::string_view {Resolved} != "/" && Raw != Resolved) {
+      Result.emplace_back(Resolved);
+    }
+
+    // getdents64 into a stack buffer rather than opendir, which allocates.
+    const int DirFD = ::open(Raw.c_str(), O_RDONLY | O_DIRECTORY | O_CLOEXEC);
+    if (DirFD < 0) {
+      return Result;
+    }
+    alignas(8) char Buffer[8192];
+    for (;;) {
+      const long Read = ::syscall(SYS_getdents64, DirFD, Buffer, sizeof(Buffer));
+      if (Read <= 0) {
+        break;
+      }
+      for (long Offset = 0; Offset < Read;) {
+        const auto* Entry = reinterpret_cast<const struct dirent64*>(Buffer + Offset);
+        Offset += Entry->d_reclen;
+        if (Entry->d_type != DT_LNK && Entry->d_type != DT_UNKNOWN) {
+          continue;
+        }
+        struct stat Link {};
+        if (::fstatat(DirFD, Entry->d_name, &Link, AT_SYMLINK_NOFOLLOW) != 0 || !S_ISLNK(Link.st_mode)) {
+          continue;
+        }
+        const fextl::string LinkPath = Raw + "/" + Entry->d_name;
+        struct stat Target {};
+        if (!realpath(LinkPath.c_str(), Resolved) || ::stat(Resolved, &Target) != 0 || !(S_ISDIR(Target.st_mode) || S_ISREG(Target.st_mode))) {
+          continue;
+        }
+        const std::string_view TargetPath {Resolved};
+        if (TargetPath == "/" || IsScratchTarget(TargetPath) ||
+            std::ranges::any_of(Result, [&](const fextl::string& Dir) { return PathIsUnder(TargetPath, Dir); })) {
+          continue;
+        }
+        Result.emplace_back(TargetPath);
+      }
+    }
+    ::close(DirFD);
+    return Result;
+  }();
+  return Dirs;
+}
+
 bool SyscallHandler::IsPathInCodeCacheScope(std::string_view Path) const {
+  // Filenames come from /proc/self/fd, so a rootfs library appears with the
+  // RootFS prefix already applied, and a library guest pacman installed with
+  // the overlay's.
+  const auto InRootFS = [&] {
+    return PathIsUnder(Path, RootFSPath()) || PathIsUnder(Path, FM.OverlayUpperPath());
+  };
   switch (CodeCacheScope) {
   case CodeCacheScopeType::Off:
     // The gate is disabled, not the subsystem: this is the legacy
@@ -1974,21 +2087,9 @@ bool SyscallHandler::IsPathInCodeCacheScope(std::string_view Path) const {
     // disk. Writing is gated separately (CodeCacheWriteEnabled).
     return true;
   case CodeCacheScopeType::All: return !Path.empty();
-  case CodeCacheScopeType::RootFS: {
-    // Filenames come from /proc/self/fd, so a rootfs library appears with the
-    // RootFS prefix already applied. An empty RootFS means every path would
-    // match the empty prefix, which is the opposite of what "rootfs" asks for.
-    const auto& Root = RootFSPath();
-    if (Root.empty() || Path.empty()) {
-      return false;
-    }
-    if (!Path.starts_with(std::string_view {Root})) {
-      return false;
-    }
-    // Require a path separator at the join so "/rootfs" does not match
-    // "/rootfs-backup/lib.so".
-    return Root.back() == '/' || Path.size() == Root.size() || Path[Root.size()] == '/';
-  }
+  case CodeCacheScopeType::Home:
+    return InRootFS() || std::ranges::any_of(CodeCacheHomeDirs(), [&](const fextl::string& Dir) { return PathIsUnder(Path, Dir); });
+  case CodeCacheScopeType::RootFS: return InRootFS();
   }
   return false;
 }
@@ -2231,6 +2332,24 @@ void SyscallHandler::FinishTrackedMmap(FEXCore::Core::InternalThreadState* Threa
   // process reliably passes through: a real (non-signal) syscall context, with
   // every VMATracking and core lock already released.
   MaybeSaveCodeCaches(Thread);
+}
+
+void SyscallHandler::TrackFileBackedCopy(FEXCore::Core::InternalThreadState* Thread, void* addr, size_t length, int prot, int flags,
+                                         int fd, off_t offset) {
+  // The same tracking GranuleMemory::Mmap gives a sub-granule file mapping it
+  // emulated: the host memory is already in place (and was invalidated when it
+  // was mapped), so only the VMA's identity changes. TrackVMARange replaces the
+  // anonymous entries the copy was made in.
+  if (!length || fd < 0) {
+    return;
+  }
+  std::optional<LateApplyExtendedVolatileMetadata> LateMetadata;
+  std::optional<FEXCore::ExecutableFileSectionInfo> CachedSection;
+  {
+    auto lk = FEXCore::GuardSignalDeferringSectionWithFallback(VMATracking.Mutex, Thread);
+    LateMetadata = TrackMmap(Thread, reinterpret_cast<uint64_t>(addr), length, prot, flags & ~MAP_ANONYMOUS, fd, offset, CachedSection);
+  }
+  FinishTrackedMmap(Thread, std::move(LateMetadata), CachedSection);
 }
 
 uint64_t SyscallHandler::GuestMunmap(bool Is64Bit, FEXCore::Core::InternalThreadState* Thread, void* addr, uint64_t length) {

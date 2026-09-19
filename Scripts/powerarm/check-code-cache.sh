@@ -28,9 +28,21 @@
 #              library it dlopens and dlcloses, and DT_NEEDED libraries whose
 #              only code run is their constructors and destructors. It closes
 #              its stderr before exiting, and the counters must still arrive.
+#   lld        programs linked by lld (the Claude CLI's and Chromium's linker)
+#              compile next to nothing warm: one with lld's default 64K
+#              layout, whose text is 64K-congruent at a file offset that is not
+#              64K-aligned, and one linked -z max-page-size=4096, whose segments
+#              are only 4K-congruent. Built with the host's clang and ld.lld
+#              against the rootfs; skipped when they are missing.
+#   homelink   the default scope, home, caches a program reached through a
+#              symlink directly in $HOME whose target is outside it (the
+#              owner's ~/Development), and not one behind a symlink into /tmp.
+#              The target is a temporary directory in BUILD_DIR, removed at
+#              exit; skipped when BUILD_DIR is on a tmpfs.
 #
 # Uses a private HOME, TMPDIR, cache directory and server socket, so it neither
-# sees nor disturbs any other POWERarmServer or cache.
+# sees nor disturbs any other POWERarmServer or cache. Every check but homelink
+# uses CodeCacheScope=all, since the private HOME and sources are in TMPDIR.
 #
 # Exit 0: OK. 1: a check failed. 2: could not run.
 set -u
@@ -42,24 +54,29 @@ rootfs=${2:-${XDG_DATA_HOME:-$HOME/.local/share}/powerarm/RootFS/ArchLinuxARM-m2
 [ -x "$rootfs/usr/bin/gcc" ] || { echo "check-code-cache: no gcc in rootfs $rootfs" >&2; exit 2; }
 
 w=$(mktemp -d "${TMPDIR:-/tmp}/check-code-cache.XXXXXX")
-trap 'rm -rf "$w"' EXIT
+apps=
+trap 'rm -rf "$w" ${apps:+"$apps"}' EXIT
 mkdir -p "$w/home" "$w/run" "$w/src" "$w/bin"
 fail=0
 ok() { echo "ok   $*"; }
 bad() { echo "FAIL $*"; fail=1; }
 
-# run CACHEDIR [ENV=V...] -- ARGS : one POWERarm process tree, cache on when CACHEDIR is not "-".
+# run CACHEDIR [ENV=V...] -- ARGS : one POWERarm process tree, cache on when
+# CACHEDIR is not "-". The caller's ENV come last, so they win.
 run() {
   local cache=$1
   shift
   local envs=()
-  while [ $# -gt 0 ] && [ "$1" != -- ]; do envs+=("$1"); shift; done
-  shift
   if [ "$cache" != - ]; then
     envs+=(POWERARM_ENABLECODECACHINGWIP=1 POWERARM_CODECACHESCOPE=all POWERARM_CODECACHESTATS=1 POWERARM_APP_CACHE_LOCATION="$cache/")
   fi
+  while [ $# -gt 0 ] && [ "$1" != -- ]; do envs+=("$1"); shift; done
+  shift
+  # POWERARM_PORTABLE keeps the processes gcc execs (cc1, as, collect2) on this
+  # build: without it they go through binfmt to whatever build is registered
+  # there, and the parallel, isa30 and corrupt checks tested that one instead.
   env -i PATH=/usr/bin:/bin HOME="$w/home" TMPDIR="$w/run" LC_ALL=C POWERARM_SERVERSOCKETPATH="$w/run/server.sock" \
-    POWERARM_ROOTFS="$rootfs" "${envs[@]}" "$emu" "$@"
+    POWERARM_PORTABLE=1 POWERARM_ROOTFS="$rootfs" "${envs[@]}" "$emu" "$@"
 }
 
 # counter FIELD FILE... : sum of one counter over every process in the stats lines of the given logs.
@@ -279,5 +296,141 @@ warm=$(cat "$w/smalllib2.hash" 2> /dev/null | wc -l)
 [ "$warm" -lt 10 ] && ok "smalllib: warm run compiled $warm blocks (cold $cold)" || bad "smalllib: warm run compiled $warm blocks (cold $cold)"
 [ "$(counter loaded "$w/smalllib2.log")" -gt 0 ] && ok "smalllib: counters reached the log after the guest closed stderr" ||
   bad "smalllib: no counters in the log after the guest closed stderr"
+
+# ---------------------------------------------------------------------------
+# lld
+# On a 64K host both layouts used to load the text as anonymous memory, which
+# the cache cannot name: every warm run compiled the program's own code again.
+# 128K of padding on each side keeps that code in text pages it shares with no
+# other segment, so the 4k layout exercises the fallback copy itself rather
+# than a neighbour's file mapping. The count is of blocks in the program's own
+# functions, whose range it prints to stderr: code in host pages shared with
+# its writable data (the PLT, .fini) is invalidated by those writes and
+# recompiled, a few blocks that vary from run to run.
+if command -v clang > /dev/null && command -v ld.lld > /dev/null; then
+  cat > "$w/src/lldprog.c" << 'EOF'
+#include <stdint.h>
+#include <stdio.h>
+/* 96 KiB of read-only data ahead of .text: lld's default layout then puts the
+   text at a file offset past the first 64K. */
+static const uint32_t table[24576] = {1, 2, 3, 5, 8, 13};
+#define F(n) \
+  __attribute__((noinline)) static uint64_t f##n(uint64_t x) { \
+    for (int i = 0; i < (int)(x & 7) + n; i++) x = x * 6364136223846793005ull + table[(x >> 7) % 24576] + n; \
+    return x; \
+  }
+F(0) F(1) F(2) F(3) F(4) F(5) F(6) F(7) F(8) F(9) F(10) F(11) F(12) F(13) F(14) F(15)
+static uint64_t (*const fns[])(uint64_t) = {f0, f1, f2, f3, f4, f5, f6, f7, f8, f9, f10, f11, f12, f13, f14, f15};
+int main(int argc, char **argv) {
+  uintptr_t lo = (uintptr_t)main, hi = (uintptr_t)main;
+  for (int i = 0; i < 16; i++) {
+    lo = (uintptr_t)fns[i] < lo ? (uintptr_t)fns[i] : lo;
+    hi = (uintptr_t)fns[i] > hi ? (uintptr_t)fns[i] : hi;
+  }
+  fprintf(stderr, "lldhot %lx %lx\n", (unsigned long)lo, (unsigned long)hi + 0x200);
+  uint64_t x = (uint64_t)argc;
+  for (int r = 0; r < 64; r++) x = fns[(x >> 3) % 16](x) ^ (uint64_t)r;
+  printf("lldprog %016llx\n", (unsigned long long)x);
+  return 0;
+}
+EOF
+  printf '\t.text\n\t.skip 0x20000\n' > "$w/src/lldpad.s"
+  # lld_own PREFIX : blocks in the program's own functions (the range PREFIX.log
+  # names) that the run compiled (PREFIX.hash); "none" when no range was printed.
+  lld_own() {
+    python3 - "$1.log" "$1.hash" << 'EOF'
+import sys
+lo = hi = None
+for line in open(sys.argv[1]):
+    if line.startswith("lldhot "):
+        lo, hi = (int(f, 16) for f in line.split()[1:3])
+if lo is None:
+    print("none")
+    sys.exit()
+n = 0
+try:
+    for line in open(sys.argv[2]):
+        if lo <= int(line.split()[0], 16) < hi:
+            n += 1
+except FileNotFoundError:
+    pass
+print(n)
+EOF
+  }
+  for v in 64k 4k; do
+    z=
+    [ $v = 4k ] && z=-Wl,-z,max-page-size=4096
+    if ! clang --target=aarch64-unknown-linux-gnu --sysroot="$rootfs" -fuse-ld=lld -O2 $z -o "lld$v" lldpad.s lldprog.c lldpad.s \
+      2> "$w/lld$v.build.log"; then
+      echo "skip lld $v: clang could not build it against $rootfs"
+      head -5 "$w/lld$v.build.log" | sed 's/^/  /'
+      continue
+    fi
+    # The layout under test, from the executable PT_LOAD: 64k = congruent modulo
+    # 64K at an offset whose 4K rounding is not 64K-aligned; 4k = not congruent.
+    layout=$(python3 - "lld$v" << 'EOF'
+import struct, sys
+b = open(sys.argv[1], "rb").read()
+phoff, = struct.unpack_from("<Q", b, 32)
+phentsize, phnum = struct.unpack_from("<HH", b, 54)
+for i in range(phnum):
+    kind, flags, off, vaddr = struct.unpack_from("<IIQQ", b, phoff + i * phentsize)
+    if kind == 1 and flags & 1:
+        if (vaddr - off) % 0x10000:
+            print("4k")
+        elif (off & ~0xfff) % 0x10000:
+            print("64k")
+        else:
+            print("aligned")
+EOF
+    )
+    [ "$layout" = $v ] || { bad "lld $v: the text segment's layout is '$layout', not the one under test"; continue; }
+    ref=$(run - -- "./lld$v" 2> /dev/null)
+    for pass in 1 2; do
+      out=$(run "$w/ld" POWERARM_CODEHASHLOG="$w/lld$v.$pass.hash" -- "./lld$v" 2> "$w/lld$v.$pass.log")
+      [ -n "$ref" ] && [ "$out" = "$ref" ] || bad "lld $v pass $pass: printed '$out', cache off '$ref'"
+    done
+    cold=$(lld_own "$w/lld$v.1")
+    warm=$(lld_own "$w/lld$v.2")
+    total=$(cat "$w/lld$v.2.hash" 2> /dev/null | wc -l)
+    [ "$cold" != none ] && [ "$cold" -gt 0 ] && [ "$warm" = 0 ] &&
+      ok "lld $v: warm run compiled none of the program's $cold blocks ($total blocks in all)" ||
+      bad "lld $v: warm run compiled $warm of the program's $cold blocks ($total blocks in all)"
+  done
+else
+  echo "skip lld: no clang or ld.lld on PATH"
+fi
+
+# ---------------------------------------------------------------------------
+# homelink
+# Cache names come from /proc/self/fd, i.e. the resolved path, so a program
+# under ~/Development -> /mnt/arch/home/<user>/Development is not below $HOME
+# by name. The home scope follows symlinks directly in $HOME, except into
+# scratch space (/tmp, tmpfs).
+apps=$(mktemp -d "$build/check-code-cache-home.XXXXXX")
+case $(stat -f -c %T "$apps") in
+tmpfs | ramfs) echo "skip homelink: $build is on a tmpfs, which the home scope never follows" ;;
+*)
+  mkdir -p "$w/scratch"
+  cp "$w/src/prog1" "$apps/homeprog"
+  cp "$w/src/prog1" "$w/scratch/scratchprog"
+  ln -s "$apps" "$w/home/apps"
+  ln -s "$w/scratch" "$w/home/scratch"
+  for pass in 1 2; do
+    a=$(run "$w/hl" POWERARM_CODECACHESCOPE=home -- "$w/home/apps/homeprog" 2> "$w/homeprog$pass.log")
+    s=$(run "$w/hl" POWERARM_CODECACHESCOPE=home -- "$w/home/scratch/scratchprog" 2> "$w/scratchprog$pass.log")
+    [ "$a" = "value 1" ] && [ "$s" = "value 1" ] || bad "homelink pass $pass: printed '$a' and '$s'"
+  done
+  ls "$w/hl/cache" 2> /dev/null | grep -q '^homeprog-' &&
+    ok "homelink: a program behind a symlink in \$HOME is cached" || bad "homelink: no cache for the program behind a symlink in \$HOME"
+  case $w:$(stat -f -c %T "$w") in
+  /tmp/* | /var/tmp/* | *:tmpfs | *:ramfs)
+    ls "$w/hl/cache" 2> /dev/null | grep -q '^scratchprog-' && bad "homelink: a program behind a symlink into scratch space was cached" ||
+      ok "homelink: a program behind a symlink into scratch space is not"
+    ;;
+  *) echo "skip homelink scratch: TMPDIR $w is not scratch space" ;;
+  esac
+  ;;
+esac
 
 exit $fail
