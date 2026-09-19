@@ -63,6 +63,8 @@ const IRBuilder::HandlerEntry IRBuilder::HandlerTable[] = {
   {"MRS", &IRBuilder::MRS}, {"MSR_reg", &IRBuilder::MSR_reg},
   {"DC_ZVA", &IRBuilder::DC_ZVA},
   {"DC_CVAU", &IRBuilder::CacheMaintenanceNop}, {"IC_IVAU", &IRBuilder::CacheMaintenanceNop},
+  {"DC_CVAC", &IRBuilder::CacheMaintenanceNop}, {"DC_CIVAC", &IRBuilder::CacheMaintenanceNop},
+  {"DC_CVAP", &IRBuilder::CacheMaintenanceNop},
   {"UnallocatedEncoding", &IRBuilder::UnallocatedEncoding},
   // Loads and stores.
   {"LDR_lit_gen", &IRBuilder::LDR_lit_gen}, {"LDRSW_lit", &IRBuilder::LDRSW_lit}, {"PRFM_lit", &IRBuilder::PRFM_lit},
@@ -139,7 +141,7 @@ const IRBuilder::HandlerEntry IRBuilder::HandlerTable[] = {
   {"LD4R_1", &IRBuilder::SIMDSingleStructure}, {"LD4R_2", &IRBuilder::SIMDSingleStructure},
   // Advanced SIMD. The translated set is the subset measured in
   // docs/powerarm/M1b-SIMD-SUBSET.md plus its cheap neighbours.
-  // POWERARM-M1-TODO(simd): no translator yet for SQSHL/UQSHL/SRSHL/URSHL/SQRSHL/UQRSHL by register, SUQADD/USQADD, SQDMULL/SQDMLAL/SQDMLSL, PMUL, RBIT vector, SDOT, FMULX, FRECPE/FRSQRTE/FRECPS/FRSQRTS, URECPE/URSQRTE, FCVTXN, FMOV of a half-precision vector immediate and the half-precision vector arithmetic, FCADD/FCMLA, and the SHA-512/SHA-3/SM3/SM4 entries (the last not on the reference A76).
+  // POWERARM-M1-TODO(simd): no translator yet for SQSHL/UQSHL/SRSHL/URSHL/SQRSHL/UQRSHL by register, SUQADD/USQADD, SQDMULL/SQDMLAL/SQDMLSL, PMUL, SDOT, FMULX, FRECPE/FRSQRTE/FRECPS/FRSQRTS, URECPE/URSQRTE, FCVTXN, FMOV of a half-precision vector immediate and the half-precision vector arithmetic, FCADD/FCMLA, and the SHA-512/SHA-3/SM3/SM4 entries (the last not on the reference A76).
   // Advanced SIMD: copy.
   {"DUP_gen", &IRBuilder::DUP_gen}, {"DUP_elt_1", &IRBuilder::DUP_elt_1}, {"DUP_elt_2", &IRBuilder::DUP_elt_2},
   {"UMOV", &IRBuilder::UMOV}, {"SMOV", &IRBuilder::SMOV}, {"INS_gen", &IRBuilder::INS_gen}, {"INS_elt", &IRBuilder::INS_elt},
@@ -167,7 +169,7 @@ const IRBuilder::HandlerEntry IRBuilder::HandlerTable[] = {
   {"CMLE_2", &IRBuilder::CMLE_2}, {"CMLT_2", &IRBuilder::CMLT_2},
   {"CMEQ_zero_1", &IRBuilder::CMEQ_zero_1}, {"CMGT_zero_1", &IRBuilder::CMGT_zero_1}, {"CMGE_zero_1", &IRBuilder::CMGE_zero_1},
   {"CMLE_1", &IRBuilder::CMLE_1}, {"CMLT_1", &IRBuilder::CMLT_1},
-  {"CNT", &IRBuilder::CNT}, {"NOT", &IRBuilder::NOT}, {"NEG_2", &IRBuilder::NEG_2}, {"ABS_2", &IRBuilder::ABS_2},
+  {"CNT", &IRBuilder::CNT}, {"RBIT_asimd", &IRBuilder::RBIT_asimd}, {"NOT", &IRBuilder::NOT}, {"NEG_2", &IRBuilder::NEG_2}, {"ABS_2", &IRBuilder::ABS_2},
   {"REV64_asimd", &IRBuilder::REV64_asimd}, {"REV32_asimd", &IRBuilder::REV32_asimd},
   {"XTN", &IRBuilder::XTN},
   // Advanced SIMD: three different.

@@ -32,7 +32,7 @@ python3 "$here/gen_blob.py" "$out/madvfile_blob.bin" $((24 * 1024 * 1024))
 gcc -O2 -o madvfile "$here/madvfile.c" "$here/madvfile.S"
 
 # Static libc programs.
-corpus="hello printf_float strmem fpmath lse lseminmax lsecasp litmus nosve cntvct madvfile vdso vdso_syscalls hlt thunk_callback hoststack procdirfd"
+corpus="hello printf_float strmem fpmath lse lseminmax lsecasp litmus nosve cntvct madvfile vdso vdso_syscalls hlt thunk_callback hoststack procdirfd dcmaint"
 for t in $corpus; do
   gcc -static -O2 -o "$t" "$here/$t.c" -lm
 done

@@ -263,6 +263,11 @@ bool IRBuilder::DC_ZVA(uint32_t Word) {
 bool IRBuilder::CacheMaintenanceNop(uint32_t) {
   // DC CVAU and IC IVAU: cache flushes for code the guest wrote. SMC tracking
   // (mtrack) already invalidates translations of written pages.
+  // DC CVAC, CIVAC and CVAP: clean (and invalidate) to the point of coherency
+  // or persistence. Linux lets EL0 run them (SCTLR_EL1.UCI); on a coherent host
+  // with no device of the guest's on the other side they have no visible effect.
+  // Firefox runs DC CIVAC at startup. DC IVAC and the set/way forms stay
+  // unimplemented: they are EL1-only, so they SIGILL on hardware too.
   return true;
 }
 

@@ -446,6 +446,22 @@ bool IRBuilder::CNT(uint32_t Word) {
   return true;
 }
 
+// RBIT (vector): reverses the bits of every byte. Three swaps on byte lanes:
+// adjacent bits, then bit pairs, then nibbles.
+bool IRBuilder::RBIT_asimd(uint32_t Word) {
+  const auto RS = OpSize::i128Bit;
+  const auto ES = OpSize::i8Bit;
+  auto Swap = [&](Ref X, uint8_t Shift, uint8_t Mask) -> Ref {
+    Ref M = _VectorImm(RS, ES, Mask);
+    return _VOr(RS, RS, _VAnd(RS, RS, _VUShrI(RS, ES, X, Shift), M), _VShlI(RS, ES, _VAnd(RS, RS, X, M), Shift));
+  };
+  Ref V = Swap(LoadV(Bits(Word, 9, 5)), 1, 0x55);
+  V = Swap(V, 2, 0x33);
+  V = _VOr(RS, RS, _VUShrI(RS, ES, V, 4), _VShlI(RS, ES, V, 4));
+  StoreVQ(Bits(Word, 4, 0), Bit(Word, 30), V);
+  return true;
+}
+
 bool IRBuilder::NOT(uint32_t Word) {
   StoreVQ(Bits(Word, 4, 0), Bit(Word, 30), _VNot(OpSize::i128Bit, OpSize::i8Bit, LoadV(Bits(Word, 9, 5))));
   return true;

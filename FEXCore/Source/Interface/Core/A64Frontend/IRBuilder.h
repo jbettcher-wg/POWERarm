@@ -164,6 +164,7 @@ public:
   bool CMLE_2(uint32_t Word); bool CMLT_2(uint32_t Word);
   bool CMEQ_zero_1(uint32_t Word); bool CMGT_zero_1(uint32_t Word); bool CMGE_zero_1(uint32_t Word);
   bool CMLE_1(uint32_t Word); bool CMLT_1(uint32_t Word);
+  bool RBIT_asimd(uint32_t Word);
   bool CNT(uint32_t Word); bool NOT(uint32_t Word); bool NEG_2(uint32_t Word); bool ABS_2(uint32_t Word);
   bool REV64_asimd(uint32_t Word); bool REV32_asimd(uint32_t Word);
   bool XTN(uint32_t Word);

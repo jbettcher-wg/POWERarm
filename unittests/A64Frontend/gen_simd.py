@@ -1071,6 +1071,15 @@ def ftype(p, allow_scalar=False):
     return p.rng.choice(choices)
 
 
+def gen_simd_rbit(p):
+    """RBIT (vector), 8B and 16B: every byte's bits reversed, over lane edge patterns and random data."""
+    for _ in range(120):
+        d, n = p.vreg(), p.vreg()
+        vn = (p.rng.choice(VEC_EDGE), p.rng.choice(VEC_EDGE)) if p.rng.random() < 0.4 else p.vec()
+        t = p.rng.choice(["8b", "16b"])
+        p.vcase([f"rbit v{d}.{t}, v{n}.{t}"], {d: p.vec(), n: vn})
+
+
 def gen_simd_facross(p):
     """FMAXV/FMINV/FMAXNMV/FMINNMV Sd, Vn.4S: NaN priority by lane, signed zeros, infinities and
     denormals (the reduction order is op(op(e0,e1), op(e2,e3))). FPCR.DN and FZ stay clear: no FP op
@@ -1582,6 +1591,7 @@ GROUPS = {
     "loadstore_nopair": gen_loadstore_nopair,
     "simd_shll": gen_simd_shll,
     "simd_facross": gen_simd_facross,
+    "simd_rbit": gen_simd_rbit,
 }
 
 
