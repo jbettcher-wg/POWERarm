@@ -367,3 +367,7 @@ CAS five times as heavily in proportion.
     cache): cpu-frame median 16.67 ms (the 60 fps cap), 12.0 ms of CPU work without sleep, 76% of
     frames at 60 fps and 93.5% with idle time left. fastppcx86's x86-64 2.0.77 on the same box and
     save: 19.6 ms, CPU-bound. Factorio versions and Mesa differ, and x86 was SMT2.
+25. **sleeve, the app manager TUI: designed, parked by Jordan until he's ready** (2026-09-19).
+    Design: docs/powerarm/APPS-TUI-DESIGN.md (181b6ba41). C++/FTXUI in-tree, package
+    `powerarm-sleeve`, command `sleeve`, Omarchy theme colours. It supersedes item 17's installer
+    script. Next: phase 1 (MVP: scan, import, wrap, rootfs list) with a standard agent.
