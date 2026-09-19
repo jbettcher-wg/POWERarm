@@ -211,6 +211,7 @@ public:
   bool FMLS_elt_4(uint32_t Word); bool FMLS_elt_2(uint32_t Word); bool FMLA_vec_2(uint32_t Word); bool FMLS_vec_2(uint32_t Word);
   bool FADDP_vec_2(uint32_t Word); bool FMAXP_vec_2(uint32_t Word); bool FMINP_vec_2(uint32_t Word);
   bool FMAXNMP_vec_2(uint32_t Word); bool FMINNMP_vec_2(uint32_t Word);
+  bool FMAXV_2(uint32_t Word); bool FMINV_2(uint32_t Word); bool FMAXNMV_2(uint32_t Word); bool FMINNMV_2(uint32_t Word);
   bool FADDP_pair_2(uint32_t Word); bool FMAXP_pair_2(uint32_t Word); bool FMINP_pair_2(uint32_t Word);
   bool FMAXNMP_pair_2(uint32_t Word); bool FMINNMP_pair_2(uint32_t Word);
   bool FCMEQ_reg_4(uint32_t Word); bool FCMGE_reg_4(uint32_t Word); bool FCMGT_reg_4(uint32_t Word);
@@ -419,6 +420,7 @@ private:
   bool SIMDFloatMulElement(uint32_t Word, int Accumulate, bool Scalar);
   bool SIMDFloatMulAccumulate(uint32_t Word, bool Subtract);
   bool SIMDFloatPairwise(uint32_t Word, FPBinaryOp Op, bool Scalar);
+  bool SIMDFloatAcrossLanes(uint32_t Word, FPBinaryOp Op);
   bool SIMDFloatCompare(uint32_t Word, FloatCompareKind Kind, bool Scalar);
   bool SIMDFloatRound(uint32_t Word, FPRounding Mode);
   bool SIMDHalfSign(uint32_t Word, bool IsNeg);

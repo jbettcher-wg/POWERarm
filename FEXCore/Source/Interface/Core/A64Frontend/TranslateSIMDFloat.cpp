@@ -180,6 +180,29 @@ bool IRBuilder::SIMDFloatPairwise(uint32_t Word, FPBinaryOp Op, bool Scalar) {
   return true;
 }
 
+// FMAXV/FMINV/FMAXNMV/FMINNMV Sd, Vn.4S. Only the 4S form is allocated here (the
+// half-precision forms are the _1 encodings). The architecture's Reduce()
+// halves the vector and combines the halves, so the result is
+// op(op(e0, e1), op(e2, e3)) with the lower element as the first operand at
+// each step, which decides which NaN propagates when both are NaNs.
+bool IRBuilder::SIMDFloatAcrossLanes(uint32_t Word, FPBinaryOp Op) {
+  if (!Bit(Word, 30) || Bit(Word, 22)) {
+    return false;
+  }
+  const auto RS = OpSize::i128Bit;
+  const auto ES = OpSize::i32Bit;
+  Ref V = LoadV(Bits(Word, 9, 5));
+  // Lanes 0 and 1 of Pairs hold op(e0, e1) and op(e2, e3).
+  Ref Pairs = FPBinaryLanes(Op, ES, _VUnZip(RS, ES, V, V), _VUnZip2(RS, ES, V, V));
+  StoreVSized(Bits(Word, 4, 0), ES, FPBinaryLanes(Op, ES, Pairs, _VDupElement(RS, ES, Pairs, 1)));
+  return true;
+}
+
+bool IRBuilder::FMAXV_2(uint32_t Word) { return SIMDFloatAcrossLanes(Word, FPBinaryOp::Max); }
+bool IRBuilder::FMINV_2(uint32_t Word) { return SIMDFloatAcrossLanes(Word, FPBinaryOp::Min); }
+bool IRBuilder::FMAXNMV_2(uint32_t Word) { return SIMDFloatAcrossLanes(Word, FPBinaryOp::MaxNum); }
+bool IRBuilder::FMINNMV_2(uint32_t Word) { return SIMDFloatAcrossLanes(Word, FPBinaryOp::MinNum); }
+
 bool IRBuilder::FADDP_vec_2(uint32_t Word) { return SIMDFloatPairwise(Word, FPBinaryOp::Add, false); }
 bool IRBuilder::FMAXP_vec_2(uint32_t Word) { return SIMDFloatPairwise(Word, FPBinaryOp::Max, false); }
 bool IRBuilder::FMINP_vec_2(uint32_t Word) { return SIMDFloatPairwise(Word, FPBinaryOp::Min, false); }

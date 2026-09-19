@@ -1071,6 +1071,24 @@ def ftype(p, allow_scalar=False):
     return p.rng.choice(choices)
 
 
+def gen_simd_facross(p):
+    """FMAXV/FMINV/FMAXNMV/FMINNMV Sd, Vn.4S: NaN priority by lane, signed zeros, infinities and
+    denormals (the reduction order is op(op(e0,e1), op(e2,e3))). FPCR.DN and FZ stay clear: no FP op
+    honours them yet (TranslateFP.cpp POWERARM-M1-TODO(fpu))."""
+    nans = [0x7FC00001, 0xFFC00002, 0x7F800003, 0xFF800004, 0x7FA00005, 0x7FC00000]
+    special = [0x00000000, 0x80000000, 0x7F800000, 0xFF800000, 0x00000001, 0x80000001, 0x007FFFFF]
+    ops = ["fmaxv", "fminv", "fmaxnmv", "fminnmv"]
+    for _ in range(640):
+        d, n = p.vreg(), p.vreg()
+        lanes = []
+        for _ in range(4):
+            r = p.rng.random()
+            lanes.append(p.rng.choice(nans) if r < 0.3 else p.rng.choice(special) if r < 0.55 else p.f32())
+        lo = lanes[0] | (lanes[1] << 32)
+        hi = lanes[2] | (lanes[3] << 32)
+        p.vcase([f"{p.rng.choice(ops)} s{d}, v{n}.4s"], {d: p.vec(), n: (lo, hi)}, fpcr=p.rng.choice(RMODES))
+
+
 def gen_simd_float(p):
     to_int = ["fcvtns", "fcvtnu", "fcvtps", "fcvtpu", "fcvtms", "fcvtmu", "fcvtzs", "fcvtzu", "fcvtas", "fcvtau"]
     for _ in range(1400):
@@ -1563,6 +1581,7 @@ GROUPS = {
     "simd_crypto": gen_simd_crypto,
     "loadstore_nopair": gen_loadstore_nopair,
     "simd_shll": gen_simd_shll,
+    "simd_facross": gen_simd_facross,
 }
 
 

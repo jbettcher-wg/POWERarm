@@ -160,6 +160,8 @@ const IRBuilder::HandlerEntry IRBuilder::HandlerTable[] = {
   {"ADDP_vec", &IRBuilder::ADDP_vec}, {"UMAXP", &IRBuilder::UMAXP}, {"UMINP", &IRBuilder::UMINP},
   // Advanced SIMD: across lanes.
   {"ADDV", &IRBuilder::ADDV}, {"UMAXV", &IRBuilder::UMAXV}, {"UMINV", &IRBuilder::UMINV},
+  {"FMAXV_2", &IRBuilder::FMAXV_2}, {"FMINV_2", &IRBuilder::FMINV_2},
+  {"FMAXNMV_2", &IRBuilder::FMAXNMV_2}, {"FMINNMV_2", &IRBuilder::FMINNMV_2},
   // Advanced SIMD: two-register misc.
   {"CMEQ_zero_2", &IRBuilder::CMEQ_zero_2}, {"CMGT_zero_2", &IRBuilder::CMGT_zero_2}, {"CMGE_zero_2", &IRBuilder::CMGE_zero_2},
   {"CMLE_2", &IRBuilder::CMLE_2}, {"CMLT_2", &IRBuilder::CMLT_2},
