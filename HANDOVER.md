@@ -288,3 +288,11 @@ CAS five times as heavily in proportion.
     and resumes at the same PC (emulating an instruction, or patching x0 after a fault) loses its
     edits. It's a correctness bug for runtimes with SIGSEGV/SIGILL handlers (JVMs, V8/JSC guard
     pages, Wine-style emulation).
+20. **G2 fusion is OFF by default** (`DisableCmpBranchFusion` default true). Firefox 156 segfaults
+    deterministically with it on: `POWERARM_PORTABLE=1 POWERARM_ROOTFS=<vk> POWERarm
+    <vk>-overlay/usr/lib/firefox/firefox --profile <tmp> --headless --screenshot out.png
+    https://www.mozilla.org/firefox/` crashes in ~30 s (rc 139, twice) and renders with
+    `POWERARM_DISABLECMPBRANCHFUSION=1`. So cmpbranch's 1954 cases miss a real-world pattern.
+    Suspects: flags live across something the liveness proof misses, CSEL rewriting, or the CMN
+    constant rule. G2's two signal fixes (RIP table, drain point) stay on. Re-enable only with a
+    test that reproduces the Firefox miscompile.
