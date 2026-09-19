@@ -2136,11 +2136,15 @@ void SyscallHandler::SaveCodeCaches(FEXCore::Core::InternalThreadState* Thread, 
     }
   }
 
-  // Saves run under the shared CodeInvalidationMutex, like a compile: that keeps
-  // fork (which takes it exclusively) from ever snapshotting a cache lock held
-  // by this thread. The VMATracking lock must be released first: a compiling
-  // thread holds CodeBufferWriteMutex while it looks addresses up in VMATracking.
-  auto InvalidationLock = FEXCore::GuardSignalDeferringSectionWithFallback<std::shared_lock>(CTX->GetCodeInvalidationMutex(), Thread);
+  // Saves run under the dedicated SaveIOLock, NOT the shared CodeInvalidationMutex:
+  // the pass does unbounded cross-process I/O (a blocking flock on the cache .lock,
+  // and compaction), and holding the shared invalidation lock across it starved an
+  // in-process SMC invalidation past the 4 s stall detector (issue #1). SaveIOLock
+  // gives the same fork guarantee (fork's LockBeforeFork takes it exclusively), so
+  // fork still never snapshots a cache lock held by this thread. The VMATracking
+  // lock must be released first: a compiling thread holds CodeBufferWriteMutex
+  // while it looks addresses up in VMATracking.
+  auto SaveIOLock = FEXCore::GuardSignalDeferringSectionWithFallback(CTX->GetCodeCache().GetSaveIOLock(), Thread);
   CTX->GetCodeCache().SaveNewBlocks(*Thread, Targets, Force ? FEXCore::CodeCacheSaveKind::Final : FEXCore::CodeCacheSaveKind::Periodic);
 }
 
@@ -2178,8 +2182,9 @@ void SyscallHandler::SaveCodeCachesBeforeUnmap(FEXCore::Core::InternalThreadStat
     return;
   }
 
-  // Same locking as SaveCodeCaches.
-  auto InvalidationLock = FEXCore::GuardSignalDeferringSectionWithFallback<std::shared_lock>(CTX->GetCodeInvalidationMutex(), Thread);
+  // Same locking as SaveCodeCaches: the dedicated SaveIOLock, not the shared
+  // CodeInvalidationMutex (see issue #1).
+  auto SaveIOLock = FEXCore::GuardSignalDeferringSectionWithFallback(CTX->GetCodeCache().GetSaveIOLock(), Thread);
   CTX->GetCodeCache().SaveNewBlocks(*Thread, Targets, FEXCore::CodeCacheSaveKind::Unmap);
 }
 

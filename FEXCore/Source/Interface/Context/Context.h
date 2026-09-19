@@ -116,6 +116,17 @@ public:
 
   FEX_CONFIG_OPT(EnableCodeCaching, ENABLECODECACHINGWIP);
 
+  // Held across a SaveNewBlocks pass in place of the shared CodeInvalidationMutex.
+  // The save does unbounded, cross-process I/O (a blocking flock on the cache .lock,
+  // and compaction that reads/hashes/writes hundreds of MiB); holding the shared
+  // invalidation lock across that starved an in-process SMC invalidation past the
+  // 4 s stall detector (issue #1). This lock gives the same fork guarantee -- fork's
+  // LockBeforeFork takes it exclusively, so it never snapshots a thread holding an
+  // internal cache lock -- without serializing invalidation behind cache I/O.
+  FEXCore::ForkableUniqueMutex SaveIOLock;
+
+  FEXCore::ForkableUniqueMutex& GetSaveIOLock() final { return SaveIOLock; }
+
   uint64_t ComputeCodeMapId(std::string_view Filename, int FD) override;
   bool SaveData(Core::InternalThreadState&, int TargetFD, const ExecutableFileSectionInfo&, uint64_t SerializedBaseAddress,
                 std::span<const GuestAddressRange> GuestRanges = {}) override;

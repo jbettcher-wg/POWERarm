@@ -815,12 +815,14 @@ void ContextImpl::UnlockAfterFork(FEXCore::Core::InternalThreadState* LiveThread
       CodeMapWriter->ResetAfterFork();
     }
     CodeCache.ResetAfterFork();
+    CodeCache.SaveIOLock.StealAndDropActiveLocks();
 
     CodeInvalidationMutex.StealAndDropActiveLocks();
     if (Config.StrictInProcessSplitLocks) {
       StrictSplitLockMutex = 0;
     }
   } else {
+    CodeCache.SaveIOLock.unlock();
     CodeInvalidationMutex.unlock();
     if (Config.StrictInProcessSplitLocks) {
       FEXCore::Utils::SpinWaitLock::unlock(&StrictSplitLockMutex);
@@ -831,6 +833,9 @@ void ContextImpl::UnlockAfterFork(FEXCore::Core::InternalThreadState* LiveThread
 
 void ContextImpl::LockBeforeFork(FEXCore::Core::InternalThreadState* Thread) {
   CodeInvalidationMutex.lock();
+  // Also drain a code-cache save pass (its internal cache locks are taken under
+  // this one, not under CodeInvalidationMutex -- see Context.h SaveIOLock).
+  CodeCache.SaveIOLock.lock();
   Allocator::LockBeforeFork(Thread);
   if (Config.StrictInProcessSplitLocks) {
     FEXCore::Utils::SpinWaitLock::lock(&StrictSplitLockMutex);

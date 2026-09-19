@@ -1282,8 +1282,10 @@ void CodeCache::NotifyCachesSaved() {
 
 void CodeCache::ResetAfterFork() {
   // Runs in the child with a single thread. Every lock here is only ever taken
-  // under CodeInvalidationMutex (shared), which fork holds exclusively, so none
-  // can be held by a thread that did not survive the fork.
+  // while holding either CodeInvalidationMutex (shared, on the compile/load path)
+  // or the code-cache SaveIOLock (on the save pass); fork holds both exclusively
+  // before snapshotting (LockBeforeFork), so none can be held by a thread that
+  // did not survive the fork.
   BlocksSinceSave.store(0, std::memory_order_relaxed);
   RanPeriodicPass.store(false, std::memory_order_relaxed);
   {
@@ -2170,7 +2172,12 @@ size_t CodeCache::SaveNewBlocks(Core::InternalThreadState&, std::span<const Code
     int LockFD = ::open(LockPath.c_str(), O_RDWR | O_CREAT | O_CLOEXEC, 0644);
     bool Written = false;
     if (LockFD != -1) {
-      if (::flock(LockFD, LOCK_SH) == 0) {
+      // Non-blocking: a sibling (or a crashed sibling whose lock survives until
+      // its core dump drains) can hold the exclusive lock for an unbounded time,
+      // and blocking here would stall this thread indefinitely. It is only a
+      // cache, so on EWOULDBLOCK the segment is simply deferred (unlinked below)
+      // and written by a later pass.
+      if (::flock(LockFD, LOCK_SH | LOCK_NB) == 0) {
         for (size_t i = 0; i < MaxSegments && !Written; ++i) {
           if (::link(Temp.c_str(), SegmentPath(Base, i).c_str()) == 0) {
             Written = true;

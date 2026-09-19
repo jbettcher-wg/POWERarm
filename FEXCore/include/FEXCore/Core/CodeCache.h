@@ -242,6 +242,11 @@ enum class CodeCacheSaveKind {
   Unmap,
 };
 
+// The lock that serialises code-cache save I/O (held across SaveNewBlocks, see
+// FEXCore::CodeCache::SaveIOLock). Forward-declared here so the interface can
+// expose it without pulling in SignalScopeGuards.h.
+class ForkableUniqueMutex;
+
 class AbstractCodeCache {
 public:
   virtual ~AbstractCodeCache() = default;
@@ -300,6 +305,14 @@ public:
    */
   virtual bool WantsSave(bool IgnoreInterval) = 0;
   virtual void NotifyCachesSaved() = 0;
+
+  // The lock held across a SaveNewBlocks pass. The syscall-layer save callers
+  // take it around the pass so that save I/O -- which can block on the
+  // cross-process namespace lock -- no longer holds the shared
+  // CodeInvalidationMutex and starves in-process invalidations (issue #1).
+  // fork drains it (LockBeforeFork) before snapshotting, so a save that is
+  // mid-fork can never leak the lock into the child.
+  virtual FEXCore::ForkableUniqueMutex& GetSaveIOLock() = 0;
 
   // In a fork child: forget the parent's unsaved compiles, so the child only
   // writes what it compiled itself.
