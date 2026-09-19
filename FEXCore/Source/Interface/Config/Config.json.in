@@ -1036,10 +1036,8 @@
       },
       "DisableCmpBranchFusion": {
         "Type": "bool",
-        "Default": "true",
+        "Default": "false",
         "Desc": [
-          "DEFAULT OFF since 2026-09-18: Firefox 156 segfaults deterministically with fusion on and runs with it off",
-          "(headless screenshot of mozilla.org, HANDOVER item 20). POWERARM_DISABLECMPBRANCHFUSION=0 turns it back on for debugging.",
           "Kill switch for compare fusion (POWERARM_DISABLECMPBRANCHFUSION=1 turns it OFF), which DeadFlagCalculationElimination runs",
           "(IR/Passes/CompareBranchFusion.cpp). A64 'cmp a,b; b.cc' arrives as SubNZCV (CMN/SUBS/ADDS: AddNZCV/SubWithFlags/AddWithFlags) +",
           "a FromNZCV CondJump, and the PPC64LE lowering reads C/V out of XER (mcrxrx + a cr-logical composite before the bc) after a",
