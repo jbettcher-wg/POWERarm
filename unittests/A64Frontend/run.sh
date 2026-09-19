@@ -240,6 +240,19 @@ if [ -f fp_scalar.powerarm ]; then
   fi
 fi
 
+# A guest started under an address-space limit (glycin runs GTK's image loaders
+# under bwrap with RLIMIT_AS; `ulimit -v` does it for a shell). POWERarm's 48-bit
+# reservation used to fail there and crash startup before the guest ran.
+if [ -f hello.golden ]; then
+  (ulimit -v 4000000 && "$emu" ./hello) > rlimit_as.powerarm 2> rlimit_as.stderr
+  echo $? > rlimit_as.powerarm.rc
+  if [ "$(cat rlimit_as.powerarm.rc)" = 0 ] && cmp -s hello.golden rlimit_as.powerarm; then
+    report PASS rlimit_as "hello under RLIMIT_AS=4 GB"
+  else
+    report FAIL rlimit_as "hello under RLIMIT_AS=4 GB: rc=$(cat rlimit_as.powerarm.rc)"
+  fi
+fi
+
 if [ "$skip" -gt 0 ]; then
   echo "passed $pass, failed $fail, skipped $skip"
 else

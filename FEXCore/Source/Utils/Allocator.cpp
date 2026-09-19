@@ -24,6 +24,7 @@
 #include <fcntl.h>
 #ifndef _WIN32
 #include <sys/mman.h>
+#include <sys/resource.h>
 #include <sys/user.h>
 #endif
 
@@ -296,6 +297,18 @@ fextl::vector<MemoryRegion> StealMemoryRegion(uintptr_t Begin, uintptr_t End) {
 fextl::vector<MemoryRegion> Setup48BitAllocatorIfExists(size_t PageSize) {
   size_t Bits = FEXCore::Allocator::DetermineVASize();
   if (Bits < 48) {
+    return {};
+  }
+
+  // Reserving [2^47, 2^48) counts 128 TiB against RLIMIT_AS, so under any
+  // address-space limit the reservation fails and startup crashed (SIGSEGV in
+  // AllocateMemoryRegions). Programs set one for their children: glycin (GTK's
+  // image loaders) runs every loader under bwrap with RLIMIT_AS, and `ulimit -v`
+  // does it for a shell. The reservation only fences off addresses the kernel
+  // hands out when asked for them (ppc64 keeps unhinted mmaps below 2^47), so
+  // without it the guest still sees 47-bit addresses.
+  struct rlimit AS {};
+  if (getrlimit(RLIMIT_AS, &AS) == 0 && AS.rlim_cur != RLIM_INFINITY) {
     return {};
   }
 

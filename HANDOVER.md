@@ -296,3 +296,26 @@ CAS five times as heavily in proportion.
     Suspects: flags live across something the liveness proof misses, CSEL rewriting, or the CMN
     constant rule. G2's two signal fixes (RIP table, drain point) stay on. Re-enable only with a
     test that reproduces the Firefox miscompile.
+21. **Firefox 156 bring-up (in progress).** Installed in the vk overlay (60 packages). Headless
+    rendering works (`--headless --screenshot`). The windowed browser never maps a window, because
+    of several separate emulator bugs, all in child processes:
+    - **Fixed tonight:** `DC CIVAC` (16d6213d0); `RBIT` vector (16d6213d0); VectorImm byte splats
+      (dfd13ec41); startup under `RLIMIT_AS`: glycin runs GTK's image loaders under
+      `bwrap` with an address-space limit, and POWERarm's 128 TiB 48-bit reservation crashed
+      every such start. It's now skipped when RLIMIT_AS is finite, and run.sh checks `rlimit_as`.
+    - **Open (a): code-cache compaction crashes in a forked child.** A fork (no exec) of the
+      80-thread main process or of the fork server calls execve; the pre-exec save runs
+      `SaveNewBlocks -> CompactSegments -> CacheSegment::Open`, which SIGSEGVs (full backtrace
+      from core 1450583).
+    - **Open (b): the fatal-fault handler calls backtrace() and faults recursively**
+      (`SignalHandlerThunk -> backtrace -> _Unwind_Backtrace`, dozens of nested frames). That
+      buries the original fault report and truncates cores. It should print its line first,
+      without unwinding, and guard against re-entry.
+    - **Open (c):** with `POWERARM_ENABLECODECACHINGWIP=0` the whole browser dies (2 cores,
+      truncated). Not yet diagnosed.
+    - **Open (d):** G2 fusion miscompiles Firefox (item 20).
+    Launch for testing: `POWERARM_PORTABLE=1 POWERARM_ROOTFS=<vk> <dev POWERarm>
+    <vk>-overlay/usr/lib/firefox/firefox --profile ~/.mozilla/firefox-arm64 <url>`. Check windows
+    with `hyprctl clients`; unwind cores with `coredumpctl dump <pid>` + gdb `bt -30`.
+    Never pattern-kill: the orchestrator's shell got killed three times by patterns matching its
+    own command line.
