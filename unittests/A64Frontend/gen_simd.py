@@ -1826,6 +1826,46 @@ def gen_simd_shiftsat(p):
                 p.vcase([clr, f"{op} {we}{d}, {e}{n}, v{mreg}.{e}[{idx}]"], v)
 
 
+def gen_simd_fcvtxn(p):
+    """FCVTXN/FCVTXN2 (vector) and FCVTXN (scalar): double to single rounded to odd, which ignores
+    FPCR.RMode, checked in every mode: exact values, halfway and near-halfway values, the overflow
+    boundary (to the largest finite value, never infinity), the denormal range and doubles far below
+    it, infinities and NaNs."""
+    edge = [
+        0x47EFFFFFE0000000, 0x47EFFFFFE0000001, 0x47EFFFFFF0000000, 0x47EFFFFFFFFFFFFF, 0x47F0000000000000,
+        0x7FEFFFFFFFFFFFFF, 0x3810000000000000, 0x380FFFFFFFFFFFFF, 0x36A0000000000000, 0x36A0000000000001,
+        0x3690000000000000, 0x369FFFFFFFFFFFFF, 0x0000000000000001, 0x0010000000000000, 0x3FF0000010000000,
+        0x3FF0000008000000, 0x3FF0000018000000, 0x3FF0000000000001, 0x3FF000001FFFFFFF, 0x3FF0000020000000,
+    ] + F64_EDGE
+    vals = [v | s for v in edge for s in (0, 1 << 63)]
+    for rmode in RMODES:
+        for i in range(0, len(vals), 2):
+            d, n = p.vregs(2)
+            p.vcase([f"fcvtxn v{d}.2s, v{n}.2d"], {d: p.vec(), n: (vals[i], vals[(i + 1) % len(vals)])}, fpcr=rmode)
+    for _ in range(500):
+        d, n = p.vregs(2)
+        lanes = []
+        for _ in range(2):
+            r = p.rng.random()
+            if r < 0.3:
+                lanes.append(p.rng.choice(vals))
+            elif r < 0.6:
+                # Single-precision range, with the bits below the single's fraction random.
+                v = struct.unpack("<Q", struct.pack("<d", p.rng.uniform(-1, 1) * 2.0 ** p.rng.randrange(-150, 129)))[0]
+                lanes.append(v ^ p.rng.getrandbits(29))
+            else:
+                lanes.append(p.f64())
+        form = p.rng.randrange(3)
+        fpcr = p.rng.choice(RMODES)
+        v = {d: p.vec(), n: (lanes[0], lanes[1])}
+        if form == 0:
+            p.vcase([f"fcvtxn v{d}.2s, v{n}.2d"], v, fpcr=fpcr)
+        elif form == 1:
+            p.vcase([f"fcvtxn2 v{d}.4s, v{n}.2d"], v, fpcr=fpcr)
+        else:
+            p.vcase([f"fcvtxn s{d}, d{n}"], v, fpcr=fpcr)
+
+
 GROUPS = {
     "simd_loadstore": gen_simd_loadstore,
     "simd_copy": gen_simd_copy,
@@ -1853,6 +1893,7 @@ GROUPS = {
     "simd_recip": gen_simd_recip,
     "simd_dotmul": gen_simd_dotmul,
     "simd_shiftsat": gen_simd_shiftsat,
+    "simd_fcvtxn": gen_simd_fcvtxn,
 }
 
 

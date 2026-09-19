@@ -204,7 +204,7 @@ public:
   bool SCVTF_float_int(uint32_t Word); bool UCVTF_float_int(uint32_t Word); bool SCVTF_float_fix(uint32_t Word); bool UCVTF_float_fix(uint32_t Word);
   bool FCVTZS_float_fix(uint32_t Word); bool FCVTZU_float_fix(uint32_t Word);
   bool FCVTZS_int_2(uint32_t Word); bool FCVTZU_int_2(uint32_t Word); bool SCVTF_int_2(uint32_t Word); bool UCVTF_int_2(uint32_t Word);
-  bool FCVTL(uint32_t Word); bool FCVTN(uint32_t Word);
+  bool FCVTL(uint32_t Word); bool FCVTN(uint32_t Word); bool FCVTXN_1(uint32_t Word); bool FCVTXN_2(uint32_t Word);
   // Advanced SIMD floating point (TranslateSIMDFloat.cpp).
   bool FADD_2(uint32_t Word); bool FSUB_2(uint32_t Word); bool FMUL_vec_2(uint32_t Word); bool FDIV_2(uint32_t Word);
   bool FMIN_2(uint32_t Word); bool FMAX_2(uint32_t Word); bool FMINNM_2(uint32_t Word); bool FMAXNM_2(uint32_t Word);
@@ -421,6 +421,7 @@ private:
   // Element 0 double -> half precision with one rounding, and the FZ16
   // output flush unless it is an FP-to-FP conversion.
   Ref DoubleToHalf(Ref D, bool ApplyFZ16);
+  bool SIMDConvertRoundToOdd(uint32_t Word, bool Scalar);
   // Host rounding mode <- FPCR.RMode of the given FPCR value.
   void SyncHostRoundingMode(Ref FPCR);
 

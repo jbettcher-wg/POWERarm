@@ -141,7 +141,7 @@ const IRBuilder::HandlerEntry IRBuilder::HandlerTable[] = {
   {"LD4R_1", &IRBuilder::SIMDSingleStructure}, {"LD4R_2", &IRBuilder::SIMDSingleStructure},
   // Advanced SIMD. The translated set is the subset measured in
   // docs/powerarm/M1b-SIMD-SUBSET.md plus its cheap neighbours.
-  // POWERARM-M1-TODO(simd): no translator yet for FCVTXN, FMOV of a half-precision vector immediate and the half-precision vector arithmetic, FCADD/FCMLA, and the SHA-512/SHA-3/SM3/SM4 entries (the last not on the reference A76).
+  // POWERARM-M1-TODO(simd): no translator yet for FMOV of a half-precision vector immediate and the half-precision vector arithmetic, FCADD/FCMLA, and the SHA-512/SHA-3/SM3/SM4 entries (the last not on the reference A76).
   // Advanced SIMD: copy.
   {"DUP_gen", &IRBuilder::DUP_gen}, {"DUP_elt_1", &IRBuilder::DUP_elt_1}, {"DUP_elt_2", &IRBuilder::DUP_elt_2},
   {"UMOV", &IRBuilder::UMOV}, {"SMOV", &IRBuilder::SMOV}, {"INS_gen", &IRBuilder::INS_gen}, {"INS_elt", &IRBuilder::INS_elt},
@@ -254,7 +254,7 @@ const IRBuilder::HandlerEntry IRBuilder::HandlerTable[] = {
   {"FCVTZS_float_fix", &IRBuilder::FCVTZS_float_fix}, {"FCVTZU_float_fix", &IRBuilder::FCVTZU_float_fix},
   {"FCVTZS_int_2", &IRBuilder::FCVTZS_int_2}, {"FCVTZU_int_2", &IRBuilder::FCVTZU_int_2},
   {"SCVTF_int_2", &IRBuilder::SCVTF_int_2}, {"UCVTF_int_2", &IRBuilder::UCVTF_int_2},
-  {"FCVTL", &IRBuilder::FCVTL}, {"FCVTN", &IRBuilder::FCVTN},
+  {"FCVTL", &IRBuilder::FCVTL}, {"FCVTN", &IRBuilder::FCVTN}, {"FCVTXN_1", &IRBuilder::FCVTXN_1}, {"FCVTXN_2", &IRBuilder::FCVTXN_2},
 };
 // clang-format on
 
