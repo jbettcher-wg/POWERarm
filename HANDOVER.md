@@ -296,7 +296,17 @@ CAS five times as heavily in proportion.
     Suspects: flags live across something the liveness proof misses, CSEL rewriting, or the CMN
     constant rule. G2's two signal fixes (RIP table, drain point) stay on. Re-enable only with a
     test that reproduces the Firefox miscompile.
-21. **Firefox 156 bring-up (in progress).** Installed in the vk overlay (60 packages). Headless
+21. **Firefox 156 runs with a window** (24e199f3f; Jordan browsed example.com, OSnews and YouTube).
+    The root cause of the child crashes: guest `setrlimit(RLIMIT_AS)` (glycin lowers it in each
+    loader fork before exec'ing bwrap) went straight to the host process, which the 128 TiB
+    reservation puts far over any limit. After that the kernel refused every mmap, and
+    `OSAllocator_64Bit::Mmap` hid the failure by returning the unmapped address, which
+    CacheSegment::Open then read. Now the guest's RLIMIT_AS is held and applied at its execve
+    (a0ce66b42; test forkexec), and the fatal-fault report writes its line first and survives
+    unwinder faults (43187f44a; tests hostfault and hostfault_report). **Next:** icons still fail
+    ("Could not load a pixbuf"); glycin-thumbnailer reports "Operation not supported", on stable
+    too. The notes below are from the investigation.
+    Earlier status: Installed in the vk overlay (60 packages). Headless
     rendering works (`--headless --screenshot`). The windowed browser never maps a window, because
     of several separate emulator bugs, all in child processes:
     - **Fixed tonight:** `DC CIVAC` (16d6213d0); `RBIT` vector (16d6213d0); VectorImm byte splats
