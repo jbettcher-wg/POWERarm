@@ -531,11 +531,19 @@ fextl::string FileManager::GetHostPath(fextl::string& Path, bool AliasedOnly) co
 // and hid the Steam install.
 //
 // Keeping these host-only makes lookup and creation agree by construction.
+//
+// /proc, /sys and /dev are the kernel's own filesystems, and a rootfs carries
+// only empty mount points for them. Deep paths worked by accident: the rootfs
+// lookup missed below the empty directory and fell through to the host. The
+// directory itself did not: open("/proc") returned the rootfs's empty /proc, so
+// every *at() relative to it failed. Chromium's single-thread check
+// (sandbox/linux/services/thread_helpers.cc: fstatat(proc_fd, "self/task/"))
+// failed that way and killed the zygote and the GPU process with SIGTRAP.
 static bool IsHostOnlyPath(const char* pathname) {
   using namespace std::string_view_literals;
   // Exact match, or a prefix followed by '/', so "/tmpfoo" is not caught.
   constexpr std::string_view HostOnlyPrefixes[] = {
-    "/tmp"sv, "/var/tmp"sv, "/dev/shm"sv, "/run"sv, "/home"sv,
+    "/tmp"sv, "/var/tmp"sv, "/dev"sv, "/run"sv, "/home"sv, "/proc"sv, "/sys"sv,
   };
 
   const std::string_view Path {pathname};
