@@ -58,6 +58,15 @@ cherry-pick; patches for them go in `docs/powerarm/outgoing-patches/fastppcx86/`
   `docs/powerarm/research/warm-codegen/`); cold G1 (MapFile 64K offsets, so lld-linked binaries
   like Claude get code-cached, plus the CodeCacheScope default); ship the guest vDSO by default
   (item 7); the P7 acquire/release RMW census (item 4, standard agent).
+- **End of 2026-09-18/19 session.** main has: G1 (lld apps cached, `home` cache scope), G2
+  (compare fusion, on), the NEON gap closure, the signal-frame fixes (register edits at the same
+  PC, fpsimd_context, RIP table, drain points), the RLIMIT_AS fixes (allocator skip + guest limit
+  held until execve), the fault reporter that survives its own faults, the /proc host-only fix,
+  DC CIVAC/CVAC/CVAP, RBIT, the VectorImm byte splat. Gate: A64Frontend 83 pass, 2 vDSO skips.
+  Firefox 156 and VS Code 1.138 both run with windows on the dev build. **Stable (binfmt) is
+  still the G1 build (`ada1b7bcc`)**: promote to bring all of the above, and Firefox, to
+  binfmt-launched programs, then re-register binfmt. Next candidates: glycin icons
+  (item 21), LDXP/STXP (item 22), G2(c) (item 18), the `setup-desktop.sh` installer (item 17).
 - **`powerarm-stable` is at `c632e0bca`** (promoted 2026-09-18, binfmt re-registered and
   `check-binfmt-inode.sh` passing; `.prev` holds `c37536838`). Promoting is what moves binfmt-launched programs -- including
   the Claude CLI and any guest child process -- onto new work, and a promote MUST be followed by
@@ -288,7 +297,10 @@ CAS five times as heavily in proportion.
     and resumes at the same PC (emulating an instruction, or patching x0 after a fault) loses its
     edits. It's a correctness bug for runtimes with SIGSEGV/SIGILL handlers (JVMs, V8/JSC guard
     pages, Wine-style emulation).
-20. **G2 fusion is OFF by default** (`DisableCmpBranchFusion` default true). Firefox 156 segfaults
+20. ~~G2 fusion off by default~~ **Fixed and back on** (merge after f577af240; test cmpchain, 600
+    cases). Chained compares (a compare reading the previous CSEL's result, as in clamps and
+    min/max-of-three at X size) referenced a node an earlier rewrite had removed; operands are now
+    read at rewrite time (eaf03c95d). Firefox renders with fusion on. The history of the bug: Firefox 156 segfaults
     deterministically with it on: `POWERARM_PORTABLE=1 POWERARM_ROOTFS=<vk> POWERarm
     <vk>-overlay/usr/lib/firefox/firefox --profile <tmp> --headless --screenshot out.png
     https://www.mozilla.org/firefox/` crashes in ~30 s (rc 139, twice) and renders with
