@@ -239,9 +239,13 @@ private:
     return Address >= Config.FABIStubsBegin && Address < Config.FABIStubsEnd;
   }
 
-  ///< Returns true when the handler redirected the guest and execution resumes through the dispatcher.
+  ///< Applies what the handler left in the rt_sigframe. Returns true when execution resumes through the dispatcher
+  ///< rather than in the backed-up host context. InGuestSyscall: the signal interrupted a guest syscall.
   bool RestoreFrame_Arm64(FEXCore::Core::InternalThreadState* Thread, ArchHelpers::Context::ContextBackup* Context,
-                          FEXCore::Core::CpuStateFrame* Frame, void* ucontext);
+                          FEXCore::Core::CpuStateFrame* Frame, void* ucontext, bool InGuestSyscall);
+
+  ///< Loads the whole guest state an rt_sigframe holds into Frame->State, for a resume through the dispatcher.
+  void LoadFrameForDispatcher_Arm64(FEXCore::Core::CpuStateFrame* Frame, const FEXCore::arm64::ucontext_t* uc, void* ucontext);
 
   ///< Setup the rt_sigframe for an AArch64 guest.
   uint64_t SetupFrame_Arm64(FEXCore::Core::InternalThreadState* Thread, ArchHelpers::Context::ContextBackup* ContextBackup,

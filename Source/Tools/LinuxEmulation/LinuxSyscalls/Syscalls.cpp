@@ -1357,29 +1357,39 @@ uint64_t SyscallHandler::HandleSyscall(FEXCore::Core::CpuStateFrame* Frame, FEXC
   //
   // Escape hatch: FEX_NO_GUEST_SA_RESTART=1 restores the old always-EINTR
   // behaviour.
+  //
+  // A handler that returns into the syscall with X0 edited replaces the result
+  // (SignalInfo.InGuestSyscall and HasSyscallResultOverride, set by
+  // SignalDelegator::RestoreFrame_Arm64), and ends any restart.
   static const bool Disabled = (getenv("FEX_NO_GUEST_SA_RESTART") != nullptr);
-  if (Disabled) {
-    return HandleSyscallImpl(Frame, Args, JITPC);
-  }
 
-  auto* ThreadObject = FEX::HLE::ThreadManager::GetStateObjectFromCPUState(Frame);
+  auto& SignalInfo = FEX::HLE::ThreadManager::GetStateObjectFromCPUState(Frame)->SignalInfo;
+  SignalInfo.InGuestSyscall = true;
+  uint64_t Result;
   while (true) {
     // Snapshot/diff rather than reset: a guest handler runs nested inside the
     // attempt below and issues syscalls of its own, each of which re-enters
     // this function. Resetting would let the innermost frame erase the outer
     // frame's delivery record.
-    const uint32_t DeliveredBefore = ThreadObject->SignalInfo.DeliveredGuestSignals;
-    const uint32_t NoRestartBefore = ThreadObject->SignalInfo.DeliveredGuestSignalsWithoutRestart;
+    const uint32_t DeliveredBefore = SignalInfo.DeliveredGuestSignals;
+    const uint32_t NoRestartBefore = SignalInfo.DeliveredGuestSignalsWithoutRestart;
 
-    const uint64_t Result = HandleSyscallImpl(Frame, Args, JITPC);
+    Result = HandleSyscallImpl(Frame, Args, JITPC);
 
-    const uint32_t Delivered = ThreadObject->SignalInfo.DeliveredGuestSignals - DeliveredBefore;
-    const uint32_t NoRestart = ThreadObject->SignalInfo.DeliveredGuestSignalsWithoutRestart - NoRestartBefore;
+    const uint32_t Delivered = SignalInfo.DeliveredGuestSignals - DeliveredBefore;
+    const uint32_t NoRestart = SignalInfo.DeliveredGuestSignalsWithoutRestart - NoRestartBefore;
 
-    if (static_cast<int64_t>(Result) != -EINTR || Delivered == 0 || NoRestart != 0 || !IsRestartableGuestSyscall_Arm64(Args)) {
-      return Result;
+    if (Disabled || SignalInfo.HasSyscallResultOverride || static_cast<int64_t>(Result) != -EINTR || Delivered == 0 || NoRestart != 0 ||
+        !IsRestartableGuestSyscall_Arm64(Args)) {
+      break;
     }
   }
+  SignalInfo.InGuestSyscall = false;
+  if (SignalInfo.HasSyscallResultOverride) [[unlikely]] {
+    SignalInfo.HasSyscallResultOverride = false;
+    Result = SignalInfo.SyscallResultOverride;
+  }
+  return Result;
 #endif
 }
 

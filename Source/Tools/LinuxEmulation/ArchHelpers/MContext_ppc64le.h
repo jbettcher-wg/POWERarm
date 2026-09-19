@@ -326,6 +326,18 @@ static inline uint64_t GetArmPState(void* ucontext) {
         | ((xer & (1ULL << 30)) >> 2);  // V ← XER.OV, shift into bit 28
 }
 
+// FPSCR[RN], the host rounding mode, in the frame's saved FPSCR (fp_regs[32],
+// which rt_sigreturn reloads; see PPC64ContextBackup::FPSCR). RN is the low
+// two bits of the 64-bit FPSCR image: 0 nearest, 1 toward zero, 2 toward
+// +Inf, 3 toward -Inf.
+static inline void SetFPSCRRoundingMode(void* ucontext, uint32_t RN) {
+  auto* mctx = GetMContext(ucontext);
+  uint64_t FPSCR;
+  memcpy(&FPSCR, &mctx->fp_regs[32], sizeof(FPSCR));
+  FPSCR = (FPSCR & ~uint64_t {3}) | (RN & 3);
+  memcpy(&mctx->fp_regs[32], &FPSCR, sizeof(FPSCR));
+}
+
 static inline uint64_t* GetArmGPRs(void* ucontext) {
   return reinterpret_cast<uint64_t*>(&GetMContext(ucontext)->gp_regs[0]);
 }
