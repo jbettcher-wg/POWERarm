@@ -367,6 +367,14 @@ CAS five times as heavily in proportion.
     cache): cpu-frame median 16.67 ms (the 60 fps cap), 12.0 ms of CPU work without sleep, 76% of
     frames at 60 fps and 93.5% with idle time left. fastppcx86's x86-64 2.0.77 on the same box and
     save: 19.6 ms, CPU-bound. Factorio versions and Mesa differ, and x86 was SMT2.
+    **Same-day head-to-head (2026-09-19, same benchmark, SDL x11, taskset 0-87, neither GL
+    thunked):** arm64 2.1.19 under POWERarm, WARM: 1,997 frames, busy median 10.5 ms, update 3.24,
+    prepare 1.21, cpu-render 4.26 ms, 77% at 60 fps, 0.3% stalls >50 ms. x86-64 2.0.77 under
+    fastppcx86 (binfmt build-smc, Ubuntu 24.04 rootfs, kisak Mesa 25.3/LLVM): 1,930 frames, busy
+    13.5 ms, update 3.22, prepare 1.70, cpu-render 5.10 ms, 67% at 60 fps, 0.8% stalls. That's
+    ~22% less CPU per frame for POWERarm; simulation is even and the lead is in the guest Mesa
+    driver work. The cold arm64 run delivered only 940 frames (first-run stalls). Oddity: the warm
+    arm64 launch took 38 s to initialise vs 27 s cold. Suspect cache install cost; to investigate.
 25. **sleeve, the app manager TUI: designed, parked by Jordan until he's ready** (2026-09-19).
     Design: docs/powerarm/APPS-TUI-DESIGN.md (181b6ba41). C++/FTXUI in-tree, package
     `powerarm-sleeve`, command `sleeve`, Omarchy theme colours. It supersedes item 17's installer
