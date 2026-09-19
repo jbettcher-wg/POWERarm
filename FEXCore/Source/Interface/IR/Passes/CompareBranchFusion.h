@@ -28,10 +28,14 @@ public:
 private:
   struct Consumer {
     Ref Node;
-    Ref Cmp1;
-    // Null when the compare is against NegatedConst (an AddNZCV/AddWithFlags
-    // producer); the node is created when the consumer is rewritten.
-    Ref Cmp2;
+    // The compare whose operands this consumer compares. Its operands are
+    // read when the consumer is rewritten, not when it is found: an earlier
+    // rewrite may have replaced one of them (a CSEL whose result the next
+    // compare reads is itself rewritten into a new Select node).
+    Ref Producer;
+    // An AddNZCV/AddWithFlags producer: compare against NegatedConst, whose
+    // node is created when the consumer is rewritten.
+    bool AgainstNegatedConst;
     uint64_t NegatedConst;
     OpSize CompareSize;
     CondClass Cond;
