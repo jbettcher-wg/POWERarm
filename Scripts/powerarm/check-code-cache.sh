@@ -34,9 +34,15 @@
 #              64K-aligned, and one linked -z max-page-size=4096, whose segments
 #              are only 4K-congruent. Built with the host's clang and ld.lld
 #              against the rootfs; skipped when they are missing.
+#   homelink   the default scope, home, caches a program reached through a
+#              symlink directly in $HOME whose target is outside it (the
+#              owner's ~/Development), and not one behind a symlink into /tmp.
+#              The target is a temporary directory in BUILD_DIR, removed at
+#              exit; skipped when BUILD_DIR is on a tmpfs.
 #
 # Uses a private HOME, TMPDIR, cache directory and server socket, so it neither
-# sees nor disturbs any other POWERarmServer or cache.
+# sees nor disturbs any other POWERarmServer or cache. Every check but homelink
+# uses CodeCacheScope=all, since the private HOME and sources are in TMPDIR.
 #
 # Exit 0: OK. 1: a check failed. 2: could not run.
 set -u
@@ -48,22 +54,24 @@ rootfs=${2:-${XDG_DATA_HOME:-$HOME/.local/share}/powerarm/RootFS/ArchLinuxARM-m2
 [ -x "$rootfs/usr/bin/gcc" ] || { echo "check-code-cache: no gcc in rootfs $rootfs" >&2; exit 2; }
 
 w=$(mktemp -d "${TMPDIR:-/tmp}/check-code-cache.XXXXXX")
-trap 'rm -rf "$w"' EXIT
+apps=
+trap 'rm -rf "$w" ${apps:+"$apps"}' EXIT
 mkdir -p "$w/home" "$w/run" "$w/src" "$w/bin"
 fail=0
 ok() { echo "ok   $*"; }
 bad() { echo "FAIL $*"; fail=1; }
 
-# run CACHEDIR [ENV=V...] -- ARGS : one POWERarm process tree, cache on when CACHEDIR is not "-".
+# run CACHEDIR [ENV=V...] -- ARGS : one POWERarm process tree, cache on when
+# CACHEDIR is not "-". The caller's ENV come last, so they win.
 run() {
   local cache=$1
   shift
   local envs=()
-  while [ $# -gt 0 ] && [ "$1" != -- ]; do envs+=("$1"); shift; done
-  shift
   if [ "$cache" != - ]; then
     envs+=(POWERARM_ENABLECODECACHINGWIP=1 POWERARM_CODECACHESCOPE=all POWERARM_CODECACHESTATS=1 POWERARM_APP_CACHE_LOCATION="$cache/")
   fi
+  while [ $# -gt 0 ] && [ "$1" != -- ]; do envs+=("$1"); shift; done
+  shift
   # POWERARM_PORTABLE keeps the processes gcc execs (cc1, as, collect2) on this
   # build: without it they go through binfmt to whatever build is registered
   # there, and the parallel, isa30 and corrupt checks tested that one instead.
@@ -392,5 +400,37 @@ EOF
 else
   echo "skip lld: no clang or ld.lld on PATH"
 fi
+
+# ---------------------------------------------------------------------------
+# homelink
+# Cache names come from /proc/self/fd, i.e. the resolved path, so a program
+# under ~/Development -> /mnt/arch/home/<user>/Development is not below $HOME
+# by name. The home scope follows symlinks directly in $HOME, except into
+# scratch space (/tmp, tmpfs).
+apps=$(mktemp -d "$build/check-code-cache-home.XXXXXX")
+case $(stat -f -c %T "$apps") in
+tmpfs | ramfs) echo "skip homelink: $build is on a tmpfs, which the home scope never follows" ;;
+*)
+  mkdir -p "$w/scratch"
+  cp "$w/src/prog1" "$apps/homeprog"
+  cp "$w/src/prog1" "$w/scratch/scratchprog"
+  ln -s "$apps" "$w/home/apps"
+  ln -s "$w/scratch" "$w/home/scratch"
+  for pass in 1 2; do
+    a=$(run "$w/hl" POWERARM_CODECACHESCOPE=home -- "$w/home/apps/homeprog" 2> "$w/homeprog$pass.log")
+    s=$(run "$w/hl" POWERARM_CODECACHESCOPE=home -- "$w/home/scratch/scratchprog" 2> "$w/scratchprog$pass.log")
+    [ "$a" = "value 1" ] && [ "$s" = "value 1" ] || bad "homelink pass $pass: printed '$a' and '$s'"
+  done
+  ls "$w/hl/cache" 2> /dev/null | grep -q '^homeprog-' &&
+    ok "homelink: a program behind a symlink in \$HOME is cached" || bad "homelink: no cache for the program behind a symlink in \$HOME"
+  case $w:$(stat -f -c %T "$w") in
+  /tmp/* | /var/tmp/* | *:tmpfs | *:ramfs)
+    ls "$w/hl/cache" 2> /dev/null | grep -q '^scratchprog-' && bad "homelink: a program behind a symlink into scratch space was cached" ||
+      ok "homelink: a program behind a symlink into scratch space is not"
+    ;;
+  *) echo "skip homelink scratch: TMPDIR $w is not scratch space" ;;
+  esac
+  ;;
+esac
 
 exit $fail

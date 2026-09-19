@@ -40,11 +40,15 @@ $end_info$
 #include "Common/FEXServerClient.h"
 #include "Common/FileMappingBaseAddress.h"
 
-#include <array>
+#include <algorithm>
 #include <climits>
 #include <cstdlib>
+#include <dirent.h>
 #include <filesystem>
 #include <sys/file.h>
+#include <sys/stat.h>
+#include <sys/statfs.h>
+#include <sys/syscall.h>
 #include <sys/mman.h>
 #include <sys/personality.h>
 #include <sys/shm.h>
@@ -1980,12 +1984,38 @@ static bool PathIsUnder(std::string_view Path, std::string_view Dir) {
   return Dir.back() == '/' || Path.size() == Dir.size() || Path[Dir.size()] == '/';
 }
 
-// The user's home directory as the host names it, and its canonical form
-// (cache file names come from /proc/self/fd, which resolves symlinks). Empty
-// when there is no usable home: "/" would turn the home scope into "all".
-static const std::array<fextl::string, 2>& CodeCacheHomeDirs() {
-  static const std::array<fextl::string, 2> Dirs = [] {
-    std::array<fextl::string, 2> Result {};
+// A symlink target the home scope must not follow: scratch space, where
+// every file is a one-off whose cache would never be read again, and the
+// kernel's pseudo-filesystems. Checked by path and by filesystem type, so a
+// tmpfs mounted anywhere counts.
+static bool IsScratchTarget(std::string_view Target) {
+  for (std::string_view Dir : {"/tmp", "/var/tmp", "/dev", "/proc", "/sys", "/run"}) {
+    if (PathIsUnder(Target, Dir)) {
+      return true;
+    }
+  }
+  struct statfs FS {};
+  if (::statfs(fextl::string {Target}.c_str(), &FS) != 0) {
+    return true;
+  }
+  constexpr decltype(FS.f_type) TmpfsMagic = 0x01021994;
+  constexpr decltype(FS.f_type) RamfsMagic = 0x858458f6;
+  return FS.f_type == TmpfsMagic || FS.f_type == RamfsMagic;
+}
+
+// The directories the home scope covers, resolved once per process on first
+// use (so a process that only runs rootfs code never looks):
+//   - $HOME as set, and its canonical form (cache file names come from
+//     /proc/self/fd, which resolves symlinks);
+//   - the canonical target of each symlink directly in $HOME, unless it is
+//     "/" or scratch space (IsScratchTarget). Users keep their trees behind
+//     such links: on the POWER9, ~/Development is a link to
+//     /mnt/arch/home/jbettcher/Development, where VS Code lives. Links deeper
+//     down resolve inside these trees and need nothing more.
+// Empty when there is no usable home: "/" would turn the home scope into "all".
+static const fextl::vector<fextl::string>& CodeCacheHomeDirs() {
+  static const fextl::vector<fextl::string> Dirs = [] {
+    fextl::vector<fextl::string> Result;
     const char* Home = getenv("HOME");
     if (!Home || Home[0] != '/') {
       return Result;
@@ -1997,17 +2027,59 @@ static const std::array<fextl::string, 2>& CodeCacheHomeDirs() {
     if (Raw == "/") {
       return Result;
     }
-    Result[0] = Raw;
+    Result.push_back(Raw);
     char Resolved[PATH_MAX];
     if (realpath(Raw.c_str(), Resolved) && std::string_view {Resolved} != "/" && Raw != Resolved) {
-      Result[1] = Resolved;
+      Result.emplace_back(Resolved);
     }
+
+    // getdents64 into a stack buffer rather than opendir, which allocates.
+    const int DirFD = ::open(Raw.c_str(), O_RDONLY | O_DIRECTORY | O_CLOEXEC);
+    if (DirFD < 0) {
+      return Result;
+    }
+    alignas(8) char Buffer[8192];
+    for (;;) {
+      const long Read = ::syscall(SYS_getdents64, DirFD, Buffer, sizeof(Buffer));
+      if (Read <= 0) {
+        break;
+      }
+      for (long Offset = 0; Offset < Read;) {
+        const auto* Entry = reinterpret_cast<const struct dirent64*>(Buffer + Offset);
+        Offset += Entry->d_reclen;
+        if (Entry->d_type != DT_LNK && Entry->d_type != DT_UNKNOWN) {
+          continue;
+        }
+        struct stat Link {};
+        if (::fstatat(DirFD, Entry->d_name, &Link, AT_SYMLINK_NOFOLLOW) != 0 || !S_ISLNK(Link.st_mode)) {
+          continue;
+        }
+        const fextl::string LinkPath = Raw + "/" + Entry->d_name;
+        struct stat Target {};
+        if (!realpath(LinkPath.c_str(), Resolved) || ::stat(Resolved, &Target) != 0 || !(S_ISDIR(Target.st_mode) || S_ISREG(Target.st_mode))) {
+          continue;
+        }
+        const std::string_view TargetPath {Resolved};
+        if (TargetPath == "/" || IsScratchTarget(TargetPath) ||
+            std::ranges::any_of(Result, [&](const fextl::string& Dir) { return PathIsUnder(TargetPath, Dir); })) {
+          continue;
+        }
+        Result.emplace_back(TargetPath);
+      }
+    }
+    ::close(DirFD);
     return Result;
   }();
   return Dirs;
 }
 
 bool SyscallHandler::IsPathInCodeCacheScope(std::string_view Path) const {
+  // Filenames come from /proc/self/fd, so a rootfs library appears with the
+  // RootFS prefix already applied, and a library guest pacman installed with
+  // the overlay's.
+  const auto InRootFS = [&] {
+    return PathIsUnder(Path, RootFSPath()) || PathIsUnder(Path, FM.OverlayUpperPath());
+  };
   switch (CodeCacheScope) {
   case CodeCacheScopeType::Off:
     // The gate is disabled, not the subsystem: this is the legacy
@@ -2016,17 +2088,8 @@ bool SyscallHandler::IsPathInCodeCacheScope(std::string_view Path) const {
     return true;
   case CodeCacheScopeType::All: return !Path.empty();
   case CodeCacheScopeType::Home:
-    for (const auto& Dir : CodeCacheHomeDirs()) {
-      if (PathIsUnder(Path, Dir)) {
-        return true;
-      }
-    }
-    [[fallthrough]];
-  case CodeCacheScopeType::RootFS:
-    // Filenames come from /proc/self/fd, so a rootfs library appears with the
-    // RootFS prefix already applied, and a library guest pacman installed with
-    // the overlay's.
-    return PathIsUnder(Path, RootFSPath()) || PathIsUnder(Path, FM.OverlayUpperPath());
+    return InRootFS() || std::ranges::any_of(CodeCacheHomeDirs(), [&](const fextl::string& Dir) { return PathIsUnder(Path, Dir); });
+  case CodeCacheScopeType::RootFS: return InRootFS();
   }
   return false;
 }

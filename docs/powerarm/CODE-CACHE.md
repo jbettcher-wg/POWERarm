@@ -206,6 +206,10 @@ now runs only for `POWERARM_SERVERCODECACHE=1`.
   and each prints their address range so the check counts only those. Before
   G1 all 20 of those blocks were compiled again by every warm run on a 64K
   host. Skipped when `clang` or `ld.lld` is missing.
+- **Home links:** with `CodeCacheScope=home`, a program reached through a
+  symlink directly in `$HOME` whose target is outside it (a temporary
+  directory in `BUILD_DIR`) gets a cache, and one behind a symlink into the
+  check's `/tmp` directory does not.
 
 Every process runs with `POWERARM_PORTABLE=1`, so the `cc1` and `as` that
 `gcc` execs run on the build under test rather than on whatever build binfmt
@@ -305,8 +309,40 @@ exists for are installed by the user, under `$HOME`: the Claude CLI in
 `~/.cache/powerarm/code-server`, a VS Code tarball in `~/.local`. Under
 `rootfs` their own code, 84% of what code-server translates and nearly all of
 Claude's, was compiled again at every launch. `home` is the RootFS, its
-overlay (where guest pacman installs; `rootfs` includes it now too) and
-everything below `$HOME`.
+overlay (where guest pacman installs; `rootfs` includes it now too),
+everything below `$HOME`, and everything below the target of a symlink
+directly in `$HOME` (next paragraphs).
+
+Cache names come from `/proc/self/fd`, so a file's path is its resolved one,
+and "below `$HOME`" alone misses trees a user keeps behind a link. On the
+POWER9, `~/Development` is a link to `/mnt/arch/home/jbettcher/Development`,
+and VS Code arm64 lives at `~/Development/vscode-arm64/<version>`. So `home`
+also covers the resolved target of each symlink directly in `$HOME`:
+
+- only links directly in `$HOME`, read once per process (a `getdents64` of
+  `$HOME` and a `realpath` per link, on the first scope question about a file
+  outside the rootfs, so build tools that run only rootfs code never pay it).
+  Links deeper down resolve inside trees already covered;
+- not a target that is `/`, under `/tmp`, `/var/tmp`, `/dev`, `/proc`,
+  `/sys` or `/run`, or on a tmpfs or ramfs: a link into scratch space would
+  let `/tmp`'s one-off binaries back in;
+- only a directory or a regular file.
+
+A simpler rule was weighed and rejected: "every file the user owns on a
+persistent filesystem" covers the same layout, but needs an `fstat` and a
+`statfs` per file, sweeps in whatever the user owns under `/opt` or `/srv`,
+and is harder to predict than "`$HOME` and what it links to".
+
+This takes in the build trees under `~/Development` too, the POWERarm build
+directories and test binaries included. That is bounded: a rebuilt binary is
+a new namespace written once, at the size of the code its run reached, and it
+ages out of the LRU; a new emulator build's namespaces replace the old
+build's within the hour (the sweep). Measured on the A64Frontend gate, whose
+goldens live in `~/Development/.powerarm-golden`: one plain run of the suite
+writes about 20 MB, 18 MB of it the test binaries' own; the
+`POWERARM_MAXINST=1` mode (one block per instruction) 95 MB; the three gate
+modes together 175 MB, under six config ids. Build trees in `/tmp`, the
+a64diff work directory and check-code-cache.sh's own stay out.
 
 Measured on the G1 tree against its parent (f518d94a3, whose code is the
 current stable, c632e0bca), one cold/warm pair each, CPUs 40-47, private cache
@@ -353,11 +389,6 @@ What was weighed:
   JIT) can never be reused, yet each costs save time and pushes useful
   namespaces out of the LRU. `all` stays available for apps installed
   system-wide, under `/opt` for example.
-- **Paths are compared resolved** (they come from `/proc/self/fd`), against
-  both `$HOME` and its resolved form. A directory reached from `$HOME`
-  through a symlink that leaves it is out of scope: on the POWER9,
-  `~/Development` is a link to `/mnt/arch/home/...`, so test binaries there
-  stay uncached, as before.
 
 ## 64K hosts: lld-linked ELFs (G1)
 
