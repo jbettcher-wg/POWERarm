@@ -363,9 +363,14 @@ public:
     // Legacy FEX_ENABLECODECACHINGWIP behaviour: load caches for anything, write
     // nothing (only FEXOfflineCompiler produces cache files).
     Off,
-    // Rootfs system libraries only. Immutable in practice and shared between
-    // titles, so they are the translations worth persisting.
+    // Rootfs system libraries only (the base and its overlay). Immutable in
+    // practice and shared between titles, so they are the translations worth
+    // persisting.
     RootFS,
+    // RootFS plus everything under the user's home directory: the apps a user
+    // installs themselves (the Claude CLI in ~/.local/share/claude, VS Code or
+    // code-server tarballs). The default; see docs/powerarm/CODE-CACHE.md.
+    Home,
     // Everything file-backed, including game-side native libraries.
     All,
   };
@@ -897,6 +902,9 @@ public:
     const auto& Value = CodeCacheScopeStr();
     if (Value == "rootfs") {
       return CodeCacheScopeType::RootFS;
+    }
+    if (Value == "home") {
+      return CodeCacheScopeType::Home;
     }
     if (Value == "all") {
       return CodeCacheScopeType::All;

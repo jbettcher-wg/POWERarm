@@ -128,6 +128,10 @@ public:
   bool OverlayActive() const {
     return Overlay.Active();
   }
+  // The overlay's host directory, empty when it is inactive.
+  const fextl::string& OverlayUpperPath() const {
+    return Overlay.UpperPath();
+  }
   uint64_t Mknodat(int dirfd, const char* pathname, mode_t mode, dev_t dev);
   // nullopt: not an overlay directory / not an overlay working directory.
   std::optional<uint64_t> OverlayGetdents64(int fd, void* dirp, uint32_t count);

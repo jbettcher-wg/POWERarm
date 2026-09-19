@@ -40,6 +40,9 @@ $end_info$
 #include "Common/FEXServerClient.h"
 #include "Common/FileMappingBaseAddress.h"
 
+#include <array>
+#include <climits>
+#include <cstdlib>
 #include <filesystem>
 #include <sys/file.h>
 #include <sys/mman.h>
@@ -1966,6 +1969,44 @@ void SyscallHandler::LoadCodeCache(FEXCore::Core::InternalThreadState&, FEXCore:
   // dispatcher miss that would otherwise compile them (CodeCache::TryLoadBlock).
 }
 
+// True when Path is Dir or lies below it. An empty Dir contains nothing (an
+// empty prefix would match every path, the opposite of what a scope asks for),
+// and a path separator is required at the join so "/rootfs" does not contain
+// "/rootfs-backup/lib.so".
+static bool PathIsUnder(std::string_view Path, std::string_view Dir) {
+  if (Dir.empty() || Path.empty() || !Path.starts_with(Dir)) {
+    return false;
+  }
+  return Dir.back() == '/' || Path.size() == Dir.size() || Path[Dir.size()] == '/';
+}
+
+// The user's home directory as the host names it, and its canonical form
+// (cache file names come from /proc/self/fd, which resolves symlinks). Empty
+// when there is no usable home: "/" would turn the home scope into "all".
+static const std::array<fextl::string, 2>& CodeCacheHomeDirs() {
+  static const std::array<fextl::string, 2> Dirs = [] {
+    std::array<fextl::string, 2> Result {};
+    const char* Home = getenv("HOME");
+    if (!Home || Home[0] != '/') {
+      return Result;
+    }
+    fextl::string Raw {Home};
+    while (Raw.size() > 1 && Raw.back() == '/') {
+      Raw.pop_back();
+    }
+    if (Raw == "/") {
+      return Result;
+    }
+    Result[0] = Raw;
+    char Resolved[PATH_MAX];
+    if (realpath(Raw.c_str(), Resolved) && std::string_view {Resolved} != "/" && Raw != Resolved) {
+      Result[1] = Resolved;
+    }
+    return Result;
+  }();
+  return Dirs;
+}
+
 bool SyscallHandler::IsPathInCodeCacheScope(std::string_view Path) const {
   switch (CodeCacheScope) {
   case CodeCacheScopeType::Off:
@@ -1974,21 +2015,18 @@ bool SyscallHandler::IsPathInCodeCacheScope(std::string_view Path) const {
     // disk. Writing is gated separately (CodeCacheWriteEnabled).
     return true;
   case CodeCacheScopeType::All: return !Path.empty();
-  case CodeCacheScopeType::RootFS: {
+  case CodeCacheScopeType::Home:
+    for (const auto& Dir : CodeCacheHomeDirs()) {
+      if (PathIsUnder(Path, Dir)) {
+        return true;
+      }
+    }
+    [[fallthrough]];
+  case CodeCacheScopeType::RootFS:
     // Filenames come from /proc/self/fd, so a rootfs library appears with the
-    // RootFS prefix already applied. An empty RootFS means every path would
-    // match the empty prefix, which is the opposite of what "rootfs" asks for.
-    const auto& Root = RootFSPath();
-    if (Root.empty() || Path.empty()) {
-      return false;
-    }
-    if (!Path.starts_with(std::string_view {Root})) {
-      return false;
-    }
-    // Require a path separator at the join so "/rootfs" does not match
-    // "/rootfs-backup/lib.so".
-    return Root.back() == '/' || Path.size() == Root.size() || Path[Root.size()] == '/';
-  }
+    // RootFS prefix already applied, and a library guest pacman installed with
+    // the overlay's.
+    return PathIsUnder(Path, RootFSPath()) || PathIsUnder(Path, FM.OverlayUpperPath());
   }
   return false;
 }

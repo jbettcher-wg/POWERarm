@@ -7,15 +7,17 @@ build runs hundreds of short processes (`sh`, `sed`, the `gcc` driver, `cc1`,
 `as`) that translate the same code again and again. The code cache keeps
 translated blocks on disk and installs them in later processes.
 
-The cache is on by default (`EnableCodeCachingWIP=1`, `CodeCacheScope=rootfs`).
+The cache is on by default (`EnableCodeCachingWIP=1`, `CodeCacheScope=home`).
 Turn it off with:
 
 ```
 POWERARM_ENABLECODECACHINGWIP=0
 ```
 
-`rootfs` writes caches for files under the configured RootFS, and `all` for
-every executable mapping. The cache lives in `$POWERARM_APP_CACHE_LOCATION/cache/`
+`rootfs` writes caches for files under the configured RootFS and its overlay,
+`home` (the default) for those and every file under `$HOME`, and `all` for
+every executable mapping. See [Scope](#scope-which-files-are-cached) for why
+`home` is the default. The cache lives in `$POWERARM_APP_CACHE_LOCATION/cache/`
 (default `$XDG_CACHE_HOME/powerarm/cache/`) and is capped at `CodeCacheMaxSize`
 MiB (default 2048, `POWERARM_CODECACHEMAXSIZE`). `POWERARM_CODECACHESTATS=1`
 prints each process's counters to stderr. The SMC modes that the cache cannot
@@ -178,7 +180,7 @@ now runs only for `POWERARM_SERVERCODECACHE=1`.
 `Scripts/powerarm/check-code-cache.sh BUILD_DIR` runs these checks (75 s):
 
 - **Parallel:** 16 parallel `gcc -O2 -c` sharing one cold cache, then warm.
-  The objects are identical to cache-off objects, 2.7M blocks load, no entry
+  The objects are identical to cache-off objects, 1.3M blocks load, no entry
   fails its hash, and no temp file or ninth segment is left.
 - **ISA 3.0:** `disableisa30` on the same directory loads nothing from the
   ISA 3.0 cache (checked with the directory read-only), writes a second config
@@ -187,7 +189,7 @@ now runs only for `POWERARM_SERVERCODECACHE=1`.
   code.
 - **Forged:** the old binary's cache is renamed to the new identity, and its
   block is rejected on the guest bytes.
-- **Corrupt:** one code byte is flipped in every `cc1` block. 2.3M entries are
+- **Corrupt:** one code byte is flipped in every `cc1` block. 1.2M entries are
   rejected and the objects are still identical.
 - **SMC:** a guest patches its own code after first use, and before first use,
   in cold and warm runs.
@@ -196,6 +198,18 @@ now runs only for `POWERARM_SERVERCODECACHE=1`.
   links libraries it only initialises compiles fewer than 10 blocks. The
   program closes its stderr before exiting, and the counters still reach the
   log.
+- **lld:** two lld-linked programs, built with the host's `clang` and `ld.lld`
+  against the rootfs, compile none of their own blocks warm: one with lld's
+  default layout (text 64K-congruent at a file offset whose 4K rounding is not
+  64K-aligned, the Claude CLI's case) and one linked `-z max-page-size=4096`
+  (only 4K-congruent). Their own functions sit 128K from any other segment,
+  and each prints their address range so the check counts only those. Before
+  G1 all 20 of those blocks were compiled again by every warm run on a 64K
+  host. Skipped when `clang` or `ld.lld` is missing.
+
+Every process runs with `POWERARM_PORTABLE=1`, so the `cc1` and `as` that
+`gcc` execs run on the build under test rather than on whatever build binfmt
+has registered (until 2026-09-18 they ran on the stable install).
 
 Gates on the merged tree (892c0a2c9):
 
@@ -269,7 +283,8 @@ counters, and a measured quality delta on `cc1 -O2 lvm.c`.
 
 ## Default-on
 
-On since OPT2-CACHEDEFAULT (`CodeCacheScope=rootfs`). The earlier blockers:
+On since OPT2-CACHEDEFAULT (`CodeCacheScope=rootfs`; `home` since G1, see
+the next section). The earlier blockers:
 
 1. **Unbounded disk use:** fixed by the size cap, LRU eviction and the sweep of
    other builds' namespaces (see Design).
@@ -280,6 +295,124 @@ On since OPT2-CACHEDEFAULT (`CodeCacheScope=rootfs`). The earlier blockers:
 3. **First runs are slower:** still true for one long process that reuses
    nothing (a cold `cc1 -O2 lvm.c`). Builds come out ahead because later
    processes of the same binary load what earlier ones wrote.
+
+## Scope: which files are cached
+
+`CodeCacheScope=home` is the default since G1 (cold research,
+`research/cold-translation/`, 2026-09-18); it was `rootfs`. The apps POWERarm
+exists for are installed by the user, under `$HOME`: the Claude CLI in
+`~/.local/share/claude/versions/<version>`, code-server in
+`~/.cache/powerarm/code-server`, a VS Code tarball in `~/.local`. Under
+`rootfs` their own code, 84% of what code-server translates and nearly all of
+Claude's, was compiled again at every launch. `home` is the RootFS, its
+overlay (where guest pacman installs; `rootfs` includes it now too) and
+everything below `$HOME`.
+
+Measured on the G1 tree against its parent (f518d94a3, whose code is the
+current stable, c632e0bca), one cold/warm pair each, CPUs 40-47, private cache
+directories, code-server's child processes kept on the build under test with
+`POWERARM_PORTABLE=1`:
+
+| Workload | before, cold / warm | after, cold / warm |
+|---|---|---|
+| `claude --version` (2.1.276), whole process | 507 / 470 ms | 576 / **90** ms |
+| same, blocks compiled | 25.7k / 24.2k | 25.7k / **41** |
+| same, `map` phase | 31.8 / 49.5 ms | 0.8 / 0.9 ms |
+| same, max RSS | 335 / 313 MiB | 245 / **179** MiB |
+| code-server, launch to first `/healthz` 200 | 3.93 / 3.97 s | 3.88 / **2.19** s |
+| code-server, then `/` | 1.14 / 1.20 s | 1.36 / 1.07 s |
+| cache directory after the pair | 2.9 MB (Claude), 6.7 MB (code-server) | 47 MB, 179 MB |
+
+The cold Claude run pays 79 ms to save 25.6k blocks (12 ms before). The `map`
+row is the loader half of G1 (next section), and so is most of the RSS drop:
+with the loader change alone a cold run peaks at 177 MiB, and the cold run
+above adds the segments it builds to save.
+
+What was weighed:
+
+- **Size.** The cap (C16: `CodeCacheMaxSize`, 2 GiB, whole namespaces evicted
+  least recently used) bounds it. One launch of each app writes the sizes
+  above; a long Claude session writes more, in the same append-only segments.
+  Each Claude update is a new file, so a new namespace, and the old version's
+  ages out of the LRU. Apps used daily stay.
+- **Runtime-generated code is never cached, in any scope.** JSC's and V8's
+  JITs write anonymous memory; the cache only names file-backed code. That
+  code (V8's 14% of code-server's units, Bun's JIT tiers) still compiles at
+  every launch, which is G5's territory. Self-modifying file-backed code is
+  handled as for any cached file: every block's guest bytes are hashed when it
+  is installed, and normal SMC tracking covers it afterwards.
+- **Security does not change.** A block is installed only when the guest
+  bytes it was translated from hash to the stored value in this process, so a
+  cache file can only ever supply a translation of the bytes actually mapped.
+  The cache directory is per user (`$XDG_CACHE_HOME`), and whoever can write it
+  is already that user. Widening the scope adds that user's own files, not
+  new writers.
+- **Why not `all`.** It also takes `/tmp`, build trees and memfd-backed
+  code. A rebuilt test binary is a new namespace every time, and a memfd
+  (`/memfd:... (deleted)`, a new inode per process, as in .NET's double-mapped
+  JIT) can never be reused, yet each costs save time and pushes useful
+  namespaces out of the LRU. `all` stays available for apps installed
+  system-wide, under `/opt` for example.
+- **Paths are compared resolved** (they come from `/proc/self/fd`), against
+  both `$HOME` and its resolved form. A directory reached from `$HOME`
+  through a symlink that leaves it is out of scope: on the POWER9,
+  `~/Development` is a link to `/mnt/arch/home/...`, so test binaries there
+  stay uncached, as before.
+
+## 64K hosts: lld-linked ELFs (G1)
+
+AArch64 linkers (lld, GNU ld) default to a 64K max-page-size, so an ELF's
+segments are 64K-congruent (`p_vaddr = p_offset mod 64K`), but their offsets
+are only 4K-aligned. The ELF loader (`ELFCodeLoader.h`, `MapFile`) rounded
+each segment to the 4K guest page, and on a 64K host the resulting offset
+could not be mapped, so the segment went through the anon+`pread` fallback.
+That was every lld-linked executable whose text starts past the first 64K of
+the file, the Claude CLI's 63 MB text and 146 MB data included. Its text was
+anonymous memory: no file for the cache to name, no load, no save, 32-50 ms of
+`pread` per launch and ~200 MB of private RSS.
+
+Now, on a host page larger than 4K:
+
+- a **host-congruent** segment is a real file mapping from the host page that
+  holds `p_vaddr` and the matching host-aligned offset, which is what a 64K
+  kernel's own binfmt_elf does. Host pages an earlier segment of the same ELF
+  already materialised are kept (their bytes and protections), and this
+  segment's own bytes are read into them;
+- a segment that is **only 4K-congruent** (`-z max-page-size=4096`) still
+  gets the anon+`pread` copy, and the copy is then tracked as the private file
+  mapping it stands in for (`TrackFileBackedCopy`), the same tracking
+  `GranuleMemory::Mmap` gives the guest's own sub-granule file mappings. The
+  cache keys blocks by guest offset from the file's load base and hashes the
+  guest bytes of every block it installs, so how the bytes got there does not
+  matter. Code in host pages it shares with a writable segment is still
+  recompiled when those writes invalidate it (the check's 4k program: 8
+  blocks of PLT and `.fini`).
+
+`InferMappingBaseAddress` accepts host-rounded mapping offsets, so both
+mappings, and the guest ld.so's own (it rounds to `AT_PAGESZ`, the host page),
+find their file's resource directly. On a 4K host none of this runs: the
+`MatchesGuest()` path of `MapFile` is the old one.
+
+## AOT for apps (G1c): plan, not built
+
+Measured once: `POWERARM_AOTTRANSLATE=entries` over the Claude ELF finds 3,636
+seeds in 0.14 s (6 MB), and the first `--version` after it loads 136 of them
+and still compiles 25.5k blocks. Bun ships stripped: only `.dynsym` and the
+`.eh_frame_hdr` FDEs are left to seed from, and neither reaches the code a
+launch runs. Seeding from symbols is the wrong tool for these apps.
+
+What would make an app's first launch warm is a warm-up run at install:
+
+1. The port's packaging runs one representative launch under the emulator the
+   user runs (the stable install, through binfmt) and the default cache: the
+   Claude installer after writing `versions/<v>` runs `claude --version`; the
+   VS Code or code-server unpack starts the server, waits for `/healthz` and
+   stops it with SIGTERM (a process killed by SIGKILL saves nothing).
+2. A promote gives the emulator a new ConfigId and makes every app cold again,
+   so `promote-powerarm-stable.sh` re-runs the registered warm-ups (a list in
+   the config directory, one command per app) after re-registering binfmt.
+3. Still worth measuring: mode `entries` over code-server's `node`, which
+   keeps a large `.dynsym`, as a complement to the warm-up.
 
 ## Ahead-of-time translation (Q1)
 
