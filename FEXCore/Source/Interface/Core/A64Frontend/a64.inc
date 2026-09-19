@@ -498,9 +498,9 @@ INST(FMINNMP_pair_2,         "FMINNMP (scalar)",                          "01111
 INST(FMINP_pair_2,           "FMINP (scalar)",                            "011111101z110000111110nnnnnddddd")
 
 // Data Processing - FP and SIMD - SIMD Scalar three different
-//INST(SQDMLAL_vec_1,          "SQDMLAL, SQDMLAL2 (vector)",                "01011110zz1mmmmm100100nnnnnddddd")
-//INST(SQDMLSL_vec_1,          "SQDMLSL, SQDMLSL2 (vector)",                "01011110zz1mmmmm101100nnnnnddddd")
-//INST(SQDMULL_vec_1,          "SQDMULL, SQDMULL2 (vector)",                "01011110zz1mmmmm110100nnnnnddddd")
+INST(SQDMLAL_vec_1,          "SQDMLAL, SQDMLAL2 (vector)",                "01011110zz1mmmmm100100nnnnnddddd")
+INST(SQDMLSL_vec_1,          "SQDMLSL, SQDMLSL2 (vector)",                "01011110zz1mmmmm101100nnnnnddddd")
+INST(SQDMULL_vec_1,          "SQDMULL, SQDMULL2 (vector)",                "01011110zz1mmmmm110100nnnnnddddd")
 
 // Data Processing - FP and SIMD - SIMD Scalar three same
 INST(SQADD_1,                "SQADD",                                     "01011110zz1mmmmm000011nnnnnddddd")
@@ -510,7 +510,7 @@ INST(CMGE_reg_1,             "CMGE (register)",                           "01011
 INST(SSHL_1,                 "SSHL",                                      "01011110zz1mmmmm010001nnnnnddddd")
 INST(SQSHL_reg_1,            "SQSHL (register)",                          "01011110zz1mmmmm010011nnnnnddddd")
 INST(SRSHL_1,                "SRSHL",                                     "01011110zz1mmmmm010101nnnnnddddd")
-//INST(SQRSHL_1,               "SQRSHL",                                    "01011110zz1mmmmm010111nnnnnddddd")
+INST(SQRSHL_1,               "SQRSHL",                                    "01011110zz1mmmmm010111nnnnnddddd")
 INST(ADD_1,                  "ADD (vector)",                              "01011110zz1mmmmm100001nnnnnddddd")
 INST(CMTST_1,                "CMTST",                                     "01011110zz1mmmmm100011nnnnnddddd")
 INST(SQDMULH_vec_1,          "SQDMULH (vector)",                          "01011110zz1mmmmm101101nnnnnddddd")
@@ -521,7 +521,7 @@ INST(CMHS_1,                 "CMHS (register)",                           "01111
 INST(USHL_1,                 "USHL",                                      "01111110zz1mmmmm010001nnnnnddddd")
 INST(UQSHL_reg_1,            "UQSHL (register)",                          "01111110zz1mmmmm010011nnnnnddddd")
 INST(URSHL_1,                "URSHL",                                     "01111110zz1mmmmm010101nnnnnddddd")
-//INST(UQRSHL_1,               "UQRSHL",                                    "01111110zz1mmmmm010111nnnnnddddd")
+INST(UQRSHL_1,               "UQRSHL",                                    "01111110zz1mmmmm010111nnnnnddddd")
 INST(SUB_1,                  "SUB (vector)",                              "01111110zz1mmmmm100001nnnnnddddd")
 INST(CMEQ_reg_1,             "CMEQ (register)",                           "01111110zz1mmmmm100011nnnnnddddd")
 INST(SQRDMULH_vec_1,         "SQRDMULH (vector)",                         "01111110zz1mmmmm101101nnnnnddddd")
@@ -553,8 +553,8 @@ INST(UCVTF_fix_1,            "UCVTF (vector, fixed-point)",               "01111
 INST(FCVTZU_fix_1,           "FCVTZU (vector, fixed-point)",              "011111110IIIIiii111111nnnnnddddd")
 
 // Data Processing - FP and SIMD - SIMD Scalar x indexed element
-//INST(SQDMLAL_elt_1,          "SQDMLAL, SQDMLAL2 (by element)",            "01011111zzLMmmmm0011H0nnnnnddddd")
-//INST(SQDMLSL_elt_1,          "SQDMLSL, SQDMLSL2 (by element)",            "01011111zzLMmmmm0111H0nnnnnddddd")
+INST(SQDMLAL_elt_1,          "SQDMLAL, SQDMLAL2 (by element)",            "01011111zzLMmmmm0011H0nnnnnddddd")
+INST(SQDMLSL_elt_1,          "SQDMLSL, SQDMLSL2 (by element)",            "01011111zzLMmmmm0111H0nnnnnddddd")
 INST(SQDMULL_elt_1,          "SQDMULL, SQDMULL2 (by element)",            "01011111zzLMmmmm1011H0nnnnnddddd")
 INST(SQDMULH_elt_1,          "SQDMULH (by element)",                      "01011111zzLMmmmm1100H0nnnnnddddd")
 INST(SQRDMULH_elt_1,         "SQRDMULH (by element)",                     "01011111zzLMmmmm1101H0nnnnnddddd")
@@ -768,8 +768,8 @@ INST(UABDL,                  "UABDL, UABDL2",                             "0Q101
 INST(UMLAL_vec,              "UMLAL, UMLAL2 (vector)",                    "0Q101110zz1mmmmm100000nnnnnddddd")
 INST(UMLSL_vec,              "UMLSL, UMLSL2 (vector)",                    "0Q101110zz1mmmmm101000nnnnnddddd")
 INST(UMULL_vec,              "UMULL, UMULL2 (vector)",                    "0Q101110zz1mmmmm110000nnnnnddddd")
-//INST(SQDMLAL_vec_2,          "SQDMLAL, SQDMLAL2 (vector)",                "0Q001110zz1mmmmm100100nnnnnddddd")
-//INST(SQDMLSL_vec_2,          "SQDMLSL, SQDMLSL2 (vector)",                "0Q001110zz1mmmmm101100nnnnnddddd")
+INST(SQDMLAL_vec_2,          "SQDMLAL, SQDMLAL2 (vector)",                "0Q001110zz1mmmmm100100nnnnnddddd")
+INST(SQDMLSL_vec_2,          "SQDMLSL, SQDMLSL2 (vector)",                "0Q001110zz1mmmmm101100nnnnnddddd")
 INST(SQDMULL_vec_2,          "SQDMULL, SQDMULL2 (vector)",                "0Q001110zz1mmmmm110100nnnnnddddd")
 
 // Data Processing - FP and SIMD - SIMD three same
@@ -783,7 +783,7 @@ INST(CMGE_reg_2,             "CMGE (register)",                           "0Q001
 INST(SSHL_2,                 "SSHL",                                      "0Q001110zz1mmmmm010001nnnnnddddd")
 INST(SQSHL_reg_2,            "SQSHL (register)",                          "0Q001110zz1mmmmm010011nnnnnddddd")
 INST(SRSHL_2,                "SRSHL",                                     "0Q001110zz1mmmmm010101nnnnnddddd")
-//INST(SQRSHL_2,               "SQRSHL",                                    "0Q001110zz1mmmmm010111nnnnnddddd")
+INST(SQRSHL_2,               "SQRSHL",                                    "0Q001110zz1mmmmm010111nnnnnddddd")
 INST(SMAX,                   "SMAX",                                      "0Q001110zz1mmmmm011001nnnnnddddd")
 INST(SMIN,                   "SMIN",                                      "0Q001110zz1mmmmm011011nnnnnddddd")
 INST(SABD,                   "SABD",                                      "0Q001110zz1mmmmm011101nnnnnddddd")
@@ -824,7 +824,7 @@ INST(CMHS_2,                 "CMHS (register)",                           "0Q101
 INST(USHL_2,                 "USHL",                                      "0Q101110zz1mmmmm010001nnnnnddddd")
 INST(UQSHL_reg_2,            "UQSHL (register)",                          "0Q101110zz1mmmmm010011nnnnnddddd")
 INST(URSHL_2,                "URSHL",                                     "0Q101110zz1mmmmm010101nnnnnddddd")
-//INST(UQRSHL_2,               "UQRSHL",                                    "0Q101110zz1mmmmm010111nnnnnddddd")
+INST(UQRSHL_2,               "UQRSHL",                                    "0Q101110zz1mmmmm010111nnnnnddddd")
 INST(UMAX,                   "UMAX",                                      "0Q101110zz1mmmmm011001nnnnnddddd")
 INST(UMIN,                   "UMIN",                                      "0Q101110zz1mmmmm011011nnnnnddddd")
 INST(UABD,                   "UABD",                                      "0Q101110zz1mmmmm011101nnnnnddddd")
@@ -893,9 +893,9 @@ INST(FCVTZU_fix_2,           "FCVTZU (vector, fixed-point)",              "0Q101
 
 // Data Processing - FP and SIMD - SIMD vector x indexed element
 INST(SMLAL_elt,              "SMLAL, SMLAL2 (by element)",                "0Q001111zzLMmmmm0010H0nnnnnddddd")
-//INST(SQDMLAL_elt_2,          "SQDMLAL, SQDMLAL2 (by element)",            "0Q001111zzLMmmmm0011H0nnnnnddddd")
+INST(SQDMLAL_elt_2,          "SQDMLAL, SQDMLAL2 (by element)",            "0Q001111zzLMmmmm0011H0nnnnnddddd")
 INST(SMLSL_elt,              "SMLSL, SMLSL2 (by element)",                "0Q001111zzLMmmmm0110H0nnnnnddddd")
-//INST(SQDMLSL_elt_2,          "SQDMLSL, SQDMLSL2 (by element)",            "0Q001111zzLMmmmm0111H0nnnnnddddd")
+INST(SQDMLSL_elt_2,          "SQDMLSL, SQDMLSL2 (by element)",            "0Q001111zzLMmmmm0111H0nnnnnddddd")
 INST(MUL_elt,                "MUL (by element)",                          "0Q001111zzLMmmmm1000H0nnnnnddddd")
 INST(SMULL_elt,              "SMULL, SMULL2 (by element)",                "0Q001111zzLMmmmm1010H0nnnnnddddd")
 INST(SQDMULL_elt_2,          "SQDMULL, SQDMULL2 (by element)",            "0Q001111zzLMmmmm1011H0nnnnnddddd")

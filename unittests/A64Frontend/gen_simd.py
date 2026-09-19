@@ -1761,6 +1761,71 @@ def gen_simd_dotmul(p):
             p.vcase([f"pmul v{d}.{t}, v{n}.{t}, v{m}.{t}"], {d: p.vec(), n: lane_vec(p, 8), m: p.vec()})
 
 
+def shift_count_vec(p, bits):
+    """Rm for a shift by register: each lane's signed low byte is a count around the lane width
+    (and the byte's extremes); the bits above the low byte are random and must be ignored."""
+    counts = [-128, -bits - 1, -bits, -bits + 1, -1, 0, 1, 2, bits - 2, bits - 1, bits, bits + 1, 127]
+    lanes = []
+    for _ in range(128 // bits):
+        c = p.rng.choice(counts) if p.rng.random() < 0.7 else p.rng.randrange(-128, 128)
+        upper = p.rng.getrandbits(bits - 8) << 8 if bits > 8 else 0
+        lanes.append(upper | (c & 0xFF))
+    return lanes_reg(lanes, bits)
+
+
+def gen_simd_shiftsat(p):
+    """SQSHL/UQSHL/SRSHL/URSHL/SQRSHL/UQRSHL by register (vector and scalar), SUQADD/USQADD, and
+    SQDMULL/SQDMLAL/SQDMLSL (vector, scalar, by element, the "2" forms). FPSR.QC is cleared before
+    every case, so each saturation (and each lane that must not saturate) is checked."""
+    clr = "msr fpsr, xzr"
+    scal = [("b", 8), ("h", 16), ("s", 32), ("d", 64)]
+    for _ in range(2000):
+        d, n, m = p.vregs(3)
+        kind = p.rng.randrange(5)
+        if kind <= 1:
+            op = p.rng.choice(["sqshl", "uqshl", "srshl", "urshl", "sqrshl", "uqrshl"])
+            scalar = p.rng.random() < 0.3
+            if scalar:
+                r, bits = ("d", 64) if op in ("srshl", "urshl") else p.rng.choice(scal)
+                v = {d: p.vec(), n: lane_vec(p, bits), m: shift_count_vec(p, bits)}
+                p.vcase([clr, f"{op} {r}{d}, {r}{n}, {r}{m}"], v)
+            else:
+                vt, bits, q = vtypes(p)
+                v = {d: p.vec(), n: lane_vec(p, bits), m: shift_count_vec(p, bits)}
+                p.vcase([clr, f"{op} v{d}.{vt}, v{n}.{vt}, v{m}.{vt}"], v)
+        elif kind == 2:
+            op = p.rng.choice(["suqadd", "usqadd"])
+            if p.rng.random() < 0.3:
+                r, bits = p.rng.choice(scal)
+                p.vcase([clr, f"{op} {r}{d}, {r}{n}"], {d: lane_vec(p, bits), n: lane_vec(p, bits)})
+            else:
+                vt, bits, q = vtypes(p)
+                p.vcase([clr, f"{op} v{d}.{vt}, v{n}.{vt}"], {d: lane_vec(p, bits), n: lane_vec(p, bits)})
+        else:
+            op = p.rng.choice(["sqdmull", "sqdmlal", "sqdmlsl"])
+            bits = p.rng.choice([16, 32])
+            e, we = ("h", "s") if bits == 16 else ("s", "d")
+            nt, nt2, wt = {16: ("4h", "8h", "4s"), 32: ("2s", "4s", "2d")}[bits]
+            mreg = p.rng.choice([r for r in VREGS if r < 16]) if bits == 16 else m
+            if mreg in (d, n):
+                mreg = [r for r in VREGS if r < 16 and r not in (d, n)][0]
+            idx = p.rng.randrange(128 // bits)
+            v = {d: lane_vec(p, bits * 2), n: lane_vec(p, bits), m: lane_vec(p, bits), mreg: lane_vec(p, bits)}
+            form = p.rng.randrange(6)
+            if form == 0:
+                p.vcase([clr, f"{op} v{d}.{wt}, v{n}.{nt}, v{m}.{nt}"], v)
+            elif form == 1:
+                p.vcase([clr, f"{op}2 v{d}.{wt}, v{n}.{nt2}, v{m}.{nt2}"], v)
+            elif form == 2:
+                p.vcase([clr, f"{op} {we}{d}, {e}{n}, {e}{m}"], v)
+            elif form == 3:
+                p.vcase([clr, f"{op} v{d}.{wt}, v{n}.{nt}, v{mreg}.{e}[{idx}]"], v)
+            elif form == 4:
+                p.vcase([clr, f"{op}2 v{d}.{wt}, v{n}.{nt2}, v{mreg}.{e}[{idx}]"], v)
+            else:
+                p.vcase([clr, f"{op} {we}{d}, {e}{n}, v{mreg}.{e}[{idx}]"], v)
+
+
 GROUPS = {
     "simd_loadstore": gen_simd_loadstore,
     "simd_copy": gen_simd_copy,
@@ -1787,6 +1852,7 @@ GROUPS = {
     "simd_rbit": gen_simd_rbit,
     "simd_recip": gen_simd_recip,
     "simd_dotmul": gen_simd_dotmul,
+    "simd_shiftsat": gen_simd_shiftsat,
 }
 
 

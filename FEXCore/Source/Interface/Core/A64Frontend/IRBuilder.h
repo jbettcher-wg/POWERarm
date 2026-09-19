@@ -263,6 +263,14 @@ public:
   bool UADDLV(uint32_t Word); bool SADDLV(uint32_t Word); bool SMAXV(uint32_t Word); bool SMINV(uint32_t Word);
   bool CLZ_asimd(uint32_t Word); bool CLS_asimd(uint32_t Word); bool UDOT_vec(uint32_t Word); bool SHLL(uint32_t Word);
   bool SDOT_vec(uint32_t Word); bool UDOT_elt(uint32_t Word); bool SDOT_elt(uint32_t Word); bool PMUL(uint32_t Word);
+  bool SQSHL_reg_2(uint32_t Word); bool UQSHL_reg_2(uint32_t Word); bool SRSHL_2(uint32_t Word); bool URSHL_2(uint32_t Word);
+  bool SQRSHL_2(uint32_t Word); bool UQRSHL_2(uint32_t Word);
+  bool SQSHL_reg_1(uint32_t Word); bool UQSHL_reg_1(uint32_t Word); bool SRSHL_1(uint32_t Word); bool URSHL_1(uint32_t Word);
+  bool SQRSHL_1(uint32_t Word); bool UQRSHL_1(uint32_t Word);
+  bool SUQADD_1(uint32_t Word); bool SUQADD_2(uint32_t Word); bool USQADD_1(uint32_t Word); bool USQADD_2(uint32_t Word);
+  bool SQDMULL_vec_1(uint32_t Word); bool SQDMULL_vec_2(uint32_t Word); bool SQDMLAL_vec_1(uint32_t Word); bool SQDMLAL_vec_2(uint32_t Word);
+  bool SQDMLSL_vec_1(uint32_t Word); bool SQDMLSL_vec_2(uint32_t Word); bool SQDMULL_elt_1(uint32_t Word); bool SQDMULL_elt_2(uint32_t Word);
+  bool SQDMLAL_elt_1(uint32_t Word); bool SQDMLAL_elt_2(uint32_t Word); bool SQDMLSL_elt_1(uint32_t Word); bool SQDMLSL_elt_2(uint32_t Word);
   bool FMULX_vec_2(uint32_t Word); bool FMULX_vec_4(uint32_t Word); bool FMULX_elt_2(uint32_t Word); bool FMULX_elt_4(uint32_t Word);
   // Cryptographic extension and CRC32 (TranslateCrypto.cpp).
   bool AESE(uint32_t Word); bool AESD(uint32_t Word); bool AESMC(uint32_t Word); bool AESIMC(uint32_t Word);
@@ -480,6 +488,9 @@ private:
   bool SIMDSignedAcrossLanesMinMax(uint32_t Word, bool IsMax);
   bool SIMDCountLeading(uint32_t Word, bool Sign);
   bool SIMDDotProduct(uint32_t Word, bool Signed, bool ByElement);
+  bool SIMDShiftByRegister(uint32_t Word, bool Signed, bool Rounding, bool Saturating, bool Scalar);
+  bool SIMDSaturatingAccumulate(uint32_t Word, bool SignedAcc, bool Scalar);
+  bool SIMDDoublingMultiplyLong(uint32_t Word, int Accumulate, bool Scalar, bool ByElement);
 
   struct JumpTargetInfo {
     Ref BlockEntry;
