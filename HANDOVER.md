@@ -273,3 +273,18 @@ CAS five times as heavily in proportion.
     `cd /` in the guest it links all 21, and `sans-serif`/`serif`/`monospace` resolve to
     Noto Sans/Noto Serif/JetBrainsMono like the host. Harmless failures in a user namespace:
     sysusers, the systemctl reloads, and fc-cache's system cache (host `/var/cache`).
+18. **Warm G2 landed** (2db45e763): A64 CMP/SUBS/CMN/ADDS fuse into B.cond and the CSEL family,
+    W and X. Warm cc1: instructions:u 21.90 -> 21.25 G (-3.0%), cycles -4.5%; warm slice
+    20.95 s (was 21.4-21.6). That's below the 6-10% estimate because 54% of compare+branch pairs
+    have a leg leaving the unit, which keeps the flags live. **Next lever, G2(c):** record each
+    unit's entry NZCV liveness, so exit legs go through `thunk{recompute; b target}` and the
+    linker branches straight to targets that don't read flags. It touches link and cache records.
+    Recomputing on the exit leg directly (`sinking.patch` in the agent's scratch) cut
+    instructions 1.4% but cost 1.2-2.6% cycles. G2 also fixed two signal bugs (RIP table zero-
+    extended negative offsets; a back-edge drain point reported the branch, not its target).
+    Tests: cmpbranch (1954 cases), sigpreempt.
+19. **Signal handler register edits are ignored when the handler leaves the PC unchanged**
+    (`RestoreFrame_Arm64`, found by the G2 agent, not fixed). A handler that fixes up registers
+    and resumes at the same PC (emulating an instruction, or patching x0 after a fault) loses its
+    edits. It's a correctness bug for runtimes with SIGSEGV/SIGILL handlers (JVMs, V8/JSC guard
+    pages, Wine-style emulation).
