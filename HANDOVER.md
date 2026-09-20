@@ -170,12 +170,14 @@ wall clock, and keep correctness gates exhaustive.
 **Already done, do not redo:** cold G1(a,b) (lld/64K-congruent apps cached, `CodeCacheScope=home`;
 (c) AOT-at-install is still only a plan in CODE-CACHE.md); warm G2(a,b) (compare+branch and
 compare+select fusion, with the chained-compare fix) -- warm `cc1` 21.90 -> 21.25 G instructions,
-cycles -4.5%, warm slice 20.95 s; the NEON gap closure; the signal-frame fixes; the RLIMIT_AS,
+cycles -4.5%, warm slice 20.95 s; warm G1(a) (the shared spill stubs moved to a context-lifetime
+island, 10245fbbf) -- warm `cc1` cycles -2.8%, icache misses 336 -> 300 M, cache footprint
+189 -> 155 M, warm slice 20.15 s; the NEON gap closure; the signal-frame fixes; the RLIMIT_AS,
 /proc, DC CIVAC, RBIT and VectorImm fixes.
 
 | # | Goal | Source | Estimate | Effort |
 |---|---|---|---|---|
-| 1 | **Warm G1, cold bytes out of the hot stream**: per-code-buffer `SpillStaticRegs` routine, link thunks/records/unlinked exit legs/tail tables in a cold region. The census puts 35% of emitted bytes in link thunks and records and 32.5% in per-unit spill copies; hot stream 102 -> ~15 MB | warm §7 G1 | -3-8% cycles; `cc1` 2.65x -> ~2.5x the Pi; icache misses (350 M baseline) | medium |
+| 1 | **Warm G1, cold bytes out of the hot stream** (a) done 10245fbbf; remaining: link thunks/records (b), unlinked exit legs (c), tail tables (d) in a cold region. The census puts 35% of emitted bytes in link thunks and records; hot stream 102 -> ~15 MB after all of G1 | warm §7 G1 | (a) measured -2.8% cycles, icache -11%, footprint -18%, no-slot stall flat (bodies carry it); (b)-(d) carry the rest of the 3-8% | medium |
 | 2 | **Warm G3, cheaper paired calls and returns**: pin `callret_sp` in a host GPR, guard-page overflow on the push, trampoline address as a relocated constant. BL and RET are 13 and 14 executed instructions today | warm §7 G3 | -4-7% | medium |
 | 3 | **Warm G4, copy and zero-extension debris**: fold the `MOV` alias in the frontend, cut the `mr` sources (SRA coalescing) and `clrldi ,32`. `mr` alone is 7.1% of executed host instructions | warm §7 G4 | -3-5% | medium |
 | 4 | **Warm G2(c), entry NZCV liveness**: exit legs go through `thunk{recompute; b target}` and the linker branches straight to targets that do not read flags. Finishes the fusion work: today 54% of compare+branch pairs keep their flags live | warm §7 G2 | the rest of the 6-10% G2 estimate | medium-high: touches link and cache records |
