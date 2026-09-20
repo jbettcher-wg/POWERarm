@@ -21,18 +21,21 @@ python3 "$here/gen_simd.py" "$out"
 cp "$here"/*.S "$out"/
 
 cd "$out"
+# A large file-backed RW segment, for the destructive-madvise regression
+# test; madvfile.S incbins it, so it must exist before the build loop.
+python3 "$here/gen_blob.py" "$out/madvfile_blob.bin" $((24 * 1024 * 1024))
 # A test may carry extra link flags on a `// LDFLAGS:` line.
 for src in *.S; do
+  # madvfile.S defines the blob's symbols and is linked with madvfile.c
+  # below; building it alone here would produce a stray static binary.
   [ "$src" = common.S ] && continue
+  [ "$src" = madvfile.S ] && continue
   gcc -march=armv8.2-a+fp16+crypto+crc+dotprod -nostdlib -static $(sed -n 's|^// LDFLAGS: ||p' "$src") -o "${src%.S}" "$src"
 done
-
-# A large file-backed RW segment, for the destructive-madvise regression test.
-python3 "$here/gen_blob.py" "$out/madvfile_blob.bin" $((24 * 1024 * 1024))
 gcc -O2 -o madvfile "$here/madvfile.c" "$here/madvfile.S"
 
 # Static libc programs.
-corpus="hello printf_float strmem fpmath lse lseminmax lsecasp litmus nosve cntvct madvfile vdso vdso_syscalls hlt thunk_callback hoststack procdirfd dcmaint forkexec hostfault"
+corpus="hello printf_float strmem fpmath lse lseminmax lsecasp litmus nosve cntvct vdso vdso_syscalls hlt thunk_callback hoststack procdirfd dcmaint forkexec hostfault"
 for t in $corpus; do
   gcc -static -O2 -o "$t" "$here/$t.c" -lm
 done
