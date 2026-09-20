@@ -165,6 +165,48 @@ CAS five times as heavily in proportion.
 - **Commits:** author is the owner only, no AI attribution anywhere. A commit that doesn't build
   says so in its message.
 
+## Next optimizations, in order (2026-09-19)
+
+The two research docs rank the goals: `docs/powerarm/research/warm-codegen/WARM-CODEGEN-RESEARCH.md`
+(§7, emitted-code quality) and `docs/powerarm/research/cold-translation/COLD-TRANSLATION-RESEARCH.md`
+(§5, translation cost). Their estimates and baselines are recorded; do not re-derive them. Measure the
+new thing once, prefer deterministic metrics (`instructions:u`, emitted bytes, block counts) over
+wall clock, and keep correctness gates exhaustive.
+
+**Already done, do not redo:** cold G1(a,b) (lld/64K-congruent apps cached, `CodeCacheScope=home`;
+(c) AOT-at-install is still only a plan in CODE-CACHE.md); warm G2(a,b) (compare+branch and
+compare+select fusion, with the chained-compare fix) -- warm `cc1` 21.90 -> 21.25 G instructions,
+cycles -4.5%, warm slice 20.95 s; the NEON gap closure; the signal-frame fixes; the RLIMIT_AS,
+/proc, DC CIVAC, RBIT and VectorImm fixes.
+
+| # | Goal | Source | Estimate | Effort |
+|---|---|---|---|---|
+| 1 | **Warm G1, cold bytes out of the hot stream**: per-code-buffer `SpillStaticRegs` routine, link thunks/records/unlinked exit legs/tail tables in a cold region. The census puts 35% of emitted bytes in link thunks and records and 32.5% in per-unit spill copies; hot stream 102 -> ~15 MB | warm §7 G1 | -3-8% cycles; `cc1` 2.65x -> ~2.5x the Pi; icache misses (350 M baseline) | medium |
+| 2 | **Warm G3, cheaper paired calls and returns**: pin `callret_sp` in a host GPR, guard-page overflow on the push, trampoline address as a relocated constant. BL and RET are 13 and 14 executed instructions today | warm §7 G3 | -4-7% | medium |
+| 3 | **Warm G4, copy and zero-extension debris**: fold the `MOV` alias in the frontend, cut the `mr` sources (SRA coalescing) and `clrldi ,32`. `mr` alone is 7.1% of executed host instructions | warm §7 G4 | -3-5% | medium |
+| 4 | **Warm G2(c), entry NZCV liveness**: exit legs go through `thunk{recompute; b target}` and the linker branches straight to targets that do not read flags. Finishes the fusion work: today 54% of compare+branch pairs keep their flags live | warm §7 G2 | the rest of the 6-10% G2 estimate | medium-high: touches link and cache records |
+| 5 | **Warm G5, unit granularity re-sweep**: `RegionWindow`/`MaxLeaders` (`Decoder.cpp:155-156`) with the cache warm and G1 in place; duplication is 1.41x | warm §7 G5 | -3-6% warm, cold cost up | small |
+| 6 | **Cold G3, per-op cost cuts**: skip `DynVRLiveIn` for non-FPR units, a per-block flag-free bit to skip DFCE/fusion, hold the `CodeInvalidationMutex` guard once in `ExitFunctionLinkWithRecord` | cold §5 G3 | -3-5% and -2.7-3% of cold translation | small-medium |
+| 7 | **Cold G4, cache write off the exit path**: `fork()` writer after `TM.Stop`, or at least skip the segment sweep on the one-shot path | cold §5 G4 | `gcc -c empty.c` 20.6x -> ~18.5x | low-medium |
+| 8 | **Thunks**: ship the guest vDSO by default (item 7), then Vulkan/GL. Factorio spends 4.26 ms per frame in guest Mesa (`cpu-render`, item 24), which thunking removes from emulation entirely; GPU-bound work already runs at native speed unthunked | THUNKS-DESIGN.md | large on GPU apps, none on `cc1`/slice | medium |
+| 9 | **Cold G2, translate-ahead helper thread** for single-threaded cold work, with a per-thread staging buffer | cold §5 G2 | `gcc -c empty.c` 20.6x -> ~12-14x est. | high risk, weeks |
+| 10 | **Cold G5, cheap baseline tier for runtime-generated code.** Now has a motivating workload: Firefox hitches while browsing, and SpiderMonkey's JIT code is anonymous (never cached) and W^X (every patch invalidates translations). **Profile first**: `Scripts/powerarm/shmstats.py -- firefox <js-heavy url>` for the SMC and JIT-time share, plus the anonymous-code census in warm §8 | cold §5 G5 | JS runtimes only | very high; defer until the profile says |
+| 11 | **Warm G6, P1(b) in its cheap form**: the frontend carries the GPR value cache across intra-unit edges with edge stores | warm §7 G6 | -2-3% general; **crc32 2.04x -> ~1.3x**, vm -10-20% | medium |
+| 12 | **Warm G7**: THP for the code buffer, `nop` pad trimmed with G1 | warm §7 G7 | iTLB 2.2x -> ~1x; -1-2% | small |
+| 13 | **P7's last lever**: census of acquire/release-only RMWs across the reference set, then relax what the census allows | OPTIMIZATION-CHECKLIST P7 | small, compounding | small |
+| 14 | **Warm G8, the F/N series** | warm §7 G8 | invisible on this set (0.4% of instructions) | **blocked** on an FP-heavy benchmark and the anonymous-code census |
+
+**Not levers** (measured, recorded in the docs): spill/fill volume (0.02%), block formation, IR-walk
+merging, `FEX_O0`, lower `MaxInst`, RA cross-block liveness for cold, the dispatcher and lookup
+(<1% warm), async cache writes (C11) and background cache install (C12).
+
+**Correctness and compatibility queue** (not optimizations, but ahead of them when they block an
+app): LDXP/STXP/LDAXP/STLXP (item 22); SQRDMLAH/SQRDMLSH and advertising asimdrdm; advertise
+asimddp (item 22); FPCR.DN and FZ (item 14); the signal-frame fidelity items (item 23); glycin icons
+(item 21); Chromium's sandbox (item 16); the VS Code cache at 1.12 GB for one binary -- check whether
+its ~14 processes each save their own copy of the same blocks; and Factorio's warm launch taking 38 s
+to initialise against 27 s cold (suspect cache install cost, item 24).
+
 ## Open items, roughly in order
 
 1. ~~Memory-ordering (litmus) differential tests with Pi goldens.~~ **Done:**
