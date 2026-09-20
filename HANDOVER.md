@@ -51,24 +51,18 @@ cherry-pick; patches for them go in `docs/powerarm/outgoing-patches/fastppcx86/`
   FMAXV/FMINV/FMAXNMV/FMINNMV (the renderer died on FMINV). Remaining unimplemented-instruction
   reports are all feature probes that also SIGILL on an A76 (GCS/TPIDR2 MRS, MTE, SVE `cnt`,
   SME).
-- **Stable promoted to `c632e0bca`** (2026-09-18, binfmt re-registered, `check-binfmt-inode.sh`
-  OK), so binfmt-launched programs and guest children now have everything in the bullet above.
-  The first launches after the promote are cold (new cache config id).
-- **Next, in order:** warm G2 (A64 compare+branch fusion never fires; about a day,
-  `docs/powerarm/research/warm-codegen/`); cold G1 (MapFile 64K offsets, so lld-linked binaries
-  like Claude get code-cached, plus the CodeCacheScope default); ship the guest vDSO by default
-  (item 7); the P7 acquire/release RMW census (item 4, standard agent).
-- **End of 2026-09-18/19 session.** main has: G1 (lld apps cached, `home` cache scope), G2
+- **End of 2026-09-18/19 session** (the ranked queue for what comes next is its own section below). main has: G1 (lld apps cached, `home` cache scope), G2
   (compare fusion, on), the NEON gap closure, the signal-frame fixes (register edits at the same
   PC, fpsimd_context, RIP table, drain points), the RLIMIT_AS fixes (allocator skip + guest limit
   held until execve), the fault reporter that survives its own faults, the /proc host-only fix,
   DC CIVAC/CVAC/CVAP, RBIT, the VectorImm byte splat. Gate: A64Frontend 83 pass, 2 vDSO skips.
-  Firefox 156 and VS Code 1.138 both run with windows on the dev build. **Stable (binfmt) is
-  still the G1 build (`ada1b7bcc`)**: promote to bring all of the above, and Firefox, to
-  binfmt-launched programs, then re-register binfmt. Next candidates: glycin icons
-  (item 21), LDXP/STXP (item 22), G2(c) (item 18), the `setup-desktop.sh` installer (item 17).
-- **`powerarm-stable` is at `c632e0bca`** (promoted 2026-09-18, binfmt re-registered and
-  `check-binfmt-inode.sh` passing; `.prev` holds `c37536838`). Promoting is what moves binfmt-launched programs -- including
+  Firefox 156, VS Code 1.138 and Factorio 2.1.19 all run with windows, on stable since the
+  2026-09-19 promote. Launchers: `~/.local/bin/{code,firefox,factorio}` plus
+  `~/.local/share/applications/*-arm64.desktop`.
+- **`powerarm-stable` is at `12f845814`** (promoted 2026-09-19, binfmt re-registered and
+  `check-binfmt-inode.sh` passing; `.prev` holds the same binary from Jordan's own promote of the
+  G1 build). Everything in the session bullet above is therefore live for binfmt-launched
+  programs, including Firefox, VS Code and Factorio. Promoting is what moves binfmt-launched programs -- including
   the Claude CLI and any guest child process -- onto new work, and a promote MUST be followed by
   `sudo sh ~/Development/register-powerarm-binfmt.sh`, because binfmt pins the interpreter's inode
   and the promote gives it a new one. `powerarm-stable.prev` is kept for rollback.
