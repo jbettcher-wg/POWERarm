@@ -116,6 +116,39 @@ PPC64Dispatcher::PPC64Dispatcher(FEXCore::Context::ContextImpl* CTX)
 
   // Make the buffer read-only+executable after generation
   mprotect(Mem, DISPATCHER_CODE_SIZE, PROT_READ | PROT_EXEC);
+
+  // G1(a): the shared spill island. Emitted here (per-context, single-threaded,
+  // before any guest thread's InitThreadPointers) so the per-thread
+  // Pointers.SpillIsland{Exit,Link} slots written in InitThreadPointers below
+  // always see a valid, flushed island.
+  EmitSpillIsland();
+}
+
+void PPC64Dispatcher::EmitSpillIsland() {
+  // One small executable region for the two shared miss-leg spill stubs. Kept
+  // separate from the dispatcher's own mmap so the dispatcher's
+  // [DispatcherBegin, DispatcherEnd) range (used by IsAddressInDispatcher and
+  // the signal delegator's "not JIT, SRA already spilled" branch) does NOT
+  // include it — the island is the SRA spill itself and must be treated as
+  // "SRA may be live" (see CPUBackend::IsAddressInCodeBuffer).
+  constexpr size_t IslandSize = 4096;
+  void* Mem = mmap(nullptr, IslandSize, PROT_READ | PROT_WRITE | PROT_EXEC,
+                   MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+  LOGMAN_THROW_A_FMT(Mem != MAP_FAILED, "Failed to allocate the spill island");
+
+  // A second emitter: this dispatcher's own emitter is bound to its buffer.
+  PPC64EmitterBase IslandEmitter(CTX, Mem, IslandSize);
+  auto Stubs = IslandEmitter.EmitSpillStubs(offsetof(PPC64BlockLinkRecord, StubAddr));
+  const size_t Emitted = IslandEmitter.GetOffset();
+
+  FEXCore::ArchHelpers::PPC64::FlushICacheRange(Mem, Emitted);
+  mprotect(Mem, IslandSize, PROT_READ | PROT_EXEC);
+  FEXCore::Allocator::VirtualName("POWERarmSpillIsland", Mem, IslandSize);
+
+  SpillIslandBase    = reinterpret_cast<uint64_t>(Mem);
+  SpillIslandSize    = Emitted;
+  SpillIslandExitAddr = SpillIslandBase + Stubs.Exit;
+  SpillIslandLinkAddr = SpillIslandBase + Stubs.Link;
 }
 
 void PPC64Dispatcher::InitThreadPointers(FEXCore::Core::InternalThreadState* Thread) {
@@ -129,6 +162,13 @@ void PPC64Dispatcher::InitThreadPointers(FEXCore::Core::InternalThreadState* Thr
   // written into each PPC64BlockLinkRecord::StubAddr, so the thunk's
   // LinkPath ld reads it off the record.  Retiring the frame slot keeps
   // InternalThreadState within its 2-page budget.
+  // G1(a): the shared spill island's stub entry points. Identical in every
+  // thread (the island is context-lifetime); blocks reach them with
+  // `ld TMP1, <slot>(STATE); mtctr; bctr`, which survives the code cache
+  // relocating the block. Written after EmitSpillIsland (constructor), so
+  // both addresses are valid here.
+  Ptrs.SpillIslandExit = SpillIslandExitAddr;
+  Ptrs.SpillIslandLink = SpillIslandLinkAddr;
   Ptrs.ThreadStopHandlerSpillSRA = ThreadStopHandlerAddressSpillSRA;
   Ptrs.ThreadPauseHandlerSpillSRA = ThreadPauseHandlerAddressSpillSRA;
   Ptrs.GuestSignal_SIGILL        = GuestSignal_SIGILL_Address;

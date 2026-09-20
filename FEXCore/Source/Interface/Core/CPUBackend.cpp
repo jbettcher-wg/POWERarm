@@ -914,6 +914,16 @@ namespace CPU {
         return true;
       }
     }
+    // G1(a): the shared spill island. It is NOT a CodeBuffer (no block index)
+    // and is deliberately outside the dispatcher's [Begin,End) range, but it
+    // holds the SRA spill itself, so a signal landing mid-island must take the
+    // "SRA may be live" SpillSRA path exactly as a signal in a per-unit stub
+    // did. Async-signal-safe: the dispatcher pointer is context-lifetime and
+    // the range check is two plain loads.
+    auto* CTXImpl = static_cast<FEXCore::Context::ContextImpl*>(ThreadState->CTX);
+    if (CTXImpl->Dispatcher && CTXImpl->Dispatcher->IsAddressInSpillIsland(Address)) {
+      return true;
+    }
     return false;
   }
 

@@ -473,6 +473,25 @@ public:
   void SpillStaticRegs(GPR tmp);
   void FillStaticRegs(FillMode Mode = FillMode::All);
 
+  // G1(a): the two shared miss-leg spill stubs, emitted once into a dedicated
+  // "spill island" (PPC64Dispatcher) instead of being copied into every
+  // compile unit. Entry offsets from the emitter's cursor at call time:
+  struct SpillStubOffsets {
+    size_t Exit {}; // SpillStaticRegs + dispatch to Pointers.ExitFunctionLinker
+    size_t Link {}; // SpillStaticRegs + dispatch to record.StubAddr (TMP2=&record)
+  };
+  // Both stubs are position-independent: each loads its dispatch target at
+  // run time (the exit stub from the per-thread frame slot, the link stub
+  // off the block-link record in TMP2), so one copy serves every block and
+  // every code buffer, and a block that branches here via a frame-slot
+  // ld/mtctr/bctr needs no relocation when the code cache relocates it.
+  // `LinkStubAddrOffset` is offsetof(PPC64BlockLinkRecord, StubAddr) — passed
+  // in (not #included) so this helper stays free of the JIT-class header.
+  // Register contract at entry: TMP2 must hold &record for the link stub only;
+  // both stubs clobber TMP1 (and, inside SpillStaticRegs, TMP3 + f0, with
+  // TMP2 preserved through the f0 stash).
+  SpillStubOffsets EmitSpillStubs(size_t LinkStubAddrOffset);
+
   // -----------------------------------------------------------------------
   // XER.CA / XER.OV writes WITHOUT the serializing mtspr.
   //

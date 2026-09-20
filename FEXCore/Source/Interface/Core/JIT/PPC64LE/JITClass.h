@@ -754,21 +754,12 @@ private:
   };
   fextl::list<PendingJumpThunk> PendingJumpThunks;
 
-  // Shared miss-leg spill stubs, one pair per compile unit, emitted at the
-  // CompileCode tail next to the jump thunks and bound only when some exit
-  // used them. Every ExitFunction miss leg used to inline SpillStaticRegs
-  // (~90 instructions of cold code between hot blocks — the dominant static
-  // bloat in DSP-heavy Witcher 3 mixer blocks, 16 stvx + 16 std per exit);
-  // now a miss is a single `b` here. The spill must still execute inside the
-  // code buffer (IsAddressInCodeBuffer is the signal delegator's proxy for
-  // "SRA may be live"), which a tail stub satisfies just as well as an
-  // inline one. Labels are members (not locals) because the emitter's
-  // pending-fixup chain lives in the Label — see the COPY HAZARD note in
-  // CodeEmitter's Label. Reset alongside PendingJumpThunks each compile.
-  PPC64Emitter::Label SharedSpillExitLabel {};      // non-linkable: -> Pointers.ExitFunctionLinker
-  PPC64Emitter::Label SharedSpillLinkLabel {};      // linkable thunk tail: TMP2=&record -> record.StubAddr
-  bool SharedSpillExitUsed {};
-  bool SharedSpillLinkUsed {};
+  // G1(a): the miss-leg spill stubs are no longer per unit. Both live once in
+  // the context's spill island (PPC64Dispatcher::EmitSpillIsland) and every
+  // miss leg reaches its stub through a per-thread Pointers.SpillIsland{Exit,
+  // Link} slot via ld/mtctr/bctr — position-independent, so no per-unit bytes
+  // and no code-cache relocation. (They used to be a per-compile-unit pair
+  // here, the dominant static bloat in DSP-heavy blocks.)
 
   // Resolved once at construction: BlockLinking knob AND code caching off.
   // See the resolution site in JIT.cpp for the hard-gate rationale.

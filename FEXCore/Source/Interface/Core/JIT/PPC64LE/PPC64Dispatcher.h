@@ -59,6 +59,23 @@ public:
     return ExitFunctionLinkerWithRecordAddress;
   }
 
+  // G1(a): the shared spill island. One context-lifetime copy of the two
+  // miss-leg spill stubs that the JIT used to emit per compile unit. Emitted
+  // in the constructor (before any thread's InitThreadPointers), addressed by
+  // blocks through the per-thread Pointers.SpillIsland{Exit,Link} slots, and
+  // recognised by CPUBackend::IsAddressInCodeBuffer so a signal mid-island
+  // still takes the "SRA may be live" SpillSRA path.
+  uint64_t GetSpillIslandExitAddr() const {
+    return SpillIslandExitAddr;
+  }
+  uint64_t GetSpillIslandLinkAddr() const {
+    return SpillIslandLinkAddr;
+  }
+  // ASYNC-SIGNAL-SAFE: two plain loads and a range test.
+  bool IsAddressInSpillIsland(uintptr_t Address) const {
+    return SpillIslandBase != 0 && Address >= SpillIslandBase && Address < SpillIslandBase + SpillIslandSize;
+  }
+
 private:
   FEXCore::Context::ContextImpl* CTX;
 
@@ -115,7 +132,19 @@ private:
   uint64_t GuestSignal_SIGTRAP_Address {};
   uint64_t GuestSignal_SIGSEGV_Address {};
 
+  // G1(a) spill island: a second, small executable region (separate from the
+  // dispatcher's own mmap) holding the two shared spill stubs. Kept out of the
+  // dispatcher's range so IsAddressInDispatcher stays false for it, while
+  // IsAddressInSpillIsland (checked by CPUBackend::IsAddressInCodeBuffer) is
+  // true — the island IS the SRA spill, so a signal landing in it must take
+  // the "SRA may be live" path, exactly as a signal in a per-unit stub did.
+  uint64_t SpillIslandBase {};
+  uint64_t SpillIslandSize {};
+  uint64_t SpillIslandExitAddr {};
+  uint64_t SpillIslandLinkAddr {};
+
   void EmitDispatcher();
+  void EmitSpillIsland();
 };
 
 } // namespace FEXCore::CPU

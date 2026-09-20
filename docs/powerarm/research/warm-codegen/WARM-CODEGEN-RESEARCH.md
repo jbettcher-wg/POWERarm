@@ -376,6 +376,26 @@ put a range on IPC items. Compounding: G1+G2+G3+G4 on `cc1` is ~20-30%.
 | G7 | THP for the code buffer; `nop` pad trimmed with G1 | iTLB 2.2x -> ~1x; -1-2% | | code-server: iTLB 243/M -> lower; -2-4% | | | low | small |
 | G8 | F/N series | none visible (0.4% of instructions) | none | unknown: JSC-generated code is anonymous | unknown: V8-generated code | none | | **blocked on an FP benchmark and the anonymous-code census (section 8)** |
 
+**G1(a) measured 2026-09-20.** The shared spill stubs moved to one
+context-lifetime 4 KB "spill island" (dispatcher-owned, emitted at construction,
+RX after emission): both stubs live there, every miss leg is `ld
+Pointers.SpillIsland{Exit,Link}; mtctr; bctr`, and the leg reaches the island
+through the per-thread frame rather than a buffer-relative branch, so the
+code-cache format and the thunk's fixed +0x30 record layout are untouched (the
+island is inside `IsAddressInCodeBuffer` for the signal contract). Warm `cc1 lvm.c`, CPU 40, the preslot protocol:
+cycles 17.28 G -> 16.80 G (**−2.8%**; load 1.4 -> 2.2 between runs, so the cycle
+line carries noise), instructions 20.83 -> 20.79 G (flat, as predicted),
+`pm_l1_icache_miss` 336 M -> 300 M (**−11%**), `pm_ic_demand_l2_br_redirect`
+350 M -> 315 M (**−10%**), cache footprint 189 M -> 155 M (**−18%**).
+`pm_ict_noslot_ic_miss` is **flat** (612 M -> 612 M): the no-slot fetch stall
+the section 8.6 pre-check priced at 3.5% of cycles does not come from the
+stubs' share of the stream — the stall is carried by the bodies' own footprint,
+which (b)-(d) still reduce (hot stream 102 M -> ~15 M), or by iTLB pressure the
+gate events do not separate. The section 9 gates for G1 ran green on (a):
+a64diff 64k (all suites, required-fail 0), `check-code-cache.sh` (24/24, the
+record layout unchanged as designed), warm slice 20.15 s (was 20.95 s after
+G2), and the three-mode A64Frontend suite.
+
 Not levers on this set (measured or read): spill/fill (0.02%), constants beyond what
 G2/G4 remove, atomics' CR save-restore (28 sites in `node`), the dispatcher and
 `FindBlock` (<1%), syscalls (~1%), the F1 stubs and bodies (0.3% of bytes), the
@@ -429,7 +449,15 @@ measurements; each line says what result would change the ranking.
    `PM_ICT_NOSLOT_BR_MPRED` (this box's `perf` does not list them by name) on warm
    `cc1` and native. Turns G1's 3-8% into a number: if ICT no-slot cycles from icache
    misses are under 3% of cycles, G1 is a footprint and iTLB item only and moves below
-   G3.
+   G3. **Measured 2026-09-19** (perf by name works with the system libpfm:
+   `LD_LIBRARY_PATH=$HOME/.local/lib/perfshim`): warm `cc1` `lvm.c` on CPU 40,
+   two runs each, private `POWERARM_APP_CACHE_LOCATION`. POWERarm: cycles 17.22 G,
+   instructions 20.85 G (21.90 G at this doc's baseline `dcb8da7e1` — the tree
+   picked up G2(a,b) fusion since), `pm_ict_noslot_cyc` 1.60 G (**9.3%** of cycles),
+   `pm_ict_noslot_ic_miss` 605 M (**3.5%** — over the 3% line, G1 stays first in the
+   queue), `pm_ict_noslot_ic_l3` 310 M (1.8%), `pm_ict_noslot_br_mpred` 202 M (1.2%).
+   Native: cycles 6.07 G, no-slot-cyc 369 M (6.1%), ic_miss 67 M (1.1%), ic_l3 35 M
+   (0.6%), br_mpred 160 M (2.7%).
 7. **A/B knobs for the sweeps**: an env override for `RegionWindow`/`MaxLeaders`
    (G5) and for the G4(a) fold, gated on `instructions:u` of warm `cc1` (21.90 G
    today) rather than wall time, per X8's lesson.

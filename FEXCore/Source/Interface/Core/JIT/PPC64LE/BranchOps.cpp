@@ -369,8 +369,16 @@ void PPC64JITCore::EmitA64PairedCall(const IR::IROp_ExitFunction* Op, bool Const
     EmitLinkFirstConstExit(ReturnAddress);
     Bind(&MissLeg);
     std(TargetReg, rip_off, STATE);
-    SharedSpillExitUsed = true;
-    b(&SharedSpillExitLabel);
+    // G1(a): branch to the shared spill island's exit stub (one per context;
+    // PPC64Dispatcher::EmitSpillIsland) instead of a per-unit copy. The
+    // frame-slot load is position-independent (code-cache safe). RIP was
+    // stored above; TMP1 is clobbered but the stub's SpillStaticRegs uses it
+    // as scratch anyway.
+    const int32_t island_off = static_cast<int32_t>(
+      offsetof(FEXCore::Core::CpuStateFrame, Pointers.SpillIslandExit));
+    ld(TMP1, static_cast<int16_t>(island_off), STATE);
+    mtctr(TMP1);
+    bctr();
   }
 
 }
@@ -1099,9 +1107,9 @@ DEF_OP(ExitFunction) {
     // branch, and the record linker below genuinely reads it.
     // Branch to this exit's jump thunk LinkPath (emitted at the tail of
     // CompileCode), which PC-discovers the adjacent PPC64BlockLinkRecord into
-    // TMP2 and tail-branches to the shared SpillStaticRegs stub
-    // (SharedSpillLinkLabel — SpillStaticRegs preserves TMP2 through f0, so
-    // &record survives it), which then enters the dispatcher's
+    // TMP2 and tail-branches to the spill island's link stub (G1(a),
+    // PPC64Dispatcher::EmitSpillIsland — SpillStaticRegs preserves TMP2
+    // through f0, so &record survives it), which then enters the dispatcher's
     // ExitFunctionLinkerWithRecord stub with r4 = &record and SRA spilled.
     // That path compiles/looks up the target AND backpatches the probe above;
     // it dispatches exactly like ExitFunctionLinker otherwise (deferred-signal
@@ -1113,12 +1121,17 @@ DEF_OP(ExitFunction) {
     std(RIPReg, rip_off, STATE);
     b(LinkPathLabel);
   } else {
-    std(RIPReg, rip_off, STATE); // BEFORE the shared stub's spill clobbers TMP1-TMP4
-    // Shared per-compile-unit spill stub (CompileCode tail): SpillStaticRegs +
-    // dispatch to Pointers.ExitFunctionLinker. Replaces ~90 inline cold
-    // instructions per exit with this one branch; see SharedSpillExitLabel.
-    SharedSpillExitUsed = true;
-    b(&SharedSpillExitLabel);
+    std(RIPReg, rip_off, STATE); // BEFORE the island stub's spill clobbers TMP1
+    // G1(a): branch to the shared spill island's exit stub (one per context;
+    // PPC64Dispatcher::EmitSpillIsland) instead of a per-compile-unit copy.
+    // The frame-slot load is position-independent (code-cache safe); RIP was
+    // stored above, and TMP1 (RIPReg's default) is clobbered but the stub's
+    // SpillStaticRegs uses it as scratch anyway.
+    const int32_t island_off = static_cast<int32_t>(
+      offsetof(FEXCore::Core::CpuStateFrame, Pointers.SpillIslandExit));
+    ld(TMP1, static_cast<int16_t>(island_off), STATE);
+    mtctr(TMP1);
+    bctr();
   }
   if (BRCache) {
     // An empty slot is filled by a sampled arrival, not the first one: only

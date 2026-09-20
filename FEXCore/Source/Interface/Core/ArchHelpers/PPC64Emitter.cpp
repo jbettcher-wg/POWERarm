@@ -96,6 +96,29 @@ void PPC64EmitterBase::SpillStaticRegs(GPR tmp) {
   mffprd(TMP2, FPR{0});                         // restore TMP2 from f0
 }
 
+PPC64EmitterBase::SpillStubOffsets PPC64EmitterBase::EmitSpillStubs(size_t LinkStubAddrOffset) {
+  // The exact two stubs the JIT used to emit per compile unit (JIT.cpp
+  // "Shared miss-leg spill stubs"): byte-identical bodies, now one copy each
+  // for the whole context. See the declaration for the position-independence
+  // and register contracts.
+  SpillStubOffsets Offsets;
+  Offsets.Exit = GetOffset();
+  SpillStaticRegs(TMP1);
+  const int32_t exit_off = static_cast<int32_t>(
+    offsetof(FEXCore::Core::CpuStateFrame, Pointers.ExitFunctionLinker));
+  ld(TMP1, static_cast<int16_t>(exit_off), STATE);
+  mtctr(TMP1);
+  bctr();
+
+  Align16B();
+  Offsets.Link = GetOffset();
+  SpillStaticRegs(TMP1);
+  ld(TMP1, static_cast<int16_t>(LinkStubAddrOffset), TMP2);
+  mtctr(TMP1);
+  bctr();
+  return Offsets;
+}
+
 // Fill static registers from CpuStateFrame → host regs
 void PPC64EmitterBase::FillStaticRegs(FillMode Mode) {
   // SRA[i] ↔ guest register StaticGPRGuestReg[i]; see SpillStaticRegs.

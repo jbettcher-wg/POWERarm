@@ -272,6 +272,18 @@ struct JITPointers {
   uint64_t L2Pointer {};
   uint64_t LUDIVHandler {};
   uint64_t LDIVHandler {};
+  // G1(a): the shared spill island's two stub entry points (see
+  // PPC64Dispatcher::EmitSpillIsland). Every miss leg reaches its stub with
+  // `ld TMP1, <slot>(STATE); mtctr; bctr` instead of a PC-relative `b` to a
+  // per-unit copy — the frame-slot load is what makes the branch survive the
+  // code cache relocating the block to a new buffer offset. Same value in
+  // every thread (the island is context-lifetime), written in
+  // InitThreadPointers. The 2-page budget note below predates these: it still
+  // holds because InternalThreadState's size constraint no longer applies
+  // (the interrupt fault page is mmap'd); the binding limit is the 32760
+  // Pointers-reachability assert below, which this pair stays under.
+  uint64_t SpillIslandExit {};
+  uint64_t SpillIslandLink {};
   // PPC64LE block linking (constant-target jump exits only) intentionally
   // does NOT add per-thread frame slots.  The dispatcher stub materialises
   // its C++ callee address as an inline constant (PPC64Dispatcher.cpp), and
