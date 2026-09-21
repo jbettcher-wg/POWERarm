@@ -532,6 +532,48 @@ public:
 protected:
   void RemoveArgUses(Ref Node);
 
+  static constexpr bool IsFlagOp(IROps Op) {
+    switch (Op) {
+    case OP_ANDWITHFLAGS:
+    case OP_ADDWITHFLAGS:
+    case OP_SUBWITHFLAGS:
+    case OP_ADCWITHFLAGS:
+    case OP_ADCZEROWITHFLAGS:
+    case OP_SBBWITHFLAGS:
+    case OP_SHIFTFLAGS:
+    case OP_ROTATEFLAGS:
+    case OP_RDRAND:
+    case OP_ADDNZCV:
+    case OP_SUBNZCV:
+    case OP_TESTNZ:
+    case OP_FCMP:
+    case OP_STORENZCV:
+    case OP_AXFLAG:
+    case OP_FCMPX86:
+    case OP_CMPPAIRZ:
+    case OP_CARRYINVERT:
+    case OP_SETSMALLNZV:
+    case OP_LOADNZCV:
+    case OP_ADC:
+    case OP_ADCZERO:
+    case OP_SBB:
+    case OP_ADCNZCV:
+    case OP_SBBNZCV:
+    case OP_NZCVSELECT:
+    case OP_NZCVSELECTV:
+    case OP_NZCVSELECTINCREMENT:
+    case OP_NEG:
+    case OP_CONDJUMP:
+    case OP_CONDSUBNZCV:
+    case OP_CONDADDNZCV:
+    case OP_RMIFNZCV:
+    case OP_INVALIDATEFLAGS:
+      return true;
+    default:
+      return false;
+    }
+  }
+
   Ref CreateNode(IROp_Header* Op) {
     uintptr_t ListBegin = DualListData.ListBegin();
     size_t Size = sizeof(OrderedNode);
@@ -543,6 +585,9 @@ protected:
       CurrentWriteCursor->append(ListBegin, Node);
     }
     CurrentWriteCursor = Node;
+    if (CurrentCodeBlock && IsFlagOp(Op->Op)) {
+      CurrentCodeBlock->Op(DualListData.DataBegin())->CW<FEXCore::IR::IROp_CodeBlock>()->HasFlags = true;
+    }
     return Node;
   }
 

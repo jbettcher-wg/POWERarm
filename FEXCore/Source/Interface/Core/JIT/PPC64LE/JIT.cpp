@@ -1738,167 +1738,173 @@ uint64_t PPC64JITCore::ExitFunctionLinkWithRecord(FEXCore::Core::CpuStateFrame* 
   // must not be linked or registered against the new map.
   auto CodeBuffer = static_cast<PPC64JITCore*>(Thread->CPUBackend.get())->CurrentCodeBuffer;
 
-  uintptr_t HostCode;
-  {
-    // Same lock discipline as ExitFunctionLink: the shared invalidation guard
-    // MUST be dropped before CompileBlock (non-recursive WritePriorityMutex;
-    // see the deadlock comment there).
-    auto lk_inval = GuardSignalDeferringSection<std::shared_lock>(CTX->CodeInvalidationMutex, Thread);
-    HostCode = Thread->LookupCache->FindBlock(Thread, GuestRIP);
-  }
-  if (!HostCode) {
-    HostCode = CTX->CompileBlock(Frame, GuestRIP, 0);
-    if (!HostCode || Thread->LookupCache->Shared != CodeBuffer->LookupCache.get()) {
-      // Not compilable (dispatch stub stops the thread on 0), or the buffer
-      // rotated: dispatch to the result but register/patch nothing.
+  auto LinkAndPatch = [&](uintptr_t HostCode) -> uint64_t {
+    // ---------------------------------------------------------------------
+    // Link. Registration and both patches happen under the SAME exclusive
+    // section: CodeInvalidationMutex (shared, so invalidation's exclusive
+    // acquisition excludes us) + the LookupCache write lock (so Erase's
+    // delink walk and this linker serialize).
+    // ---------------------------------------------------------------------
+    auto lk = Thread->LookupCache->AcquireWriteLock();
+
+    // RE-VALIDATE under the final write lock. Everything above ran under (at
+    // most) a shared lock and there is a window between it and this point:
+    // invalidation takes the exclusive lock and can erase or supersede the
+    // GuestRIP -> HostCode mapping in that gap. Patching against the stale
+    // HostCode would permanently branch this exit to a translation of guest
+    // code that has since been REWRITTEN — callers arriving via the link would
+    // diverge from callers arriving via lookup, forever, and the registration
+    // would only be consumed by a future Erase that may never come. (The ARM64
+    // implementation in this tree patches without re-checking; that is an
+    // upstream bug, deliberately not ported.) Refuse to patch on miss or
+    // mismatch; the returned HostCode is still correct for this one dispatch
+    // when it came from a successful CompileBlock above, and on a stale lookup
+    // the dispatch lands on the not-yet-erased old translation exactly as an
+    // unlinked exit would have.
+    if (Thread->LookupCache->Shared != CodeBuffer->LookupCache.get()) {
       return HostCode;
     }
-  }
-
-  // ---------------------------------------------------------------------
-  // Link. Registration and both patches happen under the SAME exclusive
-  // section: CodeInvalidationMutex (shared, so invalidation's exclusive
-  // acquisition excludes us) + the LookupCache write lock (so Erase's
-  // delink walk and this linker serialize).
-  // ---------------------------------------------------------------------
-  auto lk_inval = GuardSignalDeferringSection<std::shared_lock>(CTX->CodeInvalidationMutex, Thread);
-  auto lk = Thread->LookupCache->AcquireWriteLock();
-
-  // RE-VALIDATE under the final write lock. Everything above ran under (at
-  // most) a shared lock and there is a window between it and this point:
-  // invalidation takes the exclusive lock and can erase or supersede the
-  // GuestRIP -> HostCode mapping in that gap. Patching against the stale
-  // HostCode would permanently branch this exit to a translation of guest
-  // code that has since been REWRITTEN — callers arriving via the link would
-  // diverge from callers arriving via lookup, forever, and the registration
-  // would only be consumed by a future Erase that may never come. (The ARM64
-  // implementation in this tree patches without re-checking; that is an
-  // upstream bug, deliberately not ported.) Refuse to patch on miss or
-  // mismatch; the returned HostCode is still correct for this one dispatch
-  // when it came from a successful CompileBlock above, and on a stale lookup
-  // the dispatch lands on the not-yet-erased old translation exactly as an
-  // unlinked exit would have.
-  if (Thread->LookupCache->Shared != CodeBuffer->LookupCache.get()) {
-    return HostCode;
-  }
-  auto* Entry = Thread->LookupCache->Shared->FindBlock(GuestRIP, lk);
-  if (!Entry || Entry->HostCode != HostCode) {
-    return HostCode;
-  }
-
-  const uintptr_t CallerAddress = reinterpret_cast<uintptr_t>(Record) + Record->CallerOffset;
-  // A site is linked at most once per (un)link cycle. Every outcome below that
-  // registers a link also rewrites the caller word before this write lock is
-  // dropped, and a delink restores OrigCallerWord while dropping the
-  // registration, so a caller word that is not OrigCallerWord means the site
-  // is already linked (by another thread since the lookup above) or given up.
-  // GuestToHostMap::AddBlockLink relies on this to skip its duplicate scan.
-  // For an inline-cache site it also matters for safety: a polymorphic site's
-  // other targets arrive here through the probe's miss leg with the guard
-  // already live, and its constant words must not be rewritten under a thread
-  // that may be comparing against them. Dispatch without touching the site.
-  if (std::atomic_ref<uint32_t>(*reinterpret_cast<uint32_t*>(CallerAddress)).load(std::memory_order_relaxed) != Record->OrigCallerWord) {
-    return HostCode;
-  }
-  const uintptr_t ThunkStart = reinterpret_cast<uintptr_t>(Record) - PPC64LinkRecordFromThunkStart;
-  // A shadow-call exit (FEX_SHADOWRETSTACK link-stack pairing, see
-  // DEF_OP(ExitFunction)) branches from its Final word, not from the caller
-  // word: the caller word only ever becomes `b LinkedEntry`, and Final --
-  // unreachable until that patch lands -- takes the `bl`. Final is written
-  // first, so by the time A flips the linked leg is complete; a delink
-  // restores A alone and Final goes stale but unreachable.
-  // FinalOffset bit 0 marks a Final word that takes a plain `b` (a BR inline-
-  // cache slot) rather than the shadow call's `bl`; offsets are multiples of 4.
-  const int64_t FinalOffset = Record->FinalOffset & ~int64_t {3};
-  const bool FinalPlainBranch = (Record->FinalOffset & 1) != 0;
-  const bool ShadowCall = FinalOffset != 0;
-  // A64 paired call (EmitA64PairedCall): the caller word is itself the call.
-  // It becomes `bl HostCode` / `bl Thunk` in place, and the word after it is
-  // the return trampoline the call pushed.
-  const bool CallInPlace = ShadowCall && FinalOffset == Record->CallerOffset;
-  const uintptr_t FinalAddress = ShadowCall ? reinterpret_cast<uintptr_t>(Record) + FinalOffset : CallerAddress;
-  const uintptr_t LinkedEntry = ShadowCall ? reinterpret_cast<uintptr_t>(Record) + Record->LinkedEntryOffset : 0;
-  const int64_t DirectDelta = static_cast<int64_t>(HostCode) - static_cast<int64_t>(FinalAddress);
-  const int64_t ThunkDelta = static_cast<int64_t>(ThunkStart) - static_cast<int64_t>(FinalAddress);
-  const int64_t LinkedEntryDelta = static_cast<int64_t>(LinkedEntry) - static_cast<int64_t>(CallerAddress);
-  // The caller-word patch: a plain exit branches straight at its target
-  // (or thunk); a constant shadow call branches at its own linked leg; an
-  // inline-cache exit's caller word becomes a nop so execution falls into
-  // the guard, whose constant words were written just before (unreachable
-  // until this very store, so never observed half-written).
-  auto PatchCaller = [&](uint32_t PlainWord) {
-    if (Indirect) {
-      uint32_t* Guard = reinterpret_cast<uint32_t*>(CallerAddress + 4); // lis/ori/sldi/oris/ori
-      auto Imm = [&](unsigned i, uint64_t v) {
-        Guard[i] = (Guard[i] & 0xFFFF0000u) | static_cast<uint32_t>(v & 0xFFFFu);
-      };
-      Imm(0, GuestRIP >> 48);
-      Imm(1, GuestRIP >> 32);
-      Imm(3, GuestRIP >> 16);
-      Imm(4, GuestRIP);
-      FEXCore::ArchHelpers::PPC64::FlushICacheRange(Guard, 5 * 4);
-      PPC64PatchInstructionIf(CallerAddress, Record->OrigCallerWord, 0x60000000u); // nop
-    } else if (CallInPlace) {
-      // Already written as the Final word.
-    } else if (ShadowCall) {
-      PPC64PatchInstruction(CallerAddress, PPC64EncodeBranch(LinkedEntryDelta));
-    } else {
-      PPC64PatchInstruction(CallerAddress, PlainWord);
+    auto* Entry = Thread->LookupCache->Shared->FindBlock(GuestRIP, lk);
+    if (!Entry || Entry->HostCode != HostCode) {
+      return HostCode;
     }
-  };
-  const bool CallerReachable = !ShadowCall || Indirect || CallInPlace || PPC64BranchDisplacementInRange(LinkedEntryDelta);
 
-  const JITCodeHeader* TargetHeader = CodeBuffer->FindBlockHeader(HostCode);
-  const bool TargetReadsFlags = TargetHeader &&
-    reinterpret_cast<const CPUBackend::JITCodeTail*>(
-      reinterpret_cast<const uint8_t*>(TargetHeader) + TargetHeader->OffsetToBlockTail)->EntryNZCVLiveIn;
-
-  if (!TargetReadsFlags && PPC64BranchDisplacementInRange(DirectDelta) && CallerReachable) {
-    // Registration BEFORE patch, under the same locks: once the patched word
-    // is observable, the delinker that undoes it is already findable by
-    // Erase. The reverse order would leave a patched branch with no
-    // registered undo if this thread stalled between the two.
-    Thread->LookupCache->AddBlockLink(GuestRIP, Link, PPC64DirectBlockDelinker, lk);
-    if (ShadowCall) {
-      PPC64PatchInstruction(FinalAddress, FinalPlainBranch ? PPC64EncodeBranch(DirectDelta) : PPC64EncodeBranchLink(DirectDelta));
+    const uintptr_t CallerAddress = reinterpret_cast<uintptr_t>(Record) + Record->CallerOffset;
+    // A site is linked at most once per (un)link cycle. Every outcome below that
+    // registers a link also rewrites the caller word before this write lock is
+    // dropped, and a delink restores OrigCallerWord while dropping the
+    // registration, so a caller word that is not OrigCallerWord means the site
+    // is already linked (by another thread since the lookup above) or given up.
+    // GuestToHostMap::AddBlockLink relies on this to skip its duplicate scan.
+    // For an inline-cache site it also matters for safety: a polymorphic site's
+    // other targets arrive here through the probe's miss leg with the guard
+    // already live, and its constant words must not be rewritten under a thread
+    // that may be comparing against them. Dispatch without touching the site.
+    if (std::atomic_ref<uint32_t>(*reinterpret_cast<uint32_t*>(CallerAddress)).load(std::memory_order_relaxed) != Record->OrigCallerWord) {
+      return HostCode;
     }
-    PatchCaller(PPC64EncodeBranch(DirectDelta));
-    LinkOutcomeDirect.fetch_add(1, std::memory_order_relaxed);
-  } else if (PPC64BranchDisplacementInRange(ThunkDelta) && CallerReachable) {
-    LinkOutcomeThunk.fetch_add(1, std::memory_order_relaxed);
-    Thread->LookupCache->AddBlockLink(GuestRIP, Link, PPC64IndirectBlockDelinker, lk);
+    const uintptr_t ThunkStart = reinterpret_cast<uintptr_t>(Record) - PPC64LinkRecordFromThunkStart;
+    // A shadow-call exit (FEX_SHADOWRETSTACK link-stack pairing, see
+    // DEF_OP(ExitFunction)) branches from its Final word, not from the caller
+    // word: the caller word only ever becomes `b LinkedEntry`, and Final --
+    // unreachable until that patch lands -- takes the `bl`. Final is written
+    // first, so by the time A flips the linked leg is complete; a delink
+    // restores A alone and Final goes stale but unreachable.
+    // FinalOffset bit 0 marks a Final word that takes a plain `b` (a BR inline-
+    // cache slot) rather than the shadow call's `bl`; offsets are multiples of 4.
+    const int64_t FinalOffset = Record->FinalOffset & ~int64_t {3};
+    const bool FinalPlainBranch = (Record->FinalOffset & 1) != 0;
+    const bool ShadowCall = FinalOffset != 0;
+    // A64 paired call (EmitA64PairedCall): the caller word is itself the call.
+    // It becomes `bl HostCode` / `bl Thunk` in place, and the word after it is
+    // the return trampoline the call pushed.
+    const bool CallInPlace = ShadowCall && FinalOffset == Record->CallerOffset;
+    const uintptr_t FinalAddress = ShadowCall ? reinterpret_cast<uintptr_t>(Record) + FinalOffset : CallerAddress;
+    const uintptr_t LinkedEntry = ShadowCall ? reinterpret_cast<uintptr_t>(Record) + Record->LinkedEntryOffset : 0;
+    const int64_t DirectDelta = static_cast<int64_t>(HostCode) - static_cast<int64_t>(FinalAddress);
+    const int64_t ThunkDelta = static_cast<int64_t>(ThunkStart) - static_cast<int64_t>(FinalAddress);
+    const int64_t LinkedEntryDelta = static_cast<int64_t>(LinkedEntry) - static_cast<int64_t>(CallerAddress);
+    // The caller-word patch: a plain exit branches straight at its target
+    // (or thunk); a constant shadow call branches at its own linked leg; an
+    // inline-cache exit's caller word becomes a nop so execution falls into
+    // the guard, whose constant words were written just before (unreachable
+    // until this very store, so never observed half-written).
+    auto PatchCaller = [&](uint32_t PlainWord) {
+      if (Indirect) {
+        uint32_t* Guard = reinterpret_cast<uint32_t*>(CallerAddress + 4); // lis/ori/sldi/oris/ori
+        auto Imm = [&](unsigned i, uint64_t v) {
+          Guard[i] = (Guard[i] & 0xFFFF0000u) | static_cast<uint32_t>(v & 0xFFFFu);
+        };
+        Imm(0, GuestRIP >> 48);
+        Imm(1, GuestRIP >> 32);
+        Imm(3, GuestRIP >> 16);
+        Imm(4, GuestRIP);
+        FEXCore::ArchHelpers::PPC64::FlushICacheRange(Guard, 5 * 4);
+        PPC64PatchInstructionIf(CallerAddress, Record->OrigCallerWord, 0x60000000u); // nop
+      } else if (CallInPlace) {
+        // Already written as the Final word.
+      } else if (ShadowCall) {
+        PPC64PatchInstruction(CallerAddress, PPC64EncodeBranch(LinkedEntryDelta));
+      } else {
+        PPC64PatchInstruction(CallerAddress, PlainWord);
+      }
+    };
+    const bool CallerReachable = !ShadowCall || Indirect || CallInPlace || PPC64BranchDisplacementInRange(LinkedEntryDelta);
 
-    // Publish HostCode BEFORE the thunk-word patch, with a full barrier in
-    // between. The icache maintenance inside PPC64PatchInstruction runs after
-    // BOTH stores, so its own `sync` cannot order one against the other —
-    // without the hwsync here a remote hart
-    // can fetch the new bcl leg and still read a stale HostCode, branching
-    // to garbage. Sequence: store HostCode; hwsync; store patch word;
-    // icache maintenance. hwsync's cumulativity guarantees any hart that
-    // observes the patched word also observes the HostCode store.
-    std::atomic_ref<uint64_t>(Record->HostCode).store(HostCode, std::memory_order_seq_cst);
+    const JITCodeHeader* TargetHeader = CodeBuffer->FindBlockHeader(HostCode);
+    const bool TargetReadsFlags = TargetHeader &&
+      reinterpret_cast<const CPUBackend::JITCodeTail*>(
+        reinterpret_cast<const uint8_t*>(TargetHeader) + TargetHeader->OffsetToBlockTail)->EntryNZCVLiveIn;
+
+    if (!TargetReadsFlags && PPC64BranchDisplacementInRange(DirectDelta) && CallerReachable) {
+      // Registration BEFORE patch, under the same locks: once the patched word
+      // is observable, the delinker that undoes it is already findable by
+      // Erase. The reverse order would leave a patched branch with no
+      // registered undo if this thread stalled between the two.
+      Thread->LookupCache->AddBlockLink(GuestRIP, Link, PPC64DirectBlockDelinker, lk);
+      if (ShadowCall) {
+        PPC64PatchInstruction(FinalAddress, FinalPlainBranch ? PPC64EncodeBranch(DirectDelta) : PPC64EncodeBranchLink(DirectDelta));
+      }
+      PatchCaller(PPC64EncodeBranch(DirectDelta));
+      LinkOutcomeDirect.fetch_add(1, std::memory_order_relaxed);
+    } else if (PPC64BranchDisplacementInRange(ThunkDelta) && CallerReachable) {
+      LinkOutcomeThunk.fetch_add(1, std::memory_order_relaxed);
+      Thread->LookupCache->AddBlockLink(GuestRIP, Link, PPC64IndirectBlockDelinker, lk);
+
+      // Publish HostCode BEFORE the thunk-word patch, with a full barrier in
+      // between. The icache maintenance inside PPC64PatchInstruction runs after
+      // BOTH stores, so its own `sync` cannot order one against the other —
+      // without the hwsync here a remote hart
+      // can fetch the new bcl leg and still read a stale HostCode, branching
+      // to garbage. Sequence: store HostCode; hwsync; store patch word;
+      // icache maintenance. hwsync's cumulativity guarantees any hart that
+      // observes the patched word also observes the HostCode store.
+      std::atomic_ref<uint64_t>(Record->HostCode).store(HostCode, std::memory_order_seq_cst);
 #ifdef __powerpc64__
-    asm volatile("sync" ::: "memory"); // hwsync
+      asm volatile("sync" ::: "memory"); // hwsync
 #else
-    std::atomic_thread_fence(std::memory_order_seq_cst);
+      std::atomic_thread_fence(std::memory_order_seq_cst);
 #endif
-    PPC64PatchInstruction(ThunkStart, PPC64_BCL_20_31_PLUS4);
-    if (ShadowCall) {
-      PPC64PatchInstruction(FinalAddress, FinalPlainBranch ? PPC64EncodeBranch(ThunkDelta) : PPC64EncodeBranchLink(ThunkDelta));
+      PPC64PatchInstruction(ThunkStart, PPC64_BCL_20_31_PLUS4);
+      if (ShadowCall) {
+        PPC64PatchInstruction(FinalAddress, FinalPlainBranch ? PPC64EncodeBranch(ThunkDelta) : PPC64EncodeBranchLink(ThunkDelta));
+      }
+      PatchCaller(PPC64EncodeBranch(ThunkDelta));
+    } else {
+      // Even the thunk is out of `b` range of the exit (would need a single
+      // compile unit larger than ±32MiB — beyond every intra-block branch this
+      // backend already emits). Leave the exit unlinked; it stays on the
+      // inlined-probe path forever, which is correct, just slower. Counted
+      // rather than assumed impossible: if this is ever nonzero, an exit class
+      // is silently paying the 10-instruction probe on every traversal.
+      LinkOutcomeUnreachable.fetch_add(1, std::memory_order_relaxed);
+      GiveUpInlineCache();
     }
-    PatchCaller(PPC64EncodeBranch(ThunkDelta));
-  } else {
-    // Even the thunk is out of `b` range of the exit (would need a single
-    // compile unit larger than ±32MiB — beyond every intra-block branch this
-    // backend already emits). Leave the exit unlinked; it stays on the
-    // inlined-probe path forever, which is correct, just slower. Counted
-    // rather than assumed impossible: if this is ever nonzero, an exit class
-    // is silently paying the 10-instruction probe on every traversal.
-    LinkOutcomeUnreachable.fetch_add(1, std::memory_order_relaxed);
-    GiveUpInlineCache();
+
+    return HostCode;
+  };
+
+  {
+    // Fast path: hold shared CodeInvalidationMutex once across both FindBlock
+    // and LinkAndPatch.
+    auto lk_inval = GuardSignalDeferringSection<std::shared_lock>(CTX->CodeInvalidationMutex, Thread);
+    uintptr_t HostCode = Thread->LookupCache->FindBlock(Thread, GuestRIP);
+    if (HostCode) {
+      return LinkAndPatch(HostCode);
+    }
   }
 
-  return HostCode;
+  // Miss path: CompileBlock must run with the shared invalidation guard
+  // DROPPED to prevent deadlock against non-recursive WritePriorityMutex.
+  uintptr_t HostCode = CTX->CompileBlock(Frame, GuestRIP, 0);
+  if (!HostCode || Thread->LookupCache->Shared != CodeBuffer->LookupCache.get()) {
+    // Not compilable (dispatch stub stops the thread on 0), or the buffer
+    // rotated: dispatch to the result but register/patch nothing.
+    return HostCode;
+  }
+
+  auto lk_inval = GuardSignalDeferringSection<std::shared_lock>(CTX->CodeInvalidationMutex, Thread);
+  return LinkAndPatch(HostCode);
 }
 
 uint64_t PPC64JITCore::ExitFunctionLink(FEXCore::Core::CpuStateFrame* Frame, uint64_t GuestRIP) {
@@ -5287,8 +5293,8 @@ CPUBackend::CompiledCode PPC64JITCore::CompileCode(
   // walk above) has an all-zero FPR live mask at every op and no splat
   // candidates, so its per-block backward scan below is skipped and the masks
   // are filled with the zeros it would have computed.
-  if (!DisableABILiveMask) {
-    DynVRLiveIn.assign(IRView->GetSSACount(), UnitHasFPRWork ? ~0u : 0u);
+  if (!DisableABILiveMask && UnitHasFPRWork) {
+    DynVRLiveIn.assign(IRView->GetSSACount(), ~0u);
   }
 
   // Emission-order prepass for fallthrough elision: {CodeBlock ID, EntryPoint}
@@ -5352,6 +5358,7 @@ CPUBackend::CompiledCode PPC64JITCore::CompileCode(
     }
   }
   size_t ShapeEmissionIdx = 0;
+  DynVRSpillMask = UnitHasFPRWork ? ~0u : 0u;
 
   for (auto [BlockNode, BlockHeader] : IRView->GetBlocks()) {
     auto BlockIROp = BlockHeader->CW<FEXCore::IR::IROp_CodeBlock>();
@@ -5867,7 +5874,7 @@ CPUBackend::CompiledCode PPC64JITCore::CompileCode(
       // handler: everything emitted outside a per-op context (block-link
       // thunks, deferred stubs at the CompileCode tail) must stay
       // conservative.
-      if (!DynVRLiveIn.empty()) {
+      if (UnitHasFPRWork && !DynVRLiveIn.empty()) {
         DynVRSpillMask = DynVRLiveIn[IRView->GetID(CodeNode).Value];
       }
       if (Op <= static_cast<uint16_t>(IR::IROps::OP_LAST)) {
@@ -5875,7 +5882,9 @@ CPUBackend::CompiledCode PPC64JITCore::CompileCode(
       } else {
         Op_Unhandled(IROp, CodeNode);
       }
-      DynVRSpillMask = ~0u;
+      if (UnitHasFPRWork) {
+        DynVRSpillMask = ~0u;
+      }
 
       // XER->CR1 projection cache lifecycle (see ProjectXERToCR1): cleared
       // AFTER the handler — an op may project then write XER within one
@@ -6206,6 +6215,7 @@ CPUBackend::CompiledCode PPC64JITCore::CompileCode(
   PPC64_OPSIZE_RECORD(OpSizeProfileEnabled, OpSizeProfile::BUCKET_TAIL_AND_RIP_ENTRIES, TailAndEntriesAligned, Entry);
   PPC64_OPSIZE_RECORD_BLOCK(OpSizeProfileEnabled, Entry, IRView->GetSSACount(), CodeSize + TailAndEntriesAligned);
 
+  DynVRSpillMask = ~0u;
   return CodeData;
 }
 

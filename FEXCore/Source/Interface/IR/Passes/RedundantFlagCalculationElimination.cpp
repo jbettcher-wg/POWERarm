@@ -658,6 +658,12 @@ bool DeadFlagCalculationEliminination::ProcessBlock(IREmitter* IREmit, IRListVie
     FlagsRead = CFG.Get(ExitOp->Args[0])->Flags;
   }
 
+  if (!BlockIROp->HasFlags) {
+    const bool Changed = CFG.Get(BlockIROp)->Flags != FlagsRead;
+    CFG.Get(BlockIROp)->Flags = FlagsRead;
+    return Changed;
+  }
+
   // Iterate the block in reverse
   while (true) {
     auto [CodeNode, IROp] = CodeLast();
@@ -849,18 +855,21 @@ void DeadFlagCalculationEliminination::Run(IREmitter* IREmit) {
   // compare it drops wrote every NZCV bit, and nothing read them afterwards.
   // Compute EntryNZCVLiveIn: whether the compile unit reads flags on entry.
   if (CurrentIR.GetHeader()->BlockCount > 0) {
-    uint32_t EntryLiveIn = 0;
-    uint32_t Defined = 0;
     auto [Block0Node, _] = *CurrentIR.GetBlocks().begin();
-    for (auto [CodeNode, IROp] : CurrentIR.GetCode(Block0Node)) {
-      struct FlagInfo Info = ClassifyFast(IROp);
-      if (!Info.Trivial()) {
-        EntryLiveIn |= (Info.Read() & ~Defined);
-        Defined |= Info.Write();
+    auto Block0IROp = CurrentIR.GetOp<IR::IROp_CodeBlock>(Block0Node);
+    if (Block0IROp->HasFlags) {
+      uint32_t EntryLiveIn = 0;
+      uint32_t Defined = 0;
+      for (auto [CodeNode, IROp] : CurrentIR.GetCode(Block0Node)) {
+        struct FlagInfo Info = ClassifyFast(IROp);
+        if (!Info.Trivial()) {
+          EntryLiveIn |= (Info.Read() & ~Defined);
+          Defined |= Info.Write();
+        }
       }
-    }
-    if ((EntryLiveIn & FLAG_NZCV) != 0) {
-      CurrentIR.GetHeader()->EntryNZCVLiveIn = true;
+      if ((EntryLiveIn & FLAG_NZCV) != 0) {
+        CurrentIR.GetHeader()->EntryNZCVLiveIn = true;
+      }
     }
   }
 
@@ -870,8 +879,11 @@ void DeadFlagCalculationEliminination::Run(IREmitter* IREmit) {
   //     POWERARM_DISABLECMPBRANCHFUSION=1
   if (!DisableCmpBranchFusion()) {
     for (auto [Block, _] : CurrentIR.GetBlocks()) {
-      // Flags live out of the block, as ProcessBlock seeds them.
       auto BlockIROp = CurrentIR.GetOp<IR::IROp_CodeBlock>(Block);
+      if (!BlockIROp->HasFlags) {
+        continue;
+      }
+      // Flags live out of the block, as ProcessBlock seeds them.
       auto CodeLast = CurrentIR.at(BlockIROp->Last);
       --CodeLast;
       auto [ExitNode, ExitOp] = CodeLast();
@@ -890,8 +902,11 @@ void DeadFlagCalculationEliminination::Run(IREmitter* IREmit) {
   // to run after eliminating carries etc and it needs the global flag metadata.
   // But it only needs to run once, we don't do it in the loop.
   for (auto [Block, _] : CurrentIR.GetBlocks()) {
-    // Grab the jump
     auto BlockIROp = CurrentIR.GetOp<IR::IROp_CodeBlock>(Block);
+    if (!BlockIROp->HasFlags) {
+      continue;
+    }
+    // Grab the jump
     auto CodeLast = CurrentIR.at(BlockIROp->Last);
     --CodeLast;
 
