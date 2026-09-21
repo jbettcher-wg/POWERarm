@@ -1,17 +1,19 @@
 # sleeve: the POWERarm app manager (terminal UI) -- design
 
-Written 2026-09-19. Design only; nothing here is built yet. Every `file:line` was checked against
-the tree at `e76bc2e4d`. Read `HANDOVER.md` ("What POWERarm is for", item 8, 11, 17, 21, 24) and
-`DESIGN.md` §6.2a first; this document builds on them and does not repeat them.
+Written 2026-09-19. **Implemented 2026-09-20/21**: `sleeve` has been fully implemented, verified
+against all Phase 1 & 2 gates, and extracted into a standalone companion repository at
+`~/Development/sleeve` (multi-backend: `POWERarm` for AArch64 and `fastppcx86` for x86_64).
+Every `file:line` was checked against the tree at `e76bc2e4d`. Read `HANDOVER.md` ("What POWERarm is for",
+item 8, 11, 17, 21, 24, 25) and `DESIGN.md` §6.2a first; this document builds on them and does not repeat them.
 
 ## 0. Summary
 
-`sleeve` is a small C++ terminal program, built by POWERarm's own CMake, installed and packaged with
-the emulator, that turns "an arm64 program somewhere on disk" into "an app that launches from the
-Omarchy launcher and runs under POWERarm with the right rootfs and options". It replaces the three
+`sleeve` is a small C++ terminal program, built standalone (and deployable across both POWERarm and
+fastppcx86), that turns "an emulated program somewhere on disk" into "an app that launches from the
+Omarchy launcher and runs under the emulator with the right rootfs and options". It replaces the
 hand-written launchers of 2026-09-19 (`~/.local/bin/{code,firefox,factorio}` and their
 `*-arm64.desktop` entries) with generated, regenerable ones, and gives the owner a place to flip the
-emulator's per-app knobs without editing JSON by hand.
+emulator's per-app knobs without editing JSON by hand. Standalone repo: `~/Development/sleeve`.
 
 It does five things, each also available as a plain CLI subcommand so an agent or a script can drive
 it without a terminal:
@@ -1007,6 +1009,11 @@ health check on `code --version`, `firefox --version`, `factorio --version` and 
 reports "ran and exited normally", and on a deliberately wrong record (an x86-64 ELF) reports the
 "not a supported ELF" sentence; a theme switch with `omarchy-theme-set` recolours a running sleeve
 within a second.
+
+*Implementation Status (2026-09-21):* Phases 1 and 2 are fully implemented and verified. All 4 Phase 2 gates
+passed cleanly. Sleeve was extracted into an independent standalone repository at `~/Development/sleeve`
+featuring multi-backend support (`POWERarm` for AArch64 and `fastppcx86` for x86_64). Unit test coverage is
+100% (22/22 tests passing). Installed at `~/.local/bin/sleeve`.
 
 **Phase 3 -- archives, missing libraries, rootfs setup, shell rc.**
 `Archive` (tar, AppImage, .deb), `Libs` with the `alarm_sysroot.py whatprovides` subcommand,

@@ -416,7 +416,16 @@ to initialise against 27 s cold (suspect cache install cost, item 24).
     ~22% less CPU per frame for POWERarm; simulation is even and the lead is in the guest Mesa
     driver work. The cold arm64 run delivered only 940 frames (first-run stalls). Oddity: the warm
     arm64 launch took 38 s to initialise vs 27 s cold. Suspect cache install cost; to investigate.
-25. **sleeve, the app manager TUI: designed, parked by Jordan until he's ready** (2026-09-19).
-    Design: docs/powerarm/APPS-TUI-DESIGN.md (181b6ba41). C++/FTXUI in-tree, package
-    `powerarm-sleeve`, command `sleeve`, Omarchy theme colours. It supersedes item 17's installer
-    script. Next: phase 1 (MVP: scan, import, wrap, rootfs list) with a standard agent.
+25. **sleeve, the app manager TUI: implemented (Phase 1 & 2) and extracted as a standalone companion repo** (2026-09-21).
+    Design: `docs/powerarm/APPS-TUI-DESIGN.md`. Standalone repository: `~/Development/sleeve`.
+    Multi-backend support: `POWERarm` (AArch64) and `fastppcx86` (x86_64), selectable via `--backend=powerarm|fastppcx86`
+    or `SLEEVE_BACKEND` (defaults to `powerarm` on this host).
+    - **Features live:** Scanner (shape heuristics: Electron, Gecko, Game, Pacman, CLI), wrapper generation
+      (`~/.local/bin/<app>`, `~/.local/share/applications/<app>-<arch>.desktop` with golden formatting, atomic rename,
+      and ownership checks), AppConfig writer (`~/.config/<backend>/AppConfig/<program>.json` with key merging and
+      validation), health checking (`sleeve check <app>` running target and classifying output/exit signals), and
+      live Omarchy theme recolouring via inotify.
+    - **Gates verified:** All 4 Phase 2 gates passed (`POWERarmGetConfig --current-rootfs`, live `ProfileStats` + `shmstats.py`,
+      health check classification for normal exit and bad-ELF exit 248, dynamic theme tinting), plus 22/22 Catch2 unit tests.
+    - **Installed:** `~/.local/bin/sleeve`. Existing launchers for `code`, `firefox`, `factorio`, and `antigravity-ide`
+      are wrapped and registered.
