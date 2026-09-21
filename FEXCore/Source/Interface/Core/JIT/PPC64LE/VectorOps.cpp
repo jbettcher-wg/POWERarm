@@ -1413,6 +1413,12 @@ DEF_OP(VSQXTUNPair) {
   }
 }
 
+// ISA 3.0 xxspltib: splat any byte immediate (0..255) across all 16 bytes of a VSR.
+static void EmitXxspltib(PPC64JITCore* J, VR Dst, uint8_t Imm) {
+  // VR n is vs(32+n): TX = 1.
+  J->Emit32((60u << 26) | (Dst.idx << 21) | (static_cast<uint32_t>(Imm) << 11) | (360u << 1) | 1u);
+}
+
 // Build a vector with `val` replicated to every doubleword.
 // Used when an immediate exceeds the 5-bit range of vspltisb/h/w.
 //
@@ -1429,152 +1435,194 @@ static void BuildSplatDW(PPC64JITCore* j, VR Dst, uint64_t val) {
   j->xxpermdi(Dst, Dst, Dst, 0);
 }
 
+static void SplatShiftCount(PPC64JITCore* j, VR Dst, IR::OpSize ElemSz, uint8_t Shift, bool SupportsISA30) {
+  if (ElemSz != IR::OpSize::i64Bit) {
+    j->vspltisb(Dst, Shift);
+    return;
+  }
+  // For 64-bit, vsrad reads low 6 bits (0..63).
+  if (Shift <= 15 || Shift >= 48) {
+    j->vspltisb(Dst, Shift);
+  } else if (SupportsISA30) {
+    EmitXxspltib(j, Dst, Shift);
+  } else {
+    BuildSplatDW(j, Dst, Shift);
+  }
+}
+
 // VSRSHR: signed rounding shift right by immediate.  Per ARM srshr:
 //   result = (x + (1 << (N-1))) >> N  (arithmetic), with N in [1..ESize_bits].
+//
+// Identity (NEON-LANDINGS §3.2):
+//   (x >> N) + ((x >> (N - 1)) & 1)
+// For N == W, (x + 2^(W-1)) >> W is identically 0 for all signed inputs.
+// For 1 <= N < W, both N and N-1 are in [0, W-1] and never wrap modulo W.
+// Rounding bit is computed first into VTMP2 so V is preserved even when Dst == V.
 DEF_OP(VSRSHR) {
   const auto Op = IROp->C<IR::IROp_VSRSHR>();
   const auto ElemSz = Op->Header.ElementSize;
   const auto Dst = GetVReg(Node);
   const auto V   = GetVReg(Op->Vector);
   const uint8_t N = Op->BitShift;
+  const unsigned W = IR::OpSizeAsBits(ElemSz);
 
-  // Build VTMP1 = splat of N (as a per-element shift count; high bits are
-  // ignored by vsl* / vsr* since they take the count modulo lane bits).
-  // Build VTMP2 = splat of 1 << (N-1) added to V.
-  switch (ElemSz) {
-  case IR::OpSize::i8Bit:
-  case IR::OpSize::i16Bit:
-  case IR::OpSize::i32Bit: {
-    // Scalar fallback. Doing the rounding add at native lane width can wrap
-    // (e.g. (+INT8_MAX + 0x40) > INT8_MAX). Spill to stack, sign-extend to
-    // 64 bits, add, arithmetic shift, store back.
-    const int sz = IR::OpSizeToSize(ElemSz);
-    const size_t NumElements = 16 / sz;
-    addi(TMP3, r1, -16);
-    li(TMP1, 0);
-    stvx(V, TMP3, TMP1);
-    const int64_t Round = (int64_t)1 << (N - 1);
-    for (size_t i = 0; i < NumElements; ++i) {
-      const int16_t Off = static_cast<int16_t>(-16 + i * sz);
-      switch (sz) {
-      case 1: lbz(TMP1, Off, r1); extsb(TMP1, TMP1); break;
-      case 2: lhz(TMP1, Off, r1); extsh(TMP1, TMP1); break;
-      case 4: lwz(TMP1, Off, r1); extsw(TMP1, TMP1); break;
-      }
-      LoadConstant(TMP2, (uint64_t)Round);
-      add  (TMP1, TMP1, TMP2);
-      // NOT sradi: PPC arithmetic shifts write XER.CA, the canonical guest CF
-      // (see DEF_OP(Ashr)'s block comment), and PSIGN/rounding-shift guests
-      // preserve EFLAGS. srdi (rldicl, no XER) is exact here: the value is
-      // 64-bit sign-extended and only the low sz*8 bits are stored, so the
-      // logical/arithmetic difference lives entirely in discarded bits
-      // (sz*8 + N <= 64 always: sz*8 <= 32, N < sz*8).
-      srdi(TMP1, TMP1, N);
-      switch (sz) {
-      case 1: stb(TMP1, Off, r1); break;
-      case 2: sth(TMP1, Off, r1); break;
-      case 4: stw(TMP1, Off, r1); break;
-      }
+  if (N == 0) {
+    if (Dst != V) vmr(Dst, V);
+    return;
+  }
+  if (N >= W) {
+    vspltisb(Dst, 0);
+    return;
+  }
+
+  // Rounding bit: (x >> (N - 1)) & 1 in VTMP2
+  if (N == 1) {
+    vspltisb(VTMP1, 1);
+    vand(VTMP2, V, VTMP1);
+  } else {
+    SplatShiftCount(this, VTMP1, ElemSz, N - 1, CTX->HostFeatures.SupportsISA30);
+    switch (ElemSz) {
+    case IR::OpSize::i8Bit:  vsrab(VTMP2, V, VTMP1); break;
+    case IR::OpSize::i16Bit: vsrah(VTMP2, V, VTMP1); break;
+    case IR::OpSize::i32Bit: vsraw(VTMP2, V, VTMP1); break;
+    case IR::OpSize::i64Bit: vsrad(VTMP2, V, VTMP1); break;
+    default: Op_Unhandled(IROp, Node); return;
     }
-    addi(TMP3, r1, -16);
-    li(TMP1, 0);
-    lvx(Dst, TMP3, TMP1);
-    break;
+    vspltisb(VTMP1, 1);
+    vand(VTMP2, VTMP2, VTMP1);
   }
-  case IR::OpSize::i64Bit: {
-    BuildSplatDW(this, VTMP1, (uint64_t)N);
-    BuildSplatDW(this, VTMP2, (uint64_t)1 << (N - 1));
-    vaddudm(VTMP2, V, VTMP2);
-    vsrad(Dst, VTMP2, VTMP1);
-    break;
+
+  // Shift V right arithmetically by N into Dst
+  SplatShiftCount(this, VTMP1, ElemSz, N, CTX->HostFeatures.SupportsISA30);
+  switch (ElemSz) {
+  case IR::OpSize::i8Bit:  vsrab(Dst, V, VTMP1); break;
+  case IR::OpSize::i16Bit: vsrah(Dst, V, VTMP1); break;
+  case IR::OpSize::i32Bit: vsraw(Dst, V, VTMP1); break;
+  case IR::OpSize::i64Bit: vsrad(Dst, V, VTMP1); break;
+  default: Op_Unhandled(IROp, Node); return;
   }
-  default: Op_Unhandled(IROp, Node); break;
+
+  // Add the rounding bit to Dst
+  switch (ElemSz) {
+  case IR::OpSize::i8Bit:  vaddubm(Dst, Dst, VTMP2); break;
+  case IR::OpSize::i16Bit: vadduhm(Dst, Dst, VTMP2); break;
+  case IR::OpSize::i32Bit: vadduwm(Dst, Dst, VTMP2); break;
+  case IR::OpSize::i64Bit: vaddudm(Dst, Dst, VTMP2); break;
+  default: Op_Unhandled(IROp, Node); return;
   }
 }
 
 // VSQSHL: signed saturating shift left by immediate.
 //   result[i] = signed_saturate(V[i] << BitShift, ESize_bits)
-// Used by PSIGN/VPSIGN with BitShift = ESize_bits - 1.
 //
-// Per-element scalar implementation: only 2 free vector temps on POWER8 makes
-// the all-vector formulation (which needs shifted + sign + eq_mask coexisting)
-// awkward. Instead we spill V to the stack scratch, run a scalar SAT-SHL on
-// each element via GPRs, and reload the modified buffer into Dst. PSIGN is
-// rarely a hot path so the per-element loop cost is acceptable.
+// Pure vector lowering (NEON-LANDINGS §3.2):
+//   sl = V << Shift
+//   back = sl >>s Shift
+//   no_overflow = (back == V)
+//   sign = (0 >s V)  [all 1s if V < 0, else 0]
+//   sat = sign ^ INT_MAX
+//   result = vsel(sat, sl, no_overflow)
 DEF_OP(VSQSHL) {
   const auto Op       = IROp->C<IR::IROp_VSQSHL>();
   const auto ElemSz   = Op->Header.ElementSize;
   const auto Dst      = GetVReg(Node);
   const auto V        = GetVReg(Op->Vector);
   const uint8_t Shift = Op->BitShift;
+  const unsigned W    = IR::OpSizeAsBits(ElemSz);
 
   if (Shift == 0) {
     if (Dst != V) vmr(Dst, V);
     return;
   }
 
-  const int sz = IR::OpSizeToSize(ElemSz);
-  if (sz < 1 || sz > 8) { Op_Unhandled(IROp, Node); return; }
-  const size_t NumElements = 16 / sz;
-  const uint8_t N = static_cast<uint8_t>(IR::OpSizeAsBits(ElemSz));
-  const uint64_t SatPos = ((uint64_t)1 << (N - 1)) - 1;        // INT_MAX_N
-
-  // Spill V to [r1-16..r1).
-  addi(TMP3, r1, -16);
-  li(TMP1, 0);
-  stvx(V, TMP3, TMP1);
-
-  for (size_t i = 0; i < NumElements; ++i) {
-    const int16_t Off = static_cast<int16_t>(-16 + i * sz);
-    // Sign-extend element into a 64-bit GPR (TMP1).
-    switch (sz) {
-    case 1: lbz(TMP1, Off, r1); extsb(TMP1, TMP1); break;
-    case 2: lhz(TMP1, Off, r1); extsh(TMP1, TMP1); break;
-    case 4: lwz(TMP1, Off, r1); extsw(TMP1, TMP1); break;
-    case 8: ld (TMP1, Off, r1);                    break;
-    }
-    // shifted = TMP1 << Shift   (in 64-bit, may exceed N bits intentionally)
-    sldi(TMP2, TMP1, Shift);
-    // Saturation check: shifted must fit in signed N bits. Sign-extend the
-    // low N bits of TMP2 and compare with TMP2; any overflow flips bits above
-    // bit N-1 and the sign-extended view will differ.
-    switch (sz) {
-    case 1: extsb(TMP4, TMP2); break;
-    case 2: extsh(TMP4, TMP2); break;
-    case 4: extsw(TMP4, TMP2); break;
-    case 8: mr   (TMP4, TMP2); break;
-    }
-    cmpd(cr(1), TMP4, TMP2);  // cr(1) so CR0 (packed NZCV) is preserved
-    auto Saturate = PPC64Emitter::Label{};
-    auto Done     = PPC64Emitter::Label{};
-    bc({4, 6}, &Saturate);    // bne on CR1.EQ
-    switch (sz) {
-    case 1: stb(TMP2, Off, r1); break;
-    case 2: sth(TMP2, Off, r1); break;
-    case 4: stw(TMP2, Off, r1); break;
-    case 8: std(TMP2, Off, r1); break;
-    }
-    b(&Done);
-    Bind(&Saturate);
-    // sign = 0 (pos) or -1 (neg); sat = sign XOR SatPos. NOT sradi — it
-    // writes XER.CA (guest CF; see DEF_OP(Ashr)). rldicl isolates the sign
-    // bit and neg splats it; neither touches XER.
-    rldicl(TMP2, TMP1, 1, 63);
-    neg(TMP2, TMP2);
-    LoadConstant(TMP4, SatPos);
-    xor_(TMP2, TMP2, TMP4);
-    switch (sz) {
-    case 1: stb(TMP2, Off, r1); break;
-    case 2: sth(TMP2, Off, r1); break;
-    case 4: stw(TMP2, Off, r1); break;
-    case 8: std(TMP2, Off, r1); break;
-    }
-    Bind(&Done);
+  uint64_t SatVal = 0;
+  switch (ElemSz) {
+  case IR::OpSize::i8Bit:  SatVal = 0x7F7F7F7F7F7F7F7FULL; break;
+  case IR::OpSize::i16Bit: SatVal = 0x7FFF7FFF7FFF7FFFULL; break;
+  case IR::OpSize::i32Bit: SatVal = 0x7FFFFFFF7FFFFFFFULL; break;
+  case IR::OpSize::i64Bit: SatVal = 0x7FFFFFFFFFFFFFFFULL; break;
+  default: Op_Unhandled(IROp, Node); return;
   }
 
-  addi(TMP3, r1, -16);
-  li(TMP1, 0);
-  lvx(Dst, TMP3, TMP1);
+  if (Shift >= W) {
+    // Large shift: non-zero saturates to INT_MAX/INT_MIN based on sign; zero stays zero.
+    vspltisw(VTMP1, 0);
+    switch (ElemSz) {
+    case IR::OpSize::i8Bit:  vcmpgtsb(VTMP1, VTMP1, V); break;
+    case IR::OpSize::i16Bit: vcmpgtsh(VTMP1, VTMP1, V); break;
+    case IR::OpSize::i32Bit: vcmpgtsw(VTMP1, VTMP1, V); break;
+    case IR::OpSize::i64Bit: vcmpgtsd(VTMP1, VTMP1, V); break;
+    default: Op_Unhandled(IROp, Node); return;
+    }
+    BuildSplatDW(this, VTMP2, SatVal);
+    vxor(VTMP1, VTMP1, VTMP2); // VTMP1 = sat
+    vspltisw(VTMP2, 0);
+    switch (ElemSz) {
+    case IR::OpSize::i8Bit:  vcmpequb(Dst, V, VTMP2); break;
+    case IR::OpSize::i16Bit: vcmpequh(Dst, V, VTMP2); break;
+    case IR::OpSize::i32Bit: vcmpequw(Dst, V, VTMP2); break;
+    case IR::OpSize::i64Bit: vcmpequd(Dst, V, VTMP2); break;
+    default: Op_Unhandled(IROp, Node); return;
+    }
+    vsel(Dst, VTMP1, VTMP2, Dst); // if V == 0 select 0, else sat
+    return;
+  }
+
+  // 1 <= Shift < W:
+  // Step 1: Shift count in VTMP1
+  SplatShiftCount(this, VTMP1, ElemSz, Shift, CTX->HostFeatures.SupportsISA30);
+
+  // Step 2: Left shift into VTMP2 (sl)
+  switch (ElemSz) {
+  case IR::OpSize::i8Bit:  vslb(VTMP2, V, VTMP1); break;
+  case IR::OpSize::i16Bit: vslh(VTMP2, V, VTMP1); break;
+  case IR::OpSize::i32Bit: vslw(VTMP2, V, VTMP1); break;
+  case IR::OpSize::i64Bit: vsld(VTMP2, V, VTMP1); break;
+  default: Op_Unhandled(IROp, Node); return;
+  }
+
+  // Step 3: Shift back arithmetically into VTMP1 (back)
+  switch (ElemSz) {
+  case IR::OpSize::i8Bit:  vsrab(VTMP1, VTMP2, VTMP1); break;
+  case IR::OpSize::i16Bit: vsrah(VTMP1, VTMP2, VTMP1); break;
+  case IR::OpSize::i32Bit: vsraw(VTMP1, VTMP2, VTMP1); break;
+  case IR::OpSize::i64Bit: vsrad(VTMP1, VTMP2, VTMP1); break;
+  default: Op_Unhandled(IROp, Node); return;
+  }
+
+  // Step 4: Compare back == V -> no_overflow mask in VTMP1
+  switch (ElemSz) {
+  case IR::OpSize::i8Bit:  vcmpequb(VTMP1, VTMP1, V); break;
+  case IR::OpSize::i16Bit: vcmpequh(VTMP1, VTMP1, V); break;
+  case IR::OpSize::i32Bit: vcmpequw(VTMP1, VTMP1, V); break;
+  case IR::OpSize::i64Bit: vcmpequd(VTMP1, VTMP1, V); break;
+  default: Op_Unhandled(IROp, Node); return;
+  }
+
+  // Step 5: Park no_overflow mask in VTMP3_VSX
+  xxlor(VTMP3_VSX, toVSX(VTMP1), toVSX(VTMP1));
+
+  // Step 6: Compute sign = (0 >s V) into VTMP1. (V is never read after this)
+  vspltisw(VTMP1, 0);
+  switch (ElemSz) {
+  case IR::OpSize::i8Bit:  vcmpgtsb(VTMP1, VTMP1, V); break;
+  case IR::OpSize::i16Bit: vcmpgtsh(VTMP1, VTMP1, V); break;
+  case IR::OpSize::i32Bit: vcmpgtsw(VTMP1, VTMP1, V); break;
+  case IR::OpSize::i64Bit: vcmpgtsd(VTMP1, VTMP1, V); break;
+  default: Op_Unhandled(IROp, Node); return;
+  }
+
+  // Step 7: Materialize INT_MAX into Dst
+  BuildSplatDW(this, Dst, SatVal);
+
+  // Step 8: Compute sat = sign ^ INT_MAX into VTMP1
+  vxor(VTMP1, VTMP1, Dst);
+
+  // Step 9: Pull no_overflow mask back into Dst
+  xxlor(toVSX(Dst), VTMP3_VSX, VTMP3_VSX);
+
+  // Step 10: Select: Dst bit 1 -> sl (VTMP2), bit 0 -> sat (VTMP1)
+  vsel(Dst, VTMP1, VTMP2, Dst);
 }
 
 // ---------------------------------------------------------------------------
@@ -3655,10 +3703,6 @@ DEF_OP(VFCMPUNO) {
 // index is the control directly, with no XOR.
 static void EmitVpermr(PPC64JITCore* J, VR Dst, VR A, VR B, VR C) {
   J->Emit32((4u << 26) | (Dst.idx << 21) | (A.idx << 16) | (B.idx << 11) | (C.idx << 6) | 59u);
-}
-static void EmitXxspltib(PPC64JITCore* J, VR Dst, uint8_t Imm) {
-  // VR n is vs(32+n): TX = 1.
-  J->Emit32((60u << 26) | (Dst.idx << 21) | (static_cast<uint32_t>(Imm) << 11) | (360u << 1) | 1u);
 }
 
 DEF_OP(VTBL1) {
