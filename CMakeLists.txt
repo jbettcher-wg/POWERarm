@@ -5,6 +5,9 @@ include(CheckIncludeFiles)
 check_include_files("gdb/jit-reader.h" HAVE_GDB_JIT_READER_H)
 
 option(BUILD_THUNKS "Build thunks" FALSE)
+# Guest-side stub libraries (AArch64), built by the guest rootfs's own gcc
+# running under the POWERarm built here: no cross toolchain.
+option(BUILD_GUEST_THUNKS "Build the AArch64 guest stub libraries (needs an AArch64 guest rootfs)" ON)
 option(BUILD_FEXCONFIG "Build FEXConfig" TRUE)
 # Links the host thunk libraries with lld (ThunkLibs/HostLibs).
 option(ENABLE_CLANG_THUNKS "Build thunks with clang" FALSE)
@@ -582,14 +585,8 @@ if (BUILD_TESTING)
   add_subdirectory(unittests/)
 endif()
 
-if (BUILD_THUNKS)
+if (BUILD_THUNKS OR BUILD_GUEST_THUNKS)
   set(FEX_PROJECT_SOURCE_DIR ${PROJECT_SOURCE_DIR})
-
-  # Guest-side stub libraries (AArch64), built by the guest rootfs's own gcc
-  # running under the POWERarm built here: no cross toolchain. thunkgen parses
-  # their interfaces against the same rootfs (ThunkLibs/Generator/main.cpp).
-  # Only libVDSO so far (docs/powerarm/THUNKS-DESIGN.md, Stage 0).
-  option(BUILD_GUEST_THUNKS "Build the AArch64 guest stub libraries (needs an AArch64 guest rootfs)" ON)
 
   # The guest rootfs: an explicit path, else the RootFS named in the user's
   # POWERarm config, resolved the way POWERarm resolves it.
@@ -617,10 +614,12 @@ if (BUILD_THUNKS)
   endif()
   if (BUILD_GUEST_THUNKS)
     if (NOT GUEST_ROOTFS OR NOT EXISTS "${GUEST_ROOTFS}/usr/bin/gcc" OR NOT EXISTS "${GUEST_ROOTFS}/usr/include/stdio.h")
-      message(FATAL_ERROR "Guest thunks need an AArch64 rootfs with gcc and glibc headers; set GUEST_ROOTFS "
-                          "(got '${GUEST_ROOTFS}') or configure with -DBUILD_GUEST_THUNKS=OFF.")
+      message(WARNING "Guest thunks need an AArch64 rootfs with gcc and glibc headers; set GUEST_ROOTFS "
+                      "(got '${GUEST_ROOTFS}'). Disabling BUILD_GUEST_THUNKS.")
+      set(BUILD_GUEST_THUNKS OFF)
+    else()
+      message(STATUS "Guest thunks: AArch64 rootfs ${GUEST_ROOTFS}")
     endif()
-    message(STATUS "Guest thunks: AArch64 rootfs ${GUEST_ROOTFS}")
   endif()
 
   # Host halves. Their interface parse still models the inherited x86-64
@@ -650,11 +649,13 @@ if (BUILD_THUNKS)
   # require libclang for it.
   set(THUNKGEN_PREGEN_DIR "" CACHE PATH
       "Directory of pre-generated thunkgen host .inl files; skips the x86 interface parse")
-  if (NOT THUNKGEN_PREGEN_DIR OR BUILD_GUEST_THUNKS)
+  if (BUILD_GUEST_THUNKS OR (BUILD_THUNKS AND NOT THUNKGEN_PREGEN_DIR))
     add_subdirectory(ThunkLibs/Generator)
   endif()
 
-  add_subdirectory(ThunkLibs/HostLibs)
+  if (BUILD_THUNKS)
+    add_subdirectory(ThunkLibs/HostLibs)
+  endif()
 
   if (BUILD_GUEST_THUNKS)
     # The guest compiler: the rootfs's gcc under this build's POWERarm. The

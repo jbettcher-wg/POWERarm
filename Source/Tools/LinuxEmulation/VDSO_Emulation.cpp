@@ -4,6 +4,7 @@
 #include "Common/CPUInfo.h"
 #include "LinuxSyscalls/Arm64/GuestVA.h"
 #include "LinuxSyscalls/Syscalls.h"
+#include "LinuxSyscalls/Utils/Threads.h"
 
 #include <FEXCore/Config/Config.h>
 #include <FEXCore/Core/Context.h>
@@ -678,18 +679,48 @@ VDSOMapping LoadVDSOThunks(FEXCore::Core::InternalThreadState* Thread, FEX::HLE:
   // emulators stay in service: binfmt runs the promoted stable build for every
   // guest child process, and a POWERARM_THUNKGUESTLIBS in the environment
   // reaches those children too.
-  ThunkGuestPath = fextl::fmt::format("{}/libVDSO-a64-guest.so", ThunkGuestPath);
-  // Load VDSO if we can
-  int VDSOFD = ::open(ThunkGuestPath.c_str(), O_RDONLY);
-  if (VDSOFD != -1) {
+  int VDSOFD = -1;
+  auto TryOpen = [&](std::string_view Path) -> bool {
+    fextl::string NullTerminated(Path);
+    int FD = ::open(NullTerminated.c_str(), O_RDONLY);
+    if (FD == -1) {
+      return false;
+    }
     // An x86 guest vDSO from a fastppcx86 install must never be mapped into an
     // arm64 guest.
     Elf64_Ehdr Header {};
-    if (::pread(VDSOFD, &Header, sizeof(Header), 0) != sizeof(Header) || memcmp(Header.e_ident, ELFMAG, SELFMAG) != 0 ||
+    if (::pread(FD, &Header, sizeof(Header), 0) != sizeof(Header) || memcmp(Header.e_ident, ELFMAG, SELFMAG) != 0 ||
         Header.e_ident[EI_CLASS] != ELFCLASS64 || Header.e_machine != EM_AARCH64) {
-      LogMan::Msg::IFmt("Ignoring {}: not an AArch64 ELF", ThunkGuestPath);
-      close(VDSOFD);
-      VDSOFD = -1;
+      LogMan::Msg::IFmt("Ignoring {}: not an AArch64 ELF", NullTerminated);
+      close(FD);
+      return false;
+    }
+    VDSOFD = FD;
+    return true;
+  };
+
+  if (!ThunkGuestPath.empty()) {
+    TryOpen(fextl::fmt::format("{}/libVDSO-a64-guest.so", ThunkGuestPath));
+  }
+
+  // Fallback: look relative to POWERarm executable in build or install layouts
+  if (VDSOFD == -1) {
+    std::error_code EC;
+    auto ExePath = std::filesystem::read_symlink("/proc/self/exe", EC);
+    if (!EC) {
+      auto ExeDir = ExePath.parent_path();
+      auto Prefix = ExeDir.parent_path();
+      std::array<std::filesystem::path, 4> Candidates = {
+        Prefix / "Guest" / "libVDSO-a64-guest.so",
+        Prefix / "GuestThunks" / "libVDSO-a64-guest.so",
+        Prefix / "share" / "powerarm" / "GuestThunks" / "libVDSO-a64-guest.so",
+        Prefix / "lib" / "powerarm" / "GuestThunks" / "libVDSO-a64-guest.so",
+      };
+      for (const auto& Cand : Candidates) {
+        if (TryOpen(Cand.native())) {
+          break;
+        }
+      }
     }
   }
 
@@ -711,9 +742,16 @@ VDSOMapping LoadVDSOThunks(FEXCore::Core::InternalThreadState* Thread, FEX::HLE:
       auto PageSize = sysconf(_SC_PAGESIZE);
       PageSize = PageSize > 0 ? PageSize : static_cast<long>(FEXCore::HostPage::Size());
 
+      // Protect the main thread host stack and its growth range from being
+      // collided into by the vDSO mapping.
+      const auto HostStack = FEX::LinuxEmulation::Threads::ReserveMainThreadStack();
+
       // Scan top down and try to allocate a location
       void* VDSOPointerBase {};
       do {
+        if (HostStack.GuardBase > Mapping.VDSOSize && VDSOHint < HostStack.Top && VDSOHint + Mapping.VDSOSize > HostStack.GuardBase) {
+          VDSOHint = HostStack.GuardBase - Mapping.VDSOSize;
+        }
         VDSOPointerBase = Handler->GuestMmap(true, Thread, reinterpret_cast<void*>(VDSOHint), Mapping.VDSOSize, PROT_READ | PROT_EXEC,
                                              MAP_FIXED_NOREPLACE | MAP_SHARED, VDSOFD, 0);
         // Scan-downward until we fit.

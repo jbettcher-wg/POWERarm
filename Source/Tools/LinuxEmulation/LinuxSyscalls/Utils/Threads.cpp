@@ -79,52 +79,55 @@ namespace {
 } // namespace
 
 MainThreadStackRange ReserveMainThreadStack() {
-  const uint64_t PageSize = FEXCore::HostPage::Size();
-  const uint64_t SP = reinterpret_cast<uint64_t>(__builtin_frame_address(0));
+  static const MainThreadStackRange Range = []() -> MainThreadStackRange {
+    const uint64_t PageSize = FEXCore::HostPage::Size();
+    const uint64_t SP = reinterpret_cast<uint64_t>(__builtin_frame_address(0));
 
-  // Without /proc, the page above the stack pointer: the guard gap below
-  // absorbs the difference.
-  uint64_t Top = MappingEnd(SP);
-  if (Top == 0) {
-    Top = FEXCore::AlignUp(SP, PageSize);
-  }
+    // Without /proc, the page above the stack pointer: the guard gap below
+    // absorbs the difference.
+    uint64_t Top = MappingEnd(SP);
+    if (Top == 0) {
+      Top = FEXCore::AlignUp(SP, PageSize);
+    }
 
-  // The kernel will not grow the stack past RLIMIT_STACK below its top.
-  // Unlimited (or absurd) gets a fixed allowance; the guard turns anything
-  // deeper into a fault.
-  constexpr uint64_t MaxGrowth = 1ULL << 30;
-  uint64_t Growth = MaxGrowth;
-  struct rlimit Limit {};
-  if (::getrlimit(RLIMIT_STACK, &Limit) == 0 && Limit.rlim_cur != RLIM_INFINITY) {
-    Growth = std::min<uint64_t>(FEXCore::AlignUp(Limit.rlim_cur, PageSize), MaxGrowth);
-  }
-  // The kernel's default stack_guard_gap: 16 MiB on a 64K-page host.
-  const uint64_t Guard = 256 * PageSize;
+    // The kernel will not grow the stack past RLIMIT_STACK below its top.
+    // Unlimited (or absurd) gets a fixed allowance; the guard turns anything
+    // deeper into a fault.
+    constexpr uint64_t MaxGrowth = 1ULL << 30;
+    uint64_t Growth = MaxGrowth;
+    struct rlimit Limit {};
+    if (::getrlimit(RLIMIT_STACK, &Limit) == 0 && Limit.rlim_cur != RLIM_INFINITY) {
+      Growth = std::min<uint64_t>(FEXCore::AlignUp(Limit.rlim_cur, PageSize), MaxGrowth);
+    }
+    // The kernel's default stack_guard_gap: 16 MiB on a 64K-page host.
+    const uint64_t Guard = 256 * PageSize;
 
-  MainThreadStackRange Range {};
-  Range.Top = Top;
-  Range.GrowthLimit = Top > Growth ? Top - Growth : 0;
-  Range.GuardBase = Range.GrowthLimit > Guard ? Range.GrowthLimit - Guard : 0;
-  if (Range.GuardBase == 0) {
-    return Range;
-  }
+    MainThreadStackRange R {};
+    R.Top = Top;
+    R.GrowthLimit = Top > Growth ? Top - Growth : 0;
+    R.GuardBase = R.GrowthLimit > Guard ? R.GrowthLimit - Guard : 0;
+    if (R.GuardBase == 0) {
+      return R;
+    }
 
-  // Neither MAP_GROWSDOWN nor accessible, so the kernel lets the stack grow
-  // right up to it and a host frame that reaches it faults. Nothing else
-  // would stop one: Linux keeps its stack guard gap only below an accessible
-  // neighbour that is not itself MAP_GROWSDOWN, and the guest stack is
-  // MAP_GROWSDOWN.
-  auto Mapping = ::mmap(reinterpret_cast<void*>(Range.GuardBase), Guard, PROT_NONE,
-                        MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE | FEX::HLE::FEX_MAP_FIXED_NOREPLACE, -1, 0);
-  if (Mapping == reinterpret_cast<void*>(Range.GuardBase)) {
-    FEXCore::Allocator::VirtualName("POWERarm host stack guard", Mapping, Guard);
-  } else if (Mapping != MAP_FAILED) {
-    // A kernel without MAP_FIXED_NOREPLACE took it as a hint.
-    ::munmap(Mapping, Guard);
-  }
-  // The guard and the growth range are host memory: a guest MAP_FIXED there
-  // would put guest memory back in the stack's way.
-  FEX::HLE::HostOwnedRanges::Add(Range.GuardBase, Range.Top - Range.GuardBase);
+    // Neither MAP_GROWSDOWN nor accessible, so the kernel lets the stack grow
+    // right up to it and a host frame that reaches it faults. Nothing else
+    // would stop one: Linux keeps its stack guard gap only below an accessible
+    // neighbour that is not itself MAP_GROWSDOWN, and the guest stack is
+    // MAP_GROWSDOWN.
+    auto Mapping = ::mmap(reinterpret_cast<void*>(R.GuardBase), Guard, PROT_NONE,
+                          MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE | FEX::HLE::FEX_MAP_FIXED_NOREPLACE, -1, 0);
+    if (Mapping == reinterpret_cast<void*>(R.GuardBase)) {
+      FEXCore::Allocator::VirtualName("POWERarm host stack guard", Mapping, Guard);
+    } else if (Mapping != MAP_FAILED) {
+      // A kernel without MAP_FIXED_NOREPLACE took it as a hint.
+      ::munmap(Mapping, Guard);
+    }
+    // The guard and the growth range are host memory: a guest MAP_FIXED there
+    // would put guest memory back in the stack's way.
+    FEX::HLE::HostOwnedRanges::Add(R.GuardBase, R.Top - R.GuardBase);
+    return R;
+  }();
   return Range;
 }
 

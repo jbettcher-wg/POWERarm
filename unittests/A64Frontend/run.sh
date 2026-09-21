@@ -37,6 +37,8 @@ report() {
 if [ -z "${POWERARM_THUNKGUESTLIBS:-}" ]; then
   if guest=$(cd "$(dirname "$emu")/../Guest" 2>/dev/null && pwd) && [ -f "$guest/libVDSO-a64-guest.so" ]; then
     export POWERARM_THUNKGUESTLIBS="$guest"
+  elif guest=$(cd "$(dirname "$emu")/../GuestThunks" 2>/dev/null && pwd) && [ -f "$guest/libVDSO-a64-guest.so" ]; then
+    export POWERARM_THUNKGUESTLIBS="$guest"
   fi
 fi
 have_vdso=0
