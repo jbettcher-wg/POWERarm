@@ -65,25 +65,28 @@ run_emu() {
   [ -f "$1.args" ] && args=$(cat "$1.args")
   [ -f "$1.env" ] && envs=$(cat "$1.env")
   # shellcheck disable=SC2086
-  (
-    [ -n "$envs" ] && export $envs
-    if [ "$1" = hoststack ]; then
-      ulimit -s unlimited 2> /dev/null
-      exec setarch -R "$emu" "./$bin" $args
-    fi
-    if [ "$1" = forkexec ]; then
-      # Its children exec it again, which must stay on this build
-      # (POWERARM_PORTABLE), and save, fill and compact a code cache of their
-      # own on every run.
-      fecache=$(mktemp -d "${TMPDIR:-/tmp}/forkexec-cache.XXXXXX")
-      POWERARM_PORTABLE=1 POWERARM_ENABLECODECACHINGWIP=1 POWERARM_CODECACHESCOPE=all POWERARM_APP_CACHE_LOCATION="$fecache/" \
-        "$emu" "./$bin" $args
-      rc=$?
-      rm -rf "$fecache"
-      exit $rc
-    fi
-    exec "$emu" "./$bin" $args
-  ) > "$1.powerarm" 2> "$1.stderr"
+  {
+    (
+      ulimit -c 0 2> /dev/null
+      [ -n "$envs" ] && export $envs
+      if [ "$1" = hoststack ]; then
+        ulimit -s unlimited 2> /dev/null
+        exec setarch -R "$emu" "./$bin" $args
+      fi
+      if [ "$1" = forkexec ]; then
+        # Its children exec it again, which must stay on this build
+        # (POWERARM_PORTABLE), and save, fill and compact a code cache of their
+        # own on every run.
+        fecache=$(mktemp -d "${TMPDIR:-/tmp}/forkexec-cache.XXXXXX")
+        POWERARM_PORTABLE=1 POWERARM_ENABLECODECACHINGWIP=1 POWERARM_CODECACHESCOPE=all POWERARM_APP_CACHE_LOCATION="$fecache/" \
+          "$emu" "./$bin" $args
+        rc=$?
+        rm -rf "$fecache"
+        exit $rc
+      fi
+      exec "$emu" "./$bin" $args
+    ) > "$1.powerarm" 2> "$1.stderr"
+  } 2> /dev/null
   echo $? > "$1.powerarm.rc"
 }
 
