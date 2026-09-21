@@ -5986,83 +5986,22 @@ CPUBackend::CompiledCode PPC64JITCore::CompileCode(
 
   CodeBuffers.LatestOffset += CodeSize;
 
-  // Write code tail. Layout produced here:
-  //   [BlockBegin ..]                    header, code (Align16B'd), CodeSize bytes
-  //   [BlockBegin + CodeSize]            JITCodeTail (40 bytes; 4-byte aligned)
-  //   [BlockBegin + CodeSize + sizeof]   vl64pair entries (variable length, 1/2/9/17 bytes each)
-  //   [BlockBegin + CodeSize + sizeof + entries -> align to 16]
-  //
-  // Tail and entries are written via direct pointer arithmetic; the
-  // emitter's cursor is not advanced (we finalise the compile here and
-  // never GetCursorAddress again). CodeBuffers.LatestOffset is bumped for
-  // both regions PLUS a 16-byte alignment pad — vl64pair records are 1/2/9/17
-  // bytes each, so their sum is not instruction-aligned; the next compile's
-  // SetBuffer must land on a 16-byte boundary or its Emit32 writes are
-  // misaligned and every emitted instruction reads back as garbage.
-  auto* Tail = reinterpret_cast<CPUBackend::JITCodeTail*>(
-    GetCursorAddress<uint8_t*>());
-  // Zero the whole struct before assigning fields. This is a raw cast over
-  // whatever the code buffer previously held, not a fresh aggregate, and
-  // JITCodeTail carries a `uint8_t _Pad[3]` that no assignment below touches.
-  // Leaving it as stale buffer bytes makes CodeCache::Validate compare
-  // nondeterministic data: the validation context reuses a single code buffer
-  // across Validate calls (its reset clears the offset, not the memory) while
-  // the cache side is always a fresh zero-filled mapping, so from the second
-  // call onward the reference side carries garbage where the cache has zeros.
-  // ARM64 gets this for free — it builds the tail as a designated-initialiser
-  // aggregate, which value-initialises _Pad.
-  ::memset(Tail, 0, sizeof(*Tail));
-  Tail->RIP       = Entry;
-  Tail->GuestSize = GuestSize;
-  Tail->NumberOfRIPEntries = static_cast<uint32_t>(DebugData->GuestOpcodes.size());
-  Tail->OffsetToRIPEntries = sizeof(CPUBackend::JITCodeTail);
-  Tail->SpinLockFutex      = 0;
-  Tail->SingleInst         = SingleInst;
-
-  // S3.7-C3: RELOC_GUEST_RIP_LITERAL for Tail->RIP so cache save/load
-  // rewrites it across sessions with different ASLR. Runtime reads the plain
-  // uint64_t written above; the relocation only kicks in when Relocations
-  // are retained (IsGeneratingCache || EnableCodeCacheValidation) and applied
-  // via ApplyCodeRelocations.
-  //
-  // Offset arithmetic: BlockBufferOffset (block start in whole buffer) plus
-  // CodeSize (bytes emitted before the tail — Align16B has already run at
-  // :2501, and CodeSize was captured at :2503 before this point; nothing else
-  // emits between there and here) plus offsetof(JITCodeTail, RIP). Do NOT
-  // use CodeBuffers.LatestOffset — it is bumped at :2526 and would be off by
-  // CodeSize. Do NOT port PlaceNamedSymbolLiteral: nothing in emitted code
-  // reads Tail->RIP (only C++ does), so there is no literal-pool label.
-  //
-  // Gated on ExitRIPFixedWidth (the same predicate the RIP-move sites use):
-  // the comment above already says this record only "kicks in" when
-  // relocations are retained, i.e. when code caching is on. With it off the
-  // push was pure overhead -- a Relocation appended to a vector on every
-  // single compiled block, for a consumer that does not exist -- and the
-  // vector is discarded unread at the end of CompileCode.
-  if (RetainRelocations) {
-    Relocation Reloc {};
-    Reloc.GuestRIP.Header = {
-      .Offset = BlockBufferOffset + static_cast<uint64_t>(CodeSize) + offsetof(CPUBackend::JITCodeTail, RIP),
-      .Type   = FEXCore::CPU::RelocationTypes::RELOC_GUEST_RIP_LITERAL,
-    };
-    Reloc.GuestRIP.GuestRIP      = Entry;
-    Reloc.GuestRIP.RegisterIndex = 0;   // unused for literals
-    Relocations.emplace_back(Reloc);
+  // Encode vl64pair RIP entries:
+  uint8_t StackEntries[2048];
+  fextl::vector<uint8_t> HeapEntries;
+  uint8_t* EntryLoc = StackEntries;
+  uint8_t* EntryBase = EntryLoc;
+  const size_t MaxEntriesSize = DebugData->GuestOpcodes.size() * 17;
+  if (MaxEntriesSize > sizeof(StackEntries)) {
+    HeapEntries.resize(MaxEntriesSize);
+    EntryLoc = HeapEntries.data();
+    EntryBase = EntryLoc;
   }
-
-  auto* EntryLoc = reinterpret_cast<uint8_t*>(Tail) + sizeof(CPUBackend::JITCodeTail);
-  auto* EntryBase = EntryLoc;
-  uintptr_t PrevPCOffset  = 0;
+  uintptr_t PrevPCOffset = 0;
   int64_t PrevRIPOffset = 0;
   for (const auto& GuestOpcode : DebugData->GuestOpcodes) {
     LOGMAN_THROW_A_FMT(static_cast<uintptr_t>(GuestOpcode.HostEntryOffset) >= PrevPCOffset,
                        "GuestOpcodes must be in ascending host order for vl64pair delta walk");
-    // A guest offset is relative to the unit's entry and travels through the
-    // IR as a u32 (IROp_GuestOpcode / IROp_CodeBlock::GuestEntryOffset). A
-    // block the decoder placed below the entry (its region reaches back
-    // RegionWindow bytes) has a negative offset, so read it back as signed:
-    // zero-extended, the delta decoded to Entry + 2^32 - k and every signal
-    // or fault in such a block reported a guest PC with bit 32 set.
     const int64_t RIPOffset = static_cast<int32_t>(static_cast<uint32_t>(GuestOpcode.GuestEntryOffset));
     const uint64_t HostDelta  = static_cast<uintptr_t>(GuestOpcode.HostEntryOffset) - PrevPCOffset;
     const uint64_t GuestDelta = static_cast<uint64_t>(RIPOffset - PrevRIPOffset);
@@ -6072,56 +6011,51 @@ CPUBackend::CompiledCode PPC64JITCore::CompileCode(
   }
   const size_t EntriesSize = static_cast<size_t>(EntryLoc - EntryBase);
   const size_t TailAndEntries = sizeof(CPUBackend::JITCodeTail) + EntriesSize;
-  // Round up to 16 bytes so the next block starts on a 16-byte boundary,
-  // matching Align16B() at the end of the code region above.
   const size_t TailAndEntriesAligned = (TailAndEntries + 15) & ~size_t{15};
-  // Zero the 0-15 byte alignment pad. Nothing else writes it, yet
-  // LatestOffset advances past it below, so it is part of the block's byte
-  // range as far as CodeCache::Validate is concerned. Same reasoning as the
-  // struct memset above; ARM64's Align() memsets its equivalent gap.
-  ::memset(reinterpret_cast<uint8_t*>(Tail) + TailAndEntries, 0,
-           TailAndEntriesAligned - TailAndEntries);
 
-  // Total block span from BlockBegin including tail + entries + padding. The
-  // range check in Core.cpp:RestoreRIPFromHostPC uses this to gate the walk.
-  Tail->Size = CodeSize + TailAndEntriesAligned;
-  CodeBuffers.LatestOffset += TailAndEntriesAligned;
+  // Warm G1(b,d): Allocate cold region for this block (tail table + pad + link thunks).
+  // Hot code contains ONLY hot instructions (CodeSize); tail metadata and thunks live top-down in the chunk.
+  const size_t NumThunks = PendingJumpThunks.size();
+  const size_t ColdThunksSize = NumThunks * 112;
+  const size_t ColdSize = TailAndEntriesAligned + ColdThunksSize;
+  const uint64_t ColdBaseOffset = CodeBuffers.AllocateColdThunkBytes(ColdSize);
+  uint8_t* ColdBasePtr = CB->Ptr + ColdBaseOffset;
 
-  // Backpatch the JITCodeHeader reserved at BlockBegin. The tail was just
-  // written at BlockBegin + CodeSize (Align16B has already run, so CodeSize
-  // is the aligned pre-tail total). Cast is safe: the code buffer is
-  // capacity-checked against BlockHeadroom above so no compile can exceed
-  // 4 GiB.
-  CodeHeader->OffsetToBlockTail = static_cast<uint32_t>(CodeSize);
+  auto* Tail = reinterpret_cast<CPUBackend::JITCodeTail*>(ColdBasePtr);
+  ::memset(Tail, 0, sizeof(*Tail));
+  Tail->RIP                = Entry;
+  Tail->GuestSize          = GuestSize;
+  Tail->NumberOfRIPEntries = static_cast<uint32_t>(DebugData->GuestOpcodes.size());
+  Tail->OffsetToRIPEntries = sizeof(CPUBackend::JITCodeTail);
+  Tail->SpinLockFutex      = 0;
+  Tail->SingleInst         = SingleInst;
+  Tail->Size               = CodeSize;
+  Tail->ColdSize           = static_cast<uint32_t>(ColdSize);
 
-  // AUDIT P1: publish this block to the CodeBuffer's host-PC -> block index,
-  // which replaces the per-EntryPoint InlineJITBlockHeader store (see the
-  // FEX_NOBLOCKHEADER site in the block loop above).
-  //
-  // ORDERING CONTRACT, and why this exact line:
-  //   * The block must be COMPLETE before it is indexed. A consumer that
-  //     finds this offset immediately walks BlockBegin -> JITCodeHeader::
-  //     OffsetToBlockTail -> JITCodeTail -> Tail->Size -> the vl64pair
-  //     entries. Tail->Size is written above; OffsetToBlockTail is written on
-  //     the line directly above this one. Both are done, so any observer that
-  //     sees the index entry sees a fully-formed block.
-  //   * We are still inside CompileCode's CodeBufferWriteMutex window, which
-  //     is the same lock the code buffer's readers take, so no additional
-  //     synchronisation is needed and the index cannot be observed torn.
-  //   * BlockBufferOffset is the block's start offset in the whole buffer (the
-  //     S3.7-C0 snapshot taken before SetBuffer). Blocks are emitted strictly
-  //     in increasing offset order -- CodeBuffers.LatestOffset only ever grows
-  //     within a buffer, and a new buffer gets a fresh index -- so appends are
-  //     monotonic and the index stays sorted for a binary search.
-  //   * uint32_t: the buffer is capacity-checked against BlockHeadroom near
-  //     the top of CompileCode, so no offset can exceed 4 GiB.
+  if (EntriesSize > 0) {
+    ::memcpy(ColdBasePtr + sizeof(CPUBackend::JITCodeTail), EntryBase, EntriesSize);
+  }
+  ::memset(ColdBasePtr + TailAndEntries, 0, TailAndEntriesAligned - TailAndEntries);
+
+  if (RetainRelocations) {
+    Relocation Reloc {};
+    Reloc.GuestRIP.Header = {
+      .Offset = ColdBaseOffset + offsetof(CPUBackend::JITCodeTail, RIP),
+      .Type   = FEXCore::CPU::RelocationTypes::RELOC_GUEST_RIP_LITERAL,
+    };
+    Reloc.GuestRIP.GuestRIP      = Entry;
+    Reloc.GuestRIP.RegisterIndex = 0;   // unused for literals
+    Relocations.emplace_back(Reloc);
+  }
+
+  // Backpatch the JITCodeHeader reserved at BlockBegin to point to Tail in cold region.
+  CodeHeader->OffsetToBlockTail = static_cast<uint32_t>(ColdBaseOffset - BlockBufferOffset);
+
+  // Publish this block to the CodeBuffer's host-PC -> block index.
   CB->AppendBlock(static_cast<uint32_t>(BlockBufferOffset));
 
-  if (!PendingJumpThunks.empty()) {
-    const size_t NumThunks = PendingJumpThunks.size();
-    const size_t ColdBytes = NumThunks * 112;
-    const uint64_t ColdBaseOffset = CodeBuffers.AllocateColdThunkBytes(ColdBytes);
-    uint8_t* ColdBasePtr = CB->Ptr + ColdBaseOffset;
+  if (NumThunks > 0) {
+    const uint64_t ThunksBaseOffset = ColdBaseOffset + TailAndEntriesAligned;
     const uint64_t StubAddr = CTX->Dispatcher->GetExitFunctionLinkerWithRecordAddress();
 
     size_t ThunkIdx = 0;
@@ -6129,7 +6063,7 @@ CPUBackend::CompiledCode PPC64JITCore::CompileCode(
       static_assert(offsetof(PPC64BlockLinkRecord, StubAddr) <= 32764 &&
                       (offsetof(PPC64BlockLinkRecord, StubAddr) & 3) == 0,
                     "thunk's d-form ld must reach the record's StubAddr field");
-      const uint64_t ThunkStartOffset = ColdBaseOffset + ThunkIdx * 112;
+      const uint64_t ThunkStartOffset = ThunksBaseOffset + ThunkIdx * 112;
       uint8_t* ThunkStartPtr = CB->Ptr + ThunkStartOffset;
       const uint64_t ThunkStart = reinterpret_cast<uint64_t>(ThunkStartPtr);
       PPC64EmitterBase ThunkEmitter(CTX, ThunkStartPtr, 112);
@@ -6206,9 +6140,9 @@ CPUBackend::CompiledCode PPC64JITCore::CompileCode(
 
       ThunkIdx++;
     }
-
-    FEXCore::ArchHelpers::PPC64::FlushICacheRange(reinterpret_cast<void*>(ColdBasePtr), ColdBytes);
   }
+
+  FEXCore::ArchHelpers::PPC64::FlushICacheRange(reinterpret_cast<void*>(ColdBasePtr), ColdSize);
 
   // Flush hot code instructions out of D-cache and invalidate I-cache.
   // Flushed after thunk loop so patched CallerAddress words in the hot body are covered.

@@ -1112,7 +1112,8 @@ struct CodeCache::CacheSegment {
   bool Validate(const SegmentBlock& B) const {
     if (B.CodeOffset > Header->CodeSize || B.CodeSize > Header->CodeSize - B.CodeOffset || B.CodeSize % BlockAlignment != 0 ||
         B.ColdSize > B.CodeSize || B.ColdSize % 16 != 0 ||
-        (B.CodeSize - B.ColdSize) < sizeof(CPU::CPUBackend::JITCodeHeader) + sizeof(CPU::CPUBackend::JITCodeTail) ||
+        (B.CodeSize - B.ColdSize) < sizeof(CPU::CPUBackend::JITCodeHeader) + 4 ||
+        B.ColdSize < sizeof(CPU::CPUBackend::JITCodeTail) ||
         B.EntryOffset >= (B.CodeSize - B.ColdSize)) {
       return false;
     }
@@ -1517,19 +1518,13 @@ std::optional<CodeCache::LoadedBlock> CodeCache::TryLoadBlock(Core::InternalThre
     return std::nullopt;
   }
 
-  // The block must describe itself as a compile of GuestRIP would.
-  const auto* Header = reinterpret_cast<const CPU::CPUBackend::JITCodeHeader*>(HotDest.data());
-  if (Header->OffsetToBlockTail > HotSize - sizeof(CPU::CPUBackend::JITCodeTail)) {
-    if (ColdSize > 0) {
-      CTX.ColdOffset += ColdSize;
-    }
+  if (ColdSize < sizeof(CPU::CPUBackend::JITCodeTail)) {
+    CTX.ColdOffset += ColdSize;
     return std::nullopt;
   }
-  const auto* Tail = reinterpret_cast<const CPU::CPUBackend::JITCodeTail*>(HotDest.data() + Header->OffsetToBlockTail);
-  if (Tail->RIP != GuestRIP || Tail->GuestSize != Length || Tail->Size != HotSize) {
-    if (ColdSize > 0) {
-      CTX.ColdOffset += ColdSize;
-    }
+  const auto* Tail = reinterpret_cast<const CPU::CPUBackend::JITCodeTail*>(ColdDest.data());
+  if (Tail->RIP != GuestRIP || Tail->GuestSize != Length || Tail->Size != HotSize || Tail->ColdSize != ColdSize) {
+    CTX.ColdOffset += ColdSize;
     Stats.RelocFailed.fetch_add(1, std::memory_order_relaxed);
     return std::nullopt;
   }
@@ -1618,17 +1613,21 @@ static void CollectLiveBlocks(CodeCache& Cache, ContextImpl& CTX, const Executab
       continue;
     }
     const uint64_t Begin = Entry.BlockBegin - BufferBase;
-    if (Used - Begin < sizeof(CPU::CPUBackend::JITCodeHeader) + sizeof(CPU::CPUBackend::JITCodeTail)) {
+    if (Used - Begin < sizeof(CPU::CPUBackend::JITCodeHeader)) {
       continue;
     }
     const auto* Header = reinterpret_cast<const CPU::CPUBackend::JITCodeHeader*>(BufferBase + Begin);
-    if (Header->OffsetToBlockTail > Used - Begin - sizeof(CPU::CPUBackend::JITCodeTail)) {
+    const uint64_t ColdBaseOffset = Begin + Header->OffsetToBlockTail;
+    if (ColdBaseOffset + sizeof(CPU::CPUBackend::JITCodeTail) > CodeBuffer->UsableSize()) {
       continue;
     }
-    const auto* Tail = reinterpret_cast<const CPU::CPUBackend::JITCodeTail*>(BufferBase + Begin + Header->OffsetToBlockTail);
+    const auto* Tail = reinterpret_cast<const CPU::CPUBackend::JITCodeTail*>(BufferBase + ColdBaseOffset);
     const uint64_t Size = Tail->Size;
+    const uint64_t ColdSize = Tail->ColdSize;
     const uint64_t Length = Tail->GuestSize;
-    if (Tail->RIP != Guest || Size > Used - Begin || Size % BlockAlignment != 0 || Header->OffsetToBlockTail + sizeof(*Tail) > Size ||
+    if (Tail->RIP != Guest || Size > Used - Begin || Size % BlockAlignment != 0 ||
+        ColdSize < sizeof(CPU::CPUBackend::JITCodeTail) || ColdSize % 16 != 0 ||
+        ColdBaseOffset + ColdSize > CodeBuffer->UsableSize() ||
         Entry.HostCode < Entry.BlockBegin || Entry.HostCode - Entry.BlockBegin >= Size || Length == 0 || Length % 4 != 0 ||
         Length > uint64_t {FEXCore::A64::DEFAULT_MAX_INSTRUCTIONS} * 4 || Size > std::numeric_limits<uint32_t>::max()) {
       continue;
@@ -1638,9 +1637,6 @@ static void CollectLiveBlocks(CodeCache& Cache, ContextImpl& CTX, const Executab
     // relocation is not cacheable: the thunk may not be registered yet when a
     // later process loads it.
     const auto Relocs = RelocsFor(Guest);
-    uint32_t NumThunks = 0;
-    uint64_t MinThunkStart = std::numeric_limits<uint64_t>::max();
-    uint64_t MaxThunkEnd = 0;
     bool Cacheable = true;
 
     for (const auto& R : Relocs) {
@@ -1648,35 +1644,9 @@ static void CollectLiveBlocks(CodeCache& Cache, ContextImpl& CTX, const Executab
         Cacheable = false;
         break;
       }
-      if (R.Header.Type == CPU::RelocationTypes::RELOC_LINK_RECORD) {
-        if (R.Header.Offset < CPU::PPC64LinkRecordFromThunkStart) {
-          Cacheable = false;
-          break;
-        }
-        const uint64_t ThunkStart = R.Header.Offset - CPU::PPC64LinkRecordFromThunkStart;
-        const uint64_t ThunkEnd = ThunkStart + 112;
-        if (ThunkEnd > CodeBuffer->UsableSize()) {
-          Cacheable = false;
-          break;
-        }
-        NumThunks++;
-        MinThunkStart = std::min(MinThunkStart, ThunkStart);
-        MaxThunkEnd = std::max(MaxThunkEnd, ThunkEnd);
-      }
-    }
-    if (!Cacheable) {
-      continue;
-    }
-
-    const uint32_t ColdSize = NumThunks * 112;
-    if (NumThunks > 0 && MaxThunkEnd - MinThunkStart != ColdSize) {
-      continue;
-    }
-
-    for (const auto& R : Relocs) {
       const uint64_t Width = RelocWidth(R);
       const bool IsHot = (R.Header.Offset >= Begin && R.Header.Offset + Width <= Begin + Size);
-      const bool IsCold = (ColdSize > 0 && R.Header.Offset >= MinThunkStart && R.Header.Offset + Width <= MaxThunkEnd);
+      const bool IsCold = (R.Header.Offset >= ColdBaseOffset && R.Header.Offset + Width <= ColdBaseOffset + ColdSize);
       if (!IsHot && !IsCold) {
         Cacheable = false;
         break;
@@ -1720,17 +1690,17 @@ static void CollectLiveBlocks(CodeCache& Cache, ContextImpl& CTX, const Executab
     B.GuestHash = XXH3_64bits(GuestBytes.data(), Length);
     B.GuestLength = static_cast<uint32_t>(Length);
     B.CodeSize = static_cast<uint32_t>(Size + ColdSize);
-    B.ColdSize = ColdSize;
+    B.ColdSize = static_cast<uint32_t>(ColdSize);
     B.EntryOffset = static_cast<uint32_t>(Entry.HostCode - Entry.BlockBegin);
     B.RelocBegin = static_cast<uint32_t>(Out.Relocs.size());
     for (auto Copy : Relocs) {
       if (Copy.Header.Offset >= Begin && Copy.Header.Offset < Begin + Size) {
         Copy.Header.Offset -= Begin;
       } else {
-        const uint64_t ColdRelocOff = Copy.Header.Offset - MinThunkStart;
+        const uint64_t ColdRelocOff = Copy.Header.Offset - ColdBaseOffset;
         const uint64_t StoredRecordOff = Size + ColdRelocOff;
         if (Copy.Header.Type == CPU::RelocationTypes::RELOC_LINK_RECORD) {
-          const int64_t LiveRecord = static_cast<int64_t>(MinThunkStart + ColdRelocOff);
+          const int64_t LiveRecord = static_cast<int64_t>(ColdBaseOffset + ColdRelocOff);
           const int64_t LiveCaller = LiveRecord + Copy.LinkRecord.CallerDelta;
           const int64_t LiveLinkBranch = LiveRecord + Copy.LinkRecord.LinkBranchDelta;
           const int64_t LiveLinkedEntry = Copy.LinkRecord.LinkedEntryDelta ? LiveRecord + Copy.LinkRecord.LinkedEntryDelta : 0;
@@ -1761,10 +1731,8 @@ static void CollectLiveBlocks(CodeCache& Cache, ContextImpl& CTX, const Executab
     Out.Code.resize(CodeStart);
     const auto* SrcHot = reinterpret_cast<const std::byte*>(BufferBase + Begin);
     Out.Code.insert(Out.Code.end(), SrcHot, SrcHot + Size);
-    if (ColdSize > 0) {
-      const auto* SrcCold = reinterpret_cast<const std::byte*>(BufferBase + MinThunkStart);
-      Out.Code.insert(Out.Code.end(), SrcCold, SrcCold + ColdSize);
-    }
+    const auto* SrcCold = reinterpret_cast<const std::byte*>(BufferBase + ColdBaseOffset);
+    Out.Code.insert(Out.Code.end(), SrcCold, SrcCold + ColdSize);
     B.CodeOffset = CodeStart;
     std::span<std::byte> Copy {Out.Code.data() + CodeStart, Size + ColdSize};
     const std::span<const CPU::Relocation> BlockRelocs {Out.Relocs.data() + B.RelocBegin, B.RelocCount};
@@ -1773,8 +1741,11 @@ static void CollectLiveBlocks(CodeCache& Cache, ContextImpl& CTX, const Executab
       Out.Relocs.resize(B.RelocBegin);
       continue;
     }
+    auto* StoredHeader = reinterpret_cast<CPU::CPUBackend::JITCodeHeader*>(Copy.data());
+    StoredHeader->OffsetToBlockTail = static_cast<uint32_t>(Size);
+
     const uint32_t ZeroFutex = 0;
-    ::memcpy(Copy.data() + Header->OffsetToBlockTail + offsetof(CPU::CPUBackend::JITCodeTail, SpinLockFutex), &ZeroFutex, sizeof(ZeroFutex));
+    ::memcpy(Copy.data() + Size + offsetof(CPU::CPUBackend::JITCodeTail, SpinLockFutex), &ZeroFutex, sizeof(ZeroFutex));
 
     B.EntryHash = HashBlock(B, Copy.data(), Out.Relocs.data() + B.RelocBegin);
     Out.Blocks.push_back(B);
@@ -2509,6 +2480,11 @@ bool CodeCache::ApplyCodeRelocationsSplit(uint64_t GuestEntry, std::span<std::by
                                           std::span<const CPU::Relocation> EntryRelocations) {
   const uint64_t HotSize = HotCode.size();
   const uint64_t ColdSize = ColdCode.size();
+
+  if (HotSize >= sizeof(CPU::CPUBackend::JITCodeHeader)) {
+    auto* Header = reinterpret_cast<CPU::CPUBackend::JITCodeHeader*>(HotCode.data());
+    Header->OffsetToBlockTail = static_cast<uint32_t>(reinterpret_cast<intptr_t>(ColdCode.data()) - reinterpret_cast<intptr_t>(HotCode.data()));
+  }
 
   for (const auto& Reloc : EntryRelocations) {
     if (Reloc.Header.Type != CPU::RelocationTypes::RELOC_LINK_RECORD) {

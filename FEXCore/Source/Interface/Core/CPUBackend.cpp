@@ -546,8 +546,8 @@ namespace CPU {
 
       auto Header = reinterpret_cast<const JITCodeHeader*>(Ptr + Offset);
       const size_t OffsetToBlockTail = Header->OffsetToBlockTail;
-      // Remaining >= 64 > sizeof(JITCodeTail), so the subtraction cannot wrap.
-      if (OffsetToBlockTail < sizeof(JITCodeHeader) || OffsetToBlockTail > Remaining - sizeof(JITCodeTail)) {
+      // OffsetToBlockTail points to the cold region, which must be within the usable code buffer.
+      if (OffsetToBlockTail < sizeof(JITCodeHeader) || Offset + OffsetToBlockTail > UsableSize() - sizeof(JITCodeTail)) {
         LogMan::Msg::EFmt("Block index walk: block at {:#x} has an out-of-range tail offset {:#x} ({:#x} bytes left)", Offset,
                           OffsetToBlockTail, Remaining);
         break;

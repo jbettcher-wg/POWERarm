@@ -89,7 +89,13 @@ namespace CPU {
     bool SingleInst;
 
     uint8_t _Pad[3];
+
+    // Total size of the cold allocation for this block (tail table + pad + thunks).
+    uint32_t ColdSize;
+
+    uint32_t _Pad2;
   };
+  static_assert(sizeof(JITCodeTail) == 48, "JITCodeTail layout contract");
 
   struct CodeBuffer {
     uint8_t* Ptr;
@@ -151,11 +157,9 @@ namespace CPU {
     // MinimumBlockSize bytes, so this can never be exceeded.
     uint32_t BlockCapacity {};
 
-    // Smallest possible block span: a 4-byte JITCodeHeader plus code rounded
-    // up to 16, plus a 40-byte JITCodeTail plus its RIP entries rounded up to
-    // 16 (PPC64LE JIT.cpp, Tail->Size = CodeSize + TailAndEntriesAligned).
-    // 16 (code) + 48 (tail) = 64.
-    static constexpr size_t MinimumBlockSize = 64;
+    // Smallest possible hot block span: a 4-byte JITCodeHeader plus code rounded
+    // up to 16.
+    static constexpr size_t MinimumBlockSize = 16;
 
     // Byte size of the BlockOffsets mapping; must be identical at
     // VirtualAlloc and VirtualFree time (BlockCapacity is fixed after
