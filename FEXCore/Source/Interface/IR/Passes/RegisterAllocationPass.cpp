@@ -504,7 +504,7 @@ inline bool KillMove(IROp_Header* LastOp, IROp_Header* IROp, Ref LastNode, Ref C
     }
   }
 
-  return LastOp->Op == OP_STOREREGISTER;
+  return LastOp->Op == OP_STOREREGISTER || LastOp->Op == OP_COPY;
 }
 
 inline bool IsSignext(const IROp_Header* IROp, OrderedNodeWrapper Src, OpSize Size) {
@@ -630,6 +630,19 @@ void ConstrainedRAPass::Run(IREmitter* IREmit_) {
 
           PreferredReg[IR->GetID(Node).Value] = Reg;
           GetClass(Reg)->RegToSSA[Reg.Reg] = CodeNode;
+
+          // Propagate PreferredReg across 32-bit Bfe (StoreW zero-extension idiom)
+          // so ALU producers write directly into the destination SRA register.
+          auto NodeOp = IR->GetOp<IROp_Header>(Node);
+          if (NodeOp->Op == OP_BFE) {
+            auto Bfe = NodeOp->C<IR::IROp_Bfe>();
+            if (Bfe->Width == 32 && Bfe->lsb == 0 && !Bfe->Src.IsImmediate()) {
+              auto SrcNode = IR->GetNode(Bfe->Src);
+              if (SrcNode && PreferredReg[IR->GetID(SrcNode).Value].IsInvalid()) {
+                PreferredReg[IR->GetID(SrcNode).Value] = Reg;
+              }
+            }
+          }
         }
 
         // Coalescing an SRA store is equivalent to hoisting the store,
@@ -644,8 +657,20 @@ void ConstrainedRAPass::Run(IREmitter* IREmit_) {
         if (auto Reg = PreferredReg[IR->GetID(CodeNode).Value]; !Reg.IsInvalid()) {
           auto Node = GetClass(Reg)->RegToSSA[Reg.Reg];
           IROp_Header* Header = IR->GetOp<IROp_Header>(Node);
+          Ref SRANode = DecodeSRANode(Header, Node);
 
-          if (CodeNode != DecodeSRANode(Header, Node)) {
+          bool Match = (CodeNode == SRANode);
+          if (!Match && SRANode) {
+            auto SRAOp = IR->GetOp<IROp_Header>(SRANode);
+            if (SRAOp->Op == OP_BFE) {
+              auto Bfe = SRAOp->C<IR::IROp_Bfe>();
+              if (Bfe->Width == 32 && Bfe->lsb == 0 && !Bfe->Src.IsImmediate()) {
+                Match = (CodeNode == IR->GetNode(Bfe->Src));
+              }
+            }
+          }
+
+          if (!Match) {
             PreferredReg[IR->GetID(CodeNode).Value] = PhysicalRegister::Invalid();
           }
         }

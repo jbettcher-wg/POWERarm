@@ -852,9 +852,14 @@ DEF_OP(UDiv) {
 DEF_OP(Or) {
   auto Op  = IROp->C<IR::IROp_Or>();
   auto Dst = GetReg(Node);
-  auto S1  = GetReg(Op->Src1);
+  auto S1Node = Op->Src1;
+  auto S2Node = Op->Src2;
   uint64_t Const;
-  if (IsInlineConstant(Op->Src2, &Const)) {
+  if (IsInlineConstant(S1Node, &Const) && !IsInlineConstant(S2Node, &Const)) {
+    std::swap(S1Node, S2Node);
+  }
+  auto S1  = GetReg(S1Node);
+  if (IsInlineConstant(S2Node, &Const)) {
     if (Const == 0) {
       if (Dst != S1) mr(Dst, S1);
     } else if ((Const & 0xFFFF) == Const) {
@@ -875,7 +880,7 @@ DEF_OP(Or) {
       or_(Dst, S1, TMP4);
     }
   } else {
-    or_(Dst, S1, GetReg(Op->Src2));
+    or_(Dst, S1, GetReg(S2Node));
   }
   if (IROp->Size == IR::OpSize::i32Bit) Mask32Tail(Dst, Node);
 }
@@ -888,15 +893,20 @@ DEF_OP(And) {
   // above EmitAndMask.
   auto Op  = IROp->C<IR::IROp_And>();
   auto Dst = GetReg(Node);
-  auto S1  = GetReg(Op->Src1);
+  auto S1Node = Op->Src1;
+  auto S2Node = Op->Src2;
   uint64_t Const;
-  if (IsInlineConstant(Op->Src2, &Const)) {
+  if (IsInlineConstant(S1Node, &Const) && !IsInlineConstant(S2Node, &Const)) {
+    std::swap(S1Node, S2Node);
+  }
+  auto S1  = GetReg(S1Node);
+  if (IsInlineConstant(S2Node, &Const)) {
     if (!EmitAndMask(*this, Dst, S1, Const, IROp->Size == IR::OpSize::i32Bit)) {
       LoadConstant(TMP4, Const);
       and_(Dst, S1, TMP4);
     }
   } else {
-    and_(Dst, S1, GetReg(Op->Src2));
+    and_(Dst, S1, GetReg(S2Node));
   }
   if (IROp->Size == IR::OpSize::i32Bit) Mask32Tail(Dst, Node);
 }
@@ -904,10 +914,17 @@ DEF_OP(And) {
 DEF_OP(Xor) {
   auto Op  = IROp->C<IR::IROp_Xor>();
   auto Dst = GetReg(Node);
-  auto S1  = GetReg(Op->Src1);
+  auto S1Node = Op->Src1;
+  auto S2Node = Op->Src2;
   uint64_t Const;
-  if (IsInlineConstant(Op->Src2, &Const)) {
-    if ((Const & 0xFFFF) == Const) {
+  if (IsInlineConstant(S1Node, &Const) && !IsInlineConstant(S2Node, &Const)) {
+    std::swap(S1Node, S2Node);
+  }
+  auto S1  = GetReg(S1Node);
+  if (IsInlineConstant(S2Node, &Const)) {
+    if (Const == 0) {
+      if (Dst != S1) mr(Dst, S1);
+    } else if ((Const & 0xFFFF) == Const) {
       xori(Dst, S1, static_cast<uint16_t>(Const));
     } else if ((Const & 0xFFFF0000ull) == Const) {
       xoris(Dst, S1, static_cast<uint16_t>(Const >> 16));
@@ -921,7 +938,7 @@ DEF_OP(Xor) {
       xor_(Dst, S1, TMP4);
     }
   } else {
-    xor_(Dst, S1, GetReg(Op->Src2));
+    xor_(Dst, S1, GetReg(S2Node));
   }
   if (IROp->Size == IR::OpSize::i32Bit) Mask32Tail(Dst, Node);
 }

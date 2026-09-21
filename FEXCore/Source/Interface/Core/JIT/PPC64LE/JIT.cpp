@@ -4016,18 +4016,39 @@ void PPC64JITCore::ComputeHighZeroElision() {
         }
         break;
       }
+      case IR::OP_ADD:
+      case IR::OP_SUB:
+      case IR::OP_AND:
+      case IR::OP_OR:
+      case IR::OP_XOR:
       case IR::OP_LSHL:
       case IR::OP_LSHR:
-      case IR::OP_ASHR: {
+      case IR::OP_ASHR:
+      case IR::OP_MUL:
+      case IR::OP_UMUL: {
         if (IROp->Size <= IR::OpSize::i32Bit) {
           Elide = IsDef(IROp->Args[0]) || IsDef(IROp->Args[1]);
         }
         break;
       }
-      case IR::OP_MUL:
-      case IR::OP_UMUL: {
+      case IR::OP_NOT:
+      case IR::OP_NEG: {
         if (IROp->Size <= IR::OpSize::i32Bit) {
-          Elide = IsDef(IROp->Args[0]) || IsDef(IROp->Args[1]);
+          Elide = IsDef(IROp->Args[0]);
+        }
+        break;
+      }
+      case IR::OP_SELECT: {
+        auto Op = IROp->C<IR::IROp_Select>();
+        if (Op->CompareSize <= IR::OpSize::i32Bit) {
+          Elide = (IsDef(Op->Cmp1) || IsDef(Op->Cmp2)) && !IsDef(Op->TrueVal) && !IsDef(Op->FalseVal);
+        }
+        break;
+      }
+      case IR::OP_BFE: {
+        auto Op = IROp->C<IR::IROp_Bfe>();
+        if (Op->Width <= 32 && Op->lsb == 0) {
+          Elide = IsDef(Op->Src);
         }
         break;
       }
