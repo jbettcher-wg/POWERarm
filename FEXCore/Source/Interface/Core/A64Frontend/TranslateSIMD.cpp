@@ -334,8 +334,34 @@ bool IRBuilder::SIMDPairwise(uint32_t Word, PairwiseOp Op) {
   }
   const auto ES = ElementSizeFor(Size);
   const auto RS = OpSize::i128Bit;
-  Ref A = LoadV(Bits(Word, 9, 5));
-  Ref B = LoadV(Bits(Word, 20, 16));
+  const uint32_t Rn = Bits(Word, 9, 5);
+  const uint32_t Rm = Bits(Word, 20, 16);
+  Ref A = LoadV(Rn);
+
+  if (Rn == Rm && Size < 3) {
+    // Fast path for UMAXP/UMINP/ADDP/SMAXP/SMINP when operands are identical (NEON-LANDINGS §3.10):
+    // Shift elements right by W bits within 2W containers, combine with A, then pack via VUnZip.
+    if (!Q) {
+      A = LowHalves(this, A, A);
+    }
+    const auto WideES = ElementSizeFor(Size + 1);
+    const unsigned W = IR::OpSizeAsBits(ES);
+    const bool Signed = (Op == PairwiseOp::SMax || Op == PairwiseOp::SMin);
+    Ref Shifted = Signed ? _VSShrI(RS, WideES, A, W) : _VUShrI(RS, WideES, A, W);
+    Ref Combined {};
+    switch (Op) {
+    case PairwiseOp::Add:  Combined = _VAdd(RS, ES, A, Shifted); break;
+    case PairwiseOp::UMax: Combined = _VUMax(RS, ES, A, Shifted); break;
+    case PairwiseOp::UMin: Combined = _VUMin(RS, ES, A, Shifted); break;
+    case PairwiseOp::SMax: Combined = _VSMax(RS, ES, A, Shifted); break;
+    case PairwiseOp::SMin: Combined = _VSMin(RS, ES, A, Shifted); break;
+    }
+    Ref Result = _VUnZip(RS, ES, Combined, Combined);
+    StoreVQ(Bits(Word, 4, 0), Q, Result);
+    return true;
+  }
+
+  Ref B = LoadV(Rm);
   // Pairs are (element 2k, element 2k+1) of the concatenation B:A; for a
   // 64-bit vector that concatenation is B.low64:A.low64.
   if (!Q) {
