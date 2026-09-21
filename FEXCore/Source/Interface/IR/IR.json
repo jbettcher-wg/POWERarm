@@ -164,7 +164,7 @@
         "SwitchGen": false,
         "JITDispatchOverride": "NoOp"
       },
-      "IRHeader SSA:$Blocks, u64:$OriginalRIP, u32:$BlockCount, u32:$NumHostInstructions, u32:$SpillSlots, i1:$PostRA{false}": {
+      "IRHeader SSA:$Blocks, u64:$OriginalRIP, u32:$BlockCount, u32:$NumHostInstructions, u32:$SpillSlots, i1:$PostRA{false}, i1:$EntryNZCVLiveIn{false}": {
         "SwitchGen": false,
         "JITDispatchOverride": "NoOp"
       },

@@ -1133,11 +1133,9 @@ PPC64Emitter::Cond PPC64JITCore::MapNZCVCC(IR::CondClass Cond) {
   // leaves XER.OV = 0 and folds unordered into ZF, i.e. the x86 layout. These
   // two cases decode the ARM-FCMP layout that DEF_OP(FCmp) produces, and only
   // that.
-  case IR::CondClass::FLU:  ProjectXERToCR1();
-                            cror (12, 0, OVBit);   // CR3.LT =   LT OR UN
+  case IR::CondClass::FLU:  cror (12, 0, 3);       // CR3.LT =   CR0.LT OR CR0.SO
                             return {12, 12};
-  case IR::CondClass::FGE:  ProjectXERToCR1();
-                            crnor(12, 0, OVBit);   // CR3.LT = !(LT OR UN)
+  case IR::CondClass::FGE:  crnor(12, 0, 3);       // CR3.LT = !(CR0.LT OR CR0.SO)
                             return {12, 12};
   case IR::CondClass::FLEU: return CC_LE;
   case IR::CondClass::FGT:  return CC_GT;
@@ -1850,7 +1848,12 @@ uint64_t PPC64JITCore::ExitFunctionLinkWithRecord(FEXCore::Core::CpuStateFrame* 
   };
   const bool CallerReachable = !ShadowCall || Indirect || CallInPlace || PPC64BranchDisplacementInRange(LinkedEntryDelta);
 
-  if (PPC64BranchDisplacementInRange(DirectDelta) && CallerReachable) {
+  const JITCodeHeader* TargetHeader = CodeBuffer->FindBlockHeader(HostCode);
+  const bool TargetReadsFlags = TargetHeader &&
+    reinterpret_cast<const CPUBackend::JITCodeTail*>(
+      reinterpret_cast<const uint8_t*>(TargetHeader) + TargetHeader->OffsetToBlockTail)->EntryNZCVLiveIn;
+
+  if (!TargetReadsFlags && PPC64BranchDisplacementInRange(DirectDelta) && CallerReachable) {
     // Registration BEFORE patch, under the same locks: once the patched word
     // is observable, the delinker that undoes it is already findable by
     // Erase. The reverse order would leave a patched branch with no
@@ -6029,6 +6032,7 @@ CPUBackend::CompiledCode PPC64JITCore::CompileCode(
   Tail->OffsetToRIPEntries = sizeof(CPUBackend::JITCodeTail);
   Tail->SpinLockFutex      = 0;
   Tail->SingleInst         = SingleInst;
+  Tail->EntryNZCVLiveIn    = IRView->GetHeader()->EntryNZCVLiveIn;
   Tail->Size               = CodeSize;
   Tail->ColdSize           = static_cast<uint32_t>(ColdSize);
 

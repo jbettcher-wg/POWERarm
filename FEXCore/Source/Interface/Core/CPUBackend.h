@@ -88,7 +88,10 @@ namespace CPU {
     // If this block represents a single guest instruction.
     bool SingleInst;
 
-    uint8_t _Pad[3];
+    // If this block reads NZCV flags on entry.
+    bool EntryNZCVLiveIn;
+
+    uint8_t _Pad[2];
 
     // Total size of the cold allocation for this block (tail table + pad + thunks).
     uint32_t ColdSize;

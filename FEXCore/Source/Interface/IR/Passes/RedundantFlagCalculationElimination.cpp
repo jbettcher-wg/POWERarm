@@ -847,6 +847,23 @@ void DeadFlagCalculationEliminination::Run(IREmitter* IREmit) {
   // depend on who else reads the compare's flags. It only removes reads, so
   // the liveness it is given stays valid while it runs block by block: a
   // compare it drops wrote every NZCV bit, and nothing read them afterwards.
+  // Compute EntryNZCVLiveIn: whether the compile unit reads flags on entry.
+  if (CurrentIR.GetHeader()->BlockCount > 0) {
+    uint32_t EntryLiveIn = 0;
+    uint32_t Defined = 0;
+    auto [Block0Node, _] = *CurrentIR.GetBlocks().begin();
+    for (auto [CodeNode, IROp] : CurrentIR.GetCode(Block0Node)) {
+      struct FlagInfo Info = ClassifyFast(IROp);
+      if (!Info.Trivial()) {
+        EntryLiveIn |= (Info.Read() & ~Defined);
+        Defined |= Info.Write();
+      }
+    }
+    if ((EntryLiveIn & FLAG_NZCV) != 0) {
+      CurrentIR.GetHeader()->EntryNZCVLiveIn = true;
+    }
+  }
+
   //
   // Own kill switch (fusion used to be a pass of its own) -- a mis-fused
   // branch is a wrong-direction conditional jump, silent and data-dependent:
