@@ -1246,8 +1246,10 @@ public:
     // lsecasp). Advertising it makes correctly written binaries take the LSE
     // arm deliberately, where before only the ones that set
     // __aarch64_have_lse_atomics without consulting HWCAP got there.
+    // asimddp: FEAT_DotProd (UDOT, SDOT) passes Pi parity.
     HWCap = GUEST_HWCAP_FP | GUEST_HWCAP_ASIMD | GUEST_HWCAP_AES | GUEST_HWCAP_PMULL | GUEST_HWCAP_SHA1 | GUEST_HWCAP_SHA2 |
-            GUEST_HWCAP_CRC32 | GUEST_HWCAP_ATOMICS | GUEST_HWCAP_FPHP | GUEST_HWCAP_ASIMDHP | GUEST_HWCAP_CPUID;
+            GUEST_HWCAP_CRC32 | GUEST_HWCAP_ATOMICS | GUEST_HWCAP_FPHP | GUEST_HWCAP_ASIMDHP | GUEST_HWCAP_CPUID |
+            GUEST_HWCAP_ASIMDDP;
     HWCap2 = 0;
   }
 
