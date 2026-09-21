@@ -221,8 +221,8 @@ static_assert(CPUState::VectorOffset(CPUState::NUM_VREGS) <= 32767, "v[] must st
 // The ppc64le host register for each slot is a64::SRA in
 // Interface/Core/ArchHelpers/PPC64Emitter.h; the choice is documented there.
 // Everything else is reached through LoadContext/StoreContext.
-inline constexpr std::array<uint8_t, 18> StaticGPRGuestReg = {
-  0, 1, 2, 3, 4, 5, 6, 7, 8, 19, 20, 21, 22, 23, 24, 29, 30, CPUState::SP_INDEX,
+inline constexpr std::array<uint8_t, 17> StaticGPRGuestReg = {
+  0, 1, 2, 3, 4, 5, 6, 7, 8, 19, 20, 21, 22, 23, 29, 30, CPUState::SP_INDEX,
 };
 // Guest V registers held in the static vector slots: V0-V15.
 inline constexpr size_t NumStaticVectorRegs = 16;

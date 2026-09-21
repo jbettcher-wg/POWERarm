@@ -305,15 +305,15 @@ namespace RegVolatility {
 //
 // Host GPRs available for guest state: r0 (literal zero in RA position), r1
 // (stack), r2 (TOC), r13 (thread pointer), r3-r6 (TMP1-TMP4) and r27 (STATE)
-// are taken, which leaves 23. The dynamic pool RA keeps the five ELFv2
-// callee-saved registers it had under the x86 guest (it must stay callee-saved,
-// see the asserts below, and the allocator's pair logic was tuned for five), so
-// 18 remain for pinned guest registers -- the same host set the x86-64 map used
-// (r7-r12, r14-r23, and r28/r29, which the removed PF/AF pins freed).
+// are taken, which leaves 23. The dynamic pool RA keeps five ELFv2
+// callee-saved registers (it must stay callee-saved, see the asserts below, and
+// the allocator requires at least 5 registers for OP_SELECT: 4 sources + 1 dest),
+// r22 is pinned for CALLRET_SP, so 17 remain for pinned guest registers (r7-r12,
+// r14-r21, r23, and r28/r29).
 //
 // Guest choice for M0 (DESIGN.md §4.1, to be revisited with the register-use
-// census over the arm64 rootfs): X0-X8 (arguments, indirect result), X19-X24
-// and X29 (callee-saved, frame pointer), X30 (LR) and SP. X9-X18 and X25-X28
+// census over the arm64 rootfs): X0-X8 (arguments, indirect result), X19-X23
+// and X29 (callee-saved, frame pointer), X30 (LR) and SP. X9-X18 and X24-X28
 // live in the context and are reached with LoadContext/StoreContext.
 //
 // Guest arguments/results X0-X5 sit in ELFv2-volatile r7-r12 (they are the
@@ -323,24 +323,24 @@ namespace RegVolatility {
 namespace a64 {
   // SRA slot i holds guest register FEXCore::Core::StaticGPRGuestReg[i]
   // (CoreState.h; 0-30 = Xn, 31 = SP).
-  constexpr std::array<GPR, 18> SRA = {
+  constexpr std::array<GPR, 17> SRA = {
     r7,  r8,  r9,  r10, r11, r12,           // X0-X5
     r14, r15, r16,                          // X6-X8
-    r17, r18, r19, r20, r21, r22,           // X19-X24
+    r17, r18, r19, r20, r21,                // X19-X23
     r23,                                    // X29
     r28,                                    // X30
     r29,                                    // SP
   };
   // SRA slot of the guest stack pointer.
-  constexpr uint32_t SRA_SP_SLOT = 17;
+  constexpr uint32_t SRA_SP_SLOT = 16;
 
   // Dedicated pinned shadow callret stack pointer.
   // Pinned across JIT blocks; filled/spilled by FillStaticRegs/SpillStaticRegs.
-  constexpr GPR CALLRET_SP = r26;
+  constexpr GPR CALLRET_SP = r22;
 
   // Dynamic (non-static) GPR allocation pool
-  constexpr std::array<GPR, 4> RA = {
-    r24, r25, r30, r31,
+  constexpr std::array<GPR, 5> RA = {
+    r24, r25, r26, r30, r31,
   };
 
   constexpr unsigned RAPairs = 2;
