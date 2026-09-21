@@ -258,10 +258,10 @@ bool IRBuilder::SIMDThreeSame(uint32_t Word, ThreeSameOp Op, bool Scalar) {
   case ThreeSameOp::CmEq: Result = _VCMPEQ(RS, ES, A, B); break;
   case ThreeSameOp::CmGt: Result = _VCMPGT(RS, ES, A, B); break;
   case ThreeSameOp::CmGe: Result = _VNot(RS, ES, _VCMPGT(RS, ES, B, A)); break;
-  // Unsigned compares through the unsigned maximum: A >= B <=> max(A, B) == A.
-  case ThreeSameOp::CmHs: Result = _VCMPEQ(RS, ES, _VUMax(RS, ES, A, B), A); break;
-  case ThreeSameOp::CmHi: Result = _VNot(RS, ES, _VCMPEQ(RS, ES, _VUMax(RS, ES, A, B), B)); break;
-  case ThreeSameOp::CmTst: Result = _VNot(RS, ES, _VCMPEQZ(RS, ES, _VAnd(RS, RS, A, B))); break;
+  // Unsigned compares:
+  case ThreeSameOp::CmHs: Result = _VNot(RS, ES, _VCMPGTU(RS, ES, B, A)); break;
+  case ThreeSameOp::CmHi: Result = _VCMPGTU(RS, ES, A, B); break;
+  case ThreeSameOp::CmTst: Result = _VCMPGTUZ(RS, ES, _VAnd(RS, RS, A, B)); break;
   case ThreeSameOp::UMax: Result = _VUMax(RS, ES, A, B); break;
   case ThreeSameOp::UMin: Result = _VUMin(RS, ES, A, B); break;
   case ThreeSameOp::SMax: Result = _VSMax(RS, ES, A, B); break;

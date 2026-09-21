@@ -92,8 +92,7 @@ DEF_OP(VMov) {
     vsldoi(Dst,  VTMP1, VTMP2, 4);
     break;
   case IR::OpSize::i64Bit:
-    vsldoi(VTMP2, Src, VTMP1, 8);
-    vsldoi(Dst,  VTMP1, VTMP2, 8);
+    xxpermdi(Dst, VTMP1, Src, 1);
     break;
   default:
     if (Dst != Src) vmr(Dst, Src);
@@ -596,6 +595,21 @@ DEF_OP(VCMPLTZ) {
   case IR::OpSize::i16Bit: vcmpgtsh(Dst, VTMP1, Src); break;
   case IR::OpSize::i32Bit: vcmpgtsw(Dst, VTMP1, Src); break;
   case IR::OpSize::i64Bit: vcmpgtsd(Dst, VTMP1, Src); break;
+  default: Op_Unhandled(IROp, Node); break;
+  }
+}
+
+DEF_OP(VCMPGTUZ) {
+  const auto Op = IROp->C<IR::IROp_VCMPGTUZ>();
+  const auto ElemSz = Op->Header.ElementSize;
+  const auto Dst = GetVReg(Node);
+  const auto Src = GetVReg(Op->Vector);
+  vspltisw(VTMP1, 0);
+  switch (ElemSz) {
+  case IR::OpSize::i8Bit:  vcmpgtub(Dst, Src, VTMP1); break;
+  case IR::OpSize::i16Bit: vcmpgtuh(Dst, Src, VTMP1); break;
+  case IR::OpSize::i32Bit: vcmpgtuw(Dst, Src, VTMP1); break;
+  case IR::OpSize::i64Bit: vcmpgtud(Dst, Src, VTMP1); break;
   default: Op_Unhandled(IROp, Node); break;
   }
 }
@@ -3497,6 +3511,21 @@ DEF_OP(VCMPGT) {
   case IR::OpSize::i16Bit: vcmpgtsh(Dst, V1, V2); break;
   case IR::OpSize::i32Bit: vcmpgtsw(Dst, V1, V2); break;
   case IR::OpSize::i64Bit: vcmpgtsd(Dst, V1, V2); break;
+  default: Op_Unhandled(IROp, Node); break;
+  }
+}
+
+DEF_OP(VCMPGTU) {
+  const auto Op   = IROp->C<IR::IROp_VCMPGTU>();
+  const auto ElemSz = Op->Header.ElementSize;
+  const auto Dst  = GetVReg(Node);
+  const auto V1   = GetVReg(Op->Vector1);
+  const auto V2   = GetVReg(Op->Vector2);
+  switch (ElemSz) {
+  case IR::OpSize::i8Bit:  vcmpgtub(Dst, V1, V2); break;
+  case IR::OpSize::i16Bit: vcmpgtuh(Dst, V1, V2); break;
+  case IR::OpSize::i32Bit: vcmpgtuw(Dst, V1, V2); break;
+  case IR::OpSize::i64Bit: vcmpgtud(Dst, V1, V2); break;
   default: Op_Unhandled(IROp, Node); break;
   }
 }

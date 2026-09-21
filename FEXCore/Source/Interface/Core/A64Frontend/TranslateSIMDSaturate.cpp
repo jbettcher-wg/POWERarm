@@ -92,13 +92,13 @@ Ref IRBuilder::SaturatingAddSub(OpSize ES, Ref A, Ref B, bool Sub, bool Signed, 
   if (!Signed) {
     Ref Ovf {};
     if (Sub) {
-      // B > A unsigned: max(A, B) != A.
-      Ovf = _VNot(RS, ES64, _VCMPEQ(RS, ES64, _VUMax(RS, ES64, A, B), A));
+      // B > A unsigned
+      Ovf = _VCMPGTU(RS, ES64, B, A);
       *Saturated = Ovf;
       return _VAndn(RS, RS, Wrap, Ovf);
     }
-    // A > sum unsigned: max(A, sum) != sum.
-    Ovf = _VNot(RS, ES64, _VCMPEQ(RS, ES64, _VUMax(RS, ES64, A, Wrap), Wrap));
+    // A > sum unsigned
+    Ovf = _VCMPGTU(RS, ES64, A, Wrap);
     *Saturated = Ovf;
     return _VOr(RS, RS, Wrap, Ovf);
   }

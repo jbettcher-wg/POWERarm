@@ -2036,6 +2036,14 @@
         "DestSize": "RegisterSize",
         "ElementSize": "ElementSize"
       },
+      "FPR = VCMPGTUZ OpSize:#RegisterSize, OpSize:#ElementSize, FPR:$Vector": {
+        "Desc": ["Vector compare unsigned greater than zero",
+                 "Each element is compared, if the result is true then the resulting element is ~0, else zero",
+                 "Compares the vector against zero"
+                ],
+        "DestSize": "RegisterSize",
+        "ElementSize": "ElementSize"
+      },
       "FPR = VDupElement OpSize:#RegisterSize, OpSize:#ElementSize, FPR:$Vector, u8:$Index": {
         "Desc": ["Duplicates one element from the source register across the whole register"],
         "DestSize": "RegisterSize",
@@ -2527,6 +2535,14 @@
 
       "FPR = VCMPGT OpSize:#RegisterSize, OpSize:#ElementSize, FPR:$Vector1, FPR:$Vector2": {
         "Desc": ["Vector compare signed greater than",
+                 "Each element is compared, if the result is true then the resulting element is ~0, else zero"
+                ],
+
+        "DestSize": "RegisterSize",
+        "ElementSize": "ElementSize"
+      },
+      "FPR = VCMPGTU OpSize:#RegisterSize, OpSize:#ElementSize, FPR:$Vector1, FPR:$Vector2": {
+        "Desc": ["Vector compare unsigned greater than",
                  "Each element is compared, if the result is true then the resulting element is ~0, else zero"
                 ],
 
