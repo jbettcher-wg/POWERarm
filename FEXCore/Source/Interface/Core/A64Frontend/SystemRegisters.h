@@ -51,7 +51,7 @@ inline constexpr uint64_t ID_AA64PFR1_EL1 = 0;
 inline constexpr uint64_t ID_AA64DFR0_EL1 = 0x6;
 // Pi 5: 0x0000100010211120 (AES, SHA1, SHA2, CRC32, Atomic, RDM, DP).
 // Presented: AES=2 (AES and PMULL), SHA1=1, SHA2=1 (SHA-256 only), CRC32=1,
-// Atomic=2, DP=1 (FEAT_DotProd, passes Pi parity).
+// Atomic=2, RDM=1 (FEAT_RDM, SQRDMLAH/SH), DP=1 (FEAT_DotProd). Matches Pi 5.
 //
 // Atomic=2 is the only value the field takes besides 0, and it claims the
 // whole of FEAT_LSE: LDADD/LDCLR/LDEOR/LDSET, LDSMAX/LDSMIN/LDUMAX/LDUMIN and
@@ -59,9 +59,9 @@ inline constexpr uint64_t ID_AA64DFR0_EL1 = 0x6;
 // pass Pi parity (lse, lseminmax, lsecasp), which is what makes the claim
 // honest -- do not set this field while any member of that set is missing,
 // because a guest reading it is entitled to emit any of them.
-inline constexpr uint64_t ID_AA64ISAR0_EL1 = 0x0000100000211120;
-// Pi 5: 0x100001 (DPB, LRCPC). M1: none.
-inline constexpr uint64_t ID_AA64ISAR1_EL1 = 0;
+inline constexpr uint64_t ID_AA64ISAR0_EL1 = 0x0000100010211120;
+// Pi 5: 0x100001 (DPB, LRCPC). Presented: LRCPC=1 (FEAT_LRCPC, LDAPR*).
+inline constexpr uint64_t ID_AA64ISAR1_EL1 = 0x0000000000100000;
 // Pi 5: 0x00000111FF000000 (translation granule fields). No HWCAP depends on it.
 inline constexpr uint64_t ID_AA64MMFR0_EL1 = 0x00000111FF000000;
 

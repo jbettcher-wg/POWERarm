@@ -292,6 +292,11 @@ public:
   bool RADDHN(uint32_t Word); bool RSUBHN(uint32_t Word);
   bool SQDMULH_vec_2(uint32_t Word); bool SQRDMULH_vec_2(uint32_t Word); bool SQDMULH_vec_1(uint32_t Word); bool SQRDMULH_vec_1(uint32_t Word);
   bool SQDMULH_elt_2(uint32_t Word); bool SQRDMULH_elt_2(uint32_t Word); bool SQDMULH_elt_1(uint32_t Word); bool SQRDMULH_elt_1(uint32_t Word);
+  bool SQRDMLAH_vec_2(uint32_t Word); bool SQRDMLAH_vec_1(uint32_t Word);
+  bool SQRDMLSH_vec_2(uint32_t Word); bool SQRDMLSH_vec_1(uint32_t Word);
+  bool SQRDMLAH_elt_2(uint32_t Word); bool SQRDMLAH_elt_1(uint32_t Word);
+  bool SQRDMLSH_elt_2(uint32_t Word); bool SQRDMLSH_elt_1(uint32_t Word);
+  bool SIMDDoublingMultiplyAccumulateHigh(uint32_t Word, bool Subtract, bool Scalar, bool ByElement);
   bool MLA_elt(uint32_t Word); bool MLS_elt(uint32_t Word);
   bool SMULL_elt(uint32_t Word); bool UMULL_elt(uint32_t Word); bool SMLAL_elt(uint32_t Word); bool UMLAL_elt(uint32_t Word);
   bool SMLSL_elt(uint32_t Word); bool UMLSL_elt(uint32_t Word);

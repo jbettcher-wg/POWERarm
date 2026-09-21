@@ -1247,9 +1247,11 @@ public:
     // arm deliberately, where before only the ones that set
     // __aarch64_have_lse_atomics without consulting HWCAP got there.
     // asimddp: FEAT_DotProd (UDOT, SDOT) passes Pi parity.
+    // asimdrdm: FEAT_RDM (SQRDMLAH, SQRDMLSH) implemented and passes parity.
+    // lrcpc: FEAT_LRCPC (LDAPR, LDAPRB, LDAPRH) passes Pi parity (lse, litmus).
     HWCap = GUEST_HWCAP_FP | GUEST_HWCAP_ASIMD | GUEST_HWCAP_AES | GUEST_HWCAP_PMULL | GUEST_HWCAP_SHA1 | GUEST_HWCAP_SHA2 |
             GUEST_HWCAP_CRC32 | GUEST_HWCAP_ATOMICS | GUEST_HWCAP_FPHP | GUEST_HWCAP_ASIMDHP | GUEST_HWCAP_CPUID |
-            GUEST_HWCAP_ASIMDDP;
+            GUEST_HWCAP_ASIMDDP | GUEST_HWCAP_ASIMDRDM | GUEST_HWCAP_LRCPC;
     HWCap2 = 0;
   }
 

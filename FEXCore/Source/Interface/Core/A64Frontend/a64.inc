@@ -462,10 +462,10 @@ INST(FRSQRTE_1,              "FRSQRTE",                                   "01111
 INST(FRSQRTE_2,              "FRSQRTE",                                   "011111101z100001110110nnnnnddddd")
 
 // Data Processing - FP and SIMD - Scalar three same extra
-//INST(SQRDMLAH_vec_1,         "SQRDMLAH (vector)",                         "01111110zz0mmmmm100001nnnnnddddd")
-//INST(SQRDMLAH_vec_2,         "SQRDMLAH (vector)",                         "0Q101110zz0mmmmm100001nnnnnddddd")
-//INST(SQRDMLSH_vec_1,         "SQRDMLSH (vector)",                         "01111110zz0mmmmm100011nnnnnddddd")
-//INST(SQRDMLSH_vec_2,         "SQRDMLSH (vector)",                         "0Q101110zz0mmmmm100011nnnnnddddd")
+INST(SQRDMLAH_vec_1,         "SQRDMLAH (vector)",                         "01111110zz0mmmmm100001nnnnnddddd")
+INST(SQRDMLAH_vec_2,         "SQRDMLAH (vector)",                         "0Q101110zz0mmmmm100001nnnnnddddd")
+INST(SQRDMLSH_vec_1,         "SQRDMLSH (vector)",                         "01111110zz0mmmmm100011nnnnnddddd")
+INST(SQRDMLSH_vec_2,         "SQRDMLSH (vector)",                         "0Q101110zz0mmmmm100011nnnnnddddd")
 
 // Data Processing - FP and SIMD - Scalar two-register misc
 INST(SUQADD_1,               "SUQADD",                                    "01011110zz100000001110nnnnnddddd")
@@ -564,8 +564,8 @@ INST(FMLS_elt_1,             "FMLS (by element)",                         "01011
 INST(FMLS_elt_2,             "FMLS (by element)",                         "010111111zLMmmmm0101H0nnnnnddddd")
 INST(FMUL_elt_1,             "FMUL (by element)",                         "0101111100LMmmmm1001H0nnnnnddddd")
 INST(FMUL_elt_2,             "FMUL (by element)",                         "010111111zLMmmmm1001H0nnnnnddddd")
-//INST(SQRDMLAH_elt_1,         "SQRDMLAH (by element)",                     "01111111zzLMmmmm1101H0nnnnnddddd")
-//INST(SQRDMLSH_elt_1,         "SQRDMLSH (by element)",                     "01111111zzLMmmmm1111H0nnnnnddddd")
+INST(SQRDMLAH_elt_1,         "SQRDMLAH (by element)",                     "01111111zzLMmmmm1101H0nnnnnddddd")
+INST(SQRDMLSH_elt_1,         "SQRDMLSH (by element)",                     "01111111zzLMmmmm1111H0nnnnnddddd")
 INST(FMULX_elt_1,            "FMULX (by element)",                        "0111111100LMmmmm1001H0nnnnnddddd")
 INST(FMULX_elt_2,            "FMULX (by element)",                        "011111111zLMmmmm1001H0nnnnnddddd")
 
@@ -917,9 +917,9 @@ INST(UMLAL_elt,              "UMLAL, UMLAL2 (by element)",                "0Q101
 INST(MLS_elt,                "MLS (by element)",                          "0Q101111zzLMmmmm0100H0nnnnnddddd")
 INST(UMLSL_elt,              "UMLSL, UMLSL2 (by element)",                "0Q101111zzLMmmmm0110H0nnnnnddddd")
 INST(UMULL_elt,              "UMULL, UMULL2 (by element)",                "0Q101111zzLMmmmm1010H0nnnnnddddd")
-//INST(SQRDMLAH_elt_2,         "SQRDMLAH (by element)",                     "0Q101111zzLMmmmm1101H0nnnnnddddd")
+INST(SQRDMLAH_elt_2,         "SQRDMLAH (by element)",                     "0Q101111zzLMmmmm1101H0nnnnnddddd")
 INST(UDOT_elt,               "UDOT (by element)",                         "0Q101111zzLMmmmm1110H0nnnnnddddd")
-//INST(SQRDMLSH_elt_2,         "SQRDMLSH (by element)",                     "0Q101111zzLMmmmm1111H0nnnnnddddd")
+INST(SQRDMLSH_elt_2,         "SQRDMLSH (by element)",                     "0Q101111zzLMmmmm1111H0nnnnnddddd")
 INST(FMULX_elt_3,            "FMULX (by element)",                        "0Q10111100LMmmmm1001H0nnnnnddddd")
 INST(FMULX_elt_4,            "FMULX (by element)",                        "0Q1011111zLMmmmm1001H0nnnnnddddd")
 INST(FCMLA_elt,              "FCMLA (by element)",                        "0Q101111zzLMmmmm0rr1H0nnnnnddddd")

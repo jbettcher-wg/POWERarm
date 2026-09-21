@@ -655,6 +655,74 @@ bool IRBuilder::SQRDMULH_elt_2(uint32_t Word) { return SIMDDoublingMultiplyHigh(
 bool IRBuilder::SQDMULH_elt_1(uint32_t Word) { return SIMDDoublingMultiplyHigh(Word, false, true, true); }
 bool IRBuilder::SQRDMULH_elt_1(uint32_t Word) { return SIMDDoublingMultiplyHigh(Word, true, true, true); }
 
+// SQRDMLAH: sat(Rd + ((2 * n * m + 2^(W-1)) >> W))
+// SQRDMLSH: sat(Rd - ((2 * n * m + 2^(W-1)) >> W))
+// Intermediate doubling product does not saturate; only the final accumulation
+// saturates to the destination element size, setting FPSR.QC on saturation.
+bool IRBuilder::SIMDDoublingMultiplyAccumulateHigh(uint32_t Word, bool Subtract, bool Scalar, bool ByElement) {
+  const bool Q = !Scalar && Bit(Word, 30);
+  const uint32_t Size = Bits(Word, 23, 22);
+  if (Size != 1 && Size != 2) {
+    return false;
+  }
+  const auto ES = LaneSize(Size);
+  const auto WideES = LaneSize(Size + 1);
+  const auto RS = OpSize::i128Bit;
+  const unsigned W = IR::OpSizeAsBits(ES);
+
+  Ref B {};
+  if (ByElement) {
+    if (!IntElementOperand(Word, &B)) {
+      return false;
+    }
+  } else {
+    B = LoadV(Bits(Word, 20, 16));
+  }
+  Ref A = LoadV(Bits(Word, 9, 5));
+  const uint32_t Rd = Bits(Word, 4, 0);
+  Ref D = LoadV(Rd);
+
+  Ref RoundConst = LaneConstant(1ULL << (W - 2), WideES);
+
+  Ref ProductLow = _VSMull(RS, ES, A, B);
+  Ref RoundedLow = _VAdd(RS, WideES, ProductLow, RoundConst);
+  Ref TermLow = _VSShrI(RS, WideES, RoundedLow, W - 1);
+  Ref AccLow = Subtract ? _VSub(RS, WideES, _VSXTL(RS, ES, D), TermLow)
+                        : _VAdd(RS, WideES, _VSXTL(RS, ES, D), TermLow);
+  Ref SatLow {};
+  Ref NarrowLow = SaturateNarrow(AccLow, WideES, NarrowKind::SignedToSigned, &SatLow);
+
+  if (Q) {
+    Ref ProductHigh = _VSMull2(RS, ES, A, B);
+    Ref RoundedHigh = _VAdd(RS, WideES, ProductHigh, RoundConst);
+    Ref TermHigh = _VSShrI(RS, WideES, RoundedHigh, W - 1);
+    Ref AccHigh = Subtract ? _VSub(RS, WideES, _VSXTL2(RS, ES, D), TermHigh)
+                           : _VAdd(RS, WideES, _VSXTL2(RS, ES, D), TermHigh);
+    Ref SatHigh {};
+    Ref NarrowHigh = SaturateNarrow(AccHigh, WideES, NarrowKind::SignedToSigned, &SatHigh);
+    Ref Result = _VInsElement(RS, OpSize::i64Bit, 1, 0, NarrowLow, NarrowHigh);
+    Ref Sat = _VOr(RS, RS, SatLow, SatHigh);
+    SetQCIfAny(Sat);
+    StoreVQ(Rd, true, Result);
+  } else if (Scalar) {
+    SetQCIfAny(_VMov(WideES, SatLow).Node);
+    StoreVSized(Rd, ES, NarrowLow);
+  } else {
+    SetQCIfAny(SatLow);
+    StoreVQ(Rd, false, NarrowLow);
+  }
+  return true;
+}
+
+bool IRBuilder::SQRDMLAH_vec_2(uint32_t Word) { return SIMDDoublingMultiplyAccumulateHigh(Word, false, false, false); }
+bool IRBuilder::SQRDMLAH_vec_1(uint32_t Word) { return SIMDDoublingMultiplyAccumulateHigh(Word, false, true, false); }
+bool IRBuilder::SQRDMLSH_vec_2(uint32_t Word) { return SIMDDoublingMultiplyAccumulateHigh(Word, true, false, false); }
+bool IRBuilder::SQRDMLSH_vec_1(uint32_t Word) { return SIMDDoublingMultiplyAccumulateHigh(Word, true, true, false); }
+bool IRBuilder::SQRDMLAH_elt_2(uint32_t Word) { return SIMDDoublingMultiplyAccumulateHigh(Word, false, false, true); }
+bool IRBuilder::SQRDMLAH_elt_1(uint32_t Word) { return SIMDDoublingMultiplyAccumulateHigh(Word, false, true, true); }
+bool IRBuilder::SQRDMLSH_elt_2(uint32_t Word) { return SIMDDoublingMultiplyAccumulateHigh(Word, true, false, true); }
+bool IRBuilder::SQRDMLSH_elt_1(uint32_t Word) { return SIMDDoublingMultiplyAccumulateHigh(Word, true, true, true); }
+
 // SQDMULL/SQDMLAL/SQDMLSL (vector, scalar, by element; the "2" forms take
 // the upper half of the sources): 2 * n * m saturated to the double-width
 // lane (only MIN * MIN saturates), then for SQDMLAL/SQDMLSL added to or
