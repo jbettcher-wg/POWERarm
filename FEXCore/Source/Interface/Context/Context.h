@@ -434,6 +434,7 @@ public:
     FEX_CONFIG_OPT(BlockLinking, BLOCKLINKING);
     FEX_CONFIG_OPT(ShadowRetStack, SHADOWRETSTACK);
     FEX_CONFIG_OPT(MonoHacks, MONOHACKS);
+    FEX_CONFIG_OPT(VCmpFusion, VCMPFUSION);
   } Config;
 
   FEXCore::Utils::WritePriorityMutex::Mutex CodeInvalidationMutex {};

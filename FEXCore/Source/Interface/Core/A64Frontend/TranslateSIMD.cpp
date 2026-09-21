@@ -12,12 +12,16 @@
 // the low halves first, because the upper half of a Q == 0 input is not part
 // of the operand.
 #include "Interface/Core/A64Frontend/IRBuilder.h"
+#include "Interface/Core/A64Frontend/DecodeTable.h"
+#include "Interface/Core/A64Frontend/Decoder.h"
 #include "Interface/Core/A64Frontend/TranslateCommon.h"
+#include "Interface/Context/Context.h"
 
 #include <FEXCore/Core/CoreState.h>
 
 #include <array>
 #include <bit>
+#include <cstring>
 
 namespace FEXCore::A64 {
 using namespace FEXCore::IR;
@@ -1070,6 +1074,158 @@ bool IRBuilder::TBL(uint32_t Word) {
 }
 bool IRBuilder::TBX(uint32_t Word) {
   return TableLookup(Word, true);
+}
+
+size_t IRBuilder::TryFuseVectorScan(const Decoder::DecodedBlocks& Block, size_t Index) {
+  static const bool Disabled = (getenv("POWERARM_VCMPFUSION") && strcmp(getenv("POWERARM_VCMPFUSION"), "0") == 0) ||
+                               (getenv("FEX_VCMPFUSION") && strcmp(getenv("FEX_VCMPFUSION"), "0") == 0) ||
+                               getenv("POWERARM_NO_VCMP_FUSION") != nullptr ||
+                               getenv("FEX_NO_VCMP_FUSION") != nullptr;
+  if (Disabled || !CTX->HostFeatures.SupportsVCmpFlagBranch) {
+    return 0;
+  }
+
+  // Idiom is 4 instructions ending at the end of the block (CBZ/CBNZ must terminate the block)
+  if (Index + 4 != Block.NumInstructions) {
+    return 0;
+  }
+
+  const auto& Inst0 = Block.DecodedInstructions[Index];
+  const auto& Inst1 = Block.DecodedInstructions[Index + 1];
+  const auto& Inst2 = Block.DecodedInstructions[Index + 2];
+  const auto& Inst3 = Block.DecodedInstructions[Index + 3];
+
+  if (!Inst0.Matcher || !Inst1.Matcher || !Inst2.Matcher || !Inst3.Matcher) {
+    return 0;
+  }
+
+  // Instruction 0: CMEQ (register or zero), 128-bit vector form (Q=1)
+  const bool IsCMEQReg = (strcmp(Inst0.Matcher->Name, "CMEQ_reg_2") == 0);
+  const bool IsCMEQZero = (strcmp(Inst0.Matcher->Name, "CMEQ_zero_2") == 0);
+  if (!IsCMEQReg && !IsCMEQZero) {
+    return 0;
+  }
+
+  const bool Q0 = Bit(Inst0.Word, 30);
+  if (!Q0) {
+    return 0;
+  }
+  const uint32_t Size0 = Bits(Inst0.Word, 23, 22);
+  if (Size0 > 3) {
+    return 0;
+  }
+  const uint32_t Vd0 = Bits(Inst0.Word, 4, 0);
+  const uint32_t Vn0 = Bits(Inst0.Word, 9, 5);
+  const uint32_t Vm0 = IsCMEQReg ? Bits(Inst0.Word, 20, 16) : 0;
+
+  // Instruction 1: UMAXP or ADDP (vector), Q=1, matching element size, operands are identical and equal to Vd0
+  const bool IsUMAXP = (strcmp(Inst1.Matcher->Name, "UMAXP") == 0);
+  const bool IsADDP = (strcmp(Inst1.Matcher->Name, "ADDP_vec") == 0);
+  if (!IsUMAXP && !IsADDP) {
+    return 0;
+  }
+
+  const bool Q1 = Bit(Inst1.Word, 30);
+  if (!Q1) {
+    return 0;
+  }
+  const uint32_t Size1 = Bits(Inst1.Word, 23, 22);
+  if (Size1 != Size0) {
+    return 0;
+  }
+  const uint32_t Vn1 = Bits(Inst1.Word, 9, 5);
+  const uint32_t Rm1 = Bits(Inst1.Word, 20, 16);
+  if (Vn1 != Rm1 || Vn1 != Vd0) {
+    return 0;
+  }
+  const uint32_t Vd1 = Bits(Inst1.Word, 4, 0);
+
+  // Instruction 2: FMOV general, Sf=1 (64-bit GPR), Type=01 (64-bit vector lane), ToFP=0, Rn == Vd1
+  if (strcmp(Inst2.Matcher->Name, "FMOV_float_gen") != 0) {
+    return 0;
+  }
+  const bool Sf2 = Bit(Inst2.Word, 31);
+  const uint32_t Type2 = Bits(Inst2.Word, 23, 22);
+  const bool RMode2 = Bit(Inst2.Word, 19);
+  const bool ToFP2 = Bit(Inst2.Word, 16);
+  const uint32_t Rn2 = Bits(Inst2.Word, 9, 5);
+  const uint32_t Rd2 = Bits(Inst2.Word, 4, 0);
+  if (!Sf2 || Type2 != 0b01 || RMode2 || ToFP2 || Rn2 != Vd1 || Rd2 >= 31) {
+    return 0;
+  }
+
+  // Instruction 3: CBZ or CBNZ, Sf=1 (64-bit), Rt == Rd2
+  const bool IsCBZ = (strcmp(Inst3.Matcher->Name, "CBZ") == 0);
+  const bool IsCBNZ = (strcmp(Inst3.Matcher->Name, "CBNZ") == 0);
+  if (!IsCBZ && !IsCBNZ) {
+    return 0;
+  }
+  const bool Sf3 = Bit(Inst3.Word, 31);
+  const uint32_t Rt3 = Bits(Inst3.Word, 4, 0);
+  if (!Sf3 || Rt3 != Rd2) {
+    return 0;
+  }
+
+  const uint64_t TargetPC = Inst3.PC + SignExtend(Bits(Inst3.Word, 23, 5), 19) * 4;
+  const uint64_t NextPC = Inst3.PC + INSTRUCTION_SIZE;
+  if (TargetPC == NextPC || TargetPC == Inst3.PC) {
+    return 0;
+  }
+
+  // Match: at least one lane matched
+  // NoMatch: no lane matched
+  // In CBNZ: taken is Match (TargetPC), fallthrough is NoMatch (NextPC)
+  // In CBZ:  taken is NoMatch (TargetPC), fallthrough is Match (NextPC)
+  const uint64_t MatchTarget = IsCBNZ ? TargetPC : NextPC;
+  const uint64_t NoMatchTarget = IsCBNZ ? NextPC : TargetPC;
+  const auto ES = ElementSizeFor(Size0);
+
+  // 1. Emit RIP-table markers for the fused instructions (Inst0 was already emitted by Core.cpp)
+  _GuestOpcode(Inst1.PC - Entry);
+  _GuestOpcode(Inst2.PC - Entry);
+  _GuestOpcode(Inst3.PC - Entry);
+
+  // 2. Pre-load operands for CondJump
+  Ref V1 = LoadV(Vn0);
+  Ref V2 = IsCMEQZero ? VectorConstant64(0) : LoadV(Vm0);
+
+  // 3. Emit CondJump at end of OriginalBlock BEFORE switching blocks,
+  // so the instruction cursor is at the end of the block rather than reset to the start.
+  CondClass Cond = IsCBNZ ? CondClass::NEQ : CondClass::EQ;
+  auto Jump = _CondJump(V1, V2, InvalidNode, InvalidNode, Cond, OpSize::iInvalid, false, ES);
+
+  // 4. Create MatchBlock out-of-line at end of compile unit to keep the loop straight-line
+  auto MatchBlock = CreateNewCodeBlockAtEnd();
+
+  // 5. Populate MatchBlock (recomputes CMEQ + reduction + FMOV, then exits to MatchTarget)
+  SetCurrentCodeBlock(MatchBlock);
+  CurrentPC = Inst0.PC;
+  TranslateInstruction(Inst0);
+  CurrentPC = Inst1.PC;
+  TranslateInstruction(Inst1);
+  CurrentPC = Inst2.PC;
+  TranslateInstruction(Inst2);
+  CurrentPC = Inst3.PC;
+  ExitToPC(MatchTarget);
+
+  // 6. Resolve NoMatch block (hot loop path / fallthrough)
+  Ref NoMatchBlock;
+  if (auto It = JumpTargets.find(NoMatchTarget); It != JumpTargets.end()) {
+    NoMatchBlock = It->second.BlockEntry;
+  } else {
+    auto BlockNode = CreateNewCodeBlockAtEnd();
+    SetCurrentCodeBlock(BlockNode);
+    CurrentPC = Inst3.PC;
+    ExitToPC(NoMatchTarget);
+    NoMatchBlock = BlockNode;
+  }
+
+  // 7. Wire targets on CondJump
+  SetTrueJumpTarget(Jump, IsCBNZ ? MatchBlock : NoMatchBlock);
+  SetFalseJumpTarget(Jump, IsCBNZ ? NoMatchBlock : MatchBlock);
+
+  BlockSetPC = true;
+  return 4;
 }
 
 } // namespace FEXCore::A64

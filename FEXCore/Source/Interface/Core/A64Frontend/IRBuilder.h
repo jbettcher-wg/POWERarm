@@ -65,6 +65,11 @@ public:
   // not be handled at all (the caller abandons the compile).
   bool TranslateInstruction(const Decoder::DecodedInst& Inst);
 
+  // Recognizes the vector-scan idiom (CMEQ -> UMAXP/ADDP -> FMOV -> CBZ/CBNZ)
+  // and fuses it into a vector-compare branch (CondJump with VCmpElementSize).
+  // Returns number of instructions consumed (4 on match, 0 if not matched).
+  size_t TryFuseVectorScan(const Decoder::DecodedBlocks& Block, size_t Index);
+
   // Guest SIGSEGV (SEGV_ACCERR) at PC: the instruction word could not be read.
   void NoExecInstruction(uint64_t PC);
 

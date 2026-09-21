@@ -1009,6 +1009,17 @@ ContextImpl::GenerateIR(FEXCore::Core::InternalThreadState* Thread, uint64_t Gue
           Thread->OpDispatcher->StartContinuationBlock();
         }
 
+        if (!FullSMCValidation && Config.VCmpFusion) {
+          const size_t Fused = Thread->OpDispatcher->TryFuseVectorScan(Block, i);
+          if (Fused > 0) {
+            BlockInstructionsLength += Fused * FEXCore::A64::INSTRUCTION_SIZE;
+            TotalInstructionsLength += Fused * FEXCore::A64::INSTRUCTION_SIZE;
+            TotalInstructions += Fused;
+            Thread->OpDispatcher->FinishOp(InstAddress + Fused * FEXCore::A64::INSTRUCTION_SIZE, true);
+            break;
+          }
+        }
+
         if (!Thread->OpDispatcher->TranslateInstruction(DecodedInfo)) {
           if (TotalInstructions == 0) {
             Thread->OpDispatcher->DelayedDisownBuffer();
