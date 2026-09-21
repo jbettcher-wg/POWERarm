@@ -522,7 +522,7 @@ Ref IRBuilder::AbsoluteDifference(OpSize ES, Ref A, Ref B, bool Signed) {
   if (Signed) {
     return _VSub(RS, ES, _VSMax(RS, ES, A, B), _VSMin(RS, ES, A, B));
   }
-  return _VSub(RS, ES, _VUMax(RS, ES, A, B), _VUMin(RS, ES, A, B));
+  return _VUABD(RS, ES, A, B);
 }
 
 bool IRBuilder::SIMDAbsoluteDifference(uint32_t Word, bool Signed, bool Accumulate, bool Long) {
@@ -534,6 +534,16 @@ bool IRBuilder::SIMDAbsoluteDifference(uint32_t Word, bool Signed, bool Accumula
   const auto ES = LaneSize(Size);
   const auto RS = OpSize::i128Bit;
   const uint32_t Rd = Bits(Word, 4, 0);
+  if (Long && !Signed) {
+    const auto WideES = LaneSize(Size + 1);
+    Ref Diff = Q ? _VUABDL2(RS, ES, LoadV(Bits(Word, 9, 5)), LoadV(Bits(Word, 20, 16)))
+                 : _VUABDL(RS, ES, LoadV(Bits(Word, 9, 5)), LoadV(Bits(Word, 20, 16)));
+    if (Accumulate) {
+      Diff = _VAdd(RS, WideES, LoadV(Rd), Diff);
+    }
+    StoreV(Rd, Diff);
+    return true;
+  }
   Ref Diff = AbsoluteDifference(ES, LoadV(Bits(Word, 9, 5)), LoadV(Bits(Word, 20, 16)), Signed);
   if (!Long) {
     if (Accumulate) {

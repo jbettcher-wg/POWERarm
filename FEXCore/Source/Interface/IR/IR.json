@@ -2447,6 +2447,12 @@
         "DestSize": "RegisterSize",
         "ElementSize": "ElementSize"
       },
+      "FPR = VUABD OpSize:#RegisterSize, OpSize:#ElementSize, FPR:$Vector1, FPR:$Vector2": {
+        "Desc": ["Unsigned Absolute Difference per element"
+                ],
+        "DestSize": "RegisterSize",
+        "ElementSize": "ElementSize"
+      },
       "FPR = VUABDL OpSize:#RegisterSize, OpSize:#ElementSize, FPR:$Vector1, FPR:$Vector2": {
         "Desc": ["Unsigned Absolute Difference Long"
                 ],

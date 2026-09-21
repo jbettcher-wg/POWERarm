@@ -2729,37 +2729,91 @@ DEF_OP(VSMulH) {
   vperm(Dst, VTMP1, VTMP2, Dst);
 }
 
+// VUABD: unsigned absolute difference per element.
+// On ISA 3.0 (POWER9), uses native vabsdu* (1 instruction).
+// On POWER8, falls back to vmax - vmin.
+DEF_OP(VUABD) {
+  const auto Op = IROp->C<IR::IROp_VUABD>();
+  const auto Dst = GetVReg(Node);
+  const auto V1 = GetVReg(Op->Vector1);
+  const auto V2 = GetVReg(Op->Vector2);
+  const auto ElemSz = Op->Header.ElementSize;
+  const bool SupportsISA30 = CTX->HostFeatures.SupportsISA30;
+
+  if (SupportsISA30) {
+    switch (ElemSz) {
+    case IR::OpSize::i8Bit:  vabsdub(Dst, V1, V2); break;
+    case IR::OpSize::i16Bit: vabsduh(Dst, V1, V2); break;
+    case IR::OpSize::i32Bit: vabsduw(Dst, V1, V2); break;
+    default: Op_Unhandled(IROp, Node); break;
+    }
+  } else {
+    switch (ElemSz) {
+    case IR::OpSize::i8Bit:
+      vminub(VTMP1, V1, V2);
+      vmaxub(Dst, V1, V2);
+      vsububm(Dst, Dst, VTMP1);
+      break;
+    case IR::OpSize::i16Bit:
+      vminuh(VTMP1, V1, V2);
+      vmaxuh(Dst, V1, V2);
+      vsubuhm(Dst, Dst, VTMP1);
+      break;
+    case IR::OpSize::i32Bit:
+      vminuw(VTMP1, V1, V2);
+      vmaxuw(Dst, V1, V2);
+      vsubuwm(Dst, Dst, VTMP1);
+      break;
+    default: Op_Unhandled(IROp, Node); break;
+    }
+  }
+}
+
 // VUABDL: unsigned abs diff of lower LE half, widened.
 // ElemSz = output element size (2× input). Only i8→i16 needed for psadbw.
-// abs(a-b) unsigned = vmax - vmin. Then zero-extend lower half via vmrglb.
+// abs(a-b) unsigned = vabsdu* on ISA 3.0 (vmax - vmin on POWER8).
+// Then zero-extend lower half via vmrglb.
 DEF_OP(VUABDL) {
   const auto Op    = IROp->C<IR::IROp_VUABDL>();
   const auto ElemSz = Op->Header.ElementSize;  // output element size
   const auto Dst   = GetVReg(Node);
   const auto V1    = GetVReg(Op->Vector1);
   const auto V2    = GetVReg(Op->Vector2);
+  const bool SupportsISA30 = CTX->HostFeatures.SupportsISA30;
   switch (ElemSz) {
   case IR::OpSize::i16Bit: {
-    vminub(VTMP1, V1, V2);
-    vmaxub(VTMP2, V1, V2);
-    vsububm(VTMP1, VTMP2, VTMP1);    // VTMP1 = |V1 - V2| (bytes)
+    if (SupportsISA30) {
+      vabsdub(VTMP1, V1, V2);
+    } else {
+      vminub(VTMP1, V1, V2);
+      vmaxub(VTMP2, V1, V2);
+      vsububm(VTMP1, VTMP2, VTMP1);    // VTMP1 = |V1 - V2| (bytes)
+    }
     // Zero-extend lower half (LE bytes 0-7) to halfwords via vmrglb with zeros.
     vspltisw(VTMP2, 0);
     vmrglb(Dst, VTMP2, VTMP1);
     break;
   }
   case IR::OpSize::i32Bit: {
-    vminuh(VTMP1, V1, V2);
-    vmaxuh(VTMP2, V1, V2);
-    vsubuhm(VTMP1, VTMP2, VTMP1);
+    if (SupportsISA30) {
+      vabsduh(VTMP1, V1, V2);
+    } else {
+      vminuh(VTMP1, V1, V2);
+      vmaxuh(VTMP2, V1, V2);
+      vsubuhm(VTMP1, VTMP2, VTMP1);
+    }
     vspltisw(VTMP2, 0);
     vmrglh(Dst, VTMP2, VTMP1);
     break;
   }
   case IR::OpSize::i64Bit: {
-    vminuw(VTMP1, V1, V2);
-    vmaxuw(VTMP2, V1, V2);
-    vsubuwm(VTMP1, VTMP2, VTMP1);
+    if (SupportsISA30) {
+      vabsduw(VTMP1, V1, V2);
+    } else {
+      vminuw(VTMP1, V1, V2);
+      vmaxuw(VTMP2, V1, V2);
+      vsubuwm(VTMP1, VTMP2, VTMP1);
+    }
     vspltisw(VTMP2, 0);
     vmrglw(Dst, VTMP2, VTMP1);
     break;
@@ -2774,27 +2828,40 @@ DEF_OP(VUABDL2) {
   const auto Dst   = GetVReg(Node);
   const auto V1    = GetVReg(Op->Vector1);
   const auto V2    = GetVReg(Op->Vector2);
+  const bool SupportsISA30 = CTX->HostFeatures.SupportsISA30;
   switch (ElemSz) {
   case IR::OpSize::i16Bit: {
-    vminub(VTMP1, V1, V2);
-    vmaxub(VTMP2, V1, V2);
-    vsububm(VTMP1, VTMP2, VTMP1);
+    if (SupportsISA30) {
+      vabsdub(VTMP1, V1, V2);
+    } else {
+      vminub(VTMP1, V1, V2);
+      vmaxub(VTMP2, V1, V2);
+      vsububm(VTMP1, VTMP2, VTMP1);
+    }
     vspltisw(VTMP2, 0);
     vmrghb(Dst, VTMP2, VTMP1);
     break;
   }
   case IR::OpSize::i32Bit: {
-    vminuh(VTMP1, V1, V2);
-    vmaxuh(VTMP2, V1, V2);
-    vsubuhm(VTMP1, VTMP2, VTMP1);
+    if (SupportsISA30) {
+      vabsduh(VTMP1, V1, V2);
+    } else {
+      vminuh(VTMP1, V1, V2);
+      vmaxuh(VTMP2, V1, V2);
+      vsubuhm(VTMP1, VTMP2, VTMP1);
+    }
     vspltisw(VTMP2, 0);
     vmrghh(Dst, VTMP2, VTMP1);
     break;
   }
   case IR::OpSize::i64Bit: {
-    vminuw(VTMP1, V1, V2);
-    vmaxuw(VTMP2, V1, V2);
-    vsubuwm(VTMP1, VTMP2, VTMP1);
+    if (SupportsISA30) {
+      vabsduw(VTMP1, V1, V2);
+    } else {
+      vminuw(VTMP1, V1, V2);
+      vmaxuw(VTMP2, V1, V2);
+      vsubuwm(VTMP1, VTMP2, VTMP1);
+    }
     vspltisw(VTMP2, 0);
     vmrghw(Dst, VTMP2, VTMP1);
     break;
