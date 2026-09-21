@@ -30,6 +30,7 @@ against a real Cortex-A76 (Raspberry Pi 5), on both 64K and 4K page-size POWER k
 | **M1:** static AArch64 programs (glibc and musl, busybox, TinyCC) | ✅ output identical to the reference |
 | **M2:** Arch Linux ARM's own GCC builds zlib and Lua | ✅ every object and binary byte-identical to the reference |
 | Optimization round 1 (branches, register use, code shape, translation speed, code cache, startup) | ✅ merged |
+| NEON SIMD optimizations (vectorized shifts, 64-bit VMov, unsigned compares, pairwise reductions, ISA 3.0 vabsdu*) | ✅ merged; exact POWER9 lowerings with verified POWER8 fallbacks |
 | Larger real-world programs: JIT-based language runtimes | ✅ the aarch64 Claude Code CLI (Bun / JavaScriptCore) runs day to day, and code-server 4.137 (VS Code on Node 24 / V8) serves its workbench and runs its extension host |
 | Desktop apps: VS Code | ✅ Microsoft's arm64 VS Code 1.138 (Electron 42, Chromium 148, Node 24): the workbench, extensions and the integrated terminal. Chromium's sandbox is off (`--no-sandbox`) for now |
 | GPU | ✅ Vulkan and OpenGL run unthunked through the guest's own Mesa (RADV, radeonsi). `vkcube` matches the native frame rate |
