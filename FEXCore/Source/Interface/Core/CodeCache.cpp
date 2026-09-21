@@ -717,7 +717,7 @@ uint64_t ComputeCodeCacheConfigId() {
 namespace FEXCore::Context {
 
 // =============================================================================
-// On-disk format, version 4.
+// On-disk format, version 6.
 //
 // A cache for one guest file is a set of SEGMENTS: `<Base>`, `<Base>.1`, ...,
 // `<Base>.<MaxSegments-1>`, where Base is `<cache dir>/cache/<name>-<FileId>-<ConfigId>`.
@@ -844,7 +844,7 @@ namespace {
   }
 
   constexpr std::array<char, 4> SegmentMagic = {'P', 'A', 'C', 'C'};
-  constexpr uint32_t SegmentVersion = 5;
+  constexpr uint32_t SegmentVersion = 6;
   constexpr size_t MaxSegments = 8;
   // A runtime writer skips files with fewer new blocks than this. Stops a
   // process that compiled a handful of rare-path blocks from spending a
@@ -929,11 +929,11 @@ namespace {
     uint64_t GuestHash;   // XXH3 of the guest bytes [entry, entry + GuestLength)
     uint64_t CodeOffset;  // in the code section
     uint32_t GuestLength;
-    uint32_t CodeSize;    // JITCodeTail::Size
+    uint32_t CodeSize;    // hot size + cold size
     uint32_t EntryOffset; // entry point - JITCodeHeader
     uint32_t RelocBegin;
     uint32_t RelocCount;
-    uint32_t Pad;
+    uint32_t ColdSize;    // cold thunk bytes at end of Code (0 if none)
     uint64_t EntryHash;   // XXH3 of the fields above, the code and the relocations
   };
   static_assert(sizeof(SegmentBlock) == 56 && offsetof(SegmentBlock, EntryHash) == 48, "cache segment block layout");
@@ -1111,7 +1111,9 @@ struct CodeCache::CacheSegment {
   // again by ApplyCodeRelocations when they are used.
   bool Validate(const SegmentBlock& B) const {
     if (B.CodeOffset > Header->CodeSize || B.CodeSize > Header->CodeSize - B.CodeOffset || B.CodeSize % BlockAlignment != 0 ||
-        B.CodeSize < sizeof(CPU::CPUBackend::JITCodeHeader) + sizeof(CPU::CPUBackend::JITCodeTail) || B.EntryOffset >= B.CodeSize) {
+        B.ColdSize > B.CodeSize || B.ColdSize % 16 != 0 ||
+        (B.CodeSize - B.ColdSize) < sizeof(CPU::CPUBackend::JITCodeHeader) + sizeof(CPU::CPUBackend::JITCodeTail) ||
+        B.EntryOffset >= (B.CodeSize - B.ColdSize)) {
       return false;
     }
     if (B.RelocBegin > Header->NumRelocs || B.RelocCount > Header->NumRelocs - B.RelocBegin) {
@@ -1482,16 +1484,33 @@ std::optional<CodeCache::LoadedBlock> CodeCache::TryLoadBlock(Core::InternalThre
     Thread->LookupCache->ChangeGuestToHostMapping(*Prev, *CTX.GetLatest()->LookupCache, lk);
   }
   auto CodeBuffer = CTX.GetLatest();
-  const uint64_t Offset = AlignUp(CTX.LatestOffset, BlockAlignment);
-  if (Offset > CodeBuffer->UsableSize() || Block->CodeSize > CodeBuffer->UsableSize() - Offset) {
+  const uint32_t ColdSize = Block->ColdSize;
+  const uint32_t HotSize = Block->CodeSize - ColdSize;
+
+  if (!CTX.EnsureHeadroom(HotSize + ColdSize + BlockAlignment)) {
     // Leave rotation to the compiler.
     return std::nullopt;
   }
+  const uint64_t HotOffset = AlignUp(CTX.LatestOffset, BlockAlignment);
+  if (HotOffset > CTX.ColdOffset || HotSize > CTX.ColdOffset - HotOffset) {
+    return std::nullopt;
+  }
 
-  auto Dest = std::as_writable_bytes(std::span {CodeBuffer->Ptr, CodeBuffer->UsableSize()}).subspan(Offset, Block->CodeSize);
-  ::memcpy(Dest.data(), Seg->Code + Block->CodeOffset, Block->CodeSize);
+  auto HotDest = std::as_writable_bytes(std::span {CodeBuffer->Ptr, CodeBuffer->UsableSize()}).subspan(HotOffset, HotSize);
+  ::memcpy(HotDest.data(), Seg->Code + Block->CodeOffset, HotSize);
+
+  std::span<std::byte> ColdDest {};
+  if (ColdSize > 0) {
+    const uint64_t ColdOffset = CTX.AllocateColdThunkBytes(ColdSize);
+    ColdDest = std::as_writable_bytes(std::span {CodeBuffer->Ptr, CodeBuffer->UsableSize()}).subspan(ColdOffset, ColdSize);
+    ::memcpy(ColdDest.data(), Seg->Code + Block->CodeOffset + HotSize, ColdSize);
+  }
+
   const std::span<const CPU::Relocation> Relocs {Seg->Relocs + Block->RelocBegin, Block->RelocCount};
-  if (!ApplyCodeRelocations(Section->FileStartVA, Dest, Relocs, false)) {
+  if (!ApplyCodeRelocationsSplit(Section->FileStartVA, HotDest, ColdDest, Relocs)) {
+    if (ColdSize > 0) {
+      CTX.ColdOffset += ColdSize;
+    }
     Stats.RelocFailed.fetch_add(1, std::memory_order_relaxed);
     // Nothing references these bytes; LatestOffset is unchanged, so the next
     // compile overwrites them.
@@ -1499,27 +1518,36 @@ std::optional<CodeCache::LoadedBlock> CodeCache::TryLoadBlock(Core::InternalThre
   }
 
   // The block must describe itself as a compile of GuestRIP would.
-  const auto* Header = reinterpret_cast<const CPU::CPUBackend::JITCodeHeader*>(Dest.data());
-  if (Header->OffsetToBlockTail > Block->CodeSize - sizeof(CPU::CPUBackend::JITCodeTail)) {
+  const auto* Header = reinterpret_cast<const CPU::CPUBackend::JITCodeHeader*>(HotDest.data());
+  if (Header->OffsetToBlockTail > HotSize - sizeof(CPU::CPUBackend::JITCodeTail)) {
+    if (ColdSize > 0) {
+      CTX.ColdOffset += ColdSize;
+    }
     return std::nullopt;
   }
-  const auto* Tail = reinterpret_cast<const CPU::CPUBackend::JITCodeTail*>(Dest.data() + Header->OffsetToBlockTail);
-  if (Tail->RIP != GuestRIP || Tail->GuestSize != Length || Tail->Size != Block->CodeSize) {
+  const auto* Tail = reinterpret_cast<const CPU::CPUBackend::JITCodeTail*>(HotDest.data() + Header->OffsetToBlockTail);
+  if (Tail->RIP != GuestRIP || Tail->GuestSize != Length || Tail->Size != HotSize) {
+    if (ColdSize > 0) {
+      CTX.ColdOffset += ColdSize;
+    }
     Stats.RelocFailed.fetch_add(1, std::memory_order_relaxed);
     return std::nullopt;
   }
 
-  FEXCore::ArchHelpers::PPC64::FlushICacheRange(Dest.data(), Dest.size_bytes());
-  CTX.LatestOffset = Offset + Block->CodeSize;
+  FEXCore::ArchHelpers::PPC64::FlushICacheRange(HotDest.data(), HotDest.size_bytes());
+  if (ColdSize > 0) {
+    FEXCore::ArchHelpers::PPC64::FlushICacheRange(ColdDest.data(), ColdDest.size_bytes());
+  }
+  CTX.LatestOffset = HotOffset + HotSize;
   // Host-PC -> block index, so signals inside the block resolve like a compile's.
-  CodeBuffer->AppendBlock(static_cast<uint32_t>(Offset));
+  CodeBuffer->AppendBlock(static_cast<uint32_t>(HotOffset));
 
   Stats.Loaded.fetch_add(1, std::memory_order_relaxed);
-  auto* Begin = reinterpret_cast<uint8_t*>(Dest.data());
+  auto* Begin = reinterpret_cast<uint8_t*>(HotDest.data());
   return LoadedBlock {
     .BlockBegin = Begin,
     .HostCode = Begin + Block->EntryOffset,
-    .Size = Block->CodeSize,
+    .Size = HotSize,
     .StartAddr = GuestRIP,
     .Length = Length,
   };
@@ -1606,16 +1634,76 @@ static void CollectLiveBlocks(CodeCache& Cache, ContextImpl& CTX, const Executab
       continue;
     }
 
-    // Every relocation must be inside this block. A block holding a thunk
+    // Every relocation must be inside this block (hot or cold). A block holding a thunk
     // relocation is not cacheable: the thunk may not be registered yet when a
     // later process loads it.
     const auto Relocs = RelocsFor(Guest);
+    uint32_t NumThunks = 0;
+    uint64_t MinThunkStart = std::numeric_limits<uint64_t>::max();
+    uint64_t MaxThunkEnd = 0;
     bool Cacheable = true;
+
     for (const auto& R : Relocs) {
-      if (R.Header.Type == CPU::RelocationTypes::RELOC_NAMED_THUNK_MOVE || R.Header.Offset < Begin ||
-          R.Header.Offset + RelocWidth(R) > Begin + Size) {
+      if (R.Header.Type == CPU::RelocationTypes::RELOC_NAMED_THUNK_MOVE) {
         Cacheable = false;
         break;
+      }
+      if (R.Header.Type == CPU::RelocationTypes::RELOC_LINK_RECORD) {
+        if (R.Header.Offset < CPU::PPC64LinkRecordFromThunkStart) {
+          Cacheable = false;
+          break;
+        }
+        const uint64_t ThunkStart = R.Header.Offset - CPU::PPC64LinkRecordFromThunkStart;
+        const uint64_t ThunkEnd = ThunkStart + 112;
+        if (ThunkEnd > CodeBuffer->UsableSize()) {
+          Cacheable = false;
+          break;
+        }
+        NumThunks++;
+        MinThunkStart = std::min(MinThunkStart, ThunkStart);
+        MaxThunkEnd = std::max(MaxThunkEnd, ThunkEnd);
+      }
+    }
+    if (!Cacheable) {
+      continue;
+    }
+
+    const uint32_t ColdSize = NumThunks * 112;
+    if (NumThunks > 0 && MaxThunkEnd - MinThunkStart != ColdSize) {
+      continue;
+    }
+
+    for (const auto& R : Relocs) {
+      const uint64_t Width = RelocWidth(R);
+      const bool IsHot = (R.Header.Offset >= Begin && R.Header.Offset + Width <= Begin + Size);
+      const bool IsCold = (ColdSize > 0 && R.Header.Offset >= MinThunkStart && R.Header.Offset + Width <= MaxThunkEnd);
+      if (!IsHot && !IsCold) {
+        Cacheable = false;
+        break;
+      }
+      if (R.Header.Type == CPU::RelocationTypes::RELOC_LINK_RECORD) {
+        const int64_t LiveRecord = static_cast<int64_t>(R.Header.Offset);
+        const int64_t LiveCaller = LiveRecord + R.LinkRecord.CallerDelta;
+        const int64_t LiveLinkBranch = LiveRecord + R.LinkRecord.LinkBranchDelta;
+        if (LiveCaller < static_cast<int64_t>(Begin) || LiveCaller + 4 > static_cast<int64_t>(Begin + Size) ||
+            LiveLinkBranch < static_cast<int64_t>(Begin) || LiveLinkBranch + 4 > static_cast<int64_t>(Begin + Size)) {
+          Cacheable = false;
+          break;
+        }
+        if (R.LinkRecord.LinkedEntryDelta != 0) {
+          const int64_t LiveLinkedEntry = LiveRecord + R.LinkRecord.LinkedEntryDelta;
+          if (LiveLinkedEntry < static_cast<int64_t>(Begin) || LiveLinkedEntry >= static_cast<int64_t>(Begin + Size)) {
+            Cacheable = false;
+            break;
+          }
+        }
+        if (R.LinkRecord.FinalDelta != 0) {
+          const int64_t LiveFinal = LiveRecord + R.LinkRecord.FinalDelta;
+          if (LiveFinal < static_cast<int64_t>(Begin) || LiveFinal + 4 > static_cast<int64_t>(Begin + Size)) {
+            Cacheable = false;
+            break;
+          }
+        }
       }
     }
     if (!Cacheable) {
@@ -1631,11 +1719,35 @@ static void CollectLiveBlocks(CodeCache& Cache, ContextImpl& CTX, const Executab
     B.GuestOffset = GuestOffset;
     B.GuestHash = XXH3_64bits(GuestBytes.data(), Length);
     B.GuestLength = static_cast<uint32_t>(Length);
-    B.CodeSize = static_cast<uint32_t>(Size);
+    B.CodeSize = static_cast<uint32_t>(Size + ColdSize);
+    B.ColdSize = ColdSize;
     B.EntryOffset = static_cast<uint32_t>(Entry.HostCode - Entry.BlockBegin);
     B.RelocBegin = static_cast<uint32_t>(Out.Relocs.size());
     for (auto Copy : Relocs) {
-      Copy.Header.Offset -= Begin;
+      if (Copy.Header.Offset >= Begin && Copy.Header.Offset < Begin + Size) {
+        Copy.Header.Offset -= Begin;
+      } else {
+        const uint64_t ColdRelocOff = Copy.Header.Offset - MinThunkStart;
+        const uint64_t StoredRecordOff = Size + ColdRelocOff;
+        if (Copy.Header.Type == CPU::RelocationTypes::RELOC_LINK_RECORD) {
+          const int64_t LiveRecord = static_cast<int64_t>(MinThunkStart + ColdRelocOff);
+          const int64_t LiveCaller = LiveRecord + Copy.LinkRecord.CallerDelta;
+          const int64_t LiveLinkBranch = LiveRecord + Copy.LinkRecord.LinkBranchDelta;
+          const int64_t LiveLinkedEntry = Copy.LinkRecord.LinkedEntryDelta ? LiveRecord + Copy.LinkRecord.LinkedEntryDelta : 0;
+          const int64_t LiveFinal = Copy.LinkRecord.FinalDelta ? LiveRecord + Copy.LinkRecord.FinalDelta : 0;
+
+          const int64_t HotCallerOffset = LiveCaller - static_cast<int64_t>(Begin);
+          const int64_t HotLinkBranchOffset = LiveLinkBranch - static_cast<int64_t>(Begin);
+          const int64_t HotLinkedEntryOffset = LiveLinkedEntry ? LiveLinkedEntry - static_cast<int64_t>(Begin) : 0;
+          const int64_t HotFinalOffset = LiveFinal ? LiveFinal - static_cast<int64_t>(Begin) : 0;
+
+          Copy.LinkRecord.CallerDelta = static_cast<int32_t>(HotCallerOffset - static_cast<int64_t>(StoredRecordOff));
+          Copy.LinkRecord.LinkBranchDelta = static_cast<int32_t>(HotLinkBranchOffset - static_cast<int64_t>(StoredRecordOff));
+          Copy.LinkRecord.LinkedEntryDelta = HotLinkedEntryOffset ? static_cast<int32_t>(HotLinkedEntryOffset - static_cast<int64_t>(StoredRecordOff)) : 0;
+          Copy.LinkRecord.FinalDelta = HotFinalOffset ? static_cast<int32_t>(HotFinalOffset - static_cast<int64_t>(StoredRecordOff)) : 0;
+        }
+        Copy.Header.Offset = StoredRecordOff;
+      }
       if (Copy.Header.Type == CPU::RelocationTypes::RELOC_GUEST_RIP_LITERAL || Copy.Header.Type == CPU::RelocationTypes::RELOC_GUEST_RIP_MOVE) {
         Copy.GuestRIP.GuestRIP -= Section.FileStartVA;
       }
@@ -1647,10 +1759,14 @@ static void CollectLiveBlocks(CodeCache& Cache, ContextImpl& CTX, const Executab
     // zeroed, guest RIPs relative to the file base, no live futex state.
     const size_t CodeStart = AlignUp(Out.Code.size(), BlockAlignment);
     Out.Code.resize(CodeStart);
-    const auto* Src = reinterpret_cast<const std::byte*>(BufferBase + Begin);
-    Out.Code.insert(Out.Code.end(), Src, Src + Size);
+    const auto* SrcHot = reinterpret_cast<const std::byte*>(BufferBase + Begin);
+    Out.Code.insert(Out.Code.end(), SrcHot, SrcHot + Size);
+    if (ColdSize > 0) {
+      const auto* SrcCold = reinterpret_cast<const std::byte*>(BufferBase + MinThunkStart);
+      Out.Code.insert(Out.Code.end(), SrcCold, SrcCold + ColdSize);
+    }
     B.CodeOffset = CodeStart;
-    std::span<std::byte> Copy {Out.Code.data() + CodeStart, Size};
+    std::span<std::byte> Copy {Out.Code.data() + CodeStart, Size + ColdSize};
     const std::span<const CPU::Relocation> BlockRelocs {Out.Relocs.data() + B.RelocBegin, B.RelocCount};
     if (!Cache.ApplyCodeRelocations(0, Copy, BlockRelocs, true)) {
       Out.Code.resize(CodeStart);
@@ -1670,16 +1786,29 @@ bool CodeCache::SaveData(Core::InternalThreadState&, int FD, const ExecutableFil
   if (SerializedBaseAddress != 0) {
     return false;
   }
-  // Every live block in the ranges, with the whole sink sorted by offset.
+  fextl::vector<CompiledRecord> Records;
   fextl::vector<CPU::Relocation> Sink;
   {
     std::lock_guard lk {RelocationSinkMutex};
-    Sink = RelocationSink;
+    Records = CompiledBlocks;
+    if (Records.empty()) {
+      return false;
+    }
+    Sink.assign(RelocationSink.begin(), RelocationSink.begin() + Records.back().RelocEnd);
   }
-  std::ranges::sort(Sink, {}, [](const CPU::Relocation& R) { return R.Header.Offset; });
+  std::ranges::stable_sort(Records, {}, &CompiledRecord::GuestRIP);
+  fextl::vector<CompiledRecord> Latest;
+  for (size_t i = 0; i < Records.size(); ++i) {
+    if (i + 1 == Records.size() || Records[i + 1].GuestRIP != Records[i].GuestRIP) {
+      Latest.push_back(Records[i]);
+    }
+  }
+  fextl::unordered_map<uint64_t, size_t> ByGuest;
+  for (size_t i = 0; i < Latest.size(); ++i) {
+    ByGuest[Latest[i].GuestRIP] = i;
+  }
 
   fextl::vector<uint64_t> Candidates;
-  fextl::unordered_map<uint64_t, std::pair<uint64_t, uint64_t>> Extents;
   {
     auto CodeBufferLock = std::unique_lock {CTX.CodeBufferWriteMutex};
     auto CodeBuffer = CTX.GetLatest();
@@ -1693,11 +1822,9 @@ bool CodeCache::SaveData(Core::InternalThreadState&, int FD, const ExecutableFil
       if (!InRange || Entry.BlockBegin < BufferBase) {
         continue;
       }
-      const uint64_t Begin = Entry.BlockBegin - BufferBase;
-      const auto* Header = reinterpret_cast<const CPU::CPUBackend::JITCodeHeader*>(Entry.BlockBegin);
-      const auto* Tail = reinterpret_cast<const CPU::CPUBackend::JITCodeTail*>(Entry.BlockBegin + Header->OffsetToBlockTail);
-      Candidates.push_back(Guest);
-      Extents[Guest] = {Begin, Begin + Tail->Size};
+      if (ByGuest.contains(Guest)) {
+        Candidates.push_back(Guest);
+      }
     }
   }
   std::ranges::sort(Candidates);
@@ -1706,10 +1833,8 @@ bool CodeCache::SaveData(Core::InternalThreadState&, int FD, const ExecutableFil
   CollectLiveBlocks(
     *this, CTX, Section, Candidates, [](uint64_t) { return false; },
     [&](uint64_t Guest) -> std::span<const CPU::Relocation> {
-      const auto [Begin, End] = Extents[Guest];
-      auto First = std::ranges::lower_bound(Sink, Begin, {}, [](const CPU::Relocation& R) { return R.Header.Offset; });
-      auto Last = std::ranges::lower_bound(First, Sink.end(), End, {}, [](const CPU::Relocation& R) { return R.Header.Offset; });
-      return {Sink.data() + (First - Sink.begin()), static_cast<size_t>(Last - First)};
+      const auto& Record = Latest[ByGuest[Guest]];
+      return {Sink.data() + Record.RelocBegin, static_cast<size_t>(Record.RelocEnd - Record.RelocBegin)};
     },
     Builder);
   if (Builder.Blocks.empty()) {
@@ -2252,6 +2377,10 @@ size_t CodeCache::SaveNewBlocks(Core::InternalThreadState&, std::span<const Code
 
 bool CodeCache::ApplyCodeRelocations(uint64_t GuestEntry, std::span<std::byte> Code, std::span<const CPU::Relocation> EntryRelocations,
                                      bool ForStorage) {
+  if (!ForStorage) {
+    return ApplyCodeRelocationsSplit(GuestEntry, Code, {}, EntryRelocations);
+  }
+
   // Link records are handled around the other relocations, because a link
   // thunk's caller word can be the first word of a guest RIP window (a
   // link-first constant exit): the unlinked word is whatever the RIP
@@ -2283,6 +2412,13 @@ bool CodeCache::ApplyCodeRelocations(uint64_t GuestEntry, std::span<std::byte> C
       memcpy(Base + Caller, &Reloc.LinkRecord.OrigCallerWord, 4);
       memcpy(Base + Thunk, &Reloc.LinkRecord.OrigThunkWord, 4);
       memcpy(Base + Record, &Zero, sizeof(Zero));
+      if (Reloc.LinkRecord.FinalDelta != 0 && Reloc.LinkRecord.FinalDelta != Reloc.LinkRecord.CallerDelta) {
+        const int64_t Final = Record + Reloc.LinkRecord.FinalDelta;
+        if (Final >= 0 && Final <= Size - 4) {
+          const uint32_t Trap = 0x7FE00008u;
+          memcpy(Base + Final, &Trap, 4);
+        }
+      }
     }
   }
 
@@ -2366,6 +2502,155 @@ bool CodeCache::ApplyCodeRelocations(uint64_t GuestEntry, std::span<std::byte> C
     memcpy(Base + Record + RecordOrigWordsOffset, &CallerWord, 4);
     memcpy(Base + Record + RecordOrigWordsOffset + 4, &ThunkWord, 4);
   }
+  return true;
+}
+
+bool CodeCache::ApplyCodeRelocationsSplit(uint64_t GuestEntry, std::span<std::byte> HotCode, std::span<std::byte> ColdCode,
+                                          std::span<const CPU::Relocation> EntryRelocations) {
+  const uint64_t HotSize = HotCode.size();
+  const uint64_t ColdSize = ColdCode.size();
+
+  for (const auto& Reloc : EntryRelocations) {
+    if (Reloc.Header.Type != CPU::RelocationTypes::RELOC_LINK_RECORD) {
+      continue;
+    }
+    if (Reloc.Header.Offset < HotSize || Reloc.Header.Offset >= HotSize + ColdSize) {
+      return false;
+    }
+    const uint64_t ColdRecordOff = Reloc.Header.Offset - HotSize;
+    if (ColdRecordOff + sizeof(CPU::PPC64BlockLinkRecord) > ColdSize) {
+      return false;
+    }
+    auto* Record = reinterpret_cast<CPU::PPC64BlockLinkRecord*>(ColdCode.data() + ColdRecordOff);
+
+    const int64_t ColdThunkOff = static_cast<int64_t>(ColdRecordOff) + Reloc.LinkRecord.ThunkDelta;
+    if (ColdThunkOff < 0 || ColdThunkOff + 112 > static_cast<int64_t>(ColdSize)) {
+      return false;
+    }
+    uint8_t* ThunkPtr = reinterpret_cast<uint8_t*>(ColdCode.data()) + ColdThunkOff;
+
+    const int64_t HotCallerOff = static_cast<int64_t>(Reloc.Header.Offset) + Reloc.LinkRecord.CallerDelta;
+    if (HotCallerOff < 0 || HotCallerOff + 4 > static_cast<int64_t>(HotSize)) {
+      return false;
+    }
+    uint8_t* CallerPtr = reinterpret_cast<uint8_t*>(HotCode.data()) + HotCallerOff;
+
+    const int64_t HotLinkBranchOff = static_cast<int64_t>(Reloc.Header.Offset) + Reloc.LinkRecord.LinkBranchDelta;
+    if (HotLinkBranchOff < 0 || HotLinkBranchOff + 4 > static_cast<int64_t>(HotSize)) {
+      return false;
+    }
+    uint8_t* LinkBranchPtr = reinterpret_cast<uint8_t*>(HotCode.data()) + HotLinkBranchOff;
+
+    uint32_t ThunkWord = 0;
+    memcpy(&ThunkWord, ThunkPtr, 4);
+    if (Record->HostCode != 0 || ThunkWord != Reloc.LinkRecord.OrigThunkWord) {
+      return false;
+    }
+
+    uint8_t* LinkPath = ThunkPtr + 0x14;
+    const int64_t BranchDelta = reinterpret_cast<intptr_t>(LinkPath) - reinterpret_cast<intptr_t>(LinkBranchPtr);
+    if (!CPU::PPC64BranchDisplacementInRange(BranchDelta)) {
+      return false;
+    }
+
+    *reinterpret_cast<uint32_t*>(LinkBranchPtr) = CPU::PPC64EncodeBranch(BranchDelta);
+
+    Record->CallerOffset = reinterpret_cast<intptr_t>(CallerPtr) - reinterpret_cast<intptr_t>(Record);
+    Record->OrigCallerWord = (CallerPtr == LinkBranchPtr) ? *reinterpret_cast<uint32_t*>(CallerPtr) : Reloc.LinkRecord.OrigCallerWord;
+    Record->OrigThunkWord = Reloc.LinkRecord.OrigThunkWord;
+    Record->StubAddr = CTX.Dispatcher->GetExitFunctionLinkerWithRecordAddress();
+
+    if (Reloc.LinkRecord.LinkedEntryDelta != 0) {
+      const int64_t HotLinkedEntryOff = static_cast<int64_t>(Reloc.Header.Offset) + Reloc.LinkRecord.LinkedEntryDelta;
+      if (HotLinkedEntryOff < 0 || HotLinkedEntryOff >= static_cast<int64_t>(HotSize)) {
+        return false;
+      }
+      uint8_t* LinkedEntryPtr = reinterpret_cast<uint8_t*>(HotCode.data()) + HotLinkedEntryOff;
+      Record->LinkedEntryOffset = reinterpret_cast<intptr_t>(LinkedEntryPtr) - reinterpret_cast<intptr_t>(Record);
+    } else {
+      Record->LinkedEntryOffset = 0;
+    }
+
+    if (Reloc.LinkRecord.FinalDelta != 0) {
+      const int64_t HotFinalOff = static_cast<int64_t>(Reloc.Header.Offset) + Reloc.LinkRecord.FinalDelta;
+      if (HotFinalOff < 0 || HotFinalOff >= static_cast<int64_t>(HotSize)) {
+        return false;
+      }
+      uint8_t* FinalPtr = reinterpret_cast<uint8_t*>(HotCode.data()) + HotFinalOff;
+      const int64_t FinalOffset = reinterpret_cast<intptr_t>(FinalPtr) - reinterpret_cast<intptr_t>(Record);
+      Record->FinalOffset = FinalOffset | (Reloc.LinkRecord.FinalPlainBranch ? 1 : 0);
+    } else {
+      Record->FinalOffset = 0;
+    }
+  }
+
+  for (const auto& Reloc : EntryRelocations) {
+    if (Reloc.Header.Type == CPU::RelocationTypes::RELOC_LINK_RECORD) {
+      continue;
+    }
+    const uint64_t Width = RelocWidth(Reloc);
+    uint8_t* Ptr = nullptr;
+    size_t Remaining = 0;
+    if (Reloc.Header.Offset < HotSize) {
+      if (Width > HotSize - Reloc.Header.Offset) {
+        return false;
+      }
+      Ptr = reinterpret_cast<uint8_t*>(HotCode.data()) + Reloc.Header.Offset;
+      Remaining = HotSize - Reloc.Header.Offset;
+    } else {
+      const uint64_t ColdOff = Reloc.Header.Offset - HotSize;
+      if (ColdOff >= ColdSize || Width > ColdSize - ColdOff) {
+        return false;
+      }
+      Ptr = reinterpret_cast<uint8_t*>(ColdCode.data()) + ColdOff;
+      Remaining = ColdSize - ColdOff;
+    }
+
+    switch (Reloc.Header.Type) {
+    case CPU::RelocationTypes::RELOC_NAMED_SYMBOL_LITERAL: {
+      uint64_t Pointer = CPU::GetNamedSymbolLiteral(CTX, Reloc.NamedSymbolLiteral.Symbol);
+      memcpy(Ptr, &Pointer, sizeof(Pointer));
+      break;
+    }
+    case CPU::RelocationTypes::RELOC_NAMED_THUNK_MOVE: {
+      uint64_t Pointer = reinterpret_cast<uint64_t>(CTX.ThunkHandler->LookupThunk(Reloc.NamedThunkMove.Symbol));
+      if (Pointer == 0 || Pointer == ~0ULL) {
+        return false;
+      }
+      FEXCore::CPU::PPC64EmitterBase PatchEmitter(&CTX, Ptr, Remaining);
+      PatchEmitter.LoadConstantFixed(PPC64Emitter::r(Reloc.NamedThunkMove.RegisterIndex), Pointer);
+      break;
+    }
+    case CPU::RelocationTypes::RELOC_GUEST_RIP_LITERAL: {
+      uint64_t Val = GuestEntry + Reloc.GuestRIP.GuestRIP;
+      memcpy(Ptr, &Val, sizeof(Val));
+      break;
+    }
+    case CPU::RelocationTypes::RELOC_GUEST_RIP_MOVE: {
+      uint64_t Pointer = Reloc.GuestRIP.GuestRIP + GuestEntry;
+      if (Reloc.GuestRIP.Instructions == 0) {
+        FEXCore::CPU::PPC64EmitterBase PatchEmitter(&CTX, Ptr, Remaining);
+        PatchEmitter.LoadConstantFixed(PPC64Emitter::r(Reloc.GuestRIP.RegisterIndex), Pointer);
+        break;
+      }
+      uint8_t Window[PPC64Emitter::Emitter::LoadConstantFixedBytes + 4];
+      FEXCore::CPU::PPC64EmitterBase PatchEmitter(&CTX, Window, sizeof(Window));
+      PatchEmitter.LoadConstant(PPC64Emitter::r(Reloc.GuestRIP.RegisterIndex), Pointer);
+      if (PatchEmitter.GetOffset() > Width || Width > sizeof(Window)) {
+        return false;
+      }
+      while (PatchEmitter.GetOffset() < Width) {
+        PatchEmitter.nop();
+      }
+      memcpy(Ptr, Window, Width);
+      break;
+    }
+    default:
+      LogMan::Msg::EFmt("Unknown code cache relocation type {}", ToUnderlying(Reloc.Header.Type));
+      return false;
+    }
+  }
+
   return true;
 }
 

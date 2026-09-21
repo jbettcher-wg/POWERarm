@@ -23,6 +23,32 @@ using namespace PPC64Emitter;
 using namespace PPC64Emitter::GPRegs;
 using namespace PPC64Emitter::VRegs;
 
+// I-form `b`: signed 26-bit byte displacement (LI field is 24 bits, <<2).
+inline bool PPC64BranchDisplacementInRange(int64_t Delta) {
+  return (Delta & 3) == 0 && Delta >= -0x2000000ll && Delta <= 0x1FFFFFCll;
+}
+
+inline uint32_t PPC64EncodeBranch(int64_t Delta) {
+  return 0x48000000u | (static_cast<uint32_t>(Delta) & 0x03FFFFFCu);
+}
+
+// Layout of the PPC64BlockLinkRecord emitted in cold thunk memory.
+struct PPC64BlockLinkRecord {
+  uint64_t HostCode;       // written by the linker BEFORE the thunk-word patch
+  uint64_t GuestRIP;       // constant destination RIP of this exit
+  int64_t CallerOffset;    // in-block patch site address minus &record (negative)
+  uint32_t OrigCallerWord; // pre-link first word of the in-block L1 probe
+  uint32_t OrigThunkWord;  // pre-link first word of the thunk (b LinkPath)
+  uint64_t StubAddr;
+  int64_t LinkedEntryOffset;
+  int64_t FinalOffset;
+};
+static_assert(sizeof(PPC64BlockLinkRecord) == 56, "emitted-record layout contract");
+static_assert(offsetof(PPC64BlockLinkRecord, StubAddr) == 32, "thunk stub-addr load contract");
+static_assert(offsetof(PPC64BlockLinkRecord, HostCode) == 0, "thunk ld displacement contract");
+
+inline constexpr uint64_t PPC64LinkRecordFromThunkStart = 0x38;
+
 // -------------------------------------------------------------------------
 // Pinned registers
 // -------------------------------------------------------------------------

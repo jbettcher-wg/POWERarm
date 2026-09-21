@@ -274,7 +274,8 @@ void PPC64JITCore::EmitLinkFirstConstExit(uint64_t Target) {
   // updated in the thunk's LinkPath leg from the record's constant GuestRIP
   // before entering the spill island. When linked, the linker rewrites this
   // word to `b HostCode` (or `b ThunkStart`).
-  PendingJumpThunks.push_back({GetCursorAddress<uint64_t>(), Target, {}});
+  const uint64_t Site = GetCursorAddress<uint64_t>();
+  PendingJumpThunks.push_back({Site, Target, {}, 0, 0, false, Site});
   b(&PendingJumpThunks.back().LinkPath);
 }
 
@@ -331,9 +332,8 @@ void PPC64JITCore::EmitA64PairedCall(const IR::IROp_ExitFunction* Op, bool Const
     // A: the record's caller word, and also its Final word: FinalOffset ==
     // CallerOffset tells the linker to write `bl` here in place.
     const uint64_t A = GetCursorAddress<uint64_t>();
-    PendingJumpThunks.push_back({A, NewRIP, {}});
+    PendingJumpThunks.push_back({A, NewRIP, {}, 0, A, false, A});
     auto* Record = &PendingJumpThunks.back();
-    Record->FinalAddress = A;
     b(&Record->LinkPath);
     PatchTramp();
     EmitLinkFirstConstExit(ReturnAddress);
@@ -581,7 +581,8 @@ DEF_OP(ExitFunction) {
     // G1(c): Link-first constant exit. The patch site is a single `b LinkPath`
     // word. State.pc is updated in the thunk from the record's GuestRIP.
     EmitExitR0Zero(UnitR0Dirty);
-    PendingJumpThunks.push_back({GetCursorAddress<uint64_t>(), NewRIP, {}});
+    const uint64_t Site = GetCursorAddress<uint64_t>();
+    PendingJumpThunks.push_back({Site, NewRIP, {}, 0, 0, false, Site});
     b(&PendingJumpThunks.back().LinkPath);
     return;
   }
@@ -786,6 +787,7 @@ DEF_OP(ExitFunction) {
   // emission, because the sink decision depends on it.
   // ---------------------------------------------------------------------
   PPC64Emitter::Label* LinkPathLabel = nullptr;
+  PendingJumpThunk* PendingThunkForExit = nullptr;
   if (Linkable) {
     // Hoisted region: the r0 re-zero (always), plus the rip store when the
     // sink is off. Both probe legs below skip their own copies when Linkable.
@@ -807,7 +809,8 @@ DEF_OP(ExitFunction) {
     // SetBuffer lands on a 16-byte boundary, so this address is always 4-byte
     // aligned for the linker's atomic 4-byte rewrite.
     PendingJumpThunks.push_back({GetCursorAddress<uint64_t>(), NewRIP, {}});
-    LinkPathLabel = &PendingJumpThunks.back().LinkPath;
+    PendingThunkForExit = &PendingJumpThunks.back();
+    LinkPathLabel = &PendingThunkForExit->LinkPath;
     // Sunk region: everything from here on is skipped by a linked branch. The
     // probe below needs RIPReg regardless, so the constant is not duplicated --
     // it simply moved. State.rip is stored here so both probe legs (hit ->
@@ -867,7 +870,8 @@ DEF_OP(ExitFunction) {
   auto MissLabel = PPC64Emitter::Label{};
   if (InlineCache) {
     PendingJumpThunks.push_back({GetCursorAddress<uint64_t>(), 0 /* indirect */, {}});
-    LinkPathLabel = &PendingJumpThunks.back().LinkPath;
+    PendingThunkForExit = &PendingJumpThunks.back();
+    LinkPathLabel = &PendingThunkForExit->LinkPath;
     b(&MissLabel);                      // A: unlinked -> the linker
     lis(TMP2, 0);
     ori(TMP2, TMP2, 0);
@@ -1118,11 +1122,17 @@ DEF_OP(ExitFunction) {
     // That path compiles/looks up the target AND backpatches the probe above;
     // it dispatches exactly like ExitFunctionLinker otherwise (deferred-signal
     // guard, FillStaticRegs, bctr).
+    if (PendingThunkForExit) {
+      PendingThunkForExit->LinkBranchAddress = GetCursorAddress<uint64_t>();
+    }
     b(LinkPathLabel);
   } else if (InlineCache) {
     // Indirect shadow call: the record linker reads the target from
     // State.rip (record.GuestRIP is 0) and fills the guard above.
     std(RIPReg, rip_off, STATE);
+    if (PendingThunkForExit) {
+      PendingThunkForExit->LinkBranchAddress = GetCursorAddress<uint64_t>();
+    }
     b(LinkPathLabel);
   } else {
     std(RIPReg, rip_off, STATE); // BEFORE the island stub's spill clobbers TMP1
@@ -1153,6 +1163,7 @@ DEF_OP(ExitFunction) {
       cmpldi(cr(7), TMP2, 0);
       bc({4, 30}, &InlineCacheProbe);   // bne cr7: not sampled, probe
       std(RIPReg, rip_off, STATE);      // the record linker reads the target here
+      BRSlotThunk[i]->LinkBranchAddress = GetCursorAddress<uint64_t>();
       b(&BRSlotThunk[i]->LinkPath);
     }
   }

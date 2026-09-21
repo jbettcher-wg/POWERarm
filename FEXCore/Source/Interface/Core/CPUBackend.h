@@ -221,8 +221,26 @@ namespace CPU {
     static size_t ConfiguredMaxSize();
     static size_t ConfiguredInitialSize();
 
-    // Write offset into the latest CodeBuffer
+    // 16 MiB chunk size for bidirectional bump-allocation (guarantees PPC64 branch reach <= 16 MiB <= 32 MiB)
+    static constexpr size_t kChunkSize = 16 * 1024 * 1024;
+
+    // Write offset into the latest CodeBuffer (hot code stream)
     std::size_t LatestOffset {};
+
+    // Offset of the cold allocation pointer (thunks and records) in the current chunk.
+    // Grows downwards from CurrentChunkEnd towards LatestOffset.
+    std::size_t ColdOffset {};
+    std::size_t CurrentChunkBase {};
+    std::size_t CurrentChunkEnd {};
+
+    // Ensures at least BlockHeadroom bytes of space between LatestOffset and ColdOffset
+    // in the current chunk, advancing to the next chunk if necessary.
+    // Returns true if headroom is available, false if the buffer is full and must rotate/clear.
+    bool EnsureHeadroom(size_t BlockHeadroom);
+
+    // Allocates Bytes from the cold region (top-down) in the current chunk.
+    // Must be called with CodeBufferWriteMutex held.
+    uint64_t AllocateColdThunkBytes(size_t Bytes);
 
     // Protects writes to the latest CodeBuffer and changes to LatestOffset
     FEXCore::ForkableUniqueMutex CodeBufferWriteMutex;

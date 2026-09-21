@@ -109,6 +109,13 @@ public:
     PatchPending(lbl);
   }
 
+  // Bind a label to an explicit offset (e.g. cold thunk in code buffer)
+  void BindAt(Label* lbl, int64_t target_offset) {
+    lbl->offset = target_offset;
+    lbl->bound  = true;
+    PatchPending(lbl);
+  }
+
   // Drop any unbound forward-branch fixups. Called between compilations so
   // stale Label* pointers from a finished compile don't survive into the next.
   void ClearPendingBranches() { PendingBranches.clear(); }

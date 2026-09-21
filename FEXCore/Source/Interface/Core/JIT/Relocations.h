@@ -97,8 +97,14 @@ struct RelocLinkRecord final {
   uint32_t OrigCallerWord;
   uint32_t OrigThunkWord;
 
-  uint32_t Pad[5] {};
+  int32_t LinkBranchDelta;
+  int32_t LinkedEntryDelta;
+  int32_t FinalDelta;
+  uint32_t FinalPlainBranch;
+  uint32_t Pad[1] {};
 };
+static_assert(sizeof(RelocLinkRecord) == 48, "RelocLinkRecord size contract");
+
 
 union Relocation {
   // Clang 16 Can't default-initialize this union

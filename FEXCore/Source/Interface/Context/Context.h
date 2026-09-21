@@ -203,6 +203,9 @@ public:
    */
   [[nodiscard]]
   bool ApplyCodeRelocations(uint64_t GuestEntry, std::span<std::byte> Code, std::span<const CPU::Relocation> Relocations, bool ForStorage);
+  [[nodiscard]]
+  bool ApplyCodeRelocationsSplit(uint64_t GuestEntry, std::span<std::byte> HotCode, std::span<std::byte> ColdCode,
+                                 std::span<const CPU::Relocation> Relocations);
 
   struct CacheSegment;
   struct FileCache;

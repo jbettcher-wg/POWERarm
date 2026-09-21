@@ -176,35 +176,8 @@ static_assert(PPC64VConstPoolOffset + PPC64VConstSlotSize * (PPC64_VCONST_MAX - 
 // GuestToHostMap::AddBlockLink is a cast of this record. The two Orig*Word
 // fields stash the exact pre-link instruction words so delinking is a
 // byte-identical restore rather than a re-computation.
-struct PPC64BlockLinkRecord {
-  uint64_t HostCode;       // written by the linker BEFORE the thunk-word patch
-  uint64_t GuestRIP;       // constant destination RIP of this exit
-  int64_t CallerOffset;    // in-block patch site address minus &record (negative)
-  uint32_t OrigCallerWord; // pre-link first word of the in-block L1 probe
-  uint32_t OrigThunkWord;  // pre-link first word of the thunk (b LinkPath)
-  // Cached dispatcher-stub address. The thunk's LinkPath leg loads this via a
-  // single d-form ld off &record instead of ld off Pointers.<...>(STATE),
-  // which keeps CpuStateFrame at its 2-page budget. Written once at thunk
-  // emission from CTX->Dispatcher->GetExitFunctionLinkerWithRecordAddress()
-  // (constant over the process lifetime after dispatcher generation).
-  uint64_t StubAddr;
-  // Shadow-call exits (FEX_SHADOWRETSTACK, link-stack pairing): the linked
-  // entry the caller word is patched to branch to, and the Final word the
-  // linker rewrites to `bl HostCode` / `bl ThunkStart`. Both relative to
-  // &record; both zero for a plain jump exit. FinalOffset bit 0 set: the Final
-  // word takes a plain `b` instead (a BR inline-cache slot). An A64 paired
-  // call has FinalOffset == CallerOffset: the caller word itself becomes `bl`.
-  int64_t LinkedEntryOffset;
-  int64_t FinalOffset;
-};
-static_assert(sizeof(PPC64BlockLinkRecord) == 56, "emitted-record layout contract");
-static_assert(offsetof(PPC64BlockLinkRecord, StubAddr) == 32, "thunk stub-addr load contract");
-static_assert(offsetof(PPC64BlockLinkRecord, HostCode) == 0, "thunk ld displacement contract");
-
-// Byte distance from a jump thunk's first instruction (the thunk-side patch
-// site) to its PPC64BlockLinkRecord. Must match CompileCode's thunk emission
-// exactly; the emission site has a Release-visible check.
-static constexpr uint64_t PPC64LinkRecordFromThunkStart = 0x38;
+// PPC64BlockLinkRecord and PPC64LinkRecordFromThunkStart are defined in
+// Interface/Core/ArchHelpers/PPC64Emitter.h.
 
 class PPC64JITCore final : public CPUBackend, public PPC64EmitterBase {
 public:
@@ -751,6 +724,7 @@ private:
     uint64_t LinkedEntryAddress {}; // shadow call: linked leg entry (0 otherwise)
     uint64_t FinalAddress {};       // shadow call: the word the linker writes `bl` into
     bool FinalPlainBranch {};       // the linker writes `b` (not `bl`) into FinalAddress: a BR inline-cache slot
+    uint64_t LinkBranchAddress {};  // in-block branch site to LinkPath
   };
   fextl::list<PendingJumpThunk> PendingJumpThunks;
 

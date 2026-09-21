@@ -722,6 +722,9 @@ namespace CPU {
 
     Latest = Buffer;
     LatestOffset = 0;
+    CurrentChunkBase = 0;
+    CurrentChunkEnd = std::min(kChunkSize, Buffer->UsableSize());
+    ColdOffset = CurrentChunkEnd;
     // Everything anyone cached about the previous buffer's addresses is now
     // stale; see CodeBufferGeneration.
     CodeBufferGeneration.fetch_add(1, std::memory_order_release);
@@ -798,6 +801,38 @@ namespace CPU {
     return AllocateNew(NewCodeBufferSize);
   }
 
+  bool CodeBufferManager::EnsureHeadroom(size_t BlockHeadroom) {
+    if (!Latest) {
+      GetLatest();
+    }
+    const size_t Usable = Latest->UsableSize();
+    if (CurrentChunkEnd == 0) {
+      CurrentChunkBase = 0;
+      CurrentChunkEnd = std::min(kChunkSize, Usable);
+      LatestOffset = 0;
+      ColdOffset = CurrentChunkEnd;
+    }
+    while (LatestOffset + BlockHeadroom > ColdOffset) {
+      if (CurrentChunkEnd >= Usable) {
+        return false;
+      }
+      CurrentChunkBase = CurrentChunkEnd;
+      CurrentChunkEnd = std::min(CurrentChunkBase + kChunkSize, Usable);
+      LatestOffset = CurrentChunkBase;
+      ColdOffset = CurrentChunkEnd;
+    }
+    return true;
+  }
+
+  uint64_t CodeBufferManager::AllocateColdThunkBytes(size_t Bytes) {
+    Bytes = AlignUp(Bytes, 16);
+    LOGMAN_THROW_A_FMT(ColdOffset >= CurrentChunkBase + Bytes && ColdOffset - Bytes >= LatestOffset,
+                       "CodeBufferManager: cold allocation overrun (ColdOffset {:#x}, Bytes {:#x}, LatestOffset {:#x})",
+                       ColdOffset, Bytes, LatestOffset);
+    ColdOffset -= Bytes;
+    return ColdOffset;
+  }
+
 
   // ---------------------------------------------------------------------------
   // JIT auxiliary allocation (SMC store backpatching, ppc64le)
@@ -868,7 +903,7 @@ namespace CPU {
 
     const uint64_t Base = reinterpret_cast<uint64_t>(Latest->Ptr);
     const size_t Start = AlignUp(LatestOffset, Alignment);
-    if (Start < LatestOffset || Start + Bytes < Start || Start + Bytes > Latest->UsableSize()) {
+    if (Start < LatestOffset || Start + Bytes < Start || Start + Bytes > ColdOffset) {
       // No headroom. Rotating the buffer from here is not an option (it frees
       // the code the faulting thread is standing in), so refuse.
       return Result;

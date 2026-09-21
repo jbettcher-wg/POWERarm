@@ -1607,14 +1607,6 @@ namespace {
 // BI=31, BD=+4, AA=0, LK=1.
 constexpr uint32_t PPC64_BCL_20_31_PLUS4 = 0x429F0005u;
 
-// I-form `b`: signed 26-bit byte displacement (LI field is 24 bits, <<2).
-bool PPC64BranchDisplacementInRange(int64_t Delta) {
-  return (Delta & 3) == 0 && Delta >= -0x2000000ll && Delta <= 0x1FFFFFCll;
-}
-
-uint32_t PPC64EncodeBranch(int64_t Delta) {
-  return 0x48000000u | (static_cast<uint32_t>(Delta) & 0x03FFFFFCu);
-}
 // I-form `bl` (LK=1): the link-stack-pushing form a shadow call's Final word takes.
 uint32_t PPC64EncodeBranchLink(int64_t Delta) {
   // FEX_NO_LINKSTACKPAIR (bisection lever, see DEF_OP(ExitFunction)): the
@@ -5042,7 +5034,7 @@ CPUBackend::CompiledCode PPC64JITCore::CompileCode(
     1u << 20,
     IRView->GetSSACount() * (kMaxHostBytesPerIROp + kMaxRIPEntryBytesPerIROp) + sizeof(CPUBackend::JITCodeTail));
 
-  while (CodeBuffers.LatestOffset + BlockHeadroom > CurrentCodeBuffer->UsableSize()) {
+  while (!CodeBuffers.EnsureHeadroom(BlockHeadroom)) {
     const size_t PrevUsable = CurrentCodeBuffer->UsableSize();
 
     // Drop ownership across the unlock window so a nested compile from
@@ -5057,7 +5049,7 @@ CPUBackend::CompiledCode PPC64JITCore::CompileCode(
     // stopped growing (MAX_CODE_SIZE reached) and the block still doesn't fit,
     // another rotation will never help -- bail out loudly rather than spin, or
     // silently overrun and reproduce the deadlock described above.
-    if (CodeBuffers.LatestOffset + BlockHeadroom > CurrentCodeBuffer->UsableSize() && CurrentCodeBuffer->UsableSize() <= PrevUsable) {
+    if (!CodeBuffers.EnsureHeadroom(BlockHeadroom) && CurrentCodeBuffer->UsableSize() <= PrevUsable) {
       ERROR_AND_DIE_FMT("PPC64 JIT: block at {:#x} needs {} bytes of code buffer but the maximum buffer only has {}. "
                         "Lower MaxInst (currently producing {} IR ops).",
                         Entry, BlockHeadroom, CurrentCodeBuffer->UsableSize(), IRView->GetSSACount());
@@ -5980,185 +5972,17 @@ CPUBackend::CompiledCode PPC64JITCore::CompileCode(
   if (!ShortCondBranches.empty()) {
     ERROR_AND_DIE_FMT("PPC64 JIT: {} short conditional branches left unbound in the unit at {:#x}", ShortCondBranches.size(), Entry);
   }
-  const uint64_t StubAddr = CTX->Dispatcher->GetExitFunctionLinkerWithRecordAddress();
-  for (auto& Thunk : PendingJumpThunks) {
-    static_assert(offsetof(PPC64BlockLinkRecord, StubAddr) <= 32764 &&
-                    (offsetof(PPC64BlockLinkRecord, StubAddr) & 3) == 0,
-                  "thunk's d-form ld must reach the record's StubAddr field");
-    // 8-align the thunk start; SetBuffer lands on a 16-byte boundary so
-    // buffer offsets equal address alignment. The record at +0x38 inherits
-    // 8-byte alignment for the linker's atomic u64 HostCode store.
-    while (GetOffset() % 8) {
-      nop();
-    }
-    const uint64_t ThunkStart = GetCursorAddress<uint64_t>();
-    b(0x14);                                                        // +0x00
-    mflr(TMP1);                                                     // +0x04
-    ld(TMP2, static_cast<int16_t>(PPC64LinkRecordFromThunkStart - 0x4), TMP1); // +0x08
-    mtctr(TMP2);                                                    // +0x0c
-    bctr();                                                         // +0x10
-    Bind(&Thunk.LinkPath);                                          // +0x14
-    bcl(20, 31, 4);
-    mflr(TMP2);                                                     // +0x18
-    addi(TMP2, TMP2, static_cast<int16_t>(PPC64LinkRecordFromThunkStart - 0x18)); // +0x1c
-    // G1(c): TMP2 now holds &record. For a direct exit, update State.pc from
-    // the record's constant GuestRIP (offset 8) before entering the spill
-    // island. Indirect exits already stored State.pc in the body.
-    if (Thunk.GuestRIP != 0) {
-      const int16_t rip_off = static_cast<int16_t>(offsetof(FEXCore::Core::CpuStateFrame, State.pc));
-      ld(TMP1, 8, TMP2);                                            // +0x20
-      std(TMP1, rip_off, STATE);                                    // +0x24
-    } else {
-      nop();                                                        // +0x20
-      nop();                                                        // +0x24
-    }
-    // Tail-branch to the shared spill island (G1(a): one copy per context,
-    // see PPC64Dispatcher::EmitSpillIsland). The frame-slot load makes the
-    // branch position-independent, so the thunk serializes and reloads with
-    // no relocation. Only TMP1 is clobbered, so TMP2 = &record reaches the
-    // island's link stub, which runs SpillStaticRegs and dispatches through
-    // record.StubAddr.
-    const int32_t island_off = static_cast<int32_t>(
-      offsetof(FEXCore::Core::CpuStateFrame, Pointers.SpillIslandLink));
-    ld(TMP1, static_cast<int16_t>(island_off), STATE);              // +0x28
-    mtctr(TMP1);                                                    // +0x2c
-    bctr();                                                         // +0x30
-    nop();                                                          // +0x34
-    // Release-visible layout check (LOGMAN_* compiles to nothing in Release
-    // and the failure mode of a drifted record offset is silent wrong-code:
-    // the linked leg's ld would read instruction bytes as a host address).
-    if (GetCursorAddress<uint64_t>() != ThunkStart + PPC64LinkRecordFromThunkStart) {
-      ERROR_AND_DIE_FMT("PPC64 block-link thunk layout drifted: record lands at {:#x}, expected {:#x}",
-                        GetCursorAddress<uint64_t>(), ThunkStart + PPC64LinkRecordFromThunkStart);
-    }
-    const uint64_t RecordAddress = GetCursorAddress<uint64_t>();
-    // Stash the exact pre-link words for the delinkers. Read back from the
-    // buffer rather than re-encoded: the caller word is the probe's first
-    // instruction (already final — it is a direct emission, not a pending
-    // branch), the thunk word is the b +0x14 emitted just above.
-    const uint32_t OrigCallerWord = *reinterpret_cast<const uint32_t*>(Thunk.CallerAddress);
-    const uint32_t OrigThunkWord = *reinterpret_cast<const uint32_t*>(ThunkStart);
-    if (RetainRelocations) {
-      static_assert(offsetof(PPC64BlockLinkRecord, OrigCallerWord) == 24 && offsetof(PPC64BlockLinkRecord, OrigThunkWord) == 28,
-                    "CodeCache::ApplyCodeRelocations rewrites the record's original words at these offsets");
-      // Code cache relocations for the record (see RELOC_LINK_RECORD). Same
-      // retention predicate as every other relocation this backend records.
-      const uint64_t RecordOffset = BlockBufferOffset + static_cast<uint64_t>(GetOffset());
-      Relocation Link {};
-      Link.LinkRecord.Header = {.Offset = RecordOffset, .Type = FEXCore::CPU::RelocationTypes::RELOC_LINK_RECORD};
-      Link.LinkRecord.CallerDelta = static_cast<int32_t>(static_cast<int64_t>(Thunk.CallerAddress - RecordAddress));
-      Link.LinkRecord.ThunkDelta = static_cast<int32_t>(-static_cast<int64_t>(PPC64LinkRecordFromThunkStart));
-      Link.LinkRecord.OrigCallerWord = OrigCallerWord;
-      Link.LinkRecord.OrigThunkWord = OrigThunkWord;
-      Relocations.emplace_back(Link);
-      if (Thunk.GuestRIP != 0) {
-        // GuestRIP == 0 marks an inline-cache record and must stay 0.
-        Relocation Rip {};
-        Rip.GuestRIP.Header = {.Offset = RecordOffset + offsetof(PPC64BlockLinkRecord, GuestRIP),
-                               .Type = FEXCore::CPU::RelocationTypes::RELOC_GUEST_RIP_LITERAL};
-        Rip.GuestRIP.GuestRIP = Thunk.GuestRIP;
-        Relocations.emplace_back(Rip);
-      }
-      Relocation Stub {};
-      Stub.NamedSymbolLiteral.Header = {.Offset = RecordOffset + offsetof(PPC64BlockLinkRecord, StubAddr),
-                                        .Type = FEXCore::CPU::RelocationTypes::RELOC_NAMED_SYMBOL_LITERAL};
-      Stub.NamedSymbolLiteral.Symbol = FEXCore::CPU::RelocNamedSymbolLiteral::NamedSymbol::SYMBOL_LITERAL_EXITFUNCTION_LINKER_WITH_RECORD;
-      Relocations.emplace_back(Stub);
-    }
-    dc64(0);                                                          // HostCode
-    dc64(Thunk.GuestRIP);                                             // GuestRIP
-    dc64(static_cast<uint64_t>(Thunk.CallerAddress - RecordAddress)); // CallerOffset
-    dc64(static_cast<uint64_t>(OrigCallerWord) |
-         (static_cast<uint64_t>(OrigThunkWord) << 32));               // Orig{Caller,Thunk}Word
-    dc64(StubAddr);                                                   // StubAddr — dispatcher
-                                                                      // stub cached per record
-    dc64(Thunk.LinkedEntryAddress ? static_cast<uint64_t>(Thunk.LinkedEntryAddress - RecordAddress) : 0); // LinkedEntryOffset
-    dc64(Thunk.FinalAddress ? (static_cast<uint64_t>(Thunk.FinalAddress - RecordAddress) | (Thunk.FinalPlainBranch ? 1u : 0u)) : 0); // FinalOffset (bit 0: plain b)
-  }
-
-  // -------------------------------------------------------------------------
-  // Miss-leg spill stubs. G1(a): these no longer exist per unit. Both live
-  // once in the context's spill island (PPC64Dispatcher::EmitSpillIsland),
-  // reached by every miss leg through a frame-slot ld/mtctr/bctr — so a unit
-  // pays zero stub bytes. The island satisfies the signal delegator's
-  // IsAddressInCodeBuffer "SRA may be live" proxy (CPUBackend adds it to the
-  // check), and the guest CR0/XER arrive at the island's SpillStaticRegs
-  // unclobbered (miss-leg compares use cr7, the thunk leg touches only
-  // LR/TMP1/TMP2), so the NZCV pack still observes the block's final flags.
-  // -------------------------------------------------------------------------
-
   // -------------------------------------------------------------------------
   // Finalise
   // -------------------------------------------------------------------------
   Align16B();
 
   size_t CodeSize = GetOffset();
-  // S3.7-C0: use the block-start snapshot, not the live LatestOffset. The
-  // original recompute was numerically identical only because nothing else
-  // mutates LatestOffset between :2250 (SetBuffer) and this line — but
-  // that's an invariant nothing enforces, and reading the snapshot is
-  // strictly cleaner. Same rationale as the InsertNamedThunkRelocation
-  // change above.
+  // S3.7-C0: use the block-start snapshot, not the live LatestOffset.
   CodeData.BlockBegin = CB->Ptr + BlockBufferOffset;
   CodeData.Size       = CodeSize;
 
-  // FEX_CODEHASHLOG identity gate (see CodeHashLogFile above). Zero cost when
-  // unset: one already-loaded pointer test per compiled block.
-  if (FILE* HashLog = CodeHashLogFile()) {
-    const auto* Words = reinterpret_cast<const uint32_t*>(CodeData.BlockBegin);
-    const size_t NumWords = CodeSize / sizeof(uint32_t);
-    const uint64_t Hash = XXH3_64bits(reinterpret_cast<const void*>(CodeData.BlockBegin), CodeSize);
-
-    // Address-normalized hash. Emitted blocks legitimately bake absolute HOST
-    // addresses into ori/oris/lis immediate sequences (LoadImm64 of a FABI
-    // helper, of &SomeRuntimeObject, ...). Those addresses move whenever the
-    // FEX binary's own layout moves, so the plain hash differs between two
-    // builds that emit identical code. Zeroing the 16-bit immediate field of
-    // ori (24), oris (25) and lis (addis with RA==0) makes the hash blind to
-    // exactly that and to nothing else: any real codegen change alters an
-    // opcode, a register field, or the instruction count, all of which
-    // survive normalization.
-    fextl::vector<uint32_t> Norm(NumWords);
-    for (size_t i = 0; i < NumWords; ++i) {
-      uint32_t W = Words[i];
-      const uint32_t Primary = W >> 26;
-      const uint32_t RA = (W >> 16) & 0x1F;
-      if (Primary == 24 || Primary == 25 || (Primary == 15 && RA == 0)) {
-        W &= 0xFFFF0000u;
-      }
-      Norm[i] = W;
-    }
-    const uint64_t NormHash = XXH3_64bits(Norm.data(), NumWords * sizeof(uint32_t));
-
-    std::lock_guard Guard {CodeHashLogLock};
-    fprintf(HashLog, "%016lx %zu %016lx %016lx\n", static_cast<unsigned long>(Entry), CodeSize,
-            static_cast<unsigned long>(NormHash), static_cast<unsigned long>(Hash));
-  }
-
-  // DebugData::HostCodeSize has never been populated on this port, and PPC64LE
-  // is the only backend left in the tree, so the field was dead: every consumer
-  // read a zero. That silently broke both of them - FEX_LIBRARYJITNAMING wrote
-  // perf-map entries of length 0 (perf attributes no samples to a zero-length
-  // symbol, so profiles degraded to raw addresses), and GDBJIT computed
-  // block end == block start. Code only, excluding the tail: this is the range
-  // that is actually executed.
   DebugData->HostCodeSize = CodeSize;
-
-  // Flush the freshly-emitted instructions out of the D-cache and invalidate
-  // the I-cache for this range. POWER8 has split, non-coherent I/D caches: the
-  // store stream that emitted these instructions hits the D-cache, but the
-  // fetch stream walks the I-cache. Without this flush, branching to the new
-  // code can execute stale bytes (whatever the I-cache last fetched for the
-  // same physical line) — most commonly observed when SMC re-compiles a guest
-  // block at a code-buffer offset whose underlying page was previously
-  // executed as different host code. ARM64's CompileCode does the equivalent
-  // via ClearICache (FEXCore/Source/Interface/Core/JIT/JIT.cpp:1123).
-  //
-  // This was __builtin___clear_cache until 2026-08-13. On ppc64le that builtin
-  // emits nothing with gcc and an empty libgcc stub call with clang, i.e. this
-  // — the primary code-publication point of the whole backend — performed no
-  // cache maintenance at all. See FEXCore/Utils/ArchHelpers/PPC64CacheFlush.h.
-  FEXCore::ArchHelpers::PPC64::FlushICacheRange(reinterpret_cast<void*>(CodeData.BlockBegin), CodeSize);
 
   CodeBuffers.LatestOffset += CodeSize;
 
@@ -6292,6 +6116,127 @@ CPUBackend::CompiledCode PPC64JITCore::CompileCode(
   //   * uint32_t: the buffer is capacity-checked against BlockHeadroom near
   //     the top of CompileCode, so no offset can exceed 4 GiB.
   CB->AppendBlock(static_cast<uint32_t>(BlockBufferOffset));
+
+  if (!PendingJumpThunks.empty()) {
+    const size_t NumThunks = PendingJumpThunks.size();
+    const size_t ColdBytes = NumThunks * 112;
+    const uint64_t ColdBaseOffset = CodeBuffers.AllocateColdThunkBytes(ColdBytes);
+    uint8_t* ColdBasePtr = CB->Ptr + ColdBaseOffset;
+    const uint64_t StubAddr = CTX->Dispatcher->GetExitFunctionLinkerWithRecordAddress();
+
+    size_t ThunkIdx = 0;
+    for (auto& Thunk : PendingJumpThunks) {
+      static_assert(offsetof(PPC64BlockLinkRecord, StubAddr) <= 32764 &&
+                      (offsetof(PPC64BlockLinkRecord, StubAddr) & 3) == 0,
+                    "thunk's d-form ld must reach the record's StubAddr field");
+      const uint64_t ThunkStartOffset = ColdBaseOffset + ThunkIdx * 112;
+      uint8_t* ThunkStartPtr = CB->Ptr + ThunkStartOffset;
+      const uint64_t ThunkStart = reinterpret_cast<uint64_t>(ThunkStartPtr);
+      PPC64EmitterBase ThunkEmitter(CTX, ThunkStartPtr, 112);
+
+      ThunkEmitter.b(0x14);                                                        // +0x00
+      ThunkEmitter.mflr(TMP1);                                                     // +0x04
+      ThunkEmitter.ld(TMP2, static_cast<int16_t>(PPC64LinkRecordFromThunkStart - 0x4), TMP1); // +0x08
+      ThunkEmitter.mtctr(TMP2);                                                    // +0x0c
+      ThunkEmitter.bctr();                                                         // +0x10
+
+      // Bind LinkPath and patch the caller branch in the hot body:
+      const int64_t LinkPathEmitterOffset = static_cast<int64_t>((ThunkStartOffset + 0x14) - BlockBufferOffset);
+      BindAt(&Thunk.LinkPath, LinkPathEmitterOffset);
+
+      ThunkEmitter.bcl(20, 31, 4);                                                 // +0x14
+      ThunkEmitter.mflr(TMP2);                                                     // +0x18
+      ThunkEmitter.addi(TMP2, TMP2, static_cast<int16_t>(PPC64LinkRecordFromThunkStart - 0x18)); // +0x1c
+      if (Thunk.GuestRIP != 0) {
+        const int16_t rip_off = static_cast<int16_t>(offsetof(FEXCore::Core::CpuStateFrame, State.pc));
+        ThunkEmitter.ld(TMP1, 8, TMP2);                                            // +0x20
+        ThunkEmitter.std(TMP1, rip_off, STATE);                                    // +0x24
+      } else {
+        ThunkEmitter.nop();                                                        // +0x20
+        ThunkEmitter.nop();                                                        // +0x24
+      }
+      const int32_t island_off = static_cast<int32_t>(
+        offsetof(FEXCore::Core::CpuStateFrame, Pointers.SpillIslandLink));
+      ThunkEmitter.ld(TMP1, static_cast<int16_t>(island_off), STATE);              // +0x28
+      ThunkEmitter.mtctr(TMP1);                                                    // +0x2c
+      ThunkEmitter.bctr();                                                         // +0x30
+      ThunkEmitter.nop();                                                          // +0x34
+
+      const uint64_t RecordAddress = ThunkStart + PPC64LinkRecordFromThunkStart;
+      const uint32_t OrigCallerWord = *reinterpret_cast<const uint32_t*>(Thunk.CallerAddress);
+      const uint32_t OrigThunkWord = 0x48000014u; // b +0x14
+
+      if (RetainRelocations) {
+        static_assert(offsetof(PPC64BlockLinkRecord, OrigCallerWord) == 24 && offsetof(PPC64BlockLinkRecord, OrigThunkWord) == 28,
+                      "CodeCache::ApplyCodeRelocations rewrites the record's original words at these offsets");
+        const uint64_t RecordOffset = ThunkStartOffset + PPC64LinkRecordFromThunkStart;
+        Relocation Link {};
+        Link.LinkRecord.Header = {.Offset = RecordOffset, .Type = FEXCore::CPU::RelocationTypes::RELOC_LINK_RECORD};
+        Link.LinkRecord.CallerDelta = static_cast<int32_t>(static_cast<int64_t>(Thunk.CallerAddress - RecordAddress));
+        Link.LinkRecord.ThunkDelta = static_cast<int32_t>(-static_cast<int64_t>(PPC64LinkRecordFromThunkStart));
+        Link.LinkRecord.OrigCallerWord = OrigCallerWord;
+        Link.LinkRecord.OrigThunkWord = OrigThunkWord;
+        Link.LinkRecord.LinkBranchDelta = static_cast<int32_t>(static_cast<int64_t>(Thunk.LinkBranchAddress - RecordAddress));
+        Link.LinkRecord.LinkedEntryDelta = Thunk.LinkedEntryAddress ? static_cast<int32_t>(static_cast<int64_t>(Thunk.LinkedEntryAddress - RecordAddress)) : 0;
+        Link.LinkRecord.FinalDelta = Thunk.FinalAddress ? static_cast<int32_t>(static_cast<int64_t>(Thunk.FinalAddress - RecordAddress)) : 0;
+        Link.LinkRecord.FinalPlainBranch = Thunk.FinalPlainBranch ? 1u : 0u;
+        Relocations.emplace_back(Link);
+        if (Thunk.GuestRIP != 0) {
+          Relocation Rip {};
+          Rip.GuestRIP.Header = {.Offset = RecordOffset + offsetof(PPC64BlockLinkRecord, GuestRIP),
+                                 .Type = FEXCore::CPU::RelocationTypes::RELOC_GUEST_RIP_LITERAL};
+          Rip.GuestRIP.GuestRIP = Thunk.GuestRIP;
+          Relocations.emplace_back(Rip);
+        }
+        Relocation Stub {};
+        Stub.NamedSymbolLiteral.Header = {.Offset = RecordOffset + offsetof(PPC64BlockLinkRecord, StubAddr),
+                                          .Type = FEXCore::CPU::RelocationTypes::RELOC_NAMED_SYMBOL_LITERAL};
+        Stub.NamedSymbolLiteral.Symbol = FEXCore::CPU::RelocNamedSymbolLiteral::NamedSymbol::SYMBOL_LITERAL_EXITFUNCTION_LINKER_WITH_RECORD;
+        Relocations.emplace_back(Stub);
+      }
+
+      ThunkEmitter.dc64(0);                                                          // HostCode
+      ThunkEmitter.dc64(Thunk.GuestRIP);                                             // GuestRIP
+      ThunkEmitter.dc64(static_cast<uint64_t>(Thunk.CallerAddress - RecordAddress)); // CallerOffset
+      ThunkEmitter.dc64(static_cast<uint64_t>(OrigCallerWord) |
+                        (static_cast<uint64_t>(OrigThunkWord) << 32));               // Orig{Caller,Thunk}Word
+      ThunkEmitter.dc64(StubAddr);                                                   // StubAddr
+      ThunkEmitter.dc64(Thunk.LinkedEntryAddress ? static_cast<uint64_t>(Thunk.LinkedEntryAddress - RecordAddress) : 0);
+      ThunkEmitter.dc64(Thunk.FinalAddress ? (static_cast<uint64_t>(Thunk.FinalAddress - RecordAddress) | (Thunk.FinalPlainBranch ? 1u : 0u)) : 0);
+
+      ThunkIdx++;
+    }
+
+    FEXCore::ArchHelpers::PPC64::FlushICacheRange(reinterpret_cast<void*>(ColdBasePtr), ColdBytes);
+  }
+
+  // Flush hot code instructions out of D-cache and invalidate I-cache.
+  // Flushed after thunk loop so patched CallerAddress words in the hot body are covered.
+  FEXCore::ArchHelpers::PPC64::FlushICacheRange(reinterpret_cast<void*>(CodeData.BlockBegin), CodeSize);
+
+  // FEX_CODEHASHLOG identity gate (see CodeHashLogFile above). Zero cost when
+  // unset: one already-loaded pointer test per compiled block.
+  if (FILE* HashLog = CodeHashLogFile()) {
+    const auto* Words = reinterpret_cast<const uint32_t*>(CodeData.BlockBegin);
+    const size_t NumWords = CodeSize / sizeof(uint32_t);
+    const uint64_t Hash = XXH3_64bits(reinterpret_cast<const void*>(CodeData.BlockBegin), CodeSize);
+
+    fextl::vector<uint32_t> Norm(NumWords);
+    for (size_t i = 0; i < NumWords; ++i) {
+      uint32_t W = Words[i];
+      const uint32_t Primary = W >> 26;
+      const uint32_t RA = (W >> 16) & 0x1F;
+      if (Primary == 24 || Primary == 25 || (Primary == 15 && RA == 0)) {
+        W &= 0xFFFF0000u;
+      }
+      Norm[i] = W;
+    }
+    const uint64_t NormHash = XXH3_64bits(Norm.data(), NumWords * sizeof(uint32_t));
+
+    std::lock_guard Guard {CodeHashLogLock};
+    fprintf(HashLog, "%016lx %zu %016lx %016lx\n", static_cast<unsigned long>(Entry), CodeSize,
+            static_cast<unsigned long>(NormHash), static_cast<unsigned long>(Hash));
+  }
 
   // Op-size profiler: charge the out-of-band tail region (JITCodeTail plus the
   // vl64pair RIP entries plus the 16-byte alignment pad) to its own bucket —
