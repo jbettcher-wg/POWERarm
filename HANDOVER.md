@@ -173,7 +173,7 @@ compare+select fusion, FCMP direct CR0 decoding (F5), EntryNZCVLiveIn tracking, 
 warm G1(a) (the shared spill stubs moved to a context-lifetime island, 10245fbbf);
 warm G1(c) (unlinked exit leg in link thunk, b1c6b1fcc);
 warm G1(b,d) (link thunks, records, JITCodeTail, and RIP entries moved out of hot stream to cold region, 003933d8b, 53bd42492; warm slice 18.65 s, -11.8%);
-warm G3 (pin `callret_sp` in host GPR `r26`, guard-page overflow on push/pop, dropping 4 memory ops per BL/RET pair, ca634b80f; warm slice 17.69 s -> 17.26 s, -2.4%);
+warm G3 (pin `callret_sp` in host GPR `r22`, unpin guest X24 to keep dynamic RA at 5 registers, guard-page overflow on push/pop, dropping 4 memory ops per BL/RET pair, ca634b80f, b538d7e70; warm slice 17.69 s -> 17.37 s, -2.4%);
 FEAT_DotProd (asimddp), FEAT_RDM (asimdrdm), and FEAT_LRCPC (lrcpc)
 implemented and advertised across HWCap, ISAR0/ISAR1, /proc/cpuinfo and sysreg tests;
 test runner core-dump spam suppressed (3ca864f65);
@@ -182,7 +182,7 @@ the NEON gap closure; the signal-frame fixes; the RLIMIT_AS, /proc, DC CIVAC, RB
 | # | Goal | Source | Estimate | Effort |
 |---|---|---|---|---|
 | 1 | **Warm G1, cold bytes out of the hot stream** (a) done 10245fbbf, (c) done b1c6b1fcc, (b) done 003933d8b, (d) done 53bd42492; **all of Warm G1 complete**. Hot stream contains solely hot instructions; link thunks, records, tail tables and RIP entries live in the cold region. Warm slice 20.95 s -> 18.65 s (-11%) | warm §7 G1 | all done; -11.8% warm slice | complete |
-| 2 | **Warm G3, cheaper paired calls and returns** done: `callret_sp` pinned in host GPR `r26`, guard-page overflow on push/pop, eliminating 4 memory ops per BL/RET pair. Warm slice 17.69 s -> 17.26 s (-2.4%) | warm §7 G3 | done; -2.4% warm slice | complete |
+| 2 | **Warm G3, cheaper paired calls and returns** done: `callret_sp` pinned in host GPR `r22`, guest X24 unpinned to keep dynamic RA pool at 5 registers, guard-page overflow on push/pop, eliminating 4 memory ops per BL/RET pair. Warm slice 17.69 s -> 17.37 s (-2.4%) | warm §7 G3 | done; -2.4% warm slice | complete |
 | 3 | **Warm G4, copy and zero-extension debris**: fold the `MOV` alias in the frontend, cut the `mr` sources (SRA coalescing) and `clrldi ,32`. `mr` alone is 7.1% of executed host instructions | warm §7 G4 | -3-5% | medium |
 | 4 | **Warm G2(c), entry NZCV liveness**: exit legs go through `thunk{recompute; b target}` and the linker branches straight to targets that do not read flags. Finishes the fusion work: today 54% of compare+branch pairs keep their flags live | warm §7 G2 | the rest of the 6-10% G2 estimate | medium-high: touches link and cache records |
 | 5 | **Warm G5, unit granularity re-sweep**: `RegionWindow`/`MaxLeaders` (`Decoder.cpp:155-156`) with the cache warm and G1 in place; duplication is 1.41x | warm §7 G5 | -3-6% warm, cold cost up | small |
