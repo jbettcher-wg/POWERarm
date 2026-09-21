@@ -10,7 +10,7 @@ Status: **functional, experimental.** M1 (static binaries) and M2 (self-hosting 
 milestones are complete. Real-world applications including VS Code, Claude Code CLI, and 3D games
 run on POWER9 hosts. Active development is focused on host-optimized NEON vector lowerings,
 code cache tuning, and library thunks. See [`OPTIMIZATION-CHECKLIST.md`](OPTIMIZATION-CHECKLIST.md)
-and the lowering catalogue in [`research/neon/NEON-LANDINGS.md`](research/neon/NEON-LANDINGS.md).
+and the lowering catalogue in [`research/neon/NEON-LOWERINGS.md`](research/neon/NEON-LOWERINGS.md).
 
 - **Minimum ISA: POWER8 (2.07).** POWER9 (ISA 3.0) paths sit behind a runtime `AT_HWCAP2`
   gate with verified POWER8 fallbacks.

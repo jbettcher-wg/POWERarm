@@ -351,7 +351,7 @@ Two mechanism extensions are needed:
 
 The N1 row's "64% of their cycles" comes from `probes/workloads/strloop.c`, a microbenchmark
 that loops `strlen`/`memchr`/`strchr`/`memcmp` over a 4 KiB buffer
-(`research/neon/NEON-LANDINGS.md:51-53, 61`). It says how expensive those loops are *per byte*
+(`research/neon/NEON-LOWERINGS.md:51-53, 61`). It says how expensive those loops are *per byte*
 under the JIT; it says nothing about how much of a desktop app is in them. Real programs pass
 short strings (identifiers, paths, hash keys); for those the crossing (`SpillForABICall`, the
 16 volatile vector registers refilled unconditionally, `BranchOps.cpp:1697-1700`) costs about
@@ -590,7 +590,7 @@ grep); `SyscallsSMCTracking.cpp` (1–80, 149–330, grep); `SMCHostGranule.h` (
 `ELFCodeLoader.h` (grep, 1159–1160); `unittests/A64Frontend/{run.sh,README.md,strmem.c,
 golden.sh}`; `unittests/ThunkLibs/` listing; `docs/powerarm/{DESIGN.md §4.7–4.9, §5, §6, §7,
 HANDOVER.md, OPTIMIZATION-CHECKLIST.md (N rows, 247–316), M0-CENSUS.md (thunk sections),
-M1-ABI-DIFFERENCES.md (headings), research/neon/NEON-LANDINGS.md (40–62),
+M1-ABI-DIFFERENCES.md (headings), research/neon/NEON-LOWERINGS.md (40–62),
 probes/workloads/strloop.c, CODE-CACHE.md (headings)}`; `Scripts/powerarm/rootfs/README.md`
 and manifest head.
 

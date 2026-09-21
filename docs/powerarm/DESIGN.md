@@ -300,7 +300,7 @@ machine.
   SHA-NI onto them.
 - **AES:** the existing `VAESEnc/Dec` ops have x86 `AESENC` semantics. `AESE`/`AESD`/`AESMC`/
   `AESIMC` are compositions of them (`TranslateCrypto.cpp`); the fused `vxor; vcipher` round of
-  NEON-LANDINGS §4.2 is not built yet.
+  NEON-LOWERINGS §4.2 is not built yet.
 - **Advertised so far:** `fp`, `asimd`, `aes`, `pmull`, `sha1`, `sha2`, `crc32`, `fphp`,
   `asimdhp`, `cpuid` (`simd_crypto` passes Pi parity). `atomics` is still missing from tier 1.
 - **32-bit code:** none. There's no AArch32 and no armhf multilib; ARMv9 cores dropped AArch32

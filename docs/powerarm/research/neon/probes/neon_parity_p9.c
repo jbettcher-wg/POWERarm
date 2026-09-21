@@ -368,7 +368,7 @@ static void low_pmull8_2 SIG BODY({ v16 z = zero(), xw, yw; A2("vmrghb", xw, z, 
  *   AESMC(s) = REV32(vcipher(vncipherlast(REV32(s), 0), 0)) and AESIMC dually.
  * A full round AESE+AESMC keeps the state byte-reversed across rounds:
  *   round(s,k) = BSWAP16(vcipher(BSWAP16(s ^ k), 0)), and the two reversals
- *   cancel between consecutive rounds (see NEON-LANDINGS.md). */
+ *   cancel between consecutive rounds (see NEON-LOWERINGS.md). */
 static inline v16 rev32(v16 x) { v16 k, o;
 #if P9
   X1("xxbrw", o, x);

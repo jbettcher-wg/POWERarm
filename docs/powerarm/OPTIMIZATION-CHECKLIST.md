@@ -8,7 +8,7 @@ coming back later with a cold agent.
 Sources:
 - **[PIPE]** `research/pipeline/POWER9-VS-A76-PIPELINE.md`
 - **[FP]** `research/scalar-fp/SCALAR-FP-LOWERING.md`
-- **[NEON]** `research/neon/NEON-LANDINGS.md`
+- **[NEON]** `research/neon/NEON-LOWERINGS.md`
 
 The section references in the tables point into these files. **The research doc is the spec**:
 exact instruction sequences, parity corpora and costs are there, not here.

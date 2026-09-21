@@ -343,7 +343,7 @@ bool IRBuilder::SIMDPairwise(uint32_t Word, PairwiseOp Op) {
   Ref A = LoadV(Rn);
 
   if (Rn == Rm && Size < 3) {
-    // Fast path for UMAXP/UMINP/ADDP/SMAXP/SMINP when operands are identical (NEON-LANDINGS §3.10):
+    // Fast path for UMAXP/UMINP/ADDP/SMAXP/SMINP when operands are identical (NEON-LOWERINGS §3.10):
     // Shift elements right by W bits within 2W containers, combine with A, then pack via VUnZip.
     if (!Q) {
       A = LowHalves(this, A, A);

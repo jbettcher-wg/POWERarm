@@ -87,7 +87,7 @@ Ref IRBuilder::SaturatingAddSub(OpSize ES, Ref A, Ref B, bool Sub, bool Signed, 
     *Saturated = _VXor(RS, RS, Sat, Wrap);
     return Sat;
   }
-  // 64-bit lanes (NEON-LANDINGS §3.4).
+  // 64-bit lanes (NEON-LOWERINGS §3.4).
   const auto ES64 = OpSize::i64Bit;
   if (!Signed) {
     Ref Ovf {};

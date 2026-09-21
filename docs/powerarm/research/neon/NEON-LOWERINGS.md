@@ -1,4 +1,4 @@
-# NEON landings on POWER: the lowering catalogue
+# NEON lowerings on POWER: the lowering catalogue
 
 Research for POWERarm's next NEON workstreams: for each Advanced SIMD
 operation family, the best *exact* POWER8 sequence, the POWER9 (ISA 3.0)
@@ -813,7 +813,7 @@ is exactly `vpermr`, `vabsdu*`, `xxspltib`, `xxbrw`, `vextubrx`, `vctzlsbb`,
 4. **FMA/float exactness** (#7, #8, §3.12): `xvneg`+`xvmadd` for the
    `FNML*` family, then the CR6-gated NaN fixup shared by vector and scalar
    FP (removes `PropagateNaNOperand` from the hot path).
-5. **Missing families** with one-instruction landings: `SQDMULH/SQRDMULH.8H`
+5. **Missing families** with one-instruction lowerings: `SQDMULH/SQRDMULH.8H`
    (#10), `UDOT/USDOT` (#13), `PMULL` (#14), `UABD` (P9), 64-bit saturating
    (#11), `SMULL/UMULL/SQDMULL`, `SADDLP/UADDLP`, `CLS`, `RBIT`.
 6. **Emitter additions** for ISA 3.0 (`vpermr`, `xxspltib`, `vextu*rx`,

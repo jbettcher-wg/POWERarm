@@ -1453,7 +1453,7 @@ static void SplatShiftCount(PPC64JITCore* j, VR Dst, IR::OpSize ElemSz, uint8_t 
 // VSRSHR: signed rounding shift right by immediate.  Per ARM srshr:
 //   result = (x + (1 << (N-1))) >> N  (arithmetic), with N in [1..ESize_bits].
 //
-// Identity (NEON-LANDINGS §3.2):
+// Identity (NEON-LOWERINGS §3.2):
 //   (x >> N) + ((x >> (N - 1)) & 1)
 // For N == W, (x + 2^(W-1)) >> W is identically 0 for all signed inputs.
 // For 1 <= N < W, both N and N-1 are in [0, W-1] and never wrap modulo W.
@@ -1515,7 +1515,7 @@ DEF_OP(VSRSHR) {
 // VSQSHL: signed saturating shift left by immediate.
 //   result[i] = signed_saturate(V[i] << BitShift, ESize_bits)
 //
-// Pure vector lowering (NEON-LANDINGS §3.2):
+// Pure vector lowering (NEON-LOWERINGS §3.2):
 //   sl = V << Shift
 //   back = sl >>s Shift
 //   no_overflow = (back == V)
