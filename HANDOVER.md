@@ -176,8 +176,9 @@ island, 10245fbbf) -- warm `cc1` cycles -2.8%, icache misses 336 -> 300 M, cache
 in-body constant exit shrunk to 1 instruction (b LinkPath), saving 24-52 B per exit, ~8.5 MB
 cold instructions removed from cc1 hot stream; warm G1(b,d) (link thunks, records, JITCodeTail,
 and RIP entries moved out of hot stream to cold code buffer region; hot stream is solely hot code;
-warm slice 21.14 s -> 18.65 s, -11.8%); FEAT_DotProd (asimddp) advertised across HWCap, ISAR0.DP,
-/proc/cpuinfo and sysreg tests; test runner core-dump spam suppressed (3ca864f65);
+warm slice 21.14 s -> 18.65 s, -11.8%); FEAT_DotProd (asimddp), FEAT_RDM (asimdrdm), and FEAT_LRCPC (lrcpc)
+implemented and advertised across HWCap, ISAR0/ISAR1, /proc/cpuinfo and sysreg tests;
+test runner core-dump spam suppressed (3ca864f65);
 the NEON gap closure; the signal-frame fixes; the RLIMIT_AS, /proc, DC CIVAC, RBIT and VectorImm fixes.
 
 | # | Goal | Source | Estimate | Effort |
@@ -393,10 +394,10 @@ to initialise against 27 s cold (suspect cache install cost, item 24).
     vector/scalar group (exact but slow, one lane at a time through double; ISA 3.0
     xvcvhpsp/xvcvsphp if an FP16-heavy workload appears); scalar SLI/SRI/SSRA/USRA and
     SQRSHRN/UQRSHRN/SQRSHRUN. **Still missing, found by that agent:** LDXP/STXP/LDAXP/STLXP
-    (exclusive pairs, base ARMv8.0, decoded but no handler, TranslateExclusive.cpp);
-    SQRDMLAH/SQRDMLSH (on the A76, commented out, asimdrdm not advertised). FEAT_DotProd
-    passes against the Pi and is now advertised (281e837b7, ELFCodeLoader.h HWCap,
-    SystemRegisters.h ISAR0.DP, cpuinfo, the sysreg test). FCADD/FCMLA and SHA-512/SHA-3/SM3/SM4
+    (exclusive pairs, base ARMv8.0, decoded but no handler, TranslateExclusive.cpp).
+    FEAT_DotProd (281e837b7, asimddp), FEAT_RDM (a9f830ba4, SQRDMLAH/SQRDMLSH, asimdrdm), and
+    FEAT_LRCPC (lrcpc) are implemented and advertised (ELFCodeLoader.h HWCap,
+    SystemRegisters.h ISAR0/ISAR1, cpuinfo, the sysreg test). FCADD/FCMLA and SHA-512/SHA-3/SM3/SM4
     are not on the A76 and not advertised.
 23. **Signal-frame fidelity, still open** (found fixing item 19): a signal delivered during a syscall
     shows X0 as the syscall's first argument, not its result, so a handler that moves the PC
@@ -431,3 +432,15 @@ to initialise against 27 s cold (suspect cache install cost, item 24).
       health check classification for normal exit and bad-ELF exit 248, dynamic theme tinting), plus 22/22 Catch2 unit tests.
     - **Installed:** `~/.local/bin/sleeve`. Existing launchers for `code`, `firefox`, `factorio`, and `antigravity-ide`
       are wrapped and registered.
+26. **FEAT_RDM and FEAT_LRCPC implemented and advertised** (2026-09-21, a9f830ba4): Antigravity IDE's
+    bundled `language_server_linux_arm` crashed at startup via Google toolchain `go/sigill-fail-fast`
+    checks requiring `-march=armv8.2-a+dotprod` features (`asimddp`, `asimdrdm`, `lrcpc`). Fixed by:
+    - Implementing `SQRDMLAH` and `SQRDMLSH` (vector and by-element forms) in `TranslateSIMDSaturate.cpp`
+      via `SIMDDoublingMultiplyAccumulateHigh` with intermediate rounding and destination saturation (FEAT_RDM).
+    - Advertising `asimdrdm` and `lrcpc` (FEAT_LRCPC, whose LDAPR instructions were already fully implemented)
+      in `ELFCodeLoader.h` (HWCap), `SystemRegisters.h` (`ID_AA64ISAR0_EL1` RDM=1 matching Cortex-A76 / Pi 5
+      at `0x0000100010211120`, and `ID_AA64ISAR1_EL1` LRCPC=1 at `0x0000000000100000`), `/proc/cpuinfo`
+      Features line, and updating `unittests/A64Frontend/sysreg.S`.
+    - Tested: `language_server_linux_arm --help` runs cleanly to exit 0. All 3 test gates pass
+      (83 pass, 0 fail; a64diff 64k pass; check-code-cache 24/24 pass).
+
