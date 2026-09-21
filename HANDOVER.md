@@ -168,15 +168,13 @@ new thing once, prefer deterministic metrics (`instructions:u`, emitted bytes, b
 wall clock, and keep correctness gates exhaustive.
 
 **Already done, do not redo:** cold G1(a,b) (lld/64K-congruent apps cached, `CodeCacheScope=home`;
-(c) AOT-at-install is still only a plan in CODE-CACHE.md); warm G2(a,b) (compare+branch and
-compare+select fusion, with the chained-compare fix) -- warm `cc1` 21.90 -> 21.25 G instructions,
-cycles -4.5%, warm slice 20.95 s; warm G1(a) (the shared spill stubs moved to a context-lifetime
-island, 10245fbbf) -- warm `cc1` cycles -2.8%, icache misses 336 -> 300 M, cache footprint
-189 -> 155 M, warm slice 20.15 s; warm G1(c) (unlinked exit leg in link thunk, b1c6b1fcc) --
-in-body constant exit shrunk to 1 instruction (b LinkPath), saving 24-52 B per exit, ~8.5 MB
-cold instructions removed from cc1 hot stream; warm G1(b,d) (link thunks, records, JITCodeTail,
-and RIP entries moved out of hot stream to cold code buffer region; hot stream is solely hot code;
-warm slice 21.14 s -> 18.65 s, -11.8%); FEAT_DotProd (asimddp), FEAT_RDM (asimdrdm), and FEAT_LRCPC (lrcpc)
+(c) AOT-at-install is still only a plan in CODE-CACHE.md); warm G2(a,b,d) (compare+branch and
+compare+select fusion, FCMP direct CR0 decoding (F5), EntryNZCVLiveIn tracking, direct link gating, 2f8013325);
+warm G1(a) (the shared spill stubs moved to a context-lifetime island, 10245fbbf);
+warm G1(c) (unlinked exit leg in link thunk, b1c6b1fcc);
+warm G1(b,d) (link thunks, records, JITCodeTail, and RIP entries moved out of hot stream to cold region, 003933d8b, 53bd42492; warm slice 18.65 s, -11.8%);
+warm G3 (pin `callret_sp` in host GPR `r26`, guard-page overflow on push/pop, dropping 4 memory ops per BL/RET pair, ca634b80f; warm slice 17.69 s -> 17.26 s, -2.4%);
+FEAT_DotProd (asimddp), FEAT_RDM (asimdrdm), and FEAT_LRCPC (lrcpc)
 implemented and advertised across HWCap, ISAR0/ISAR1, /proc/cpuinfo and sysreg tests;
 test runner core-dump spam suppressed (3ca864f65);
 the NEON gap closure; the signal-frame fixes; the RLIMIT_AS, /proc, DC CIVAC, RBIT and VectorImm fixes.
