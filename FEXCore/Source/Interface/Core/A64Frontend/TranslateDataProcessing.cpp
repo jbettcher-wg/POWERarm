@@ -395,25 +395,11 @@ bool IRBuilder::LogicalShifted(uint32_t Word) {
   }
   const auto Size = SizeFor(Is64);
 
-  const uint32_t Rm = Bits(Word, 20, 16);
-  Ref Operand = ShiftReg(LoadX(Rm), ShiftType, Amount, Is64);
+  Ref Operand = ShiftReg(LoadX(Bits(Word, 20, 16)), ShiftType, Amount, Is64);
   if (Invert) {
     Operand = _Not(OpSize::i64Bit, Operand);
   }
-
-  // MOV/MVN aliases: orr/orn with Rn==XZR folds to Operand (0 | Operand == Operand).
-  // Similarly, EOR/EON with Rn==XZR folds to Operand (0 ^ Operand == Operand).
-  if ((Opc == 0b01 || Opc == 0b10) && Rn == 31) {
-    StoreReg(Rd, Is64, Operand);
-    return true;
-  }
-
   Ref Src = LoadX(Rn);
-
-  if ((Opc == 0b01 || Opc == 0b10) && !Invert && Amount == 0 && Rm == 31) {
-    StoreReg(Rd, Is64, Src);
-    return true;
-  }
 
   switch (Opc) {
   case 0b00: StoreReg(Rd, Is64, _And(Size, Src, Operand)); break;
