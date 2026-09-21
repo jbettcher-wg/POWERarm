@@ -270,12 +270,11 @@ bool PPC64JITCore::ConstantCallReturnAddress(const IR::OrderedNodeWrapper& WNode
 }
 
 void PPC64JITCore::EmitLinkFirstConstExit(uint64_t Target) {
-  const int16_t rip_off = static_cast<int16_t>(offsetof(FEXCore::Core::CpuStateFrame, State.pc));
-  // The patch site is the first word of the RIP move; the linker rewrites it
-  // to `b HostCode` (or `b Thunk`), skipping the rest.
+  // G1(c): The patch site is the single `b LinkPath` instruction. State.pc is
+  // updated in the thunk's LinkPath leg from the record's constant GuestRIP
+  // before entering the spill island. When linked, the linker rewrites this
+  // word to `b HostCode` (or `b ThunkStart`).
   PendingJumpThunks.push_back({GetCursorAddress<uint64_t>(), Target, {}});
-  InsertExitRIPMove(TMP1, Target);
-  std(TMP1, rip_off, STATE);
   b(&PendingJumpThunks.back().LinkPath);
 }
 
@@ -327,7 +326,6 @@ void PPC64JITCore::EmitA64PairedCall(const IR::IROp_ExitFunction* Op, bool Const
                 (static_cast<uint32_t>(Delta) & 0xFFFFu);
   };
 
-  PPC64Emitter::Label MissLeg {};
   if (ConstRIP) {
     EmitExitR0Zero(UnitR0Dirty);
     // A: the record's caller word, and also its Final word: FinalOffset ==
@@ -336,14 +334,11 @@ void PPC64JITCore::EmitA64PairedCall(const IR::IROp_ExitFunction* Op, bool Const
     PendingJumpThunks.push_back({A, NewRIP, {}});
     auto* Record = &PendingJumpThunks.back();
     Record->FinalAddress = A;
-    b(&MissLeg);
+    b(&Record->LinkPath);
     PatchTramp();
     EmitLinkFirstConstExit(ReturnAddress);
-    Bind(&MissLeg);
-    InsertExitRIPMove(TMP1, NewRIP);
-    std(TMP1, rip_off, STATE);
-    b(&Record->LinkPath);
   } else {
+    PPC64Emitter::Label MissLeg {};
     const int32_t l1_off = static_cast<int32_t>(offsetof(FEXCore::Core::CpuStateFrame, State.L1Pointer));
     const int32_t l1mask_off = static_cast<int32_t>(offsetof(FEXCore::Core::CpuStateFrame, State.L1Mask));
     ld(TMP2, l1_off, STATE);
@@ -579,6 +574,15 @@ DEF_OP(ExitFunction) {
 
   if (A64Call) {
     EmitA64PairedCall(Op, ConstRIP, NewRIP, A64CallReturn, UnitR0Dirty);
+    return;
+  }
+
+  if (Linkable && LinkFirst) {
+    // G1(c): Link-first constant exit. The patch site is a single `b LinkPath`
+    // word. State.pc is updated in the thunk from the record's GuestRIP.
+    EmitExitR0Zero(UnitR0Dirty);
+    PendingJumpThunks.push_back({GetCursorAddress<uint64_t>(), NewRIP, {}});
+    b(&PendingJumpThunks.back().LinkPath);
     return;
   }
 

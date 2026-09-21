@@ -5939,19 +5939,19 @@ CPUBackend::CompiledCode PPC64JITCore::CompileCode(
   //   +0x00  b +0x14                ThunkPatchSite. Unlinked -> LinkPath.
   //                                 Linked out-of-range -> bcl 20,31,$+4.
   //   +0x04  mflr TMP1              (runs only when patched) TMP1 = ThunkStart+4
-  //   +0x08  ld   TMP2, 0x2C(TMP1)  TMP2 = record.HostCode (at ThunkStart+0x30)
+  //   +0x08  ld   TMP2, 0x34(TMP1)  TMP2 = record.HostCode (at ThunkStart+0x38)
   //   +0x0c  mtctr TMP2
   //   +0x10  bctr
   //   +0x14  LinkPath: bcl 20,31,$+4     LR = ThunkStart+0x18 (no link-stack push)
   //   +0x18  mflr TMP2              TMP2 = ThunkStart+0x18
-  //   +0x1c  addi TMP2, TMP2, 0x18  TMP2 = r4 = &record (linker stub argument)
-  //   +0x20  ld   TMP1, 32(TMP2)    TMP1 = record.StubAddr — dispatcher stub
-  //                                 addr cached in the record so no per-thread
-  //                                 CpuStateFrame slot is needed
-  //   +0x24  mtctr TMP1
-  //   +0x28  bctr
-  //   +0x2c  nop                    pad so the record is 8-byte aligned
-  //   +0x30  PPC64BlockLinkRecord   (5 x dc64; HostCode field atomically
+  //   +0x1c  addi TMP2, TMP2, 0x20  TMP2 = r4 = &record (linker stub argument)
+  //   +0x20  ld   TMP1, 8(TMP2)     TMP1 = record.GuestRIP (or nop if indirect)
+  //   +0x24  std  TMP1, pc(STATE)   State.pc updated before link/spill (G1(c))
+  //   +0x28  ld   TMP1, island_off(STATE) TMP1 = Pointers.SpillIslandLink
+  //   +0x2c  mtctr TMP1
+  //   +0x30  bctr
+  //   +0x34  nop                    pad so the record is 8-byte aligned
+  //   +0x38  PPC64BlockLinkRecord   (5 x dc64; HostCode field atomically
   //                                 rewritten by the linker; StubAddr is the
   //                                 dispatcher stub's fixed address, written
   //                                 once at emit time)
@@ -5986,7 +5986,7 @@ CPUBackend::CompiledCode PPC64JITCore::CompileCode(
                     (offsetof(PPC64BlockLinkRecord, StubAddr) & 3) == 0,
                   "thunk's d-form ld must reach the record's StubAddr field");
     // 8-align the thunk start; SetBuffer lands on a 16-byte boundary so
-    // buffer offsets equal address alignment. The record at +0x30 inherits
+    // buffer offsets equal address alignment. The record at +0x38 inherits
     // 8-byte alignment for the linker's atomic u64 HostCode store.
     while (GetOffset() % 8) {
       nop();
@@ -6001,19 +6001,29 @@ CPUBackend::CompiledCode PPC64JITCore::CompileCode(
     bcl(20, 31, 4);
     mflr(TMP2);                                                     // +0x18
     addi(TMP2, TMP2, static_cast<int16_t>(PPC64LinkRecordFromThunkStart - 0x18)); // +0x1c
-    // TMP2 now holds &record. Tail-branch to the shared spill island (G1(a):
-    // one copy per context, see PPC64Dispatcher::EmitSpillIsland). The
-    // frame-slot load makes the branch position-independent, so the thunk
-    // serializes and reloads with no relocation. Only TMP1 is clobbered, so
-    // TMP2 = &record reaches the island's link stub, which runs
-    // SpillStaticRegs and dispatches through record.StubAddr. Exactly three
-    // instructions + one nop, keeping the record at +0x30.
+    // G1(c): TMP2 now holds &record. For a direct exit, update State.pc from
+    // the record's constant GuestRIP (offset 8) before entering the spill
+    // island. Indirect exits already stored State.pc in the body.
+    if (Thunk.GuestRIP != 0) {
+      const int16_t rip_off = static_cast<int16_t>(offsetof(FEXCore::Core::CpuStateFrame, State.pc));
+      ld(TMP1, 8, TMP2);                                            // +0x20
+      std(TMP1, rip_off, STATE);                                    // +0x24
+    } else {
+      nop();                                                        // +0x20
+      nop();                                                        // +0x24
+    }
+    // Tail-branch to the shared spill island (G1(a): one copy per context,
+    // see PPC64Dispatcher::EmitSpillIsland). The frame-slot load makes the
+    // branch position-independent, so the thunk serializes and reloads with
+    // no relocation. Only TMP1 is clobbered, so TMP2 = &record reaches the
+    // island's link stub, which runs SpillStaticRegs and dispatches through
+    // record.StubAddr.
     const int32_t island_off = static_cast<int32_t>(
       offsetof(FEXCore::Core::CpuStateFrame, Pointers.SpillIslandLink));
-    ld(TMP1, static_cast<int16_t>(island_off), STATE);              // +0x20
-    mtctr(TMP1);                                                    // +0x24
-    bctr();                                                         // +0x28
-    nop();                                                          // +0x2c
+    ld(TMP1, static_cast<int16_t>(island_off), STATE);              // +0x28
+    mtctr(TMP1);                                                    // +0x2c
+    bctr();                                                         // +0x30
+    nop();                                                          // +0x34
     // Release-visible layout check (LOGMAN_* compiles to nothing in Release
     // and the failure mode of a drifted record offset is silent wrong-code:
     // the linked leg's ld would read instruction bytes as a host address).

@@ -204,7 +204,7 @@ static_assert(offsetof(PPC64BlockLinkRecord, HostCode) == 0, "thunk ld displacem
 // Byte distance from a jump thunk's first instruction (the thunk-side patch
 // site) to its PPC64BlockLinkRecord. Must match CompileCode's thunk emission
 // exactly; the emission site has a Release-visible check.
-static constexpr uint64_t PPC64LinkRecordFromThunkStart = 0x30;
+static constexpr uint64_t PPC64LinkRecordFromThunkStart = 0x38;
 
 class PPC64JITCore final : public CPUBackend, public PPC64EmitterBase {
 public:
