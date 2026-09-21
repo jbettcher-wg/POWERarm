@@ -69,6 +69,8 @@ public:
     SUCCESS,
     // The instruction word could not be read because the page is not executable.
     NOEXEC_INST,
+    // The entry PC is not 4-byte aligned (ARM64 PC alignment fault).
+    UNALIGNED_PC,
   };
 
   struct DecodedInst final {

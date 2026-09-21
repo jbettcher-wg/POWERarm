@@ -121,6 +121,21 @@ void Decoder::DecodeInstructionsAtEntry(FEXCore::Core::InternalThreadState*, uin
     DecodedBuffer.resize(Cap);
   }
 
+  if ((PC & (INSTRUCTION_SIZE - 1)) != 0) {
+    // Emitted as a guest SIGBUS (BUS_ADRALN) at PC by the IR builder (AArch64 PC alignment fault).
+    DecodedBuffer[0] = {.PC = PC, .Word = 0, .Matcher = nullptr};
+    BlockInfo.Blocks.push_back(DecodedBlocks {
+      .Entry = PC,
+      .Size = 0,
+      .NumInstructions = 1,
+      .DecodedInstructions = DecodedBuffer.data(),
+      .BlockStatus = DecodedBlockStatus::UNALIGNED_PC,
+      .IsEntryPoint = true,
+    });
+    BlockInfo.TotalInstructionCount = 1;
+    return;
+  }
+
   if (!CheckRangeExecutable(PC, INSTRUCTION_SIZE)) {
     // Emitted as a guest SIGSEGV at PC by the IR builder, exactly like the x86 decoder's NOEXEC_INST.
     DecodedBuffer[0] = {.PC = PC, .Word = 0, .Matcher = DecodeInstruction(0)};
@@ -313,6 +328,19 @@ void Decoder::DecodeInstructionsAtEntry(FEXCore::Core::InternalThreadState*, uin
     DecodedMaxAddress = std::max(DecodedMaxAddress, DecodedEnd);
     BlockInfo.TotalInstructionCount += Block.NumInstructions;
     BlockInfo.Blocks.push_back(Block);
+  }
+
+  if (BlockInfo.Blocks.empty()) {
+    DecodedBuffer[0] = {.PC = PC, .Word = 0, .Matcher = nullptr};
+    BlockInfo.Blocks.push_back(DecodedBlocks {
+      .Entry = PC,
+      .Size = 0,
+      .NumInstructions = 1,
+      .DecodedInstructions = DecodedBuffer.data(),
+      .BlockStatus = DecodedBlockStatus::NOEXEC_INST,
+      .IsEntryPoint = true,
+    });
+    BlockInfo.TotalInstructionCount = 1;
   }
 }
 

@@ -565,14 +565,16 @@ uint64_t ForkGuest(FEXCore::Core::InternalThreadState* Thread, FEXCore::Core::Cp
     // Unlock the mutexes on both sides of the fork
     FEX::HLE::_SyscallHandler->UnlockAfterFork(Frame->Thread, IsChild);
 
-    ::syscall(SYS_rt_sigprocmask, SIG_SETMASK, &Mask, nullptr, sizeof(Mask));
-
     // Child
-    // update the internal TID
+    // update the internal TID and PID before registering TLS and unmasking signals
     ThreadObject->ThreadInfo.TID = FHU::Syscalls::gettid();
     ThreadObject->ThreadInfo.PID = ::getpid();
     FEX::HLE::_SyscallHandler->FM.UpdatePID(ThreadObject->ThreadInfo.PID);
     ThreadObject->ThreadInfo.clear_child_tid = nullptr;
+
+    FEX::HLE::_SyscallHandler->RegisterTLSState(ThreadObject);
+
+    ::syscall(SYS_rt_sigprocmask, SIG_SETMASK, &Mask, nullptr, sizeof(Mask));
 
     // only a  single thread running so no need to remove anything from the thread array
 

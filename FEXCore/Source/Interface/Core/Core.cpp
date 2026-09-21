@@ -976,7 +976,11 @@ ContextImpl::GenerateIR(FEXCore::Core::InternalThreadState* Thread, uint64_t Gue
 
         if (Block.BlockStatus != FEXCore::A64::Decoder::DecodedBlockStatus::SUCCESS) {
           // Only reachable for the entry instruction: nothing before it could have made it valid.
-          Thread->OpDispatcher->NoExecInstruction(InstAddress);
+          if (Block.BlockStatus == FEXCore::A64::Decoder::DecodedBlockStatus::UNALIGNED_PC) {
+            Thread->OpDispatcher->UnalignedPCInstruction(InstAddress);
+          } else {
+            Thread->OpDispatcher->NoExecInstruction(InstAddress);
+          }
           ++TotalInstructions;
           break;
         }

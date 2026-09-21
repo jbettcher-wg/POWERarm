@@ -68,6 +68,9 @@ public:
   // Guest SIGSEGV (SEGV_ACCERR) at PC: the instruction word could not be read.
   void NoExecInstruction(uint64_t PC);
 
+  // Guest SIGBUS (BUS_ADRALN) at PC: the instruction PC is unaligned (PC & 3 != 0).
+  void UnalignedPCInstruction(uint64_t PC);
+
   // Closes the current guest block at NextPC if this was its last instruction.
   // Returns true when no further instruction of the block may be translated:
   // the instruction ended the block (branch, SVC, signal), or the block was

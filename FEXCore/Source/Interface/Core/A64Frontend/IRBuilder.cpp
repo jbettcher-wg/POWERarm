@@ -324,6 +324,11 @@ void IRBuilder::BeginFunction(uint64_t PC, const fextl::vector<Decoder::DecodedB
   }
 
   auto It = JumpTargets.find(PC);
+  if (It == JumpTargets.end()) {
+    auto CodeNode = CreateCodeNode(true, 0);
+    auto [InsertedIt, _] = JumpTargets.try_emplace(PC, JumpTargetInfo {CodeNode, false, true});
+    It = InsertedIt;
+  }
   LOGMAN_THROW_A_FMT(It != JumpTargets.end(), "Couldn't find block generated for 0x{:x}", PC);
   SetCurrentCodeBlock(It->second.BlockEntry);
   IRHeader.first->Blocks = It->second.BlockEntry->Wrapped(DualListData.ListBegin());
@@ -450,6 +455,15 @@ void IRBuilder::NoExecInstruction(uint64_t PC) {
                          .Signal = FEXCore::Core::FAULT_SIGSEGV,
                          .TrapNumber = 0,
                          .si_code = 2, ///< SEGV_ACCERR
+                       });
+}
+
+void IRBuilder::UnalignedPCInstruction(uint64_t PC) {
+  RaiseGuestSignal(PC, BreakDefinition {
+                         .ErrorRegister = 0,
+                         .Signal = FEXCore::Core::FAULT_SIGBUS,
+                         .TrapNumber = 0,
+                         .si_code = 1, ///< BUS_ADRALN
                        });
 }
 

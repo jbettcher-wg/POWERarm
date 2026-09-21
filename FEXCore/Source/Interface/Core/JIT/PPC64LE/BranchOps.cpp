@@ -1450,6 +1450,7 @@ DEF_OP(Break) {
   int32_t sig_off;
   switch (Op->Reason.Signal) {
   case FEXCore::Core::FAULT_SIGILL:
+  case FEXCore::Core::FAULT_SIGBUS:
     sig_off = static_cast<int32_t>(
       offsetof(FEXCore::Core::CpuStateFrame, Pointers.GuestSignal_SIGILL));
     break;

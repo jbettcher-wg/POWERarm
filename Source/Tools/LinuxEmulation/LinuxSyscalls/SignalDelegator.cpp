@@ -75,18 +75,21 @@ static bool SigTraceEnabled() {
     } \
   } while (0)
 
+namespace {
+thread_local FEX::HLE::ThreadStateObject* TLS_ThreadObject {};
+}
+
 static FEX::HLE::ThreadStateObject* GetThreadFromAltStack(const stack_t& alt_stack) {
   // The thread object lives just before the alt-stack begin. If the alt-stack
-  // is disabled or has no base (signal arrived during thread teardown after
-  // sigaltstack(SS_DISABLE) in UninstallTLSState), there is no valid thread
-  // pointer to read. Return nullptr so the caller can chain the default
-  // handler -- the original fault is then preserved in a clean coredump
-  // instead of being clobbered by a recovery-path double-fault.
+  // is disabled or has no base, fall back to thread-local storage.
   if ((alt_stack.ss_flags & SS_DISABLE) || alt_stack.ss_sp == nullptr) {
-    return nullptr;
+    return TLS_ThreadObject;
   }
   FEX::HLE::ThreadStateObject* ThreadObject {};
   memcpy(&ThreadObject, reinterpret_cast<void*>(reinterpret_cast<uint64_t>(alt_stack.ss_sp) - 8), sizeof(void*));
+  if (!ThreadObject) {
+    ThreadObject = TLS_ThreadObject;
+  }
   return ThreadObject;
 }
 
@@ -515,6 +518,12 @@ static void SignalHandlerThunk(int Signal, siginfo_t* Info, void* UContext) {
   // ->SignalInfo crashes. Fall through to default disposition; coredump
   // preserves original siginfo.
   const uint32_t HostTid = FHU::Syscalls::gettid();
+  const pid_t HostPid = ::getpid();
+  // If PID changed (process forked), update the thread object's PID and TID.
+  if (ThreadObject->ThreadInfo.PID != static_cast<uint32_t>(HostPid)) {
+    ThreadObject->ThreadInfo.PID = HostPid;
+    ThreadObject->ThreadInfo.TID.store(HostTid, std::memory_order_relaxed);
+  }
   const bool ObjIsZombie = ThreadObject->ThreadInfo.IsZombie.load(std::memory_order_acquire);
   const uint32_t ObjTid = ThreadObject->ThreadInfo.TID.load(std::memory_order_relaxed);
   if (ObjIsZombie || ObjTid != HostTid) {
@@ -1783,6 +1792,13 @@ void SignalDelegator::HandleGuestSignal(FEX::HLE::ThreadStateObject* ThreadObjec
   }
 #endif
 
+  if (Thread->CurrentFrame->SynchronousFaultData.FaultToTopAndGeneratedException) {
+    Signal = Thread->CurrentFrame->SynchronousFaultData.Signal;
+    SigInfo.si_signo = Signal;
+    SigInfo.si_code = Thread->CurrentFrame->SynchronousFaultData.si_code;
+    SigInfo.si_addr = reinterpret_cast<void*>(Thread->CurrentFrame->State.pc);
+  }
+
   // Diagnostic (FEX_ABORT_TRIPWIRE=1): log every guest-delivered fatal-class
   // sync signal with its si_addr/si_code and the guest RIP. Paired with the
   // tgkill(SIGABRT) tripwire in Passthrough.cpp -- together they show what
@@ -2434,6 +2450,7 @@ SignalDelegator::~SignalDelegator() {
 }
 
 void SignalDelegator::RegisterTLSState(FEX::HLE::ThreadStateObject* Thread) {
+  TLS_ThreadObject = Thread;
   FEXCore::Allocator::RegisterTLSData(Thread->Thread);
 
   Thread->SignalInfo.Delegator = this;
@@ -2473,6 +2490,7 @@ void SignalDelegator::RegisterTLSState(FEX::HLE::ThreadStateObject* Thread) {
 }
 
 void SignalDelegator::UninstallTLSState(FEX::HLE::ThreadStateObject* Thread) {
+  TLS_ThreadObject = nullptr;
   FEXCore::Allocator::munmap(Thread->SignalInfo.AltStackPtr, SIGSTKSZ * 16);
 
   Thread->SignalInfo.AltStackPtr = nullptr;

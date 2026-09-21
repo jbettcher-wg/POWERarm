@@ -29,6 +29,7 @@ out/
 *.pyc
 .cache
 .idea/
+.claude/
 CMakeLists.txt.user
 
 # Reference documentation (large binaries, not redistributable here)
