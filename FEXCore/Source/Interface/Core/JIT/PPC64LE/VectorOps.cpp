@@ -2729,6 +2729,38 @@ DEF_OP(VSMulH) {
   vperm(Dst, VTMP1, VTMP2, Dst);
 }
 
+// VSQDMulH: 16-bit signed saturating doubling multiply high (SQDMULH.8H).
+// vmhaddshs with VRC = 0 computes sat((a * b) >> 15).
+DEF_OP(VSQDMulH) {
+  const auto Op = IROp->C<IR::IROp_VSQDMulH>();
+  const auto ElemSz = Op->Header.ElementSize;
+  const auto Dst = GetVReg(Node);
+  const auto V1  = GetVReg(Op->Vector1);
+  const auto V2  = GetVReg(Op->Vector2);
+  if (ElemSz == IR::OpSize::i16Bit) {
+    vspltisw(VTMP1, 0);
+    vmhaddshs(Dst, V1, V2, VTMP1);
+  } else {
+    Op_Unhandled(IROp, Node);
+  }
+}
+
+// VSQRDMulH: 16-bit signed saturating rounding doubling multiply high (SQRDMULH.8H).
+// vmhraddshs with VRC = 0 computes sat((a * b + 0x4000) >> 15).
+DEF_OP(VSQRDMulH) {
+  const auto Op = IROp->C<IR::IROp_VSQRDMulH>();
+  const auto ElemSz = Op->Header.ElementSize;
+  const auto Dst = GetVReg(Node);
+  const auto V1  = GetVReg(Op->Vector1);
+  const auto V2  = GetVReg(Op->Vector2);
+  if (ElemSz == IR::OpSize::i16Bit) {
+    vspltisw(VTMP1, 0);
+    vmhraddshs(Dst, V1, V2, VTMP1);
+  } else {
+    Op_Unhandled(IROp, Node);
+  }
+}
+
 // VUABD: unsigned absolute difference per element.
 // On ISA 3.0 (POWER9), uses native vabsdu* (1 instruction).
 // On POWER8, falls back to vmax - vmin.

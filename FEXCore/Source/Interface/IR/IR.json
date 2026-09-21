@@ -2447,6 +2447,20 @@
         "DestSize": "RegisterSize",
         "ElementSize": "ElementSize"
       },
+      "FPR = VSQDMulH OpSize:#RegisterSize, OpSize:#ElementSize, FPR:$Vector1, FPR:$Vector2": {
+        "Desc": ["Vector Signed Saturating Doubling Multiply High",
+                 "Per element: sat((2 * a * b) >> ElementSizeBits)"
+                ],
+        "DestSize": "RegisterSize",
+        "ElementSize": "ElementSize"
+      },
+      "FPR = VSQRDMulH OpSize:#RegisterSize, OpSize:#ElementSize, FPR:$Vector1, FPR:$Vector2": {
+        "Desc": ["Vector Signed Saturating Rounding Doubling Multiply High",
+                 "Per element: sat((2 * a * b + (1 << (ElementSizeBits - 1))) >> ElementSizeBits)"
+                ],
+        "DestSize": "RegisterSize",
+        "ElementSize": "ElementSize"
+      },
       "FPR = VUABD OpSize:#RegisterSize, OpSize:#ElementSize, FPR:$Vector1, FPR:$Vector2": {
         "Desc": ["Unsigned Absolute Difference per element"
                 ],

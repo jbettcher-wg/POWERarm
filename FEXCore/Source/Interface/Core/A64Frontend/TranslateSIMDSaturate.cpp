@@ -618,6 +618,13 @@ bool IRBuilder::IntElementOperand(uint32_t Word, Ref* Element) {
 // wrapped result is MIN, so MIN lanes flip to MAX.
 Ref IRBuilder::DoublingMultiplyHigh(OpSize ES, Ref A, Ref B, bool Rounding, Ref* Saturated) {
   const auto RS = OpSize::i128Bit;
+  if (ES == OpSize::i16Bit) {
+    Ref Min = LaneConstant(1ULL << 15, ES);
+    Ref IsMinA = _VCMPEQ(RS, ES, A, Min);
+    Ref IsMinB = _VCMPEQ(RS, ES, B, Min);
+    *Saturated = _VAnd(RS, RS, IsMinA, IsMinB);
+    return Rounding ? _VSQRDMulH(RS, ES, A, B).Node : _VSQDMulH(RS, ES, A, B).Node;
+  }
   const auto WideES = ES == OpSize::i16Bit ? OpSize::i32Bit : OpSize::i64Bit;
   const unsigned W = IR::OpSizeAsBits(ES);
   auto HighHalf = [&](Ref Product) -> Ref {

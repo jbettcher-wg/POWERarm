@@ -1652,6 +1652,16 @@ public:
   void mfvscr(VR vrt) { Emit32((4u<<26)|(vrt.idx<<21)|(0<<16)|(0<<11)|1540u); }
   void mtvscr(VR vrb) { Emit32((4u<<26)|(0<<21)|(0<<16)|(vrb.idx<<11)|1604u); }
 
+  // Vector Multiply-High-Add Signed Halfword Saturate (VA-form: XO=32).
+  //   VRT[i] = sat((VRA[i] * VRB[i] + (VRC[i] << 16)) >> 15).
+  // With VRC = 0: SQDMULH.8H (16-bit signed saturating doubling multiply high).
+  void vmhaddshs(VR vrt, VR vra, VR vrb, VR vrc)  { EmitVA(vrt.idx, vra.idx, vrb.idx, vrc.idx, 32); }
+
+  // Vector Multiply-High-Round-Add Signed Halfword Saturate (VA-form: XO=33).
+  //   VRT[i] = sat((VRA[i] * VRB[i] + 0x4000 + (VRC[i] << 16)) >> 15).
+  // With VRC = 0: SQRDMULH.8H (16-bit signed saturating rounding doubling multiply high).
+  void vmhraddshs(VR vrt, VR vra, VR vrb, VR vrc) { EmitVA(vrt.idx, vra.idx, vrb.idx, vrc.idx, 33); }
+
   // Multiply-low and add unsigned halfword modulo (VA-form: XO=34).
   //   VRT[i] = (VRA[i] * VRB[i] + VRC[i]) mod 2^16, per halfword.
   // With VRC = 0 this is exactly x86 PMULLW, and being elementwise it needs no
