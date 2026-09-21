@@ -334,9 +334,13 @@ namespace a64 {
   // SRA slot of the guest stack pointer.
   constexpr uint32_t SRA_SP_SLOT = 17;
 
+  // Dedicated pinned shadow callret stack pointer.
+  // Pinned across JIT blocks; filled/spilled by FillStaticRegs/SpillStaticRegs.
+  constexpr GPR CALLRET_SP = r26;
+
   // Dynamic (non-static) GPR allocation pool
-  constexpr std::array<GPR, 5> RA = {
-    r24, r25, r26, r30, r31,
+  constexpr std::array<GPR, 4> RA = {
+    r24, r25, r30, r31,
   };
 
   constexpr unsigned RAPairs = 2;

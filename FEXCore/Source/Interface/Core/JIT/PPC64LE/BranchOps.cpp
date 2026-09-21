@@ -282,7 +282,6 @@ void PPC64JITCore::EmitLinkFirstConstExit(uint64_t Target) {
 void PPC64JITCore::EmitA64PairedCall(const IR::IROp_ExitFunction* Op, bool ConstRIP, uint64_t NewRIP, uint64_t ReturnAddress,
                                      bool UnitR0Dirty) {
   const int16_t rip_off = static_cast<int16_t>(offsetof(FEXCore::Core::CpuStateFrame, State.pc));
-  const int16_t sp_off = static_cast<int16_t>(offsetof(FEXCore::Core::CpuStateFrame, State.callret_sp));
 
   // The guest return address for the push is X30, which the frontend stored
   // just before this exit and which lives in its pinned static register at
@@ -312,13 +311,11 @@ void PPC64JITCore::EmitA64PairedCall(const IR::IROp_ExitFunction* Op, bool Const
   uint32_t* AddiWord = GetCursorAddress<uint32_t*>();
   addi(TMP2, TMP2, 0);
   // No bounds check: a push below the base faults on the guard page and
-  // SyscallHandler::HandleSegfault resets TMP3 (the faulting store's base
+  // SyscallHandler::HandleSegfault resets CALLRET_SP (the faulting store's base
   // register) to the default location, then the store retries.
-  ld(TMP3, sp_off, STATE);
-  addi(TMP3, TMP3, -16);
-  std(RetReg, 0, TMP3);
-  std(TMP2, 8, TMP3);
-  std(TMP3, sp_off, STATE);
+  addi(a64::CALLRET_SP, a64::CALLRET_SP, -16);
+  std(RetReg, 0, a64::CALLRET_SP);
+  std(TMP2, 8, a64::CALLRET_SP);
 
   auto PatchTramp = [&]() {
     const int64_t Delta = static_cast<int64_t>(GetCursorAddress<uint64_t>()) - static_cast<int64_t>(Anchor);
@@ -685,43 +682,29 @@ DEF_OP(ExitFunction) {
   const bool ShadowCall = ShadowActive && Op->Hint == IR::BranchHint::Call;
   const uint32_t CRBID = (ShadowCall && !Op->CallReturnBlock.IsInvalid()) ?
                          IR->GetOp<IR::IROp_CodeBlock>(Op->CallReturnBlock)->ID : 0u;
-  const int16_t sp_off = static_cast<int16_t>(offsetof(FEXCore::Core::CpuStateFrame, State.callret_sp));
-  const int16_t base_off = static_cast<int16_t>(offsetof(FEXCore::Core::CpuStateFrame, State.callret_base));
-  const int16_t end_off = static_cast<int16_t>(offsetof(FEXCore::Core::CpuStateFrame, State.callret_end));
-
-  // Emits bcl/mflr/addi(placeholder) + the push. Returns {&mflr, &addi word}
-  // so the caller can patch the addi's SI once the trampoline address is
-  // known (compile-time write into the buffer we are emitting into; the
-  // whole unit is icache-flushed once at the end of CompileCode).
   auto EmitShadowCallPush = [&]() -> std::pair<uint64_t, uint32_t*> {
-    bcl(20, 31, 4);                     // LK form the link stack does not push
-    const uint64_t MflrAddr = GetCursorAddress<uint64_t>();
-    mflr(TMP2);                         // TMP2 = &mflr
+    uint64_t Anchor;
+    if (CTX->HostFeatures.SupportsISA30) {
+      lnia(TMP2);
+      Anchor = GetCursorAddress<uint64_t>();
+    } else {
+      bcl(20, 31, 4);                     // LK form the link stack does not push
+      Anchor = GetCursorAddress<uint64_t>();
+      mflr(TMP2);                         // TMP2 = &mflr
+    }
     uint32_t* AddiWord = GetCursorAddress<uint32_t*>();
     addi(TMP2, TMP2, 0);                // SI patched: TMP2 = &trampoline
-    ld(TMP3, sp_off, STATE);            // TMP3 = sp
-    ld(TMP4, base_off, STATE);          // TMP4 = base (frame mirror)
-    addi(TMP3, TMP3, -16);              // TMP3 = new sp
-    cmpd(cr(7), TMP3, TMP4);
-    PPC64Emitter::Label l_do_push{}, l_push_done{};
-    bc({4, 28}, &l_do_push);            // new sp >= base -> room to push
-    // Overflow: reset to empty (base+SIZE, read from the end mirror), skip
-    // the store, never write below the low guard page.
-    ld(TMP4, end_off, STATE);
-    std(TMP4, sp_off, STATE);
-    b(&l_push_done);
-    Bind(&l_do_push);
+    // No bounds check: push below base faults on the guard page, reset by segfault handler.
+    addi(a64::CALLRET_SP, a64::CALLRET_SP, -16);
     if (!Op->CallReturnBlock.IsInvalid()) {
-      std(GetReg(Op->CallReturnAddress), 0, TMP3); // slot0 = guest_ret_rip
-      std(TMP2, 8, TMP3);                          // slot8 = host trampoline
+      std(GetReg(Op->CallReturnAddress), 0, a64::CALLRET_SP); // slot0 = guest_ret_rip
+      std(TMP2, 8, a64::CALLRET_SP);                          // slot8 = host trampoline
     } else {
-      li(TMP2, 0);                      // no return block: a {0,0} entry never matches
-      std(TMP2, 0, TMP3);
-      std(TMP2, 8, TMP3);
+      li(TMP4, 0);                      // no return block: a {0,0} entry never matches
+      std(TMP4, 0, a64::CALLRET_SP);
+      std(TMP4, 8, a64::CALLRET_SP);
     }
-    std(TMP3, sp_off, STATE);           // callret_sp = new sp
-    Bind(&l_push_done);
-    return {MflrAddr, AddiWord};
+    return {Anchor, AddiWord};
   };
   auto PatchShadowCallAddi = [&](std::pair<uint64_t, uint32_t*> Push, uint64_t TrampAddr) {
     const int64_t Delta = static_cast<int64_t>(TrampAddr) - static_cast<int64_t>(Push.first);
@@ -745,24 +728,18 @@ DEF_OP(ExitFunction) {
     // the trampoline into LR and `blr` -- the link stack, primed by the
     // call's LK=1 branch, predicts this; the count cache would not.
     // No empty check: a pop past the top of the stack faults on the guard
-    // page above it, and SyscallHandler::HandleSegfault resets TMP2 to the
+    // page above it, and SyscallHandler::HandleSegfault resets CALLRET_SP to the
     // default location and retries the load (a stale or zero entry follows,
     // which cannot match a live trampoline wrongly; see EmitA64PairedCall).
-    ld(TMP2, sp_off, STATE);            // TMP2 = sp
-    // Rule 4 (POWER9 pipeline research): move the host trampoline into the
-    // branch register as early as its value exists, so the 5-6 cycle SPR move
-    // overlaps the guest-address compare instead of preceding the blr. LR/CTR
-    // are scratch on the mismatch path (the probe reloads CTR).
-    ld(TMP4, 8, TMP2);                  // TMP4 = host trampoline (top slot + 8)
-    ld(TMP3, 0, TMP2);                  // TMP3 = guest_ret_rip (top slot)
+    ld(TMP4, 8, a64::CALLRET_SP);       // TMP4 = host trampoline (top slot + 8)
+    ld(TMP3, 0, a64::CALLRET_SP);       // TMP3 = guest_ret_rip (top slot)
     if (NoLinkStackPair) {
       mtctr(TMP4);
     } else {
       mtlr(TMP4);
     }
     cmpd(cr(7), TMP3, RIPReg);
-    addi(TMP2, TMP2, 16);               // pop (unconditional, mirrors the stack discipline)
-    std(TMP2, sp_off, STATE);
+    addi(a64::CALLRET_SP, a64::CALLRET_SP, 16); // pop (unconditional, mirrors the stack discipline)
     bc({4, 30}, &ShadowRetReprobe);     // guest_ret_rip != target -> probe
     // P5.0.1: store rip before the jump. RETAINED deliberately even though the
     // exit-RIP sink retires the equivalent store on linked constant exits:

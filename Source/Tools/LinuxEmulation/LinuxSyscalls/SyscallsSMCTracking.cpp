@@ -254,13 +254,12 @@ bool SyscallHandler::HandleSegfault(FEXCore::Core::InternalThreadState* Thread, 
 #if defined(ARCHITECTURE_arm64)
     ArchHelpers::Context::SetArmReg(ucontext, 25, CallRetStackInfo.DefaultLocation);
 #elif defined(ARCHITECTURE_ppc64le)
-    // ppc64le has no pinned REG_CALLRET_SP: the JIT's shadow CALL push and RET
-    // pop (BranchOps.cpp) load callret_sp into a scratch register and address
-    // the stack through it without bounds checks, so an overflow or underflow
-    // faults on the guard page at the first ld/std through that register.
+    // ppc64le pins CALLRET_SP (a64::CALLRET_SP = r26): the JIT's shadow CALL push
+    // and RET pop (BranchOps.cpp) address the stack through it without bounds checks,
+    // so an overflow or underflow faults on the guard page at the first ld/std through it.
     // Reset that base register to the default location and retry: the push
-    // then stores its entry there and writes the reset sp back, the pop reads
-    // a stale or zero entry (a mismatch at worst, never a wrong branch).
+    // then stores its entry there, the pop reads a stale or zero entry (a mismatch
+    // at worst, never a wrong branch).
     const uint64_t PC = ArchHelpers::Context::GetPc(ucontext);
     if (!Thread->CTX->IsAddressInCodeBuffer(Thread, PC)) {
       return false;
@@ -271,6 +270,7 @@ bool SyscallHandler::HandleSegfault(FEXCore::Core::InternalThreadState* Thread, 
       return false;
     }
     ArchHelpers::Context::SetPPCGpReg(ucontext, (Word >> 16) & 0x1f, CallRetStackInfo.DefaultLocation);
+    Thread->CurrentFrame->State.callret_sp = CallRetStackInfo.DefaultLocation;
 #endif
     return true;
   }

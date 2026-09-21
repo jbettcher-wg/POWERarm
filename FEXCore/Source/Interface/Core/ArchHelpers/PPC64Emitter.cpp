@@ -61,6 +61,11 @@ void PPC64EmitterBase::SpillStaticRegs(GPR tmp) {
     stvx(SRAFPR[i], STATE, tmp);
   }
 
+  // Spill CALLRET_SP to State.callret_sp
+  int32_t callret_sp_off = static_cast<int32_t>(
+    offsetof(FEXCore::Core::CpuStateFrame, State.callret_sp));
+  std(a64::CALLRET_SP, static_cast<int16_t>(callret_sp_off), STATE);
+
   // Save NZCV across the dispatcher / C++ slow paths. Pack CR0 + XER into the
   // ARM-style 32-bit NZCV layout (N=LSB31, Z=30, C=29, V=28) and store at
   // State.nzcv. Mirrors DEF_OP(LoadNZCV) bit shuffles.
@@ -140,6 +145,12 @@ void PPC64EmitterBase::FillStaticRegs(FillMode Mode) {
       LoadImm32(TMP1, static_cast<uint32_t>(off));
       ldx(SRA[i], STATE, TMP1);
     }
+  }
+
+  if (WantNonVolatile) {
+    int32_t callret_sp_off = static_cast<int32_t>(
+      offsetof(FEXCore::Core::CpuStateFrame, State.callret_sp));
+    ld(a64::CALLRET_SP, static_cast<int16_t>(callret_sp_off), STATE);
   }
 
   if (Mode == FillMode::NonVolatileGPRsOnly) {
