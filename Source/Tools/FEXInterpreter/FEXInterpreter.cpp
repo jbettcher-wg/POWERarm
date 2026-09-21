@@ -890,7 +890,23 @@ int main(int argc, char** argv, char** const envp) {
   // memory-management syscalls, and a guest that exits shortly after its last
   // mmap would otherwise throw away everything compiled since. The image ends
   // here without exit_group, so print the counters as exit_group would.
-  SyscallHandler->CodeCacheImageExit(ParentThread->Thread);
+  static const bool Stats = [] {
+    const char* Env = getenv("FEX_CODECACHESTATS");
+    return Env && *Env == '1';
+  }();
+  pid_t WriterPID = -1;
+  if (!Stats && FEXCore::Config::Get_ENABLECODECACHINGWIP() && SyscallHandler->CodeCacheWriteEnabled()) {
+    WriterPID = fork();
+    if (WriterPID == 0) {
+      SyscallHandler->CodeCacheImageExit(ParentThread->Thread);
+      _exit(0);
+    }
+  }
+  if (WriterPID <= 0) {
+    if (WriterPID < 0) {
+      SyscallHandler->CodeCacheImageExit(ParentThread->Thread);
+    }
+  }
   FEX::HLE::StartupTimer.Mark(FEX::HLE::StartupTimes::SAVE);
 
   auto ProgramStatus = ParentThread->StatusCode;

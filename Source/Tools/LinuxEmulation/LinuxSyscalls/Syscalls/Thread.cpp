@@ -871,7 +871,24 @@ void RegisterThread(FEX::HLE::SyscallHandler* Handler) {
       FEX::HLE::GuestErrorExitHook();
     }
     // Keep what this process compiled (a no-op unless it writes code caches).
-    FEX::HLE::_SyscallHandler->CodeCacheImageExit(Frame->Thread);
+    static const bool Stats = [] {
+      const char* Env = getenv("FEX_CODECACHESTATS");
+      return Env && *Env == '1';
+    }();
+    pid_t WriterPID = -1;
+    if (!Stats && FEXCore::Config::Get_ENABLECODECACHINGWIP() && FEX::HLE::_SyscallHandler->CodeCacheWriteEnabled()) {
+      FEX::HLE::_SyscallHandler->TM.Stop(true);
+      WriterPID = fork();
+      if (WriterPID == 0) {
+        FEX::HLE::_SyscallHandler->CodeCacheImageExit(Frame->Thread);
+        _exit(0);
+      }
+    }
+    if (WriterPID <= 0) {
+      if (WriterPID < 0) {
+        FEX::HLE::_SyscallHandler->CodeCacheImageExit(Frame->Thread);
+      }
+    }
     FEX::HLE::StartupTimer.Mark(FEX::HLE::StartupTimes::SAVE);
     // Release this thread's shared-lock holdings before the kernel kills it
     // and every sibling thread.  Sibling threads can't sweep their own TLS

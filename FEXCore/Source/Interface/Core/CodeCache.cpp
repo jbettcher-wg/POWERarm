@@ -2305,7 +2305,8 @@ size_t CodeCache::SaveNewBlocks(Core::InternalThreadState&, std::span<const Code
     }
   }
 
-  if (SegmentsWritten != 0) {
+  const bool OneShot = (Kind == CodeCacheSaveKind::Final) && !RanPeriodicPass.load(std::memory_order_relaxed);
+  if (SegmentsWritten != 0 && !OneShot) {
     // Every base path is in the one cache directory.
     for (const auto& Target : Targets) {
       if (!Target.BasePath.empty()) {
@@ -2321,7 +2322,8 @@ size_t CodeCache::SaveNewBlocks(Core::InternalThreadState&, std::span<const Code
   // relocations only they reference. The rest has had its chance: written,
   // already on disk, not cacheable, or of a file no longer mapped. Records
   // appended during the pass stay, after the kept ones (newest last).
-  {
+  // On Final save the image is terminating; nothing reads these again.
+  if (Kind != CodeCacheSaveKind::Final) {
     std::lock_guard lk {RelocationSinkMutex};
     const uint64_t SinkPrefix = Sink.size();
     if (SinkGeneration == Generation && CompiledBlocks.size() >= SnapshotSize && RelocationSink.size() >= SinkPrefix) {
