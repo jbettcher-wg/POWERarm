@@ -1,4 +1,3 @@
-<p align="center">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="docs/powerarm/assets/logo/powerarm-lockup-horizontal-dark.png">
     <img src="docs/powerarm/assets/logo/powerarm-lockup-horizontal-light.png" alt="POWERarm: AArch64 on POWER" width="560">
@@ -12,7 +11,7 @@
 ![Page size: 4K and 64K](https://img.shields.io/badge/page%20size-4K%20%7C%2064K-6c757d)
 ![Status: experimental](https://img.shields.io/badge/status-experimental-orange)
 
-</p>
+
 
 **Run AArch64 Linux programs on POWER.** POWERarm is a user-mode emulator for **ppc64le** hosts
 (POWER8 and later). It translates AArch64 machine code to POWER machine code at run time, runs
