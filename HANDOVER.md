@@ -168,12 +168,14 @@ new thing once, prefer deterministic metrics (`instructions:u`, emitted bytes, b
 wall clock, and keep correctness gates exhaustive.
 
 **Already done, do not redo:** cold G1(a,b) (lld/64K-congruent apps cached, `CodeCacheScope=home`;
-(c) AOT-at-install is still only a plan in CODE-CACHE.md); warm G2(a,b,d) (compare+branch and
-compare+select fusion, FCMP direct CR0 decoding (F5), EntryNZCVLiveIn tracking, direct link gating, 2f8013325);
+(c) AOT-at-install is still only a plan in CODE-CACHE.md); warm G2 (compare+branch and
+compare+select fusion, FCMP direct CR0 decoding (F5), EntryNZCVLiveIn tracking, direct link gating, 2f8013325; exit sinking rejected on cycle overhead; all of Warm G2 complete);
 warm G1(a) (the shared spill stubs moved to a context-lifetime island, 10245fbbf);
 warm G1(c) (unlinked exit leg in link thunk, b1c6b1fcc);
 warm G1(b,d) (link thunks, records, JITCodeTail, and RIP entries moved out of hot stream to cold region, 003933d8b, 53bd42492; warm slice 18.65 s, -11.8%);
 warm G3 (pin `callret_sp` in host GPR `r22`, unpin guest X24 to keep dynamic RA at 5 registers, guard-page overflow on push/pop, dropping 4 memory ops per BL/RET pair, ca634b80f, b538d7e70; warm slice 17.69 s -> 17.37 s, -2.4%);
+warm G4 (fold MOV/MVN aliases, coalesce copy debris, and extend clrldi elision, fd48d5360; warm slice 17.37 s -> 16.80 s, -3.3%);
+warm G5 (unit granularity re-sweep across 64/8, 128/8, 256/8, 256/16 with dynamic environment overrides `POWERARM_REGIONWINDOW` and `POWERARM_MAXLEADERS` hashed in CodeCache; confirmed 128/8 default delivers optimal cold time 19.69 s and warm slice 16.91 s; all of Warm G5 complete);
 FEAT_DotProd (asimddp), FEAT_RDM (asimdrdm), and FEAT_LRCPC (lrcpc)
 implemented and advertised across HWCap, ISAR0/ISAR1, /proc/cpuinfo and sysreg tests;
 test runner core-dump spam suppressed (3ca864f65);
@@ -184,8 +186,8 @@ the NEON gap closure; the signal-frame fixes; the RLIMIT_AS, /proc, DC CIVAC, RB
 | 1 | **Warm G1, cold bytes out of the hot stream** (a) done 10245fbbf, (c) done b1c6b1fcc, (b) done 003933d8b, (d) done 53bd42492; **all of Warm G1 complete**. Hot stream contains solely hot instructions; link thunks, records, tail tables and RIP entries live in the cold region. Warm slice 20.95 s -> 18.65 s (-11%) | warm §7 G1 | all done; -11.8% warm slice | complete |
 | 2 | **Warm G3, cheaper paired calls and returns** done: `callret_sp` pinned in host GPR `r22`, guest X24 unpinned to keep dynamic RA pool at 5 registers, guard-page overflow on push/pop, eliminating 4 memory ops per BL/RET pair. Warm slice 17.69 s -> 17.37 s (-2.4%) | warm §7 G3 | done; -2.4% warm slice | complete |
 | 3 | **Warm G4, copy and zero-extension debris** done fd48d5360: folded MOV/MVN aliases in frontend, commuted inline constant operands in Or/And/Xor, coalesced OP_COPY in KillMove, propagated PreferredReg across 32-bit Bfe to eliminate SRA StoreW copies, extended ConsumerStep clrldi elision to 32-bit arithmetic, logical, unary, select, and bfe ops. Warm slice 17.37 s -> 16.80 s (-3.3%) | warm §7 G4 | done; -3.3% warm slice | complete |
-| 4 | **Warm G2(c), entry NZCV liveness**: exit legs go through `thunk{recompute; b target}` and the linker branches straight to targets that do not read flags. Finishes the fusion work: today 54% of compare+branch pairs keep their flags live | warm §7 G2 | the rest of the 6-10% G2 estimate | medium-high: touches link and cache records |
-| 5 | **Warm G5, unit granularity re-sweep**: `RegionWindow`/`MaxLeaders` (`Decoder.cpp:155-156`) with the cache warm and G1 in place; duplication is 1.41x | warm §7 G5 | -3-6% warm, cold cost up | small |
+| 4 | **Warm G2, flags via CR / fusion** done 2db45e763, 2f8013325: A64 CMP/SUBS/CMN/ADDS fuse into B.cond and CSEL family; FCMP direct CR0 decoding; EntryNZCVLiveIn tracking; linker gating prevents direct linking to live-in flag targets. G2(c) exit-sinking recompute tested and rejected on cycle overhead (+1.2-2.6% cycles). **All of Warm G2 complete** | warm §7 G2 | done; warm cc1 cycles -4.5% | complete |
+| 5 | **Warm G5, unit granularity re-sweep** done: re-swept `RegionWindow`/`MaxLeaders` (`Decoder.cpp:155-156`) with the cache warm and G1-G4 in place across 64/8, 128/8, 256/8, and 256/16. Added dynamic environment overrides `POWERARM_REGIONWINDOW` and `POWERARM_MAXLEADERS` hashed in CodeCache config ID. Default 128/8 confirmed optimal for cold compile (19.69 s) and warm slice (16.91 s) | warm §7 G5 | done; sweep verified | complete |
 | 6 | **Cold G3, per-op cost cuts**: skip `DynVRLiveIn` for non-FPR units, a per-block flag-free bit to skip DFCE/fusion, hold the `CodeInvalidationMutex` guard once in `ExitFunctionLinkWithRecord` | cold §5 G3 | -3-5% and -2.7-3% of cold translation | small-medium |
 | 7 | **Cold G4, cache write off the exit path**: `fork()` writer after `TM.Stop`, or at least skip the segment sweep on the one-shot path | cold §5 G4 | `gcc -c empty.c` 20.6x -> ~18.5x | low-medium |
 | 8 | **Thunks**: ship the guest vDSO by default (item 7), then Vulkan/GL. Factorio spends 4.26 ms per frame in guest Mesa (`cpu-render`, item 24), which thunking removes from emulation entirely; GPU-bound work already runs at native speed unthunked | THUNKS-DESIGN.md | large on GPU apps, none on `cc1`/slice | medium |
@@ -327,15 +329,13 @@ to initialise against 27 s cold (suspect cache install cost, item 24).
     `cd /` in the guest it links all 21, and `sans-serif`/`serif`/`monospace` resolve to
     Noto Sans/Noto Serif/JetBrainsMono like the host. Harmless failures in a user namespace:
     sysusers, the systemctl reloads, and fc-cache's system cache (host `/var/cache`).
-18. **Warm G2 landed** (2db45e763): A64 CMP/SUBS/CMN/ADDS fuse into B.cond and the CSEL family,
+18. **Warm G2 complete** (2db45e763, 2f8013325): A64 CMP/SUBS/CMN/ADDS fuse into B.cond and the CSEL family,
     W and X. Warm cc1: instructions:u 21.90 -> 21.25 G (-3.0%), cycles -4.5%; warm slice
-    20.95 s (was 21.4-21.6). That's below the 6-10% estimate because 54% of compare+branch pairs
-    have a leg leaving the unit, which keeps the flags live. **Next lever, G2(c):** record each
-    unit's entry NZCV liveness, so exit legs go through `thunk{recompute; b target}` and the
-    linker branches straight to targets that don't read flags. It touches link and cache records.
-    Recomputing on the exit leg directly (`sinking.patch` in the agent's scratch) cut
-    instructions 1.4% but cost 1.2-2.6% cycles. G2 also fixed two signal bugs (RIP table zero-
-    extended negative offsets; a back-edge drain point reported the branch, not its target).
+    20.95 s (was 21.4-21.6). Entry NZCV liveness and linker direct-link gating landed (2f8013325).
+    Sinking recompute to exit legs is formally rejected due to cycle regression (+1.2-2.6% cycles),
+    and jump-thunk recompute is blocked by fixed-layout cache records; all of Warm G2 is complete.
+    G2 also fixed two signal bugs (RIP table zero-extended negative offsets; a back-edge drain point
+    reported the branch, not its target).
     Tests: cmpbranch (1954 cases), sigpreempt.
 19. ~~Signal handler register edits are ignored when the handler leaves the PC unchanged~~ **Fixed** (7d1bc2e39; test sigedit).
     (`RestoreFrame_Arm64`, found by the G2 agent, not fixed). A handler that fixes up registers

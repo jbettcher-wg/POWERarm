@@ -9,9 +9,38 @@
 #include <FEXCore/Utils/TypeDefines.h>
 
 #include <algorithm>
+#include <cstdlib>
 #include <cstring>
 
 namespace FEXCore::A64 {
+
+namespace {
+uint64_t GetRegionWindow() {
+  static const uint64_t Val = []() -> uint64_t {
+    const char* Env = getenv("POWERARM_REGIONWINDOW");
+    if (Env && *Env) {
+      char* End = nullptr;
+      unsigned long V = strtoul(Env, &End, 0);
+      if (End != Env) return static_cast<uint64_t>(V);
+    }
+    return 128;
+  }();
+  return Val;
+}
+
+size_t GetMaxLeaders() {
+  static const size_t Val = []() -> size_t {
+    const char* Env = getenv("POWERARM_MAXLEADERS");
+    if (Env && *Env) {
+      char* End = nullptr;
+      unsigned long V = strtoul(Env, &End, 0);
+      if (End != Env) return static_cast<size_t>(V);
+    }
+    return 8;
+  }();
+  return Val;
+}
+} // namespace
 
 Decoder::Decoder(FEXCore::Core::InternalThreadState* Thread)
   : Thread {Thread}
@@ -167,8 +196,8 @@ void Decoder::DecodeInstructionsAtEntry(FEXCore::Core::InternalThreadState*, uin
   //   128 bytes, 8 leaders      9.4 / 0.40 / 123.3 / 106.7
   //   64 bytes, 8 leaders       9.4 / 0.39 / 121.8 / 106.4
   // The window bounds the distance from the branch to its target.
-  constexpr uint64_t RegionWindow = 128;
-  constexpr size_t MaxLeaders = 8;
+  const uint64_t RegionWindow = GetRegionWindow();
+  const size_t MaxLeaders = GetMaxLeaders();
   const bool FollowBranches = CTX->Config.Multiblock() && Cap > 1 && MaxLeaders > 1;
   // Slot range: a region may reach RegionWindow below the entry, and a linear
   // run from the entry is never cut short by the window (it is bounded by Cap).

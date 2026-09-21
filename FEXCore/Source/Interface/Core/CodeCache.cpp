@@ -690,6 +690,10 @@ uint64_t ComputeCodeCacheConfigId() {
       // mirroring LogicalImmEnabled().
       const char* LogicalImmEnv = getenv("FEX_PPCLOGICALIMM");
       Hasher.Add(static_cast<uint64_t>(!(LogicalImmEnv && LogicalImmEnv[0] == '0')));
+      const char* RegionWindowEnv = getenv("POWERARM_REGIONWINDOW");
+      Hasher.Add(std::string_view {RegionWindowEnv ? RegionWindowEnv : ""});
+      const char* MaxLeadersEnv = getenv("POWERARM_MAXLEADERS");
+      Hasher.Add(std::string_view {MaxLeadersEnv ? MaxLeadersEnv : ""});
     }
 
     // The scope option itself, because it decides whether the process runs as a
