@@ -764,15 +764,8 @@ bool IRBuilder::FCVTL(uint32_t Word) {
   const auto RS = OpSize::i128Bit;
   const auto SrcES = Z ? OpSize::i32Bit : OpSize::i16Bit;
   const auto DstES = Z ? OpSize::i64Bit : OpSize::i32Bit;
-  const uint8_t Count = Z ? 2 : 4;
   Ref V = LoadV(Bits(Word, 9, 5));
-  Ref Result = _VectorImm(RS, OpSize::i8Bit, 0);
-  for (uint8_t i = 0; i < Count; ++i) {
-    Ref Element = _VDupElement(RS, SrcES, V, (Q ? Count : 0) + i);
-    Ref Converted = Z ? _A64FToF(OpSize::i64Bit, OpSize::i32Bit, Element).Node :
-                        _A64FToF(OpSize::i32Bit, OpSize::i64Bit, HalfToDouble(Element, false, false)).Node;
-    Result = _VInsElement(RS, DstES, i, 0, Result, Converted);
-  }
+  Ref Result = Q ? _VFCVTL2(RS, SrcES, V) : _Vector_FToF(RS, DstES, V, SrcES);
   StoreV(Bits(Word, 4, 0), Result);
   return true;
 }
@@ -785,15 +778,8 @@ bool IRBuilder::FCVTN(uint32_t Word) {
   const auto RS = OpSize::i128Bit;
   const auto SrcES = Z ? OpSize::i64Bit : OpSize::i32Bit;
   const auto DstES = Z ? OpSize::i32Bit : OpSize::i16Bit;
-  const uint8_t Count = Z ? 2 : 4;
   Ref V = LoadV(Bits(Word, 9, 5));
-  Ref Narrow = _VectorImm(RS, OpSize::i8Bit, 0);
-  for (uint8_t i = 0; i < Count; ++i) {
-    Ref Element = _VDupElement(RS, SrcES, V, i);
-    Ref Converted = Z ? _A64FToF(OpSize::i32Bit, OpSize::i64Bit, Element).Node :
-                        DoubleToHalf(_A64FToF(OpSize::i64Bit, OpSize::i32Bit, Element), false);
-    Narrow = _VInsElement(RS, DstES, i, 0, Narrow, Converted);
-  }
+  Ref Narrow = _Vector_FToF(RS, DstES, V, SrcES);
   StoreNarrow(Bits(Word, 4, 0), Q, Narrow);
   return true;
 }

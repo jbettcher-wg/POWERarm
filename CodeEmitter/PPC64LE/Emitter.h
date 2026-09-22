@@ -1060,6 +1060,30 @@ public:
            ((475u & 0x1FFu) << 2) | (1u << 1) /*BX*/ | 1u /*TX*/);
   }
 
+  // xvcvhpsp XT, XB — vector convert half-precision to single-precision (ISA 3.0).
+  // XX2-form with RA=24, XO=475. Promotes 4 halfwords (one from each 32-bit word of XB)
+  // to 4 singles in XT.
+  void xvcvhpsp(VR t, VR b) {
+    Emit32((60u << 26) | (t.idx << 21) | (24u << 16) | (b.idx << 11) |
+           ((475u & 0x1FFu) << 2) | (1u << 1) /*BX*/ | 1u /*TX*/);
+  }
+  void xvcvhpsp(VSXR t, VSXR b) {
+    Emit32((60u << 26) | ((t.idx & 31u) << 21) | (24u << 16) | ((b.idx & 31u) << 11) |
+           ((475u & 0x1FFu) << 2) | (((b.idx >> 5) & 1u) << 1) /*BX*/ | ((t.idx >> 5) & 1u) /*TX*/);
+  }
+
+  // xvcvsphp XT, XB — vector convert single-precision to half-precision (ISA 3.0).
+  // XX2-form with RA=25, XO=475. Converts 4 singles in XB to 4 halfwords in XT
+  // (one in each 32-bit word).
+  void xvcvsphp(VR t, VR b) {
+    Emit32((60u << 26) | (t.idx << 21) | (25u << 16) | (b.idx << 11) |
+           ((475u & 0x1FFu) << 2) | (1u << 1) /*BX*/ | 1u /*TX*/);
+  }
+  void xvcvsphp(VSXR t, VSXR b) {
+    Emit32((60u << 26) | ((t.idx & 31u) << 21) | (25u << 16) | ((b.idx & 31u) << 11) |
+           ((475u & 0x1FFu) << 2) | (((b.idx >> 5) & 1u) << 1) /*BX*/ | ((t.idx >> 5) & 1u) /*TX*/);
+  }
+
   // XO field values for XX2 are taken straight from gas-emitted bytes (the
   // ISA-listed numbers in some books include extra bits and don't match the
   // 9-bit XO field at BE 21..29 directly).

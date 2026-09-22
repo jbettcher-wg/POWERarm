@@ -5096,7 +5096,22 @@ DEF_OP(Vector_FToF) {
     return;
   }
   if (Conv == 0x0402 || Conv == 0x0204) {
-    // F16C: f16x4↔f32x4 packed conversion via software FABI helper.
+    if (Conv == 0x0402) {
+      if (EmitterCTX->HostFeatures.SupportsISA30) {
+        vspltisw(VTMP1, 0);
+        vmrglh(VTMP1, VTMP1, Src);
+        xvcvhpsp(Dst, VTMP1);
+        return;
+      }
+    } else { // Conv == 0x0204
+      if (EmitterCTX->HostFeatures.SupportsISA30) {
+        vspltisw(VTMP2, 0);
+        xvcvsphp(VTMP1, Src);
+        vpkuwum(Dst, VTMP2, VTMP1);
+        return;
+      }
+    }
+    // F16C: f16x4↔f32x4 packed conversion via software FABI helper (ISA 2.07 fallback).
     // Conv 0x0402: src f16 (i16) → dst f32 (i32) — VCVTPH2PS.
     // Conv 0x0204: src f32 (i32) → dst f16 (i16) — VCVTPS2PH (low half = 4 halves,
     //                                              upper half zeroed).
@@ -5126,10 +5141,10 @@ DEF_OP(Vector_FToF) {
   Op_Unhandled(IROp, Node);
 }
 
-// VFCVTL2: f32→f64 from the UPPER 64 bits of the source (CVTPS2PD upper).
+// VFCVTL2: f32→f64 from the UPPER 64 bits of the source (CVTPS2PD upper), or
+// f16→f32 from the upper half of the source.
 // IR.json defines DestElementSize as "ElementSize << 1", so Header.ElementSize
-// here is the *destination* size.  We only handle i64 (f32→f64); f32 (from f16)
-// would need an FP16 convert that POWER8 lacks.
+// here is the *destination* size.
 DEF_OP(VFCVTL2) {
   const auto Op = IROp->C<IR::IROp_VFCVTL2>();
   const auto Dst = GetVReg(Node);
@@ -5143,7 +5158,13 @@ DEF_OP(VFCVTL2) {
     return;
   }
   if (Op->Header.ElementSize == IR::OpSize::i32Bit) {
-    // f16→f32 from the upper half of Src — software path via FABI helper.
+    if (EmitterCTX->HostFeatures.SupportsISA30) {
+      vspltisw(VTMP1, 0);
+      vmrghh(VTMP1, VTMP1, Src);
+      xvcvhpsp(Dst, VTMP1);
+      return;
+    }
+    // f16→f32 from the upper half of Src — software path via FABI helper (ISA 2.07 fallback).
     const int CryptoSpillSaveSize = static_cast<int>(a64::kDynRegSaveSize);
     const auto PostSpill = [&](int Off) { return Off + CryptoSpillSaveSize; };
     stdu(r1, -CryptoMiniFrameSize, r1);
@@ -5169,7 +5190,7 @@ DEF_OP(VFCVTL2) {
 // VFCVTN2: narrow f64→f32 (or f32→f16) and insert into the upper 64 bits of
 // the destination, lower 64 bits from VectorLower.  IR.json defines this op's
 // ElementSize as "ElementSize >> 1" — so Header.ElementSize is the destination
-// element size.  i32 = f64→f32 narrow; i16 (f32→f16) we don't support.
+// element size.
 DEF_OP(VFCVTN2) {
   const auto Op = IROp->C<IR::IROp_VFCVTN2>();
   const auto Dst = GetVReg(Node);
@@ -5188,8 +5209,15 @@ DEF_OP(VFCVTN2) {
     return;
   }
   if (Op->Header.ElementSize == IR::OpSize::i16Bit) {
+    if (EmitterCTX->HostFeatures.SupportsISA30) {
+      vspltisw(VTMP2, 0);
+      xvcvsphp(VTMP1, VU);
+      vpkuwum(VTMP1, VTMP2, VTMP1);
+      xxpermdi(AsVSX(Dst), AsVSX(VTMP1), AsVSX(VL), 0b11);
+      return;
+    }
     // f32→f16 narrow: write 4 f16 from VU into upper half of dst,
-    // preserve VL's low half (which already holds 4 f16 from prior Vector_FToF).
+    // preserve VL's low half (ISA 2.07 fallback).
     const int CryptoSpillSaveSize = static_cast<int>(a64::kDynRegSaveSize);
     const auto PostSpill = [&](int Off) { return Off + CryptoSpillSaveSize; };
     stdu(r1, -CryptoMiniFrameSize, r1);

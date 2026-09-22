@@ -324,10 +324,8 @@ inline uint32_t f16_to_f32(uint16_t h) {
     return (sign << 31) | (exp_f << 23) | (mant_h << 13);
   }
   if (exp_h == 31) {
-    // INF or NaN. Preserve quiet-NaN bit (Intel SDM: F16C produces qNaN with
-    // payload from the half's mantissa shifted into the high mantissa bits).
     if (mant_h == 0) return (sign << 31) | (0xFFu << 23);
-    return (sign << 31) | (0xFFu << 23) | (mant_h << 13);
+    return (sign << 31) | (0xFFu << 23) | (1u << 22) | ((mant_h & 0x1FFu) << 13);
   }
   const uint32_t exp_f = exp_h - 15 + 127;
   return (sign << 31) | (exp_f << 23) | (mant_h << 13);
@@ -359,9 +357,7 @@ inline uint16_t f32_to_f16(uint32_t f, int rmode) {
 
   if (exp == 128) {                         // INF or NaN
     if (mant == 0) return (uint16_t)((sign << 15) | 0x7C00u);
-    uint16_t h = (uint16_t)((sign << 15) | 0x7C00u | (mant >> 13));
-    if ((h & 0x3FFu) == 0) h |= 1;          // ensure NaN payload nonzero
-    return h;
+    return (uint16_t)((sign << 15) | 0x7E00u | ((mant >> 13) & 0x1FFu));
   }
   if (exp >= 16) {                          // overflow → ±INF (or ±MAX for trunc/away rounds)
     if (rmode == FE_TOWARDZERO ||
