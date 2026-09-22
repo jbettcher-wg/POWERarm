@@ -94,6 +94,16 @@ public:
     Offset = 0;
   }
 
+  // Re-point the buffer at a new base WITHOUT disturbing the cursor or the
+  // pending forward-branch fixups. Used by the PPC64 backend after it copies a
+  // staged compile unit into the shared code buffer: labels, fixups and the
+  // cursor are all offset-based, so a bind issued after this patches the copy
+  // rather than the staging buffer it was emitted into.
+  void RebaseBuffer(uint8_t* buf, size_t size) {
+    Buffer = buf;
+    BufferSize = size;
+  }
+
   uint8_t* GetCursorAddress() const { return Buffer + Offset; }
   uint8_t* GetBufferBase()    const { return Buffer; }
   size_t   GetOffset()        const { return Offset; }
