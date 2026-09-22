@@ -584,8 +584,7 @@ The `vextubrx` index is the LE lane index directly (probed for all 16 lanes);
 | **`FRECPE`** | exact table: scaled = 256+frac<22:15>, est = ((2^19/(2·scaled+1))+1)>>1, exponent 253−exp, denormal outputs for exp 253/254, `|x|<2^-128 → ±inf` | the C model (verified on the Pi) is the specification; a vector lowering needs an integer division per lane (`xvdivdp` on doubles is exact here) or a 256-entry lookup; **the `xvresp` estimate is not bit-exact and must not be used** | ~20 | model OK; vector form not built | |
 | **`FRSQRTE`** | exact table with the `'01':fraction<22:16>` case for odd biased exponents and `RecipSqrtEstimate`'s loop | same remark | ~24 | model OK | |
 | `FRECPS` | `xvnegsp; xvmaddasp 2.0` + 2-operand NaN fixup + `inf×0 → 2.0` | operand 1 is negated *before* NaN processing (sign of a NaN result flips) | 2 (+~14) | OK | |
-| **`FRSQRTS`** | `xvnegsp; halve a (or b if a<2·FLT_MIN); xvmaddasp 1.5` + fixup | `(3−a·b)/2` is rounded **once**: `xvnmsubasp 3; xvmulsp 0.5` is wrong at overflow (`frsqrts_nv` row) | 6 (+~14) | OK | |
-| `FCVTL/FCVTN` half↔single | `xvcvhpsp`/`xvcvsphp` (3.0) | 22 cycles each; POWER8 needs software | 1 + unpack | current (`A64FToF`) | 22 |
+| **`FCVTL/FCVTN`** half↔single | ISA 3.0: `vmrglh`/`vmrghh` + `xvcvhpsp` (f16→f32), `xvcvsphp` + `vpkuwum` (+ `xxpermdi` for VFCVTN2) (f32→f16); ISA 2.07: software FABI helper fallback with IEEE-754/ARMv8 NaN quieting | Landed in `42c94ed53`. Measured 5.0× throughput speedup on ISA 3.0 (5.32 ns vs 26.54 ns on P8 helper). 100% golden parity across all tests | 2–3 | OK ×4 | 5.3 (P9) / 26.5 (P8) |
 
 ### 3.13 `LD2/LD3/LD4`, `ST2/ST3/ST4`
 

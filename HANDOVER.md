@@ -453,5 +453,18 @@ to initialise against 27 s cold (suspect cache install cost, item 24).
     - Skipped `SweepCacheDirectory` on one-shot exit paths (`Kind == CodeCacheSaveKind::Final && !RanPeriodicPass`) and skipped `CompiledBlocks`/`RelocationSink` vector repacking when `Kind == CodeCacheSaveKind::Final`.
     - Added background `fork()` writer in `FEXInterpreter.cpp` (after `TM.Stop(true)`) and in `Thread.cpp` (`exit_group`), allowing the parent process to exit immediately without waiting for disk serialization when `!Stats`.
     - Gates verified: `unittests/A64Frontend/run.sh` 83 pass / 2 skip, `check-code-cache.sh` 24/24 pass, `a64diff-run.sh 64k` pass across all 5 test suites. Cold slice 19.51 s -> 16.97 s (-2.54 s / -13% faster; cold compilation now within 0.04 s of warm 16.93 s).
+29. **Guest vDSO enabled by default** (2026-09-21, 1a9f70395): `libVDSO-a64-guest.so` built and installed by default, eliminating context switches and host kernel syscall overhead for `clock_gettime`, `gettimeofday`, and `time`. Also resolved host stack collision avoidance and portable path probing.
+30. **Vector-scan idiom branch fusion (N1)** (2026-09-21, 11c5be45c): fused CMEQ → UMAXP/ADDP → FMOV → CBZ/CBNZ idiom in A64Frontend via `TryFuseVectorScan`, lowering directly to backend `_CondJump` in `VCmpElementSize` mode (`vcmpequb.` + `bc` on CR6[2]). Loop hot edge skips reduction, GPR move, and compare.
+31. **Native SQDMULH.8H and SQRDMULH.8H (N6)** (2026-09-21, 01494f413): lowered 16-bit doubling high multiply with and without rounding directly to native AltiVec `vmhaddshs` and `vmhraddshs` (~25 instructions -> 2 instructions).
+32. **LookupCache L1 resize & prefault (S4)** (2026-09-21, 11b6bfd77): L1 resized to 128k entries (2 MiB, 32 x 64K pages) and prefaulted writable via `MADV_POPULATE_WRITE` (with single-byte touch fallback), eliminating zero-page COW faults. Cold slice 20.26 s -> 17.45 s (-14%).
+33. **Exclusive pairs LDXP, STXP, LDAXP, STLXP** (2026-09-21, ec69f58ed): 32-bit (64-bit pair) and 64-bit (128-bit pair) exclusive load/store pairs implemented in `TranslateExclusive.cpp` via CAS/CASPair software monitor lowering with acquire/release barriers; test `exclusive_pair`.
+34. **`/proc/self/exe` re-exec resolution** (2026-09-21, 290a21401): resolved `/proc/self/exe` to guest binary path inside RootFS / overlay, allowing self-re-executing applications (such as Chromium / Electron zygotes and sandboxed child processes) to re-exec cleanly under emulation.
+35. **Hardware Vector FP16 Conversions (ISA 3.0) with verified ISA 2.07 fallback (N14)** (2026-09-21, 42c94ed53):
+    - Added `xvcvhpsp` and `xvcvsphp` to `CodeEmitter/PPC64LE/Emitter.h`.
+    - Implemented `Vector_FToF` (f16x4 <-> f32x4), `VFCVTL2` (f16x4 -> f32x4), and `VFCVTN2` (f32x4 -> f16x4) in `VectorOps.cpp` using `vmrglh`/`vmrghh`, `xvcvhpsp`, `xvcvsphp`, `vpkuwum`, and `xxpermdi`.
+    - Preserved exact ISA 2.07 fallback via software FABI helpers, fixing IEEE-754 / ARMv8 NaN quieting in `f16_to_f32` and `f32_to_f16` (setting bit 22 for f32 and bit 9 for f16 on NaNs) to ensure 100% byte-for-byte golden matching under `POWERARM_HOSTFEATURES=disableisa30`.
+    - Measured throughput gain: **5.0× speedup** on vector FP16 conversions (425.5 ms / 5.32 ns/op on ISA 3.0 vs 2,123.4 ms / 26.54 ns/op on ISA 2.07 fallback); 4.6× speedup on buffer conversions (30.4 vs 139.5 ms); 14% speedup on N-body double-precision integrator (100.6 vs 114.5 ms).
+    - All verification gates passed (Gate 1: 86/86 default and disableisa30; Gate 2: 24/24; Gate 3: 0 required fail).
+
 
 
