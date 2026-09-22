@@ -2817,6 +2817,33 @@
                 ],
         "DestSize": "RegisterSize",
         "ElementSize": "ElementSize"
+      },
+      "FPR = A64FMinMax OpSize:#RegisterSize, OpSize:#ElementSize, FPR:$Vector1, FPR:$Vector2, i1:$IsMax, i1:$IsNumber": {
+        "Desc": ["A64 FPMin/FPMax (IsNumber=0) or FPMinNum/FPMaxNum (IsNumber=1) per lane",
+                 "Ordered lanes: the min/max, with -0 below +0 (max(+0,-0)=+0, min=-0)",
+                 "IsNumber=0: any NaN operand yields the FPProcessNaNs result (A64FArith's NaN rule)",
+                 "IsNumber=1: a quiet NaN whose other operand is not a quiet NaN is first replaced by",
+                 "-Inf (IsMax) / +Inf (!IsMax); the lane is then min/max'ed, so a lone qNaN loses and",
+                 "an sNaN or a pair of qNaNs still propagates per FPProcessNaNs",
+                 "Lowering: xv{max,min}{dp,sp} plus the NaN check; xsmaxjdp/xsmaxcdp are not usable",
+                 "(docs/powerarm/COLD-BLOCK-DESIGN.md)"
+                ],
+        "DestSize": "RegisterSize",
+        "ElementSize": "ElementSize"
+      },
+      "FPR = A64FMulAdd OpSize:#RegisterSize, OpSize:#ElementSize, FPR:$Addend, FPR:$Vector1, FPR:$Vector2": {
+        "Desc": ["A64 FPMulAdd: Addend + Vector1*Vector2 per lane, one rounding",
+                 "Operand negations (FMSUB/FNMADD/FNMSUB, FMLS) are applied by the frontend BEFORE this",
+                 "op, as A64 does (FPNeg flips a NaN's sign); the host's negating fused forms are never",
+                 "used (checklist B1, docs/powerarm/COLD-BLOCK-DESIGN.md)",
+                 "NaN rule (FPProcessNaNs3 in order Addend, Vector1, Vector2): the first signalling NaN,",
+                 "else the first quiet NaN, quieted with payload; then, if Addend is a quiet NaN and the",
+                 "product is Inf*0 or 0*Inf, the default NaN instead. Non-NaN lanes with an invalid",
+                 "product (Inf*0, no NaN addend) give the default NaN on both architectures",
+                 "Lowering: copy Addend, xvmadda{dp,sp}, NaN check on the result, cold stub"
+                ],
+        "DestSize": "RegisterSize",
+        "ElementSize": "ElementSize"
       }
     },
     "Crypto": {

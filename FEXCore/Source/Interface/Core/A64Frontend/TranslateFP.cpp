@@ -156,33 +156,7 @@ Ref IRBuilder::PropagateNaNOperand(OpSize ElementSize, Ref A, Ref B) {
 }
 
 Ref IRBuilder::FPMinMax(OpSize ElementSize, Ref A, Ref B, bool IsMax, bool IsNumber) {
-  const auto RS = OpSize::i128Bit;
-  if (IsNumber) {
-    // A lone quiet NaN operand becomes the infinity that loses the compare.
-    Ref Quiet = FPConstant(QuietBit(ElementSize), ElementSize);
-    Ref QuietNaNA = _VAnd(RS, RS, _VFCMPUNO(RS, ElementSize, A, A), _VNot(RS, ElementSize, _VCMPEQZ(RS, ElementSize, _VAnd(RS, RS, A, Quiet))));
-    Ref QuietNaNB = _VAnd(RS, RS, _VFCMPUNO(RS, ElementSize, B, B), _VNot(RS, ElementSize, _VCMPEQZ(RS, ElementSize, _VAnd(RS, RS, B, Quiet))));
-    const bool Is64 = ElementSize == OpSize::i64Bit;
-    const uint64_t PosInf = Is64 ? 0x7FF0000000000000ULL : 0x7F800000ULL;
-    const uint64_t NegInf = Is64 ? 0xFFF0000000000000ULL : 0xFF800000ULL;
-    Ref Inf = FPConstant(IsMax ? NegInf : PosInf, ElementSize);
-    Ref ReplaceA = _VAndn(RS, RS, QuietNaNA, QuietNaNB);
-    Ref ReplaceB = _VAndn(RS, RS, QuietNaNB, QuietNaNA);
-    Ref NewA = _VBSL(RS, ReplaceA, Inf, A);
-    B = _VBSL(RS, ReplaceB, Inf, B);
-    A = NewA;
-  }
-
-  Ref Unordered = _VFCMPUNO(RS, ElementSize, A, B);
-  Ref NaNResult = _VFAdd(RS, ElementSize, PropagateNaNOperand(ElementSize, A, B), B);
-  Ref ALess = _VFCMPLT(RS, ElementSize, A, B);
-  Ref BLess = _VFCMPLT(RS, ElementSize, B, A);
-  // Equal operands: -0 and +0 are the only distinct bit patterns, and OR
-  // (min) or AND (max) of the two picks the right one.
-  Ref Result = IsMax ? _VAnd(RS, RS, A, B).Node : _VOr(RS, RS, A, B).Node;
-  Result = _VBSL(RS, ALess, IsMax ? B : A, Result);
-  Result = _VBSL(RS, BLess, IsMax ? A : B, Result);
-  return _VBSL(RS, Unordered, NaNResult, Result);
+  return _A64FMinMax(OpSize::i128Bit, ElementSize, A, B, IsMax, IsNumber);
 }
 
 // ---------------------------------------------------------------------------
@@ -400,40 +374,7 @@ bool IRBuilder::FMAXNM_float(uint32_t Word) { return FPTwoRegister(Word, FPBinar
 // NaN) and the default NaN for a quiet NaN addend with an Inf*0 product.
 // Negations of A or N are applied by the caller before the call.
 Ref IRBuilder::FPMulAddLanes(OpSize Size, Ref A, Ref N, Ref M) {
-  const auto RS = OpSize::i128Bit;
-  Ref Fused = _VFMLA(RS, Size, N, M, A);
-
-  const bool Is64 = Size == OpSize::i64Bit;
-  Ref Quiet = FPConstant(QuietBit(Size), Size);
-  auto IsNaN = [&](Ref V) -> Ref {
-    return _VFCMPUNO(RS, Size, V, V);
-  };
-  auto QuietBitSet = [&](Ref V) -> Ref {
-    return _VNot(RS, Size, _VCMPEQZ(RS, Size, _VAnd(RS, RS, V, Quiet)));
-  };
-  Ref NaNA = IsNaN(A), NaNN = IsNaN(N), NaNM = IsNaN(M);
-  Ref QBitA = QuietBitSet(A), QBitN = QuietBitSet(N), QBitM = QuietBitSet(M);
-  Ref NaNResult = M;
-  NaNResult = _VBSL(RS, _VAnd(RS, RS, NaNN, QBitN), N, NaNResult);
-  NaNResult = _VBSL(RS, _VAnd(RS, RS, NaNA, QBitA), A, NaNResult);
-  NaNResult = _VBSL(RS, _VAndn(RS, RS, NaNM, QBitM), M, NaNResult);
-  NaNResult = _VBSL(RS, _VAndn(RS, RS, NaNN, QBitN), N, NaNResult);
-  NaNResult = _VBSL(RS, _VAndn(RS, RS, NaNA, QBitA), A, NaNResult);
-  NaNResult = _VOr(RS, RS, NaNResult, Quiet);
-  Ref AnyNaN = _VOr(RS, RS, NaNA, _VOr(RS, RS, NaNN, NaNM));
-  Ref Result = _VBSL(RS, AnyNaN, NaNResult, Fused);
-
-  Ref Zero = _VectorImm(RS, OpSize::i8Bit, 0);
-  Ref Inf = FPConstant(Is64 ? 0x7FF0000000000000ULL : 0x7F800000ULL, Size);
-  Ref InfN = _VFCMPEQ(RS, Size, _VFAbs(RS, Size, N), Inf);
-  Ref InfM = _VFCMPEQ(RS, Size, _VFAbs(RS, Size, M), Inf);
-  Ref ZeroN = _VFCMPEQ(RS, Size, N, Zero);
-  Ref ZeroM = _VFCMPEQ(RS, Size, M, Zero);
-  Ref InfTimesZero = _VOr(RS, RS, _VAnd(RS, RS, InfN, ZeroM), _VAnd(RS, RS, ZeroN, InfM));
-  Ref DefaultCase = _VAnd(RS, RS, _VAnd(RS, RS, NaNA, QBitA), InfTimesZero);
-  Ref DefaultNaN = FPConstant(Is64 ? 0x7FF8000000000000ULL : 0x7FC00000ULL, Size);
-  Result = _VBSL(RS, DefaultCase, DefaultNaN, Result);
-  return Result;
+  return _A64FMulAdd(OpSize::i128Bit, Size, A, N, M);
 }
 
 bool IRBuilder::FPThreeRegister(uint32_t Word) {

@@ -334,25 +334,36 @@ private:
   // for a signal delivered mid-stub. No absolute addresses, so nothing new for
   // RetainRelocations or the code cache.
   struct FPColdStub {
+    enum class Kind : uint8_t { Arith, MinMax, MulAdd };
+    Kind Kind { Kind::Arith };
     size_t SiteOffset {};              // offset of the site's `bc`, for the reach check
     PPC64Emitter::Label Entry {};      // the `bc` target; bound at the stub
     PPC64Emitter::Label Join {};       // bound at the site, right after the `bc`
     PPC64Emitter::VR Dst {};
-    PPC64Emitter::VR A {};             // Vector1, or VTMP2 when Dst aliased it
-    PPC64Emitter::VR B {};             // Vector2, or VTMP2 when Dst aliased it
+    PPC64Emitter::VR A {};             // Vector1 / Addend, or VTMP2 when Dst aliased it
+    PPC64Emitter::VR B {};             // Vector2 / Vector1, or VTMP2 when Dst aliased it
+    PPC64Emitter::VR C {};             // Vector2 (MulAdd)
     uint8_t Op {};                     // IROp_A64FArith::Op
+    bool IsMax {};                     // IROp_A64FMinMax::IsMax
+    bool IsNumber {};                  // IROp_A64FMinMax::IsNumber
     bool Is64 {};                      // ElementSize == i64Bit
   };
   fextl::list<FPColdStub> FPColdStubs;
   static constexpr size_t kFPColdStubFlushCount = 256;
-  // One shared NaNFix body per element width, emitted on demand at the first
-  // flush that needs it ([0] = sp, [1] = dp). Reset per compile alongside
+  // Shared cold bodies per element width, emitted on demand at the first flush
+  // that needs them ([0] = sp, [1] = dp). Reset per compile alongside
   // ShortCondBranches — a Label carries a pending-fixup chain index into the
   // emitter's per-compile PendingBranches vector.
   PPC64Emitter::Label FPNaNFixBody[2] {};
   bool FPNaNFixBodyUsed[2] {};
+  PPC64Emitter::Label FPNMPrepBody[2] {};
+  bool FPNMPrepBodyUsed[2] {};
+  PPC64Emitter::Label FPFMAFixBody[2] {};
+  bool FPFMAFixBodyUsed[2] {};
   void EmitFPColdStubs(bool BranchOver);
   void EmitFPNaNFixBody(bool Is64);
+  void EmitFPNMPrepBody(bool Is64);
+  void EmitFPFMAFixBody(bool Is64);
   // POWERARM_FPCOLD=0: emit the check but never the branch, so the ARM-exact
   // NaN rows of the goldens must FAIL. That is the positive control proving the
   // cold path is reached at all (COLD-BLOCK-DESIGN.md §9, FP research §12.1).

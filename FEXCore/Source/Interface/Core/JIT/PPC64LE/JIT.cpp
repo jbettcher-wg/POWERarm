@@ -5210,6 +5210,14 @@ CPUBackend::CompiledCode PPC64JITCore::CompileCode(
   FPNaNFixBody[1] = {};
   FPNaNFixBodyUsed[0] = false;
   FPNaNFixBodyUsed[1] = false;
+  FPNMPrepBody[0] = {};
+  FPNMPrepBody[1] = {};
+  FPNMPrepBodyUsed[0] = false;
+  FPNMPrepBodyUsed[1] = false;
+  FPFMAFixBody[0] = {};
+  FPFMAFixBody[1] = {};
+  FPFMAFixBodyUsed[0] = false;
+  FPFMAFixBodyUsed[1] = false;
 
   // -------------------------------------------------------------------------
   // Emit entry point

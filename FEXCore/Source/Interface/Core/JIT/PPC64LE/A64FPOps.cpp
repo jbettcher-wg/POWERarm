@@ -449,6 +449,8 @@ namespace {
   constexpr auto P3 = PPC64Emitter::VSXR {6};
   constexpr auto P4 = PPC64Emitter::VSXR {7}; // the quiet-bit mask
   constexpr auto P5 = PPC64Emitter::VSXR {8};
+  constexpr auto P6 = PPC64Emitter::VSXR {9};
+  constexpr auto P7 = PPC64Emitter::VSXR {10};
 
   // CR6[0] (CR bit 24) is set iff EVERY lane compared equal, so BO=4 ("branch
   // if the bit is clear") on it is "some lane is a NaN".
@@ -514,6 +516,112 @@ DEF_OP(A64FArith) {
   Bind(&Stub.Join);
 }
 
+DEF_OP(A64FMinMax) {
+  const auto Op = IROp->C<IR::IROp_A64FMinMax>();
+  const auto ElemSz = IROp->ElementSize;
+  if (ElemSz != IR::OpSize::i32Bit && ElemSz != IR::OpSize::i64Bit) {
+    Op_Unhandled(IROp, Node);
+    return;
+  }
+  const bool Is64 = ElemSz == IR::OpSize::i64Bit;
+  const auto Dst = GetVReg(Node);
+  const auto V1 = GetVReg(Op->Vector1);
+  const auto V2 = GetVReg(Op->Vector2);
+
+  Is64 ? xvcmpeqdp_(VTMP1, V1, V1) : xvcmpeqsp_(VTMP1, V1, V1);
+
+  if (!FPColdEnabled()) {
+    if (V1 != V2) {
+      Is64 ? xvcmpeqdp_(VTMP1, V2, V2) : xvcmpeqsp_(VTMP1, V2, V2);
+    }
+    if (Op->IsMax) {
+      Is64 ? xvmaxdp(Dst, V1, V2) : xvmaxsp(Dst, V1, V2);
+    } else {
+      Is64 ? xvmindp(Dst, V1, V2) : xvminsp(Dst, V1, V2);
+    }
+    return;
+  }
+
+  FPNaNFixBodyUsed[Is64] = true;
+  if (Op->IsNumber) {
+    FPNMPrepBodyUsed[Is64] = true;
+  }
+  auto& Stub = FPColdStubs.emplace_back();
+  Stub.Kind = FPColdStub::Kind::MinMax;
+  Stub.SiteOffset = GetOffset();
+  Stub.Dst = Dst;
+  Stub.A = V1;
+  Stub.B = V2;
+  Stub.IsMax = Op->IsMax;
+  Stub.IsNumber = Op->IsNumber;
+  Stub.Is64 = Is64;
+
+  bc(CondSomeLaneNaN, &Stub.Entry);
+  if (V1 != V2) {
+    Is64 ? xvcmpeqdp_(VTMP1, V2, V2) : xvcmpeqsp_(VTMP1, V2, V2);
+    bc(CondSomeLaneNaN, &Stub.Entry);
+  }
+  if (Op->IsMax) {
+    Is64 ? xvmaxdp(Dst, V1, V2) : xvmaxsp(Dst, V1, V2);
+  } else {
+    Is64 ? xvmindp(Dst, V1, V2) : xvminsp(Dst, V1, V2);
+  }
+  Bind(&Stub.Join);
+}
+
+DEF_OP(A64FMulAdd) {
+  const auto Op = IROp->C<IR::IROp_A64FMulAdd>();
+  const auto ElemSz = IROp->ElementSize;
+  if (ElemSz != IR::OpSize::i32Bit && ElemSz != IR::OpSize::i64Bit) {
+    Op_Unhandled(IROp, Node);
+    return;
+  }
+  const bool Is64 = ElemSz == IR::OpSize::i64Bit;
+  const auto Dst = GetVReg(Node);
+  const auto Add = GetVReg(Op->Addend);
+  const auto V1 = GetVReg(Op->Vector1);
+  const auto V2 = GetVReg(Op->Vector2);
+
+  PPC64Emitter::VR S_Add = Add;
+  PPC64Emitter::VR S_V1 = V1;
+  PPC64Emitter::VR S_V2 = V2;
+
+  if (Dst == Add) {
+    xxlor(VTMP2, Add, Add);
+    S_Add = VTMP2;
+    if (V1 == Add) S_V1 = VTMP2;
+    if (V2 == Add) S_V2 = VTMP2;
+  } else {
+    if (Dst == V1 || Dst == V2) {
+      const auto Aliased = (Dst == V1) ? V1 : V2;
+      xxlor(VTMP2, Aliased, Aliased);
+      if (Dst == V1) S_V1 = VTMP2;
+      if (Dst == V2) S_V2 = VTMP2;
+    }
+    xxlor(Dst, Add, Add);
+  }
+
+  Is64 ? xvmaddadp(Dst, S_V1, S_V2) : xvmaddasp(Dst, S_V1, S_V2);
+
+  Is64 ? xvcmpeqdp_(VTMP1, Dst, Dst) : xvcmpeqsp_(VTMP1, Dst, Dst);
+
+  if (!FPColdEnabled()) {
+    return;
+  }
+
+  FPFMAFixBodyUsed[Is64] = true;
+  auto& Stub = FPColdStubs.emplace_back();
+  Stub.Kind = FPColdStub::Kind::MulAdd;
+  Stub.SiteOffset = GetOffset();
+  Stub.Dst = Dst;
+  Stub.A = S_Add;
+  Stub.B = S_V1;
+  Stub.C = S_V2;
+  Stub.Is64 = Is64;
+  bc(CondSomeLaneNaN, &Stub.Entry);
+  Bind(&Stub.Join);
+}
+
 // NaNFix_{dp,sp} — the host transcription of IRBuilder::PropagateNaNOperand
 // (A64Frontend/TranslateFP.cpp:135-145), which the Pi goldens already verify,
 // so the cold path's specification is the existing frontend code.
@@ -521,49 +629,210 @@ DEF_OP(A64FArith) {
 //   in:  P0 = A, P1 = B
 //   out: P0 = A' — B in lanes where A is a quiet NaN and B a signalling NaN,
 //        A everywhere else
-//   clobbers: P2, P3, P4, P5, TMP1. NO CR field, no XER, no VMX register, no
+//        P2 = unordered mask (all 1s if either operand is NaN, else all 0s)
+//        P3 = propagated quiet NaN per lane
+//   clobbers: P2, P3, P4, P5, VTMP1, VTMP2, TMP1. NO CR field, no XER, no
 //             memory, and no GPR besides TMP1 — TMP4 carries the caller's LR.
-//
-// Re-running the site's own op on (A', B) is what makes the swap sufficient
-// for sub and div too: a NaN operand makes the result a NaN whatever the
-// order, only the choice of NaN changes (FP research §3.4 [MEASURED: fsub and
-// fdiv PASS]).
-//
-// The quiet-bit test is `xxland t, X, Q` then `xvcmpeq{dp,sp} m, t, Q`: X & Q
-// is either 0 or Q, Q is a denormal bit pattern, and VSX has no DAZ (FP
-// research §6.3, "denormals are free on POWER9"), so comparing it with itself
-// is exact and no VMX-form op is needed on the low bank. The sticky VXSNAN
-// this raises in FPSCR is unobservable — FPSR cumulative flags are not
-// emulated (TranslateFP.cpp:335).
 void PPC64JITCore::EmitFPNaNFixBody(bool Is64) {
   Bind(&FPNaNFixBody[Is64]);
 
-  // The quiet bit, replicated into every lane. mtfprd writes doubleword 0 and
-  // leaves doubleword 1 undefined, so splat dw0 across both with xxpermdi
-  // DM=0b00. The sp pattern is pre-replicated into the 64-bit immediate.
+  // The quiet bit, replicated into every lane.
   LoadConstant(TMP1, Is64 ? 0x0008000000000000ULL : 0x0040000000400000ULL);
   mtfprd(f(P4.idx), TMP1);
   xxpermdi(P4, P4, P4, 0b00);
 
   // A lane is unordered with itself iff it is a NaN.
   if (Is64) {
-    xvcmpeqdp(P2, P0, P0); // OrdA
-    xvcmpeqdp(P3, P1, P1); // OrdB
+    xvcmpeqdp(AsVSX(VTMP1), P0, P0); // OrdA
+    xvcmpeqdp(AsVSX(VTMP2), P1, P1); // OrdB
   } else {
-    xvcmpeqsp(P2, P0, P0);
-    xvcmpeqsp(P3, P1, P1);
+    xvcmpeqsp(AsVSX(VTMP1), P0, P0);
+    xvcmpeqsp(AsVSX(VTMP2), P1, P1);
   }
 
   xxland(P5, P0, P4);
   Is64 ? xvcmpeqdp(P5, P5, P4) : xvcmpeqsp(P5, P5, P4); // A's quiet bit set
-  xxlandc(P2, P5, P2);                                  // QuietA   = QSetA & ~OrdA
+  xxlandc(P2, P5, AsVSX(VTMP1));                       // QuietA   = QSetA & ~OrdA
 
   xxland(P5, P1, P4);
   Is64 ? xvcmpeqdp(P5, P5, P4) : xvcmpeqsp(P5, P5, P4); // B's quiet bit set
-  xxlnor(P3, P3, P5);                                   // SigB     = ~(OrdB | QSetB)
+  xxlnor(P3, AsVSX(VTMP2), P5);                         // SigB     = ~(OrdB | QSetB)
 
   xxland(P2, P2, P3);                                   // swap where both hold
   xxsel(P0, P0, P1, P2);                                // A' = mask ? B : A
+
+  // Unordered mask: ~OrdA | ~OrdB = ~(OrdA & OrdB) = xxlnand(OrdA, OrdB)
+  xxlnand(P2, AsVSX(VTMP1), AsVSX(VTMP2));
+
+  // Propagated quiet NaN: xvadd(A', B)
+  Is64 ? xvadddp(P3, P0, P1) : xvaddsp(P3, P0, P1);
+  blr();
+}
+
+// NMPrep_{dp,sp} — the IsNumber prologue of FPMinMax (TranslateFP.cpp:160-174).
+//
+//   in:  P0 = A, P1 = B, P4 = Inf constant (±Inf)
+//   out: P0/P1 with lone quiet NaN operands replaced by P4
+//   clobbers: P2, P3, P5, VTMP1, VTMP2, TMP1
+void PPC64JITCore::EmitFPNMPrepBody(bool Is64) {
+  Bind(&FPNMPrepBody[Is64]);
+
+  // Quiet-bit mask into P5
+  LoadConstant(TMP1, Is64 ? 0x0008000000000000ULL : 0x0040000000400000ULL);
+  mtfprd(f(P5.idx), TMP1);
+  xxpermdi(P5, P5, P5, 0b00);
+
+  // OrdA and OrdB
+  if (Is64) {
+    xvcmpeqdp(AsVSX(VTMP1), P0, P0);
+    xvcmpeqdp(AsVSX(VTMP2), P1, P1);
+  } else {
+    xvcmpeqsp(AsVSX(VTMP1), P0, P0);
+    xvcmpeqsp(AsVSX(VTMP2), P1, P1);
+  }
+
+  xxland(P2, P0, P5);
+  Is64 ? xvcmpeqdp(P2, P2, P5) : xvcmpeqsp(P2, P2, P5);
+  xxlandc(P2, P2, AsVSX(VTMP1)); // QuietNaNA = QSetA & ~OrdA
+
+  xxland(P3, P1, P5);
+  Is64 ? xvcmpeqdp(P3, P3, P5) : xvcmpeqsp(P3, P3, P5);
+  xxlandc(P3, P3, AsVSX(VTMP2)); // QuietNaNB = QSetB & ~OrdB
+
+  xxlandc(AsVSX(VTMP1), P2, P3); // ReplaceA = QuietNaNA & ~QuietNaNB
+  xxlandc(AsVSX(VTMP2), P3, P2); // ReplaceB = QuietNaNB & ~QuietNaNA
+
+  xxsel(P0, P0, P4, AsVSX(VTMP1));
+  xxsel(P1, P1, P4, AsVSX(VTMP2));
+  blr();
+}
+
+// FMAFix_{dp,sp} — the host transcription of FPMulAddLanes (TranslateFP.cpp:402-437).
+//
+//   in:  P0 = Addend, P1 = N, P2 = M, P3 = Fused result
+//   out: P3 = final ARM-exact result
+//   clobbers: P4, P5, P6, P7, VTMP1, VTMP2, VTMP3_VSX, TMP1
+void PPC64JITCore::EmitFPFMAFixBody(bool Is64) {
+  Bind(&FPFMAFixBody[Is64]);
+
+  const auto VTMP1_VSX = AsVSX(VTMP1);
+  const auto VTMP2_VSX = AsVSX(VTMP2);
+
+  // 1. Quiet bit mask into P4
+  LoadConstant(TMP1, Is64 ? 0x0008000000000000ULL : 0x0040000000400000ULL);
+  mtfprd(f(P4.idx), TMP1);
+  xxpermdi(P4, P4, P4, 0b00);
+
+  // 2. Start NaNResult = M in P6
+  xxlor(P6, P2, P2);
+
+  // 3. AnyNaN accumulator in P7: start with NaNM
+  if (Is64) {
+    xvcmpeqdp(P7, P2, P2); // OrdM
+  } else {
+    xvcmpeqsp(P7, P2, P2);
+  }
+  xxlnor(P7, P7, P7);     // NaNM = ~OrdM
+
+  // SNaNM = NaNM & ~QBitM in VTMP1_VSX:
+  xxland(VTMP1_VSX, P2, P4); // M & Q
+  Is64 ? xvcmpeqdp(VTMP1_VSX, VTMP1_VSX, P4) : xvcmpeqsp(VTMP1_VSX, VTMP1_VSX, P4); // QBitM
+  xxlandc(VTMP1_VSX, P7, VTMP1_VSX); // VTMP1_VSX = SNaNM
+
+  // 4. Operand N:
+  if (Is64) {
+    xvcmpeqdp(VTMP2_VSX, P1, P1); // OrdN
+  } else {
+    xvcmpeqsp(VTMP2_VSX, P1, P1);
+  }
+  xxlnor(VTMP2_VSX, VTMP2_VSX, VTMP2_VSX); // NaNN = ~OrdN
+  xxlor(P7, P7, VTMP2_VSX);                // AnyNaN |= NaNN
+
+  xxland(VTMP3_VSX, P1, P4); // N & Q
+  Is64 ? xvcmpeqdp(VTMP3_VSX, VTMP3_VSX, P4) : xvcmpeqsp(VTMP3_VSX, VTMP3_VSX, P4); // QBitN
+
+  // QNaNN = NaNN & QBitN
+  xxland(VTMP3_VSX, VTMP2_VSX, VTMP3_VSX);
+  xxsel(P6, P6, P1, VTMP3_VSX); // NaNResult = QNaNN ? N : NaNResult
+
+  // SNaNN = NaNN & ~QNaNN in VTMP2_VSX:
+  xxlandc(VTMP2_VSX, VTMP2_VSX, VTMP3_VSX); // VTMP2_VSX = SNaNN
+
+  // 5. Operand A:
+  if (Is64) {
+    xvcmpeqdp(VTMP3_VSX, P0, P0); // OrdA
+  } else {
+    xvcmpeqsp(VTMP3_VSX, P0, P0);
+  }
+  xxlnor(VTMP3_VSX, VTMP3_VSX, VTMP3_VSX); // NaNA = ~OrdA
+  xxlor(P7, P7, VTMP3_VSX);                // AnyNaN |= NaNA (P7 is now final AnyNaN)
+
+  xxland(P5, P0, P4); // A & Q
+  Is64 ? xvcmpeqdp(P5, P5, P4) : xvcmpeqsp(P5, P5, P4); // QBitA
+
+  // QNaNA = NaNA & QBitA in P5 (preserved for DefaultCase!)
+  xxland(P5, VTMP3_VSX, P5);
+  xxsel(P6, P6, P0, P5); // NaNResult = QNaNA ? A : NaNResult
+
+  // SNaNA = NaNA & ~QNaNA in VTMP3_VSX:
+  xxlandc(VTMP3_VSX, VTMP3_VSX, P5); // VTMP3_VSX = SNaNA
+
+  // Apply the 3 signalling NaN selects in order: SNaNM, SNaNN, SNaNA
+  xxsel(P6, P6, P2, VTMP1_VSX); // NaNResult = SNaNM ? M : NaNResult
+  xxsel(P6, P6, P1, VTMP2_VSX); // NaNResult = SNaNN ? N : NaNResult
+  xxsel(P6, P6, P0, VTMP3_VSX); // NaNResult = SNaNA ? A : NaNResult
+
+  // Quiet the NaNResult:
+  xxlor(P6, P6, P4);
+
+  // Result = AnyNaN ? NaNResult : Fused(P3):
+  xxsel(P3, P3, P6, P7);
+
+  // 6. DefaultCase: InfTimesZero & QNaNA
+  // InfTimesZero = (|N| == Inf & M == 0) | (N == 0 & |M| == Inf)
+  xxlxor(VTMP1_VSX, VTMP1_VSX, VTMP1_VSX); // Zero
+  if (Is64) {
+    xvcmpeqdp(VTMP2_VSX, P1, VTMP1_VSX); // ZeroN
+    xvcmpeqdp(VTMP3_VSX, P2, VTMP1_VSX); // ZeroM
+  } else {
+    xvcmpeqsp(VTMP2_VSX, P1, VTMP1_VSX);
+    xvcmpeqsp(VTMP3_VSX, P2, VTMP1_VSX);
+  }
+
+  // Load Inf into P4:
+  LoadConstant(TMP1, Is64 ? 0x7FF0000000000000ULL : 0x7F8000007F800000ULL);
+  mtfprd(f(P4.idx), TMP1);
+  xxpermdi(P4, P4, P4, 0b00);
+
+  if (Is64) {
+    xvabsdp(P6, P1);
+    xvcmpeqdp(P6, P6, P4); // InfN
+    xvabsdp(P7, P2);
+    xvcmpeqdp(P7, P7, P4); // InfM
+  } else {
+    xvabssp(P6, P1);
+    xvcmpeqsp(P6, P6, P4); // InfN
+    xvabssp(P7, P2);
+    xvcmpeqsp(P7, P7, P4); // InfM
+  }
+
+  // InfN & ZeroM:
+  xxland(P6, P6, VTMP3_VSX);
+  // ZeroN & InfM:
+  xxland(P7, VTMP2_VSX, P7);
+  // InfTimesZero:
+  xxlor(P6, P6, P7);
+
+  // DefaultCase = QNaNA & InfTimesZero:
+  xxland(P6, P5, P6);
+
+  // Load DefaultNaN into P4:
+  LoadConstant(TMP1, Is64 ? 0x7FF8000000000000ULL : 0x7FC000007FC00000ULL);
+  mtfprd(f(P4.idx), TMP1);
+  xxpermdi(P4, P4, P4, 0b00);
+
+  // Final select: DefaultCase (P6) ? DefaultNaN (P4) : Result (P3)
+  xxsel(P3, P3, P4, P6);
   blr();
 }
 
@@ -592,21 +861,59 @@ void PPC64JITCore::EmitFPColdStubs(bool BranchOver) {
 
   for (auto& S : FPColdStubs) {
     if (GetOffset() - S.SiteOffset > 32764) {
-      ERROR_AND_DIE_FMT("PPC64 JIT: A64FArith cold branch at +{:#x} cannot reach its stub at +{:#x}", S.SiteOffset, GetOffset());
+      ERROR_AND_DIE_FMT("PPC64 JIT: A64 FP cold branch at +{:#x} cannot reach its stub at +{:#x}", S.SiteOffset, GetOffset());
     }
     Bind(&S.Entry);
-    xxlor(P0, AsVSX(S.A), AsVSX(S.A));
-    xxlor(P1, AsVSX(S.B), AsVSX(S.B));
-    mflr(TMP4);
-    bl(&FPNaNFixBody[S.Is64]);
-    mtlr(TMP4);
-    const auto D = AsVSX(S.Dst);
-    switch (S.Op) {
-    case 0: S.Is64 ? xvadddp(D, P0, P1) : xvaddsp(D, P0, P1); break;
-    case 1: S.Is64 ? xvsubdp(D, P0, P1) : xvsubsp(D, P0, P1); break;
-    case 2: S.Is64 ? xvmuldp(D, P0, P1) : xvmulsp(D, P0, P1); break;
-    case 3: S.Is64 ? xvdivdp(D, P0, P1) : xvdivsp(D, P0, P1); break;
-    default: ERROR_AND_DIE_FMT("PPC64 JIT: A64FArith cold stub with kind {}", S.Op);
+    switch (S.Kind) {
+    case FPColdStub::Kind::Arith: {
+      xxlor(P0, AsVSX(S.A), AsVSX(S.A));
+      xxlor(P1, AsVSX(S.B), AsVSX(S.B));
+      mflr(TMP4);
+      bl(&FPNaNFixBody[S.Is64]);
+      mtlr(TMP4);
+      const auto D = AsVSX(S.Dst);
+      switch (S.Op) {
+      case 0: S.Is64 ? xvadddp(D, P0, P1) : xvaddsp(D, P0, P1); break;
+      case 1: S.Is64 ? xvsubdp(D, P0, P1) : xvsubsp(D, P0, P1); break;
+      case 2: S.Is64 ? xvmuldp(D, P0, P1) : xvmulsp(D, P0, P1); break;
+      case 3: S.Is64 ? xvdivdp(D, P0, P1) : xvdivsp(D, P0, P1); break;
+      default: ERROR_AND_DIE_FMT("PPC64 JIT: A64FArith cold stub with kind {}", S.Op);
+      }
+      break;
+    }
+    case FPColdStub::Kind::MinMax: {
+      xxlor(P0, AsVSX(S.A), AsVSX(S.A));
+      xxlor(P1, AsVSX(S.B), AsVSX(S.B));
+      mflr(TMP4);
+      if (S.IsNumber) {
+        const uint64_t PosInf = S.Is64 ? 0x7FF0000000000000ULL : 0x7F8000007F800000ULL;
+        const uint64_t NegInf = S.Is64 ? 0xFFF0000000000000ULL : 0xFF800000FF800000ULL;
+        LoadConstant(TMP1, S.IsMax ? NegInf : PosInf);
+        mtfprd(f(P4.idx), TMP1);
+        xxpermdi(P4, P4, P4, 0b00);
+        bl(&FPNMPrepBody[S.Is64]);
+      }
+      bl(&FPNaNFixBody[S.Is64]);
+      mtlr(TMP4);
+      if (S.IsMax) {
+        S.Is64 ? xvmaxdp(AsVSX(VTMP1), P0, P1) : xvmaxsp(AsVSX(VTMP1), P0, P1);
+      } else {
+        S.Is64 ? xvmindp(AsVSX(VTMP1), P0, P1) : xvminsp(AsVSX(VTMP1), P0, P1);
+      }
+      xxsel(AsVSX(S.Dst), AsVSX(VTMP1), P3, P2);
+      break;
+    }
+    case FPColdStub::Kind::MulAdd: {
+      xxlor(P0, AsVSX(S.A), AsVSX(S.A));
+      xxlor(P1, AsVSX(S.B), AsVSX(S.B));
+      xxlor(P2, AsVSX(S.C), AsVSX(S.C));
+      xxlor(P3, AsVSX(S.Dst), AsVSX(S.Dst));
+      mflr(TMP4);
+      bl(&FPFMAFixBody[S.Is64]);
+      mtlr(TMP4);
+      xxlor(AsVSX(S.Dst), P3, P3);
+      break;
+    }
     }
     b(&S.Join);
   }
@@ -615,8 +922,14 @@ void PPC64JITCore::EmitFPColdStubs(bool BranchOver) {
   // Bodies last, and only once per unit per width: a later flush's `bl` to an
   // already-bound label is a backward branch with 24 bits of reach.
   for (int W = 0; W < 2; ++W) {
+    if (FPNMPrepBodyUsed[W] && !FPNMPrepBody[W].bound) {
+      EmitFPNMPrepBody(W != 0);
+    }
     if (FPNaNFixBodyUsed[W] && !FPNaNFixBody[W].bound) {
       EmitFPNaNFixBody(W != 0);
+    }
+    if (FPFMAFixBodyUsed[W] && !FPFMAFixBody[W].bound) {
+      EmitFPFMAFixBody(W != 0);
     }
   }
 

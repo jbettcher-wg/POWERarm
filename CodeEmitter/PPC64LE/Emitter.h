@@ -1013,6 +1013,13 @@ public:
   void xxland (VSXR t, VSXR a, VSXR b) { EmitXX3VSX(t.idx, a.idx, b.idx, 130); }
   void xxlandc(VSXR t, VSXR a, VSXR b) { EmitXX3VSX(t.idx, a.idx, b.idx, 138); }
   void xxlnor (VSXR t, VSXR a, VSXR b) { EmitXX3VSX(t.idx, a.idx, b.idx, 162); }
+  void xxlnand(VSXR t, VSXR a, VSXR b) { EmitXX3VSX(t.idx, a.idx, b.idx, 178); }
+  void xvmaxsp(VSXR t, VSXR a, VSXR b) { EmitXX3VSX(t.idx, a.idx, b.idx, 192); }
+  void xvminsp(VSXR t, VSXR a, VSXR b) { EmitXX3VSX(t.idx, a.idx, b.idx, 200); }
+  void xvmaxdp(VSXR t, VSXR a, VSXR b) { EmitXX3VSX(t.idx, a.idx, b.idx, 224); }
+  void xvmindp(VSXR t, VSXR a, VSXR b) { EmitXX3VSX(t.idx, a.idx, b.idx, 232); }
+  void xvabssp(VSXR t, VSXR b) { EmitXX2VSX(t.idx, b.idx, 409); }
+  void xvabsdp(VSXR t, VSXR b) { EmitXX2VSX(t.idx, b.idx, 473); }
 
   // m-form: T = ±(T*B) ± A (T is multiplicand, A is addend)
   void xvmaddmsp (VR t, VR a, VR b) { EmitXX3(t.idx, a.idx, b.idx,  73); }
