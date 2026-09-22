@@ -297,23 +297,27 @@ __attribute__((naked)) void StackPivotAndCall(void* Arg, FEXCore::Threads::Threa
   // r4: Function to call
   // r5: StackPivot
   __asm volatile(
-    // ELFv2: caller must provide a frame with LR-save at +16 for the callee
-    // to clobber during its prologue. A 16-byte pivot frame placed at the
-    // top of the new stack puts +16 one byte past the mapping -> SEGV.
-    // Use 32 bytes so +16 is in-mapping. Host LR at +8 (CR save area, only
-    // touched by callees that save CR — none of ours do).
+    // ELFv2 ABI mandates caller linkage area (32 bytes) + parameter save area
+    // (64 bytes for r3..r10) = 96 bytes minimum, aligned to 16 bytes.
+    // Allocate 128 bytes so callee parameter spills do not exceed the stack mapping.
+    // The return address is stored in caller's LR save slot at 16(r1) before pivoting,
+    // ensuring stack unwinders (gdb, libgcc) can traverse back to the host caller.
     "mflr  %%r6\n\t"
-    "mr    %%r7, %%r1\n\t"       // save original SP
-    "mr    %%r1, %%r5\n\t"       // pivot to new stack
-    "stdu  %%r7, -32(%%r1)\n\t"  // back-chain at 0; 32-byte ELFv2 frame
-    "std   %%r6,  8(%%r1)\n\t"   // host LR (CR-save slot)
-    "std   %%r2, 24(%%r1)\n\t"   // preserve TOC across bctrl
-    "mr    %%r12, %%r4\n\t"      // ELFv2 global-entry: r12 = func addr
+    "std   %%r6, 16(%%r1)\n\t"       // save return address in caller's LR slot
+    ".cfi_offset 65, 16\n\t"
+    "mr    %%r7, %%r1\n\t"           // save original SP
+    ".cfi_def_cfa 7, 0\n\t"
+    "mr    %%r1, %%r5\n\t"           // pivot to new stack
+    "stdu  %%r7, -128(%%r1)\n\t"     // back-chain at 0; 128-byte ELFv2 frame
+    "std   %%r2, 24(%%r1)\n\t"       // preserve TOC across bctrl
+    "mr    %%r12, %%r4\n\t"          // ELFv2 global-entry: r12 = func addr
     "mtctr %%r4\n\t"
     "bctrl\n\t"
-    "ld    %%r2, 24(%%r1)\n\t"
-    "ld    %%r6,  8(%%r1)\n\t"
-    "ld    %%r1,  0(%%r1)\n\t"
+    "ld    %%r2, 24(%%r1)\n\t"       // restore TOC
+    "ld    %%r1,  0(%%r1)\n\t"       // restore original SP
+    ".cfi_def_cfa 1, 0\n\t"
+    "ld    %%r6, 16(%%r1)\n\t"       // reload return address from caller's LR slot
+    ".cfi_restore 65\n\t"
     "mtlr  %%r6\n\t"
     "blr"
     ::

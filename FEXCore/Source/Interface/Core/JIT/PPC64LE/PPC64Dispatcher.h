@@ -36,14 +36,10 @@ public:
   FEXCore::SignalDelegatorConfig MakeSignalDelegatorConfig() const;
 
   // Called from native code to enter JIT execution.
-  void ExecuteDispatch(FEXCore::Core::CpuStateFrame* Frame, bool SingleInst = false) {
-    DispatchPtr(Frame, SingleInst);
-  }
+  void ExecuteDispatch(FEXCore::Core::CpuStateFrame* Frame, bool SingleInst = false);
 
   // Called for JIT callbacks (signal handler callbacks etc.)
-  void ExecuteJITCallback(FEXCore::Core::CpuStateFrame* Frame, uint64_t RIP) {
-    CallbackPtr(Frame, RIP);
-  }
+  void ExecuteJITCallback(FEXCore::Core::CpuStateFrame* Frame, uint64_t RIP);
 
   uint64_t GetExitFunctionLinkerAddress() const {
     return ExitFunctionLinkerAddress;

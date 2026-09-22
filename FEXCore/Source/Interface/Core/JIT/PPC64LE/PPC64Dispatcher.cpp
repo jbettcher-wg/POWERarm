@@ -764,6 +764,12 @@ void PPC64Dispatcher::EmitDispatcher() {
   // so the SMC single-step failure path can reach the no-spill entry via a
   // forward branch — see the label declaration near CompileSingleStepLabel.
   Bind(&ThreadStopNoSpillLabel);
+  {
+    int32_t rsl_off = static_cast<int32_t>(
+      offsetof(CpuStateFrame, ReturningStackLocation));
+    li(TMP1, 0);
+    std(TMP1, static_cast<int16_t>(rsl_off), STATE);
+  }
   PopCalleeSavedRegisters();
   blr();
 
@@ -933,6 +939,12 @@ void PPC64Dispatcher::EmitDispatcher() {
   // a finding.)
   GuestSignal_SIGSEGV_Address = reinterpret_cast<uint64_t>(GetCursorAddress<uint8_t*>());
   SpillStaticRegs(TMP1);
+  {
+    int32_t rsl_off = static_cast<int32_t>(
+      offsetof(CpuStateFrame, ReturningStackLocation));
+    li(TMP1, 0);
+    std(TMP1, static_cast<int16_t>(rsl_off), STATE);
+  }
   PopCalleeSavedRegisters();
   blr();
 
@@ -1128,6 +1140,16 @@ FEXCore::SignalDelegatorConfig PPC64Dispatcher::MakeSignalDelegatorConfig() cons
     .SRAAVXHighBankFirst = static_cast<uint16_t>(AVXHIGH_BANK_FIRST),
     .SRAAVXHighBankCount = static_cast<uint16_t>(CTX->HostFeatures.SupportsAVX ? FPRCount : 0),
   };
+}
+
+void PPC64Dispatcher::ExecuteDispatch(FEXCore::Core::CpuStateFrame* Frame, bool SingleInst) {
+  DispatchPtr(Frame, SingleInst);
+  Frame->ReturningStackLocation = 0;
+}
+
+void PPC64Dispatcher::ExecuteJITCallback(FEXCore::Core::CpuStateFrame* Frame, uint64_t RIP) {
+  CallbackPtr(Frame, RIP);
+  Frame->ReturningStackLocation = 0;
 }
 
 } // namespace FEXCore::CPU

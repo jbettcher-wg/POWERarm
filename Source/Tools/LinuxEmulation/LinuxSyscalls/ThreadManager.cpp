@@ -381,6 +381,9 @@ void ThreadManager::NotifyPause() {
   // Tell all the threads that they should pause
   std::lock_guard lk(ThreadCreationMutex);
   for (auto& Thread : Threads) {
+    if (Thread->ThreadInfo.IsZombie.load(std::memory_order_relaxed)) {
+      continue;
+    }
     SignalDelegation->SignalThread(Thread->Thread, SignalEvent::Pause);
   }
 }
@@ -465,6 +468,9 @@ void ThreadManager::Stop(bool IgnoreCurrentThread) {
   {
     std::lock_guard lk(ThreadCreationMutex);
     for (auto& Thread : Threads) {
+      if (Thread->ThreadInfo.IsZombie.load(std::memory_order_relaxed)) {
+        continue;
+      }
       if (IgnoreCurrentThread && Thread->ThreadInfo.TID == tid) {
         // If we are calling stop from the current thread then we can ignore sending signals to this thread.
         // This thread is already gone - do NOT send it a stop signal.
@@ -482,6 +488,16 @@ void ThreadManager::Stop(bool IgnoreCurrentThread) {
   // Stop the current thread now if we aren't ignoring it
   if (CurrentThread) {
     StopThread(CurrentThread);
+  }
+
+  // When stopping all worker threads from the main/exiting thread, wait for them
+  // to complete teardown so subsequent operations (e.g. fork() or memory unmaps)
+  // do not race with worker threads holding jemalloc/allocator or libc locks.
+  if (IgnoreCurrentThread) {
+    std::unique_lock<std::mutex> lk(IdleWaitMutex);
+    IdleWaitCV.wait_for(lk, std::chrono::milliseconds(1000), [this] {
+      return IdleWaitRefCount.load() <= 1;
+    });
   }
 }
 

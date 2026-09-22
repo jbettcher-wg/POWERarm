@@ -1316,6 +1316,11 @@ bool SignalDelegator::HandleSignalPause(FEXCore::Core::InternalThreadState* Thre
   auto Frame = Thread->CurrentFrame;
 
   if (SignalReason == SignalEvent::Pause) {
+    if (ThreadObject->ThreadInfo.IsZombie.load()) {
+      ThreadObject->SignalReason.store(SignalEvent::Nothing);
+      return true;
+    }
+
     // Store our thread state so we can come back to this
     StoreThreadState(Thread, Signal, ucontext, HandlerPlacement {});
 
@@ -1343,10 +1348,17 @@ bool SignalDelegator::HandleSignalPause(FEXCore::Core::InternalThreadState* Thre
   }
 
   if (SignalReason == SignalEvent::Stop) {
+    // If the thread is already outside the dispatcher or is a zombie, do not hijack it.
+    if (Frame->ReturningStackLocation == 0 || ThreadObject->ThreadInfo.IsZombie.load()) {
+      ThreadObject->SignalReason.store(SignalEvent::Nothing);
+      return true;
+    }
+
     // Our thread is stopping
     // We don't care about anything at this point
     // Set the stack to our starting location when we entered the core and get out safely
     ArchHelpers::Context::SetSp(ucontext, Frame->ReturningStackLocation);
+    ArchHelpers::Context::SetState(ucontext, reinterpret_cast<uint64_t>(Frame));
 
     // Our ref counting doesn't matter anymore
     Thread->CurrentFrame->SignalHandlerRefCounter = 0;

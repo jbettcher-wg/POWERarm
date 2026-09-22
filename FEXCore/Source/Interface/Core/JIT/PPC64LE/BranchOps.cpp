@@ -112,6 +112,11 @@ DEF_OP(CallbackReturn) {
   addi(TMP2, TMP2, 16);
   std(TMP2, sp_off, STATE);
 
+  int32_t rsl_off = static_cast<int32_t>(
+    offsetof(FEXCore::Core::CpuStateFrame, ReturningStackLocation));
+  li(TMP1, 0);
+  std(TMP1, static_cast<int16_t>(rsl_off), STATE);
+
   PopCalleeSavedRegisters();
   blr();
 }
