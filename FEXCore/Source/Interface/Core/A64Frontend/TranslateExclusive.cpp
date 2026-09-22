@@ -32,6 +32,43 @@ bool IRBuilder::LoadExclusive(uint32_t Word) {
   _StoreContext(OpSize::i8Bit, RegClass::GPR, Constant(1U << Size), offsetof(FEXCore::Core::CPUState, excl_size));
   _StoreContext(OpSize::i8Bit, RegClass::GPR, Constant(1), offsetof(FEXCore::Core::CPUState, excl_valid));
   StoreReg(Rt, Size == 3, Value);
+  if (Bit(Word, 15)) {
+    _Fence(IR::FenceType::Acquire);
+  }
+  return true;
+}
+
+bool IRBuilder::LoadExclusivePair(uint32_t Word) {
+  const bool Is64 = Bit(Word, 30);
+  const uint32_t Rn = Bits(Word, 9, 5);
+  const uint32_t Rt = Bits(Word, 4, 0);
+  const uint32_t Rt2 = Bits(Word, 14, 10);
+
+  Ref Address = LoadXSP(Rn);
+  if (Is64) {
+    Ref Val1 = _LoadMem(RegClass::GPR, OpSize::i64Bit, Address, Invalid(), OpSize::i8Bit, MemOffsetType::SXTX, 1);
+    Ref Val2 = _LoadMem(RegClass::GPR, OpSize::i64Bit, Address, Constant(8), OpSize::i8Bit, MemOffsetType::SXTX, 1);
+    _StoreContext(OpSize::i64Bit, RegClass::GPR, Address, offsetof(FEXCore::Core::CPUState, excl_addr));
+    _StoreContext(OpSize::i64Bit, RegClass::GPR, Val1, offsetof(FEXCore::Core::CPUState, excl_value));
+    _StoreContext(OpSize::i64Bit, RegClass::GPR, Val2, offsetof(FEXCore::Core::CPUState, excl_value_hi));
+    _StoreContext(OpSize::i8Bit, RegClass::GPR, Constant(16), offsetof(FEXCore::Core::CPUState, excl_size));
+    _StoreContext(OpSize::i8Bit, RegClass::GPR, Constant(1), offsetof(FEXCore::Core::CPUState, excl_valid));
+    StoreX(Rt, Val1);
+    StoreX(Rt2, Val2);
+  } else {
+    Ref Pair64 = _LoadMem(RegClass::GPR, OpSize::i64Bit, Address, Invalid(), OpSize::i8Bit, MemOffsetType::SXTX, 1);
+    Ref Val1 = _Bfe(OpSize::i64Bit, 32, 0, Pair64);
+    Ref Val2 = _Lshr(OpSize::i64Bit, Pair64, Constant(32));
+    _StoreContext(OpSize::i64Bit, RegClass::GPR, Address, offsetof(FEXCore::Core::CPUState, excl_addr));
+    _StoreContext(OpSize::i64Bit, RegClass::GPR, Pair64, offsetof(FEXCore::Core::CPUState, excl_value));
+    _StoreContext(OpSize::i8Bit, RegClass::GPR, Constant(8), offsetof(FEXCore::Core::CPUState, excl_size));
+    _StoreContext(OpSize::i8Bit, RegClass::GPR, Constant(1), offsetof(FEXCore::Core::CPUState, excl_valid));
+    StoreW(Rt, Val1);
+    StoreW(Rt2, Val2);
+  }
+  if (Bit(Word, 15)) {
+    _Fence(IR::FenceType::Acquire);
+  }
   return true;
 }
 
@@ -63,6 +100,70 @@ bool IRBuilder::StoreExclusive(uint32_t Word) {
     Ref Expected = _LoadContext(OpSize::i64Bit, RegClass::GPR, offsetof(FEXCore::Core::CPUState, excl_value));
     Ref Old = _CAS(MemSize, Expected, LoadX(Rt), LoadXSP(Rn));
     Ref Status = _Select(OpSize::i64Bit, OpSize::i64Bit, CondClass::EQ, Old, Expected, Constant(0), Constant(1));
+    _StoreNZCV(NZCV);
+    StoreW(Rs, Status);
+  }
+  auto TryDone = _Jump();
+
+  Ref FailBlock = CreateNewCodeBlockAfter(TryBlock);
+  SetFalseJumpTarget(Branch, FailBlock);
+  SetCurrentCodeBlock(FailBlock);
+  StoreW(Rs, Constant(1));
+  auto FailDone = _Jump();
+
+  Ref Join = CreateNewCodeBlockAfter(FailBlock);
+  SetJumpTarget(TryDone, Join);
+  SetJumpTarget(FailDone, Join);
+  SetCurrentCodeBlock(Join);
+  return true;
+}
+
+bool IRBuilder::StoreExclusivePair(uint32_t Word) {
+  const bool Is64 = Bit(Word, 30);
+  const uint32_t Rs = Bits(Word, 20, 16);
+  const uint32_t Rn = Bits(Word, 9, 5);
+  const uint32_t Rt = Bits(Word, 4, 0);
+  const uint32_t Rt2 = Bits(Word, 14, 10);
+
+  // Match = valid && excl_addr == Rn && excl_size == (Is64 ? 16 : 8).
+  Ref Valid = _LoadContext(OpSize::i8Bit, RegClass::GPR, offsetof(FEXCore::Core::CPUState, excl_valid));
+  Ref ExclSize = _LoadContext(OpSize::i8Bit, RegClass::GPR, offsetof(FEXCore::Core::CPUState, excl_size));
+  Ref ExclAddr = _LoadContext(OpSize::i64Bit, RegClass::GPR, offsetof(FEXCore::Core::CPUState, excl_addr));
+  Ref AddrMatch = _Select(OpSize::i64Bit, OpSize::i64Bit, CondClass::EQ, ExclAddr, LoadXSP(Rn), Constant(1), Constant(0));
+  Ref SizeMatch = _Select(OpSize::i64Bit, OpSize::i64Bit, CondClass::EQ, ExclSize, Constant(Is64 ? 16 : 8), Valid, Constant(0));
+  Ref Match = _And(OpSize::i64Bit, AddrMatch, SizeMatch);
+  _StoreContext(OpSize::i8Bit, RegClass::GPR, Constant(0), offsetof(FEXCore::Core::CPUState, excl_valid));
+  auto Branch = _CondJump(Match, Constant(0), InvalidNode, InvalidNode, CondClass::NEQ, OpSize::i64Bit);
+
+  // SSA values are block local, so each arm reloads what it needs.
+  Ref Current = GetCurrentBlock();
+  Ref TryBlock = CreateNewCodeBlockAfter(Current);
+  SetTrueJumpTarget(Branch, TryBlock);
+  SetCurrentCodeBlock(TryBlock);
+  {
+    Ref NZCV = _LoadNZCV();
+    Ref Status {};
+    if (Is64) {
+      Ref ExpLo = _LoadContext(OpSize::i64Bit, RegClass::GPR, offsetof(FEXCore::Core::CPUState, excl_value));
+      Ref ExpHi = _LoadContext(OpSize::i64Bit, RegClass::GPR, offsetof(FEXCore::Core::CPUState, excl_value_hi));
+      Ref DesLo = LoadX(Rt);
+      Ref DesHi = LoadX(Rt2);
+      Ref Address = LoadXSP(Rn);
+      Ref OutLo = _Copy(ExpLo);
+      Ref OutHi = _Copy(ExpHi);
+      _CASPair(OpSize::i64Bit, ExpLo, ExpHi, DesLo, DesHi, Address, OutLo, OutHi);
+      Ref LoMatch = _Select(OpSize::i64Bit, OpSize::i64Bit, CondClass::EQ, OutLo, ExpLo, Constant(1), Constant(0));
+      Ref HiMatch = _Select(OpSize::i64Bit, OpSize::i64Bit, CondClass::EQ, OutHi, ExpHi, Constant(1), Constant(0));
+      Ref BothMatch = _And(OpSize::i64Bit, LoMatch, HiMatch);
+      Status = _Select(OpSize::i64Bit, OpSize::i64Bit, CondClass::EQ, BothMatch, Constant(1), Constant(0), Constant(1));
+    } else {
+      Ref Expected = _LoadContext(OpSize::i64Bit, RegClass::GPR, offsetof(FEXCore::Core::CPUState, excl_value));
+      Ref Lo = _Bfe(OpSize::i64Bit, 32, 0, LoadX(Rt));
+      Ref Hi = _Lshl(OpSize::i64Bit, LoadX(Rt2), Constant(32));
+      Ref Desired = _Or(OpSize::i64Bit, Hi, Lo);
+      Ref Old = _CAS(OpSize::i64Bit, Expected, Desired, LoadXSP(Rn));
+      Status = _Select(OpSize::i64Bit, OpSize::i64Bit, CondClass::EQ, Old, Expected, Constant(0), Constant(1));
+    }
     _StoreNZCV(NZCV);
     StoreW(Rs, Status);
   }

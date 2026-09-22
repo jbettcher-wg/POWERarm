@@ -81,6 +81,8 @@ const IRBuilder::HandlerEntry IRBuilder::HandlerTable[] = {
   // Exclusive loads and stores (software monitor).
   {"LDXR", &IRBuilder::LoadExclusive}, {"LDAXR", &IRBuilder::LoadExclusive},
   {"STXR", &IRBuilder::StoreExclusive}, {"STLXR", &IRBuilder::StoreExclusive},
+  {"LDXP", &IRBuilder::LoadExclusivePair}, {"LDAXP", &IRBuilder::LoadExclusivePair},
+  {"STXP", &IRBuilder::StoreExclusivePair}, {"STLXP", &IRBuilder::StoreExclusivePair},
   {"LDAR", &IRBuilder::LoadStoreAtomicWidth}, {"LDLAR", &IRBuilder::LoadStoreAtomicWidth},
   // FEAT_LSE atomic memory operations, compare-and-swap and acquire load.
   {"LDADDB", &IRBuilder::AtomicMemOp}, {"LDCLRB", &IRBuilder::AtomicMemOp}, {"LDEORB", &IRBuilder::AtomicMemOp}, {"LDSETB", &IRBuilder::AtomicMemOp}, {"SWPB", &IRBuilder::AtomicMemOp},

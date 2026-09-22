@@ -107,7 +107,9 @@ struct alignas(64) CPUState {
   uint32_t nzcv {};
   uint32_t fpcr {};
   uint32_t fpsr {};
-  uint32_t _pad0 {};
+  uint8_t excl_size {};
+  uint8_t excl_valid {};
+  uint16_t _pad0 {};
 
   uint64_t L1Pointer {};
   uint64_t L1Mask {};
@@ -127,13 +129,11 @@ struct alignas(64) CPUState {
   uint64_t tpidr_el0 {};
   uint64_t tpidrro_el0 {};
 
-  // Exclusive monitor (LDXR/STXR). Software form; see DESIGN.md §4.3.
+  // Exclusive monitor (LDXR/STXR, LDXP/STXP). Software form; see DESIGN.md §4.3.
   // POWERARM-M0-TODO(cpustate): layout only; whether the hardware larx/stcx. fast path needs extra per-thread state is an M4 decision.
   uint64_t excl_addr {};
   uint64_t excl_value {};
-  uint8_t excl_size {};
-  uint8_t excl_valid {};
-  uint8_t _pad1[6] {};
+  uint64_t excl_value_hi {};
 
   // Cacheline: 5-12
   // V0-V31, 128 bits each, stored as the little-endian image an stvx writes.

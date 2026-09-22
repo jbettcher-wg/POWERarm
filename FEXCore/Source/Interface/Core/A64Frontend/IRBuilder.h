@@ -133,7 +133,9 @@ public:
   bool LoadStoreImm9(uint32_t Word); bool STRx_LDRx_imm_2(uint32_t Word); bool STLURx_LDAPURx(uint32_t Word);
   bool PRFM_imm(uint32_t Word);
   bool LoadStoreRegOffset(uint32_t Word);
-  bool LoadExclusive(uint32_t Word); bool StoreExclusive(uint32_t Word); bool LoadStoreAtomicWidth(uint32_t Word);
+  bool LoadExclusive(uint32_t Word); bool StoreExclusive(uint32_t Word);
+  bool LoadExclusivePair(uint32_t Word); bool StoreExclusivePair(uint32_t Word);
+  bool LoadStoreAtomicWidth(uint32_t Word);
   bool AtomicMemOp(uint32_t Word); bool AtomicMinMax(uint32_t Word); bool LDAPR(uint32_t Word);
   bool CompareAndSwap(uint32_t Word); bool CompareAndSwapPair(uint32_t Word);
   // Data processing (register).

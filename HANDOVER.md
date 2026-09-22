@@ -204,8 +204,7 @@ merging, `FEX_O0`, lower `MaxInst`, RA cross-block liveness for cold, the dispat
 (<1% warm), async cache writes (C11) and background cache install (C12).
 
 **Correctness and compatibility queue** (not optimizations, but ahead of them when they block an
-app): LDXP/STXP/LDAXP/STLXP (item 22); SQRDMLAH/SQRDMLSH and advertising asimdrdm; advertise
-asimddp (item 22); FPCR.DN and FZ (item 14); the signal-frame fidelity items (item 23); glycin icons
+app): FPCR.DN and FZ (item 14); the signal-frame fidelity items (item 23); glycin icons
 (item 21); Chromium's sandbox (item 16); the VS Code cache at 1.12 GB for one binary -- check whether
 its ~14 processes each save their own copy of the same blocks; and Factorio's warm launch taking 38 s
 to initialise against 27 s cold (suspect cache install cost, item 24).
@@ -394,8 +393,9 @@ to initialise against 27 s cold (suspect cache install cost, item 24).
     saturating shifts by register, SUQADD/USQADD, SQDMULL/SQDMLAL/SQDMLSL; FCVTXN; the whole FP16
     vector/scalar group (exact but slow, one lane at a time through double; ISA 3.0
     xvcvhpsp/xvcvsphp if an FP16-heavy workload appears); scalar SLI/SRI/SSRA/USRA and
-    SQRSHRN/UQRSHRN/SQRSHRUN. **Still missing, found by that agent:** LDXP/STXP/LDAXP/STLXP
-    (exclusive pairs, base ARMv8.0, decoded but no handler, TranslateExclusive.cpp).
+    SQRSHRN/UQRSHRN/SQRSHRUN. LDXP/STXP/LDAXP/STLXP (exclusive pairs, base ARMv8.0)
+    implemented in TranslateExclusive.cpp via 32-bit (64-bit memory CAS) and 64-bit (128-bit memory CASPair)
+    software monitor lowering with acquire/release barriers; test exclusive_pair.
     FEAT_DotProd (281e837b7, asimddp), FEAT_RDM (a9f830ba4, SQRDMLAH/SQRDMLSH, asimdrdm), and
     FEAT_LRCPC (lrcpc) are implemented and advertised (ELFCodeLoader.h HWCap,
     SystemRegisters.h ISAR0/ISAR1, cpuinfo, the sysreg test). FCADD/FCMLA and SHA-512/SHA-3/SM3/SM4
