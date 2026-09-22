@@ -47,10 +47,6 @@ bool IRBuilder::AddSubImmediate(uint32_t Word, bool IsSub, bool SetFlags) {
   Ref ImmRef = Constant(Imm);
 
   if (!SetFlags) {
-    if (Imm == 0) {
-      StoreRegSP(Rd, Is64, Src);
-      return true;
-    }
     StoreRegSP(Rd, Is64, IsSub ? _Sub(Size, Src, ImmRef) : _Add(Size, Src, ImmRef));
     return true;
   }
@@ -98,19 +94,6 @@ bool IRBuilder::LogicalImmediate(uint32_t Word) {
   const uint32_t Rn = Bits(Word, 9, 5);
   const uint32_t Rd = Bits(Word, 4, 0);
   const auto Size = SizeFor(Is64);
-
-  // MOV bitmask immediate aliases:
-  // ORR/EOR Xd, XZR, #imm -> 0 | imm = imm (MOV alias)
-  if ((Opc == 0b01 || Opc == 0b10) && Rn == 31) {
-    StoreRegSP(Rd, Is64, Constant(Imm));
-    return true;
-  }
-  // AND Xd, XZR, #imm -> 0 & imm = 0
-  if (Opc == 0b00 && Rn == 31) {
-    StoreRegSP(Rd, Is64, Constant(0));
-    return true;
-  }
-
   Ref Src = LoadX(Rn);
   Ref ImmRef = Constant(Imm);
 
@@ -407,40 +390,15 @@ bool IRBuilder::LogicalShifted(uint32_t Word) {
   const uint32_t Amount = Bits(Word, 15, 10);
   const uint32_t Rn = Bits(Word, 9, 5);
   const uint32_t Rd = Bits(Word, 4, 0);
-  const uint32_t Rm = Bits(Word, 20, 16);
   if (!Is64 && Amount >= 32) {
     return false;
   }
   const auto Size = SizeFor(Is64);
 
-  Ref Operand = ShiftReg(LoadX(Rm), ShiftType, Amount, Is64);
+  Ref Operand = ShiftReg(LoadX(Bits(Word, 20, 16)), ShiftType, Amount, Is64);
   if (Invert) {
     Operand = _Not(OpSize::i64Bit, Operand);
   }
-
-  // MOV/MVN aliases:
-  // ORR/ORN with Rn==31: 0 | Operand = Operand (MOV/MVN alias)
-  // EOR/EON with Rn==31: 0 ^ Operand = Operand (MOV/MVN alias)
-  if ((Opc == 0b01 || Opc == 0b10) && Rn == 31) {
-    StoreReg(Rd, Is64, Operand);
-    return true;
-  }
-  // ORR/EOR with Rm==31: Src | 0 = Src, Src ^ 0 = Src
-  if ((Opc == 0b01 || Opc == 0b10) && !Invert && Amount == 0 && Rm == 31) {
-    StoreReg(Rd, Is64, LoadX(Rn));
-    return true;
-  }
-  // AND/BIC with Rn==31: 0 & Operand = 0
-  if (Opc == 0b00 && Rn == 31) {
-    StoreReg(Rd, Is64, Constant(0));
-    return true;
-  }
-  // AND with Rm==31: Src & 0 = 0
-  if (Opc == 0b00 && !Invert && Amount == 0 && Rm == 31) {
-    StoreReg(Rd, Is64, Constant(0));
-    return true;
-  }
-
   Ref Src = LoadX(Rn);
 
   switch (Opc) {
@@ -460,37 +418,12 @@ bool IRBuilder::AddSubShifted(uint32_t Word) {
   const uint32_t Amount = Bits(Word, 15, 10);
   const uint32_t Rn = Bits(Word, 9, 5);
   const uint32_t Rd = Bits(Word, 4, 0);
-  const uint32_t Rm = Bits(Word, 20, 16);
   if (ShiftType == 0b11 || (!Is64 && Amount >= 32)) {
     return false;
   }
   const auto Size = SizeFor(Is64);
 
-  Ref Operand = ShiftReg(LoadX(Rm), ShiftType, Amount, Is64);
-
-  if (!SetFlags) {
-    if (!IsSub && Rn == 31) {
-      // ADD Rd, XZR, Operand -> 0 + Operand = Operand
-      StoreReg(Rd, Is64, Operand);
-      return true;
-    }
-    if (IsSub && Rn == 31) {
-      // SUB Rd, XZR, Operand -> 0 - Operand = -Operand (NEG alias)
-      StoreReg(Rd, Is64, _Neg(Size, Operand));
-      return true;
-    }
-    if (!IsSub && Rm == 31 && Amount == 0) {
-      // ADD Rd, Rn, XZR -> Rn + 0 = Rn
-      StoreReg(Rd, Is64, LoadX(Rn));
-      return true;
-    }
-    if (IsSub && Rm == 31 && Amount == 0) {
-      // SUB Rd, Rn, XZR -> Rn - 0 = Rn
-      StoreReg(Rd, Is64, LoadX(Rn));
-      return true;
-    }
-  }
-
+  Ref Operand = ShiftReg(LoadX(Bits(Word, 20, 16)), ShiftType, Amount, Is64);
   Ref Src = LoadX(Rn);
 
   if (!SetFlags) {
@@ -516,15 +449,8 @@ bool IRBuilder::AddSubExtended(uint32_t Word) {
   }
   const auto Size = SizeFor(Is64);
 
-  const uint32_t Rm = Bits(Word, 20, 16);
+  Ref Operand = ExtendReg(LoadX(Bits(Word, 20, 16)), Option, Shift);
   Ref Src = LoadXSP(Rn);
-
-  if (!SetFlags && Rm == 31 && Shift == 0) {
-    StoreRegSP(Rd, Is64, Src);
-    return true;
-  }
-
-  Ref Operand = ExtendReg(LoadX(Rm), Option, Shift);
 
   if (!SetFlags) {
     StoreRegSP(Rd, Is64, IsSub ? _Sub(Size, Src, Operand) : _Add(Size, Src, Operand));
@@ -643,46 +569,32 @@ bool IRBuilder::CondSelect(uint32_t Word) {
 bool IRBuilder::MADD(uint32_t Word) {
   const bool Is64 = Bit(Word, 31);
   const auto Size = SizeFor(Is64);
-  const uint32_t Ra = Bits(Word, 14, 10);
-  const uint32_t Rd = Bits(Word, 4, 0);
   Ref Product = _Mul(Size, LoadX(Bits(Word, 9, 5)), LoadX(Bits(Word, 20, 16)));
-  if (Ra == 31) {
-    // MUL alias: MADD Xd, Xn, Xm, XZR -> Xn * Xm
-    StoreReg(Rd, Is64, Product);
-    return true;
-  }
-  StoreReg(Rd, Is64, _Add(Size, LoadX(Ra), Product));
+  StoreReg(Bits(Word, 4, 0), Is64, _Add(Size, LoadX(Bits(Word, 14, 10)), Product));
   return true;
 }
 
 bool IRBuilder::MSUB(uint32_t Word) {
   const bool Is64 = Bit(Word, 31);
   const auto Size = SizeFor(Is64);
-  const uint32_t Ra = Bits(Word, 14, 10);
-  const uint32_t Rd = Bits(Word, 4, 0);
   Ref Product = _Mul(Size, LoadX(Bits(Word, 9, 5)), LoadX(Bits(Word, 20, 16)));
-  if (Ra == 31) {
-    // MNEG alias: MSUB Xd, Xn, Xm, XZR -> -(Xn * Xm)
-    StoreReg(Rd, Is64, _Neg(Size, Product));
-    return true;
-  }
-  StoreReg(Rd, Is64, _Sub(Size, LoadX(Ra), Product));
+  StoreReg(Bits(Word, 4, 0), Is64, _Sub(Size, LoadX(Bits(Word, 14, 10)), Product));
   return true;
 }
 
 bool IRBuilder::MultiplyAddSubLong(uint32_t Word, bool IsSigned, bool IsSub) {
   Ref Src1 = LoadX(Bits(Word, 9, 5));
   Ref Src2 = LoadX(Bits(Word, 20, 16));
-  Ref Product = IsSigned ? _SMull(Src1, Src2) : _UMull(Src1, Src2);
-  const uint32_t Ra = Bits(Word, 14, 10);
-  const uint32_t Rd = Bits(Word, 4, 0);
-  if (Ra == 31) {
-    // SMULL/UMULL and SMNEGL/UMNEGL aliases
-    StoreX(Rd, IsSub ? _Neg(OpSize::i64Bit, Product) : Product);
-    return true;
+  if (IsSigned) {
+    Src1 = _Sbfe(OpSize::i64Bit, 32, 0, Src1);
+    Src2 = _Sbfe(OpSize::i64Bit, 32, 0, Src2);
+  } else {
+    Src1 = _Bfe(OpSize::i64Bit, 32, 0, Src1);
+    Src2 = _Bfe(OpSize::i64Bit, 32, 0, Src2);
   }
-  Ref Addend = LoadX(Ra);
-  StoreX(Rd, IsSub ? _Sub(OpSize::i64Bit, Addend, Product) : _Add(OpSize::i64Bit, Addend, Product));
+  Ref Product = _Mul(OpSize::i64Bit, Src1, Src2);
+  Ref Addend = LoadX(Bits(Word, 14, 10));
+  StoreX(Bits(Word, 4, 0), IsSub ? _Sub(OpSize::i64Bit, Addend, Product) : _Add(OpSize::i64Bit, Addend, Product));
   return true;
 }
 
