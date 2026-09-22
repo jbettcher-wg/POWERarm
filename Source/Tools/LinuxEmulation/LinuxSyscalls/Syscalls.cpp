@@ -525,11 +525,13 @@ uint64_t ExecveHandler(FEXCore::Core::CpuStateFrame* Frame, const char* pathname
     snprintf(PidSelfPath, 50, "/proc/%i/exe", pid);
 
     if (strcmp(pathname, "/proc/self/exe") == 0 || strcmp(pathname, "/proc/thread-self/exe") == 0 || strcmp(pathname, PidSelfPath) == 0) {
-      // If the application is trying to execve `/proc/self/exe` or its variants,
-      // then we need to redirect this path to the true application path.
-      // This is because this path is a symlink to the executing application, which is always `FEX`.
-      // ex: JRE and shapez.io do this self-execution.
       Filename = SyscallHandler->Filename();
+      if (!Filename.empty() && Filename[0] == '/') {
+        auto Path = SyscallHandler->FM.GetEmulatedPath(Filename.c_str(), true);
+        if (!Path.empty() && FHU::Filesystem::Exists(Path)) {
+          Filename = std::move(Path);
+        }
+      }
     }
 
     Type = ELFLoader::ELFContainer::GetELFType(Filename);
