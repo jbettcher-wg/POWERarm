@@ -414,6 +414,9 @@ public:
   // The guest image is about to go away (exit_group, execve): save what it
   // compiled and, with POWERARM_CODECACHESTATS=1, print its cache counters.
   void CodeCacheImageExit(FEXCore::Core::InternalThreadState* Thread) {
+    // No speculative compiles underneath the final save (execve reaches here
+    // without a thread-manager Stop). Idempotent.
+    CTX->StopBackgroundTranslation();
     SaveCodeCaches(Thread, true);
     static const bool Stats = [] {
       const char* Env = getenv("FEX_CODECACHESTATS");

@@ -1128,6 +1128,23 @@ private:
   // Grows the staging buffer to hold at least Bytes and returns its base.
   uint8_t* EnsureStagingBuffer(size_t Bytes);
 
+  // Cold G2: note a compile-time-constant exit destination of this unit, for
+  // the translate-ahead helper. Deduplicated (a unit's two exit arms often
+  // share a target, and a loop's backedge repeats) and capped, so the cost is
+  // a handful of compares on the exit path of a compile and nothing at all at
+  // run time.
+  void RecordConstExitTarget(uint64_t GuestRIP) {
+    if (!GuestRIP || CodeData.NumConstExitTargets >= CompiledCode::kMaxConstExitTargets) {
+      return;
+    }
+    for (uint8_t i = 0; i < CodeData.NumConstExitTargets; ++i) {
+      if (CodeData.ConstExitTargets[i] == GuestRIP) {
+        return;
+      }
+    }
+    CodeData.ConstExitTargets[CodeData.NumConstExitTargets++] = GuestRIP;
+  }
+
   // Index into Relocations of the first relocation this compile unit recorded
   // while staging; PublishStagedBlock rebases [this, size()) by the placement
   // offset. Relocations recorded *after* publication already carry final
