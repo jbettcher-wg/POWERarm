@@ -1237,7 +1237,14 @@ DEF_OP(CondJump) {
     uint64_t Bit;
     LOGMAN_THROW_A_FMT(IsInlineConstant(Op->Cmp2, &Bit) && Bit < 64,
                        "CondJump TSTZ/TSTNZ: expected inline-constant bit < 64");
-    auto Reg = GetReg(Op->Cmp1);
+    uint64_t Cmp1Const;
+    GPR Reg;
+    if (IsInlineConstant(Op->Cmp1, &Cmp1Const)) {
+      LoadConstant(TMP2, Cmp1Const);
+      Reg = TMP2;
+    } else {
+      Reg = GetReg(Op->Cmp1);
+    }
     uint32_t sh = (64u - static_cast<uint32_t>(Bit)) & 63u;
     rldicl(TMP1, Reg, sh, 63);          // TMP1 = (Reg >> Bit) & 1 (no Rc, CR untouched)
     cmpldi(cr(7), TMP1, 0);             // cr7 = (TMP1 == 0)

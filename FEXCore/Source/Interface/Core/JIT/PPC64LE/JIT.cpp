@@ -1244,8 +1244,9 @@ void PPC64JITCore::EmitCompare(IR::CondClass Cond, IR::OpSize Sz,
     return;
   }
 
-  uint64_t Const;
-  GPR Reg1 = GetReg(Src1);
+  uint64_t Const1, Const2;
+  bool S1Inline = IsInlineConstant(Src1, &Const1);
+  bool S2Inline = IsInlineConstant(Src2, &Const2);
   bool IsUnsigned = (Cond == IR::CondClass::UGE || Cond == IR::CondClass::ULT ||
                      Cond == IR::CondClass::UGT || Cond == IR::CondClass::ULE);
 
@@ -1258,13 +1259,17 @@ void PPC64JITCore::EmitCompare(IR::CondClass Cond, IR::OpSize Sz,
   // EQ/NEQ-vs-0 fold, but written generically so any future caller is safe.
   if (Sz == IR::OpSize::i8Bit || Sz == IR::OpSize::i16Bit) {
     uint32_t Sh = (Sz == IR::OpSize::i8Bit) ? 56u : 48u;
-    sldi(TMP1, Reg1, Sh);
-    if (IsInlineConstant(Src2, &Const)) {
-      if (Const == 0) {
+    if (S1Inline) {
+      LoadConstant(TMP1, Const1 << Sh);
+    } else {
+      sldi(TMP1, GetReg(Src1), Sh);
+    }
+    if (S2Inline) {
+      if (Const2 == 0) {
         if (IsUnsigned) cmpldi(cr(CRField), TMP1, 0);
         else            cmpdi(cr(CRField), TMP1, 0);
       } else {
-        LoadConstant(TMP2, Const << Sh);
+        LoadConstant(TMP2, Const2 << Sh);
         if (IsUnsigned) cmpld(cr(CRField), TMP1, TMP2);
         else            cmpd(cr(CRField), TMP1, TMP2);
       }
@@ -1276,27 +1281,35 @@ void PPC64JITCore::EmitCompare(IR::CondClass Cond, IR::OpSize Sz,
     return;
   }
 
-  if (IsInlineConstant(Src2, &Const)) {
+  GPR Reg1;
+  if (S1Inline) {
+    LoadConstant(TMP3, Const1);
+    Reg1 = TMP3;
+  } else {
+    Reg1 = GetReg(Src1);
+  }
+
+  if (S2Inline) {
     if (IsUnsigned) {
-      if (Const <= 0xFFFF) {
+      if (Const2 <= 0xFFFF) {
         if (Sz <= IR::OpSize::i32Bit)
-          cmplwi(cr(CRField), Reg1, static_cast<uint16_t>(Const));
+          cmplwi(cr(CRField), Reg1, static_cast<uint16_t>(Const2));
         else
-          cmpldi(cr(CRField), Reg1, static_cast<uint16_t>(Const));
+          cmpldi(cr(CRField), Reg1, static_cast<uint16_t>(Const2));
       } else {
-        LoadConstant(TMP4, Const);
+        LoadConstant(TMP4, Const2);
         if (Sz <= IR::OpSize::i32Bit) cmplw(cr(CRField), Reg1, TMP4);
         else                           cmpld(cr(CRField), Reg1, TMP4);
       }
     } else {
-      int64_t sConst = static_cast<int64_t>(Const);
+      int64_t sConst = static_cast<int64_t>(Const2);
       if (sConst >= -32768 && sConst <= 32767) {
         if (Sz <= IR::OpSize::i32Bit)
           cmpwi(cr(CRField), Reg1, static_cast<int16_t>(sConst));
         else
           cmpdi(cr(CRField), Reg1, static_cast<int16_t>(sConst));
       } else {
-        LoadConstant(TMP4, Const);
+        LoadConstant(TMP4, Const2);
         if (Sz <= IR::OpSize::i32Bit) cmpw(cr(CRField), Reg1, TMP4);
         else                           cmpd(cr(CRField), Reg1, TMP4);
       }
