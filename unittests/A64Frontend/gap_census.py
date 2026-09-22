@@ -41,8 +41,10 @@ def main():
     example = {}
     funcs = collections.defaultdict(set)
     bins = collections.defaultdict(set)
+    import shutil
+    objdump = os.environ.get("OBJDUMP", "llvm-objdump" if shutil.which("llvm-objdump") else "objdump")
     for path in args:
-        out = subprocess.run(["objdump", "-d", path], capture_output=True, text=True, check=True).stdout
+        out = subprocess.run([objdump, "-d", path], capture_output=True, text=True, check=True).stdout
         func = "?"
         cache = {}
         for line in out.splitlines():

@@ -80,7 +80,7 @@ run_emu() {
         # (POWERARM_PORTABLE), and save, fill and compact a code cache of their
         # own on every run.
         fecache=$(mktemp -d "${TMPDIR:-/tmp}/forkexec-cache.XXXXXX")
-        POWERARM_PORTABLE=1 POWERARM_ENABLECODECACHINGWIP=1 POWERARM_CODECACHESCOPE=all POWERARM_APP_CACHE_LOCATION="$fecache/" \
+        POWERARM_PORTABLE=1 POWERARM_ROOTFS="" POWERARM_ENABLECODECACHINGWIP=1 POWERARM_CODECACHESCOPE=all POWERARM_APP_CACHE_LOCATION="$fecache/" \
           "$emu" "./$bin" $args
         rc=$?
         rm -rf "$fecache"

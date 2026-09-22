@@ -117,7 +117,7 @@ CAS five times as heavily in proportion.
 - **`POWERARM_PORTABLE=1` breaks rootfs-by-name.** Portable mode moves the data directory, so a
   config `"RootFS": "ArchLinuxARM-m2"` resolves to nothing and guest paths silently fall through to
   host ppc64le binaries ("not a supported ELF"). Pass `POWERARM_ROOTFS=<absolute path>` with it.
-  **Open item: make that combination fail loudly.**
+  Fixed: that combination now fails loudly.
 - **binfmt pins the interpreter's inode, and the entry lies about it.** Register the stable install
   (`~/.local/opt/powerarm-stable/Bin/POWERarm`, refreshed by `promote-powerarm-stable.sh`), never a
   build directory, and re-register after promoting. Skip the re-register and the entry still
@@ -217,7 +217,8 @@ to initialise against 27 s cold (suspect cache install cost, item 24).
    also exercise `AtomicMinMax`'s retry back edge) and `unittests/MemoryModel/check.sh` (herd7,
    by model, a regression gate). Read both headers before trusting a PASS: POWER9 never shows
    store->store reordering, so release-side changes can only be validated by the model.
-2. Make `POWERARM_PORTABLE=1` plus a named rootfs fail loudly.
+2. ~~Make `POWERARM_PORTABLE=1` plus a named rootfs fail loudly.~~ **Done:**
+   fails loudly with a clear diagnostic instead of silently falling through to host binaries.
 3. ~~`MRS` of `CNTVCT_EL0` and `CNTFRQ_EL0`~~ **Done** (9fa8983a7); code-server now serves.
 4. **P7, last lever: acquire-only and release-only LSE RMWs. A standard-agent task.** Relaxed
    RMWs and acquire fences are done (d96394b3d, 147903303) and trailing-sync is formally rejected
@@ -307,10 +308,11 @@ to initialise against 27 s cold (suspect cache install cost, item 24).
 14. **FPCR.DN and FPCR.FZ have no effect** (`TranslateFP.cpp` POWERARM-M1-TODO(fpu)). No test
     sets them. Apps that enable flush-to-zero or default-NaN (audio DSP, some engines) get IEEE
     results instead.
-15. **FP16 vector coverage vs the `asimdhp` claim.** Several half-precision vector encodings are
-    still commented out in `a64.inc` (FMAXV_1, FMAXNMP_vec_1, ...), while HWCAP advertises
-    asimdhp. Audit with `gap_census.py`, implement the missing ones against Pi goldens, or stop
-    advertising asimdhp until they exist.
+15. ~~FP16 vector coverage vs the `asimdhp` claim.~~ **Done:** audited against ARMv8.2-A FP16
+    specification. The entire group is implemented in `TranslateSIMDHalf.cpp` and `TranslateSIMDEstimate.cpp`
+    (711c5963b) and verified by `simd_half` (2,536 test cases against Raspberry Pi 5 goldens).
+    Remaining commented-out FP instructions in `a64.inc` belong to FEAT_FHM (HWCAP_FHM), FEAT_FCMA
+    (HWCAP_FCMA), and BFloat16, none of which are advertised.
 16. **Chromium sandbox.** VS Code runs with `--no-sandbox`. The real sandbox needs user
     namespaces and seccomp-bpf filters over arm64 syscall numbers; seccomp emulation is opt-in
     (`POWERARM_NEEDSSECCOMP`).

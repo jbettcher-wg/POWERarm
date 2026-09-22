@@ -91,8 +91,13 @@ FPCR_MRS = (0xD53B4400, 0xD53B4420)  # MRS FPCR / FPSR, Rt masked off
 FPCR_MSR = (0xD51B4400, 0xD51B4420)
 
 
+import shutil
+
+OBJDUMP = os.environ.get("OBJDUMP", "llvm-objdump" if shutil.which("llvm-objdump") else "objdump")
+
+
 def census(entries, path, missing_only=False, handlers=frozenset()):
-    out = subprocess.run(["objdump", "-d", path], capture_output=True, text=True, check=True).stdout
+    out = subprocess.run([OBJDUMP, "-d", path], capture_output=True, text=True, check=True).stdout
     func = "?"
     counts = collections.Counter()  # (reachable, cls, name, mnemonic) -> n
     funcs = collections.defaultdict(set)

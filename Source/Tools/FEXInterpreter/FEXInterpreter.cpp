@@ -613,6 +613,27 @@ int main(int argc, char** argv, char** const envp) {
   FEX_CONFIG_OPT(Environment, ENV);
   FEX_CONFIG_OPT(HostEnvironment, HOSTENV);
 
+  if (!LDPath().empty()) {
+    if (!FHU::Filesystem::IsAbsolute(LDPath())) {
+      if (PortableInfo.IsPortable) {
+        fextl::fmt::print(stderr,
+                          "POWERarm: POWERARM_PORTABLE=1 is incompatible with named rootfs '{}': "
+                          "portable mode redirects the data directory, so a named rootfs cannot be resolved. "
+                          "Pass an absolute path via POWERARM_ROOTFS=<path> instead.\n",
+                          LDPath());
+      } else {
+        fextl::fmt::print(stderr, "POWERarm: named rootfs '{}' could not be found.\n", LDPath());
+      }
+      FEX::Logging::FlushHeldErrorsToStderr();
+      return -ENOEXEC;
+    }
+    if (!FHU::Filesystem::Exists(LDPath())) {
+      fextl::fmt::print(stderr, "POWERarm: configured RootFS '{}' does not exist.\n", LDPath());
+      FEX::Logging::FlushHeldErrorsToStderr();
+      return -ENOEXEC;
+    }
+  }
+
   FEX::Logging::Init();
   FEX::HLE::StartupTimer.Mark(FEX::HLE::StartupTimes::SERVER);
 
