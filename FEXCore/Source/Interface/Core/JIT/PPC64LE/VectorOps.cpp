@@ -826,6 +826,45 @@ DEF_OP(VDupElement) {
   }
 }
 
+// ISA 3.0 xxspltib: splat any byte immediate (0..255) across all 16 bytes of a VSR.
+static void EmitXxspltib(PPC64JITCore* J, VR Dst, uint8_t Imm) {
+  // VR n is vs(32+n): TX = 1.
+  J->Emit32((60u << 26) | (Dst.idx << 21) | (static_cast<uint32_t>(Imm) << 11) | (360u << 1) | 1u);
+}
+
+// Build a vector with `val` replicated to every doubleword.
+// Used when an immediate exceeds the 5-bit range of vspltisb/h/w.
+//
+// mtvsrd defines the doubleword that xxpermdi index 0 reads (BE dword 0, the
+// half mfvsrd/mtvsrd see, which is FEX's LE element 1); dm=0 then duplicates
+// that half into both. Byte-for-byte identical to the std/std/lvx roundtrip
+// this replaces -- verified on POWER8 by storing both forms back through stvx
+// and comparing the 16 bytes -- but without the guaranteed store-hit-load
+// stall of feeding a vector load from two GPR stores issued two cycles
+// earlier.
+static void BuildSplatDW(PPC64JITCore* j, VR Dst, uint64_t val) {
+  j->LoadConstant(TMP4, val);
+  j->mtvsrd(Dst, TMP4);
+  j->xxpermdi(Dst, Dst, Dst, 0);
+}
+
+static void SplatShiftCount(PPC64JITCore* j, VR Dst, IR::OpSize ElemSz, uint8_t Shift, bool SupportsISA30) {
+  if (ElemSz != IR::OpSize::i64Bit) {
+    j->vspltisb(Dst, Shift);
+    return;
+  }
+  // For 64-bit, vsld/vsrd/vsrad reads low 6 bits (0..63).
+  // vspltisb covers [0..15] and [48..63] via 5-bit sign extension.
+  // xxspltib covers [0..255] in 1 instruction on ISA 3.0 (POWER9+).
+  if (SupportsISA30) {
+    EmitXxspltib(j, Dst, Shift);
+  } else if (Shift <= 15 || Shift >= 48) {
+    j->vspltisb(Dst, Shift);
+  } else {
+    BuildSplatDW(j, Dst, Shift);
+  }
+}
+
 // ---------------------------------------------------------------------------
 // VShlI / VUShrI / VSShrI — immediate shifts
 // ---------------------------------------------------------------------------
@@ -856,16 +895,7 @@ DEF_OP(VShlI) {
     vslw(Dst, Src, VTMP1);
     break;
   case IR::OpSize::i64Bit:
-    // POWER8 LE: vsld reads the per-doubleword shift count from each
-    // doubleword's hardware-LSB position. mtvsrd places `count` in BE
-    // doubleword 0 (phys[0..7], LSB byte at phys[7] which is the doubleword
-    // LSB in hardware terms); xxpermdi DM=0 then duplicates that doubleword
-    // into both halves. A naive std/lvx round-trip places the count's LSB
-    // at the wrong end of each doubleword (interaction with LE byte ordering)
-    // and produces shift count 0. Validated empirically — see vsrd_v3.c.
-    li(TMP4, static_cast<int16_t>(Shift));
-    mtvsrd(VTMP1, TMP4);
-    xxpermdi(VTMP1, VTMP1, VTMP1, 0);
+    SplatShiftCount(this, VTMP1, ElemSz, Shift, CTX->HostFeatures.SupportsISA30);
     vsld(Dst, Src, VTMP1);
     break;
   default: Op_Unhandled(IROp, Node); break;
@@ -896,10 +926,7 @@ DEF_OP(VUShrI) {
     vsrw(Dst, Src, VTMP1);
     break;
   case IR::OpSize::i64Bit:
-    // See VShlI i64Bit comment.
-    li(TMP4, static_cast<int16_t>(Shift));
-    mtvsrd(VTMP1, TMP4);
-    xxpermdi(VTMP1, VTMP1, VTMP1, 0);
+    SplatShiftCount(this, VTMP1, ElemSz, Shift, CTX->HostFeatures.SupportsISA30);
     vsrd(Dst, Src, VTMP1);
     break;
   default: Op_Unhandled(IROp, Node); break;
@@ -931,10 +958,7 @@ DEF_OP(VSShrI) {
     vsraw(Dst, Src, VTMP1);
     break;
   case IR::OpSize::i64Bit:
-    // See VShlI i64Bit comment — use mtvsrd + xxpermdi.
-    li(TMP4, static_cast<int16_t>(Shift));
-    mtvsrd(VTMP1, TMP4);
-    xxpermdi(VTMP1, VTMP1, VTMP1, 0);
+    SplatShiftCount(this, VTMP1, ElemSz, Shift, CTX->HostFeatures.SupportsISA30);
     vsrad(Dst, Src, VTMP1);
     break;
   default: Op_Unhandled(IROp, Node); break;
@@ -959,10 +983,7 @@ DEF_OP(VUShraI) {
   case IR::OpSize::i32Bit:
     vspltisw(VTMP1, (int32_t)Shift); vsrw(VTMP2, V, VTMP1); break;
   case IR::OpSize::i64Bit:
-    // Same shift-count splat as VUShrI i64Bit: see BuildSplatDW.
-    li(TMP4, static_cast<int16_t>(Shift));
-    mtvsrd(VTMP1, TMP4);
-    xxpermdi(VTMP1, VTMP1, VTMP1, 0);
+    SplatShiftCount(this, VTMP1, ElemSz, Shift, CTX->HostFeatures.SupportsISA30);
     vsrd(VTMP2, V, VTMP1); break;
   default: Op_Unhandled(IROp, Node); return;
   }
@@ -1179,25 +1200,21 @@ DEF_OP(VSSHLL) {
   case IR::OpSize::i16Bit:
     vupklsb(Dst, Src);
     if (N) {
-      LoadConstant(TMP1, N); mtvsrd(VTMP1, TMP1);
-      vsplth(VTMP1, VTMP1, 3);
+      vspltish(VTMP1, (int16_t)N);
       vslh(Dst, Dst, VTMP1);
     }
     break;
   case IR::OpSize::i32Bit:
     vupklsh(Dst, Src);
     if (N) {
-      LoadConstant(TMP1, N); mtvsrd(VTMP1, TMP1);
-      vspltw(VTMP1, VTMP1, 1);
+      vspltisw(VTMP1, (int32_t)N);
       vslw(Dst, Dst, VTMP1);
     }
     break;
   case IR::OpSize::i64Bit:
     vupklsw(Dst, Src);
     if (N) {
-      LoadConstant(TMP1, N);
-      mtvsrd(VTMP1, TMP1);
-      xxpermdi(VTMP1, VTMP1, VTMP1, 0);
+      SplatShiftCount(this, VTMP1, ElemSz, N, CTX->HostFeatures.SupportsISA30);
       vsld(Dst, Dst, VTMP1);
     }
     break;
@@ -1215,25 +1232,21 @@ DEF_OP(VSSHLL2) {
   case IR::OpSize::i16Bit:
     vupkhsb(Dst, Src);
     if (N) {
-      LoadConstant(TMP1, N); mtvsrd(VTMP1, TMP1);
-      vsplth(VTMP1, VTMP1, 3);
+      vspltish(VTMP1, (int16_t)N);
       vslh(Dst, Dst, VTMP1);
     }
     break;
   case IR::OpSize::i32Bit:
     vupkhsh(Dst, Src);
     if (N) {
-      LoadConstant(TMP1, N); mtvsrd(VTMP1, TMP1);
-      vspltw(VTMP1, VTMP1, 1);
+      vspltisw(VTMP1, (int32_t)N);
       vslw(Dst, Dst, VTMP1);
     }
     break;
   case IR::OpSize::i64Bit:
     vupkhsw(Dst, Src);
     if (N) {
-      LoadConstant(TMP1, N);
-      mtvsrd(VTMP1, TMP1);
-      xxpermdi(VTMP1, VTMP1, VTMP1, 0);
+      SplatShiftCount(this, VTMP1, ElemSz, N, CTX->HostFeatures.SupportsISA30);
       vsld(Dst, Dst, VTMP1);
     }
     break;
@@ -1410,43 +1423,6 @@ DEF_OP(VSQXTUNPair) {
   case IR::OpSize::i8Bit:  vpkshus(Dst, VUpp, VLow); break;
   case IR::OpSize::i16Bit: vpkswus(Dst, VUpp, VLow); break;
   default: Op_Unhandled(IROp, Node); break;
-  }
-}
-
-// ISA 3.0 xxspltib: splat any byte immediate (0..255) across all 16 bytes of a VSR.
-static void EmitXxspltib(PPC64JITCore* J, VR Dst, uint8_t Imm) {
-  // VR n is vs(32+n): TX = 1.
-  J->Emit32((60u << 26) | (Dst.idx << 21) | (static_cast<uint32_t>(Imm) << 11) | (360u << 1) | 1u);
-}
-
-// Build a vector with `val` replicated to every doubleword.
-// Used when an immediate exceeds the 5-bit range of vspltisb/h/w.
-//
-// mtvsrd defines the doubleword that xxpermdi index 0 reads (BE dword 0, the
-// half mfvsrd/mtvsrd see, which is FEX's LE element 1); dm=0 then duplicates
-// that half into both. Byte-for-byte identical to the std/std/lvx roundtrip
-// this replaces -- verified on POWER8 by storing both forms back through stvx
-// and comparing the 16 bytes -- but without the guaranteed store-hit-load
-// stall of feeding a vector load from two GPR stores issued two cycles
-// earlier.
-static void BuildSplatDW(PPC64JITCore* j, VR Dst, uint64_t val) {
-  j->LoadConstant(TMP4, val);
-  j->mtvsrd(Dst, TMP4);
-  j->xxpermdi(Dst, Dst, Dst, 0);
-}
-
-static void SplatShiftCount(PPC64JITCore* j, VR Dst, IR::OpSize ElemSz, uint8_t Shift, bool SupportsISA30) {
-  if (ElemSz != IR::OpSize::i64Bit) {
-    j->vspltisb(Dst, Shift);
-    return;
-  }
-  // For 64-bit, vsrad reads low 6 bits (0..63).
-  if (Shift <= 15 || Shift >= 48) {
-    j->vspltisb(Dst, Shift);
-  } else if (SupportsISA30) {
-    EmitXxspltib(j, Dst, Shift);
-  } else {
-    BuildSplatDW(j, Dst, Shift);
   }
 }
 
@@ -3200,9 +3176,7 @@ static void EmitArithSaturate(PPC64JITCore* j, VR Dst, VR Vec, GPR TMP1, GPR TMP
   case IR::OpSize::i16Bit: j->vspltish(VTMP2, 15); j->vsrah(Dst, Vec, VTMP2); break;
   case IR::OpSize::i32Bit: j->vspltisw(VTMP2, -1); j->vsraw(Dst, Vec, VTMP2); break;
   case IR::OpSize::i64Bit:
-    j->li(TMP1, 63);
-    j->mtvsrd(VTMP2, TMP1);
-    j->xxpermdi(VTMP2, VTMP2, VTMP2, 0);
+    j->vspltisb(VTMP2, -1);
     j->vsrad(Dst, Vec, VTMP2);
     break;
   default: break;
