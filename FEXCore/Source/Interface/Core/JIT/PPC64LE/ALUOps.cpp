@@ -4214,6 +4214,40 @@ DEF_OP(StoreNZCV) {
   SetOVFromBit(TMP1, TMP2);
 }
 
+// LoadFPSR / StoreFPSR — floating-point status register with VSCR.SAT synchronization
+// =========================================================================
+DEF_OP(LoadFPSR) {
+  auto Dst = GetReg(Node);
+  const int16_t Offset = offsetof(FEXCore::Core::CPUState, fpsr);
+  lwz(Dst, Offset, STATE);
+  mfvscr(VTMP1);
+  if (CTX->HostFeatures.SupportsISA30) {
+    mfvsrld(TMP1, VTMP1);
+  } else {
+    vsldoi(VTMP1, VTMP1, VTMP1, 8);
+    mfvsrd(TMP1, VTMP1);
+  }
+  andi_(TMP1, TMP1, 1);
+  sldi(TMP1, TMP1, 27);
+  or_(Dst, Dst, TMP1);
+  stw(Dst, Offset, STATE);
+}
+
+DEF_OP(StoreFPSR) {
+  auto Op  = IROp->C<IR::IROp_StoreFPSR>();
+  auto Src = GetReg(Op->Value);
+  const int16_t Offset = offsetof(FEXCore::Core::CPUState, fpsr);
+
+  LoadConstant(TMP1, 0xF800009FULL);
+  and_(TMP1, Src, TMP1);
+  stw(TMP1, Offset, STATE);
+
+  rldicl(TMP1, Src, 64 - 27, 63);
+  mtvsrd(VTMP1, TMP1);
+  xxpermdi(AsVSX(VTMP1), VZERO_VSX, AsVSX(VTMP1), 0);
+  mtvscr(VTMP1);
+}
+
 DEF_OP(CarryInvert) {
   // Flip x86 CF, which we route through XER.CA. PPC subtract sets CA = !borrow,
   // so this op is what the IR uses to convert PPC's CA convention to x86's CF.

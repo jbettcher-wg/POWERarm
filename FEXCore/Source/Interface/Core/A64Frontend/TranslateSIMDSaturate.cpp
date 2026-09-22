@@ -76,17 +76,15 @@ void IRBuilder::StoreIntLanes(uint32_t Word, bool Scalar, OpSize ES, Ref Result)
 
 Ref IRBuilder::SaturatingAddSub(OpSize ES, Ref A, Ref B, bool Sub, bool Signed, Ref* Saturated) {
   const auto RS = OpSize::i128Bit;
-  Ref Wrap = Sub ? _VSub(RS, ES, A, B).Node : _VAdd(RS, ES, A, B).Node;
   if (ES != OpSize::i64Bit) {
-    Ref Sat {};
+    *Saturated = nullptr;
     if (Signed) {
-      Sat = Sub ? _VSQSub(RS, ES, A, B).Node : _VSQAdd(RS, ES, A, B).Node;
+      return Sub ? _VSQSub(RS, ES, A, B).Node : _VSQAdd(RS, ES, A, B).Node;
     } else {
-      Sat = Sub ? _VUQSub(RS, ES, A, B).Node : _VUQAdd(RS, ES, A, B).Node;
+      return Sub ? _VUQSub(RS, ES, A, B).Node : _VUQAdd(RS, ES, A, B).Node;
     }
-    *Saturated = _VXor(RS, RS, Sat, Wrap);
-    return Sat;
   }
+  Ref Wrap = Sub ? _VSub(RS, ES, A, B).Node : _VAdd(RS, ES, A, B).Node;
   // 64-bit lanes (NEON-LOWERINGS §3.4).
   const auto ES64 = OpSize::i64Bit;
   if (!Signed) {
@@ -114,15 +112,24 @@ Ref IRBuilder::SaturatingAddSub(OpSize ES, Ref A, Ref B, bool Sub, bool Signed, 
 }
 
 bool IRBuilder::SIMDSaturatingAddSub(uint32_t Word, bool Sub, bool Signed, bool Scalar) {
-  const bool Q = Bit(Word, 30);
+  const bool Q = !Scalar && Bit(Word, 30);
   const uint32_t Size = Bits(Word, 23, 22);
   if (!Scalar && Size == 3 && !Q) {
     return false;
   }
   const auto ES = LaneSize(Size);
   Ref Sat {};
-  Ref Result = SaturatingAddSub(ES, LoadV(Bits(Word, 9, 5)), LoadV(Bits(Word, 20, 16)), Sub, Signed, &Sat);
-  SetQCIfAny(UsedLanes(Sat, Scalar, Q, ES));
+  Ref A = LoadV(Bits(Word, 9, 5));
+  Ref B = LoadV(Bits(Word, 20, 16));
+  if (!Q) {
+    const auto ActiveSize = Scalar ? ES : OpSize::i64Bit;
+    A = _VMov(ActiveSize, A);
+    B = _VMov(ActiveSize, B);
+  }
+  Ref Result = SaturatingAddSub(ES, A, B, Sub, Signed, &Sat);
+  if (Sat) {
+    SetQCIfAny(UsedLanes(Sat, Scalar, Q, ES));
+  }
   StoreIntLanes(Word, Scalar, ES, Result);
   return true;
 }
@@ -162,7 +169,7 @@ bool IRBuilder::SQNEG_1(uint32_t Word) { return SIMDSaturatingAbsNeg(Word, true,
 // SUQADD: Rd (signed) + Rn (unsigned) with signed saturation. USQADD: Rd
 // (unsigned) + Rn (signed) with unsigned saturation. Scalar and vector.
 bool IRBuilder::SIMDSaturatingAccumulate(uint32_t Word, bool SignedAcc, bool Scalar) {
-  const bool Q = Bit(Word, 30);
+  const bool Q = !Scalar && Bit(Word, 30);
   const uint32_t Size = Bits(Word, 23, 22);
   if (!Scalar && Size == 3 && !Q) {
     return false;
@@ -172,6 +179,11 @@ bool IRBuilder::SIMDSaturatingAccumulate(uint32_t Word, bool SignedAcc, bool Sca
   const uint32_t Rd = Bits(Word, 4, 0);
   Ref D = LoadV(Rd);
   Ref N = LoadV(Bits(Word, 9, 5));
+  if (!Q) {
+    const auto ActiveSize = Scalar ? ES : OpSize::i64Bit;
+    D = _VMov(ActiveSize, D);
+    N = _VMov(ActiveSize, N);
+  }
   // SUQADD: the addend's top bit; USQADD: a negative addend.
   Ref TopSet = _VCMPLTZ(RS, ES, N);
   Ref Unused {};
@@ -181,15 +193,25 @@ bool IRBuilder::SIMDSaturatingAccumulate(uint32_t Word, bool SignedAcc, bool Sca
     // larger one makes the sum non-negative: (d + 2^(W-1)) + (n - 2^(W-1))
     // in unsigned saturating arithmetic, capped at the signed maximum.
     Ref Flip = LaneConstant(1ULL << (IR::OpSizeAsBits(ES) - 1), ES);
-    Ref Small = SaturatingAddSub(ES, D, N, false, true, &Unused);
-    Ref Offset = SaturatingAddSub(ES, _VXor(RS, RS, D, Flip), _VXor(RS, RS, N, Flip), false, false, &Unused);
+    if (!Q) {
+      const auto ActiveSize = Scalar ? ES : OpSize::i64Bit;
+      Flip = _VMov(ActiveSize, Flip);
+    }
+    Ref Zero = LaneConstant(0, ES);
+    Ref N_Small = _VBSL(RS, TopSet, Zero, N);
+    Ref N_Offset = _VBSL(RS, TopSet, _VXor(RS, RS, N, Flip), Zero);
+    Ref Small = SaturatingAddSub(ES, D, N_Small, false, true, &Unused);
+    Ref Offset = SaturatingAddSub(ES, _VXor(RS, RS, D, Flip), N_Offset, false, false, &Unused);
     Ref Large = _VUMin(RS, ES, Offset, LaneConstant(LaneMask(ES) >> 1, ES));
     Result = _VBSL(RS, TopSet, Large, Small);
   } else {
     // A negative addend subtracts its magnitude, saturating at 0 (-MIN
     // wraps to 2^(W-1), which is its magnitude as an unsigned value).
-    Ref Add = SaturatingAddSub(ES, D, N, false, false, &Unused);
-    Ref Sub = SaturatingAddSub(ES, D, _VNeg(RS, ES, N), true, false, &Unused);
+    Ref Zero = LaneConstant(0, ES);
+    Ref N_Add = _VBSL(RS, TopSet, Zero, N);
+    Ref N_Sub = _VBSL(RS, TopSet, _VNeg(RS, ES, N), Zero);
+    Ref Add = SaturatingAddSub(ES, D, N_Add, false, false, &Unused);
+    Ref Sub = SaturatingAddSub(ES, D, N_Sub, true, false, &Unused);
     Result = _VBSL(RS, TopSet, Sub, Add);
   }
   // A saturated lane never equals the wrapped sum.
@@ -619,10 +641,7 @@ bool IRBuilder::IntElementOperand(uint32_t Word, Ref* Element) {
 Ref IRBuilder::DoublingMultiplyHigh(OpSize ES, Ref A, Ref B, bool Rounding, Ref* Saturated) {
   const auto RS = OpSize::i128Bit;
   if (ES == OpSize::i16Bit) {
-    Ref Min = LaneConstant(1ULL << 15, ES);
-    Ref IsMinA = _VCMPEQ(RS, ES, A, Min);
-    Ref IsMinB = _VCMPEQ(RS, ES, B, Min);
-    *Saturated = _VAnd(RS, RS, IsMinA, IsMinB);
+    *Saturated = nullptr;
     return Rounding ? _VSQRDMulH(RS, ES, A, B).Node : _VSQDMulH(RS, ES, A, B).Node;
   }
   const auto WideES = ES == OpSize::i16Bit ? OpSize::i32Bit : OpSize::i64Bit;
@@ -642,7 +661,7 @@ Ref IRBuilder::DoublingMultiplyHigh(OpSize ES, Ref A, Ref B, bool Rounding, Ref*
 }
 
 bool IRBuilder::SIMDDoublingMultiplyHigh(uint32_t Word, bool Rounding, bool Scalar, bool ByElement) {
-  const bool Q = Bit(Word, 30);
+  const bool Q = !Scalar && Bit(Word, 30);
   const uint32_t Size = Bits(Word, 23, 22);
   if (Size != 1 && Size != 2) {
     return false;
@@ -656,9 +675,17 @@ bool IRBuilder::SIMDDoublingMultiplyHigh(uint32_t Word, bool Rounding, bool Scal
   } else {
     B = LoadV(Bits(Word, 20, 16));
   }
+  Ref A = LoadV(Bits(Word, 9, 5));
+  if (!Q) {
+    const auto ActiveSize = Scalar ? ES : OpSize::i64Bit;
+    A = _VMov(ActiveSize, A);
+    B = _VMov(ActiveSize, B);
+  }
   Ref Sat {};
-  Ref Result = DoublingMultiplyHigh(ES, LoadV(Bits(Word, 9, 5)), B, Rounding, &Sat);
-  SetQCIfAny(UsedLanes(Sat, Scalar, Q, ES));
+  Ref Result = DoublingMultiplyHigh(ES, A, B, Rounding, &Sat);
+  if (Sat) {
+    SetQCIfAny(UsedLanes(Sat, Scalar, Q, ES));
+  }
   StoreIntLanes(Word, Scalar, ES, Result);
   return true;
 }
@@ -763,15 +790,32 @@ bool IRBuilder::SIMDDoublingMultiplyLong(uint32_t Word, int Accumulate, bool Sca
     B = LoadV(Bits(Word, 20, 16));
   }
   Ref A = LoadV(Bits(Word, 9, 5));
+  if (Scalar) {
+    A = _VMov(ES, A);
+    B = _VMov(ES, B);
+  }
   Ref Product = Upper ? _VSMull2(RS, ES, A, B).Node : _VSMull(RS, ES, A, B).Node;
+  if (Scalar) {
+    Product = _VMov(WideES, Product);
+  }
   Ref Sat {};
   Ref Result = SaturatingAddSub(WideES, Product, Product, false, true, &Sat);
   if (Accumulate != 0) {
+    Ref D = LoadV(Rd);
+    if (Scalar) {
+      D = _VMov(WideES, D);
+    }
     Ref AccSat {};
-    Result = SaturatingAddSub(WideES, LoadV(Rd), Result, Accumulate < 0, true, &AccSat);
-    Sat = _VOr(RS, RS, Sat, AccSat);
+    Result = SaturatingAddSub(WideES, D, Result, Accumulate < 0, true, &AccSat);
+    if (Sat && AccSat) {
+      Sat = _VOr(RS, RS, Sat, AccSat);
+    } else if (AccSat) {
+      Sat = AccSat;
+    }
   }
-  SetQCIfAny(Scalar ? _VMov(WideES, Sat).Node : Sat);
+  if (Sat) {
+    SetQCIfAny(Scalar ? _VMov(WideES, Sat).Node : Sat);
+  }
   if (Scalar) {
     StoreVSized(Rd, WideES, Result);
   } else {

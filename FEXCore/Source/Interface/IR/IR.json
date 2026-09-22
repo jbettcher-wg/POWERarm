@@ -510,6 +510,17 @@
         "DestSize": "OpSize::i32Bit"
       },
 
+      "GPR = LoadFPSR": {
+        "Desc": ["Loads value of FPSR register, folding VSCR.SAT into bit 27 (QC)"],
+        "DestSize": "OpSize::i32Bit"
+      },
+
+      "StoreFPSR GPR:$Value": {
+        "HasSideEffects": true,
+        "Desc": ["Stores value to FPSR register and synchronizes VSCR.SAT from bit 27"],
+        "DestSize": "OpSize::i32Bit"
+      },
+
       "SSA = LoadMem RegisterClass:$Class, OpSize:#Size, GPR:$Addr, GPR:$Offset, OpSize:$Align, MemOffsetType:$OffsetType, u8:$OffsetScale": {
         "Inline": ["", "Mem"],
         "DestSize": "Size"

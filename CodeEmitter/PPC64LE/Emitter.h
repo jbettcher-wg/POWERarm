@@ -845,6 +845,11 @@ public:
     Emit32((31u << 26) | (vrs.idx << 21) | (rt.idx << 16) | (51u << 1) | 1u);
   }
 
+  // mfvsrld RT, VRS (ISA 3.0) — MFVSRLD with TX=1: move lower doubleword from VR
+  void mfvsrld(GPR rt, VR vrs) {
+    Emit32((31u << 26) | (vrs.idx << 21) | (rt.idx << 16) | (307u << 1) | 1u);
+  }
+
   // mtvsrwa VRT, RS (ISA 2.07) — MTVSRWA with TX=1: move word and sign-extend to doubleword 0
   void mtvsrwa(VR vrt, GPR rs) {
     Emit32((31u << 26) | (vrt.idx << 21) | (rs.idx << 16) | (211u << 1) | 1u);
