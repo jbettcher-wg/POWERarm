@@ -516,8 +516,15 @@ bool IRBuilder::AddSubExtended(uint32_t Word) {
   }
   const auto Size = SizeFor(Is64);
 
-  Ref Operand = ExtendReg(LoadX(Bits(Word, 20, 16)), Option, Shift);
+  const uint32_t Rm = Bits(Word, 20, 16);
   Ref Src = LoadXSP(Rn);
+
+  if (!SetFlags && Rm == 31 && Shift == 0) {
+    StoreRegSP(Rd, Is64, Src);
+    return true;
+  }
+
+  Ref Operand = ExtendReg(LoadX(Rm), Option, Shift);
 
   if (!SetFlags) {
     StoreRegSP(Rd, Is64, IsSub ? _Sub(Size, Src, Operand) : _Add(Size, Src, Operand));
@@ -636,32 +643,46 @@ bool IRBuilder::CondSelect(uint32_t Word) {
 bool IRBuilder::MADD(uint32_t Word) {
   const bool Is64 = Bit(Word, 31);
   const auto Size = SizeFor(Is64);
+  const uint32_t Ra = Bits(Word, 14, 10);
+  const uint32_t Rd = Bits(Word, 4, 0);
   Ref Product = _Mul(Size, LoadX(Bits(Word, 9, 5)), LoadX(Bits(Word, 20, 16)));
-  StoreReg(Bits(Word, 4, 0), Is64, _Add(Size, LoadX(Bits(Word, 14, 10)), Product));
+  if (Ra == 31) {
+    // MUL alias: MADD Xd, Xn, Xm, XZR -> Xn * Xm
+    StoreReg(Rd, Is64, Product);
+    return true;
+  }
+  StoreReg(Rd, Is64, _Add(Size, LoadX(Ra), Product));
   return true;
 }
 
 bool IRBuilder::MSUB(uint32_t Word) {
   const bool Is64 = Bit(Word, 31);
   const auto Size = SizeFor(Is64);
+  const uint32_t Ra = Bits(Word, 14, 10);
+  const uint32_t Rd = Bits(Word, 4, 0);
   Ref Product = _Mul(Size, LoadX(Bits(Word, 9, 5)), LoadX(Bits(Word, 20, 16)));
-  StoreReg(Bits(Word, 4, 0), Is64, _Sub(Size, LoadX(Bits(Word, 14, 10)), Product));
+  if (Ra == 31) {
+    // MNEG alias: MSUB Xd, Xn, Xm, XZR -> -(Xn * Xm)
+    StoreReg(Rd, Is64, _Neg(Size, Product));
+    return true;
+  }
+  StoreReg(Rd, Is64, _Sub(Size, LoadX(Ra), Product));
   return true;
 }
 
 bool IRBuilder::MultiplyAddSubLong(uint32_t Word, bool IsSigned, bool IsSub) {
   Ref Src1 = LoadX(Bits(Word, 9, 5));
   Ref Src2 = LoadX(Bits(Word, 20, 16));
-  if (IsSigned) {
-    Src1 = _Sbfe(OpSize::i64Bit, 32, 0, Src1);
-    Src2 = _Sbfe(OpSize::i64Bit, 32, 0, Src2);
-  } else {
-    Src1 = _Bfe(OpSize::i64Bit, 32, 0, Src1);
-    Src2 = _Bfe(OpSize::i64Bit, 32, 0, Src2);
+  Ref Product = IsSigned ? _SMull(Src1, Src2) : _UMull(Src1, Src2);
+  const uint32_t Ra = Bits(Word, 14, 10);
+  const uint32_t Rd = Bits(Word, 4, 0);
+  if (Ra == 31) {
+    // SMULL/UMULL and SMNEGL/UMNEGL aliases
+    StoreX(Rd, IsSub ? _Neg(OpSize::i64Bit, Product) : Product);
+    return true;
   }
-  Ref Product = _Mul(OpSize::i64Bit, Src1, Src2);
-  Ref Addend = LoadX(Bits(Word, 14, 10));
-  StoreX(Bits(Word, 4, 0), IsSub ? _Sub(OpSize::i64Bit, Addend, Product) : _Add(OpSize::i64Bit, Addend, Product));
+  Ref Addend = LoadX(Ra);
+  StoreX(Rd, IsSub ? _Sub(OpSize::i64Bit, Addend, Product) : _Add(OpSize::i64Bit, Addend, Product));
   return true;
 }
 
