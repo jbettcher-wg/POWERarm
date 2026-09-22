@@ -845,6 +845,21 @@ public:
     Emit32((31u << 26) | (vrs.idx << 21) | (rt.idx << 16) | (51u << 1) | 1u);
   }
 
+  // mtvsrwa VRT, RS (ISA 2.07) — MTVSRWA with TX=1: move word and sign-extend to doubleword 0
+  void mtvsrwa(VR vrt, GPR rs) {
+    Emit32((31u << 26) | (vrt.idx << 21) | (rs.idx << 16) | (211u << 1) | 1u);
+  }
+
+  // mtvsrwz VRT, RS (ISA 2.07) — MTVSRWZ with TX=1: move word and zero-extend to doubleword 0
+  void mtvsrwz(VR vrt, GPR rs) {
+    Emit32((31u << 26) | (vrt.idx << 21) | (rs.idx << 16) | (243u << 1) | 1u);
+  }
+
+  // mfvsrwz RT, VRS (ISA 2.07) — MFVSRWZ with TX=1: move word and zero-extend to GPR
+  void mfvsrwz(GPR rt, VR vrs) {
+    Emit32((31u << 26) | (vrs.idx << 21) | (rt.idx << 16) | (115u << 1) | 1u);
+  }
+
   // ===== VSX XX3-form (Power ISA 2.07 §1.6.10) =====
   // Layout (LE word bits): bits 0:31
   //   bit 0     = TX
@@ -1130,6 +1145,7 @@ public:
   // Scalar round-to-integral, fixed modes (gas-verified on op4k:
   // xsrdpim/p/z vs34,vs35 = f04019e7/f04019a7/f0401967). NaN-quiet,
   // identity for |x| >= 2^52, unlike the fctid/fcfid round trip.
+  void xsrdpi (VR t, VR b)   { EmitXX2(t.idx, b.idx,  73); }  // round half away
   void xsrdpim(VR t, VR b)   { EmitXX2(t.idx, b.idx, 121); }  // floor
   void xsrdpip(VR t, VR b)   { EmitXX2(t.idx, b.idx, 105); }  // ceil
   void xsrdpiz(VR t, VR b)   { EmitXX2(t.idx, b.idx,  89); }  // trunc
@@ -1975,6 +1991,18 @@ public:
   }
   void mtfsfi(uint32_t bf, uint32_t u) {
     Emit32((63u << 26) | (bf << 23) | (0u << 22) | (u << 12) | (134u << 1));
+  }
+  void mtfsb0(uint32_t bt) {
+    Emit32((63u << 26) | ((bt & 31u) << 21) | (70u << 1));
+  }
+  void mtfsb1(uint32_t bt) {
+    Emit32((63u << 26) | ((bt & 31u) << 21) | (38u << 1));
+  }
+  void mffscrni(FPR frt, uint32_t rm) {
+    Emit32((63u << 26) | (frt.idx << 21) | (23u << 16) | ((rm & 3u) << 11) | (583u << 1));
+  }
+  void mffscrn(FPR frt, FPR frb) {
+    Emit32((63u << 26) | (frt.idx << 21) | (22u << 16) | (frb.idx << 11) | (583u << 1));
   }
 
   // =========================================================================

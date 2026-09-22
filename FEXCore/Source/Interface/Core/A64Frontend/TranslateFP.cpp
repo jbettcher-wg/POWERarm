@@ -279,12 +279,7 @@ bool IRBuilder::FABS_float(uint32_t Word) { return FPOneRegister(Word, FPUnaryOp
 bool IRBuilder::FNEG_float(uint32_t Word) { return FPOneRegister(Word, FPUnaryOp::Neg); }
 bool IRBuilder::FSQRT_float(uint32_t Word) { return FPOneRegister(Word, FPUnaryOp::Sqrt); }
 
-// Round to integral in the given mode (FPRoundInt). Directed modes and the
-// FPCR mode (FRINTX, FRINTI) are Vector_FToI. There is no IR mode for ties
-// away (FRINTA) or for ties to even independent of FPCR.RMode (FRINTN), so
-// those start from the truncation T and the exact remainder D = X - T:
-// |D| > 1/2 rounds away from zero, |D| == 1/2 is the tie. The step is a
-// select, never an addition of zero, so the sign of a zero result is T's.
+// Round to integral in the given mode (FPRoundInt).
 Ref IRBuilder::FPRoundToIntegral(Ref X, OpSize ElementSize, FPRounding Mode) {
   const auto RS = OpSize::i128Bit;
   switch (Mode) {
@@ -292,33 +287,11 @@ Ref IRBuilder::FPRoundToIntegral(Ref X, OpSize ElementSize, FPRounding Mode) {
   case FPRounding::NegInf: return _Vector_FToI(RS, ElementSize, X, RoundMode::NegInfinity);
   case FPRounding::Zero: return _Vector_FToI(RS, ElementSize, X, RoundMode::TowardsZero);
   case FPRounding::Current: return _Vector_FToI(RS, ElementSize, X, RoundMode::Host);
-  case FPRounding::TiesAway:
-  case FPRounding::TiesEven: break;
+  case FPRounding::TiesAway: return _Vector_FToI(RS, ElementSize, X, RoundMode::NearestAway);
+  case FPRounding::TiesEven: return _Vector_FToI(RS, ElementSize, X, RoundMode::Nearest);
   }
-  const bool Double = ElementSize == OpSize::i64Bit;
-  const uint64_t Half = Double ? 0x3FE0000000000000ULL : 0x3F000000ULL;
-  const uint64_t One = Double ? 0x3FF0000000000000ULL : 0x3F800000ULL;
-  const uint64_t Sign = Double ? 0x8000000000000000ULL : 0x80000000ULL;
-  Ref T = _Vector_FToI(RS, ElementSize, X, RoundMode::TowardsZero);
-  Ref AbsD = _VFAbs(RS, ElementSize, _VFSub(RS, ElementSize, X, T));
-  // +-1 with the sign of X.
-  Ref Step = _VOr(RS, RS, _VAnd(RS, RS, X, FPConstant(Sign, ElementSize)), FPConstant(One, ElementSize));
-  Ref Away = _VFAdd(RS, ElementSize, T, Step);
-  Ref Above = _VFCMPLT(RS, ElementSize, FPConstant(Half, ElementSize), AbsD);
-  Ref Tie = _VFCMPEQ(RS, ElementSize, AbsD, FPConstant(Half, ElementSize));
-  Ref TakeAway = Above;
-  if (Mode == FPRounding::TiesAway) {
-    TakeAway = _VOr(RS, RS, Above, Tie);
-  } else {
-    // A tie rounds to whichever of T and T +- 1 is even; T is even when
-    // trunc(T / 2) * 2 == T. Ties only exist below 2^52, where this is exact.
-    Ref HalfT = _VFMul(RS, ElementSize, T, FPConstant(Half, ElementSize));
-    Ref TEven = _VFCMPEQ(RS, ElementSize, _VFAdd(RS, ElementSize, _Vector_FToI(RS, ElementSize, HalfT, RoundMode::TowardsZero),
-                                                 _Vector_FToI(RS, ElementSize, HalfT, RoundMode::TowardsZero)),
-                         T);
-    TakeAway = _VOr(RS, RS, Above, _VAnd(RS, RS, Tie, _VNot(RS, ElementSize, TEven)));
-  }
-  return _VBSL(RS, TakeAway, Away, T);
+  LOGMAN_MSG_A_FMT("Unreachable FPRounding mode");
+  return X;
 }
 
 bool IRBuilder::FPRoundInt(uint32_t Word, FPRounding Mode) {

@@ -105,7 +105,8 @@
       "NegInfinity = 1,",
       "PosInfinity = 2,",
       "TowardsZero = 3, /* Truncate */",
-      "Host        = 4,"
+      "Host        = 4,",
+      "NearestAway = 5,"
     ],
     "class ConstPad : uint8_t": [
       "NoPad = 0,",

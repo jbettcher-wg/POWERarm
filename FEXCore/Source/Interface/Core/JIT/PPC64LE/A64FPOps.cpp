@@ -48,13 +48,6 @@ namespace {
     J->Emit32((60u << 26) | (T.idx << 21) | (RA << 16) | (B.idx << 11) | ((XO & 0x1FFu) << 2) | (1u << 1) | 1u);
   }
 
-  void mfvsrwz(PPC64JITCore* J, GPR Rt, VR Vrs) {
-    J->Emit32((31u << 26) | (Vrs.idx << 21) | (Rt.idx << 16) | (115u << 1) | 1u);
-  }
-  void mtfsb0(PPC64JITCore* J, uint32_t Bit) {
-    J->Emit32((63u << 26) | (Bit << 21) | (70u << 1));
-  }
-
   // FPSCR bits 62:63 (32-bit numbering 30:31) are RN.
   constexpr uint32_t FPSCR_RN_HI = 30;
   constexpr uint32_t FPSCR_RN_LO = 31;
@@ -73,14 +66,13 @@ static void PositionElement0AsDouble(PPC64JITCore* J, VR Dst, VR Vec, IR::OpSize
 // Dst = [0 : Value] with Value a 64-bit pattern in doubleword 0 of Src, or a
 // 32-bit pattern in TMP1 when FromGPR32 is set.
 static void PlaceElement0(PPC64JITCore* J, VR Dst, VR Src) {
-  J->vspltisw(VTMP2, 0);
-  J->xxpermdi(Dst, VTMP2, Src, 0); // dw0 <- 0, dw1 <- Src.dw0
+  J->xxpermdi(AsVSX(Dst), VZERO_VSX, AsVSX(Src), 0); // dw0 <- 0, dw1 <- Src.dw0
 }
 
 static void PlaceSingleFromDoubleword0(PPC64JITCore* J, VR Dst, VR Src) {
   // The single's bits are in the low word of doubleword 0; the high word is
   // not guaranteed to be zero.
-  mfvsrwz(J, TMP1, Src);
+  J->mfvsrwz(TMP1, Src);
   J->mtvsrd(VTMP1, TMP1);
   PlaceElement0(J, Dst, VTMP1);
 }
@@ -95,16 +87,22 @@ DEF_OP(A64FloatToGPR) {
 
   switch (Op->Rounding) {
   case 0: // Ties to even: round with RN forced to nearest, then restore RN.
-    mffs(f(0));
-    mtfsb0(this, FPSCR_RN_HI);
-    mtfsb0(this, FPSCR_RN_LO);
-    xsrdpic(VTMP1, VTMP1);
-    mtfsf(0x01, f(0)); // field 7: XE, NI and RN
+    if (CTX->HostFeatures.SupportsISA30) {
+      mffscrni(f(0), 0);
+      xsrdpic(VTMP1, VTMP1);
+      mffscrn(f(0), f(0));
+    } else {
+      mffs(f(0));
+      mtfsb0(FPSCR_RN_HI);
+      mtfsb0(FPSCR_RN_LO);
+      xsrdpic(VTMP1, VTMP1);
+      mtfsf(0x01, f(0)); // field 7: XE, NI and RN
+    }
     break;
   case 1: xsrdpip(VTMP1, VTMP1); break;
   case 2: xsrdpim(VTMP1, VTMP1); break;
   case 3: break; // The converts below truncate.
-  default: EmitXX2(VTMP1.idx, VTMP1.idx, XO_XSRDPI); break;
+  default: xsrdpi(VTMP1, VTMP1); break;
   }
 
   if (!Op->Signed) {
@@ -112,7 +110,7 @@ DEF_OP(A64FloatToGPR) {
     if (Is64) {
       mfvsrd(Dst, VTMP2);
     } else {
-      mfvsrwz(this, Dst, VTMP2);
+      mfvsrwz(Dst, VTMP2);
     }
     return;
   }
@@ -124,7 +122,7 @@ DEF_OP(A64FloatToGPR) {
     mfvsrd(Dst, VTMP2);
   } else {
     xscvdpsxws(VTMP2, VTMP1);
-    mfvsrwz(this, Dst, VTMP2);
+    mfvsrwz(Dst, VTMP2);
   }
   PPC64Emitter::Label Ordered;
   bc(PPC64Emitter::Cond {4, 7}, &Ordered); // CR1.SO clear: not NaN
@@ -139,13 +137,13 @@ DEF_OP(A64FloatFromGPR) {
 
   if (Op->SrcSize == IR::OpSize::i32Bit) {
     if (Op->Signed) {
-      extsw(TMP1, Src);
+      mtvsrwa(VTMP1, Src);
     } else {
-      clrldi(TMP1, Src, 32);
+      mtvsrwz(VTMP1, Src);
     }
-    Src = TMP1;
+  } else {
+    mtvsrd(VTMP1, Src);
   }
-  mtvsrd(VTMP1, Src);
 
   if (IROp->Size == IR::OpSize::i64Bit) {
     Op->Signed ? xscvsxddp(VTMP1, VTMP1) : xscvuxddp(VTMP1, VTMP1);

@@ -4459,6 +4459,7 @@ DEF_OP(VFToIScalarInsert) {
     case IR::RoundMode::NegInfinity: xsrdpim(t, b); break;
     case IR::RoundMode::PosInfinity: xsrdpip(t, b); break;
     case IR::RoundMode::TowardsZero: xsrdpiz(t, b); break;
+    case IR::RoundMode::NearestAway: xsrdpi(t, b); break;
     case IR::RoundMode::Nearest:
     case IR::RoundMode::Host:
     default:                         xsrdpic(t, b); break;
@@ -5249,15 +5250,14 @@ DEF_OP(Vector_FToI) {
 
   if (ElemSz == IR::OpSize::i32Bit) {
     // Vector_FToI is round-to-integral-FLOAT (result stays floating-point).
-    // x86 RoundMode::Nearest is "round-half-to-even" (banker's).  POWER's
-    // xvrspi/vrfin are "round-half-away-from-zero", so for Nearest we must use
-    // xvrspic which honors FPSCR.RN (defaults to RN=0 = nearest-even).  Host
-    // mode uses the same path.
+    // vrfin rounds half-to-even (banker's). xvrspi rounds half-away-from-zero (FRINTA).
+    // xvrspic honors FPSCR.RN (defaults to RN=0 = nearest-even). Host mode uses the same path.
     switch (Op->Round) {
     case FEXCore::IR::RoundMode::NegInfinity: vrfim(Dst, Src); break;
     case FEXCore::IR::RoundMode::PosInfinity: vrfip(Dst, Src); break;
     case FEXCore::IR::RoundMode::TowardsZero: vrfiz(Dst, Src); break;
-    case FEXCore::IR::RoundMode::Nearest:
+    case FEXCore::IR::RoundMode::NearestAway: xvrspi(Dst, Src); break;
+    case FEXCore::IR::RoundMode::Nearest:     vrfin(Dst, Src); break;
     case FEXCore::IR::RoundMode::Host:
     default:                                  xvrspic(Dst, Src); break;
     }
@@ -5268,7 +5268,20 @@ DEF_OP(Vector_FToI) {
     case FEXCore::IR::RoundMode::NegInfinity: xvrdpim(Dst, Src); break;
     case FEXCore::IR::RoundMode::PosInfinity: xvrdpip(Dst, Src); break;
     case FEXCore::IR::RoundMode::TowardsZero: xvrdpiz(Dst, Src); break;
+    case FEXCore::IR::RoundMode::NearestAway: xvrdpi(Dst, Src); break;
     case FEXCore::IR::RoundMode::Nearest:
+      if (CTX->HostFeatures.SupportsISA30) {
+        mffscrni(f(0), 0);
+        xvrdpic(Dst, Src);
+        mffscrn(f(0), f(0));
+      } else {
+        mffs(f(0));
+        mtfsb0(30);
+        mtfsb0(31);
+        xvrdpic(Dst, Src);
+        mtfsf(0x01, f(0));
+      }
+      break;
     case FEXCore::IR::RoundMode::Host:
     default:                                  xvrdpic(Dst, Src); break;  // FPSCR.RN
     }
@@ -5344,6 +5357,7 @@ DEF_OP(Vector_F64ToI32) {
   case IR::RoundMode::TowardsZero: xvrdpiz(VTMP1, Src); break;
   case IR::RoundMode::NegInfinity: xvrdpim(VTMP1, Src); break;
   case IR::RoundMode::PosInfinity: xvrdpip(VTMP1, Src); break;
+  case IR::RoundMode::NearestAway: xvrdpi(VTMP1, Src); break;
   case IR::RoundMode::Nearest:
   case IR::RoundMode::Host:
   default:                         xvrdpic(VTMP1, Src); break;  // FPSCR.RN

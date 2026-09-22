@@ -149,6 +149,7 @@ static void PrintArg(fextl::stringstream* out, const IRListView*, RoundMode Arg)
     case RoundMode::PosInfinity: return "+Inf";
     case RoundMode::TowardsZero: return "Towards Zero";
     case RoundMode::Host: return "Host";
+    case RoundMode::NearestAway: return "Nearest Away";
     }
     return "<Unknown Round Type>";
   }();
