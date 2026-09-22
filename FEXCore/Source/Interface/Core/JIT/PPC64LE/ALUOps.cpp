@@ -2826,28 +2826,25 @@ DEF_OP(NZCVSelect) {
 }
 
 DEF_OP(NZCVSelectV) {
-  auto Op   = IROp->C<IR::IROp_NZCVSelectV>();
-  auto Dst  = GetVReg(Node);
-  auto True = GetVReg(Op->TrueVal);
+  auto Op    = IROp->C<IR::IROp_NZCVSelectV>();
+  auto Dst   = GetVReg(Node);
+  auto True  = GetVReg(Op->TrueVal);
   auto False_= GetVReg(Op->FalseVal);
-  auto CC   = MapNZCVCC(IntegerNZCVCond(Op->Cond));
+  auto CC    = MapNZCVCC(IntegerNZCVCond(Op->Cond));
 
-  // Aliasing guard: if RA tied Dst to True, the `vmr Dst, False` below would
-  // wipe True before the conditional `vmr Dst, True` could read it.  Hit by
-  // X87 F64 FXTRACT, which emits two back-to-back NZCVSelectV ops whose first
-  // dest aliases its own TrueVal.  (The GPR NZCVSelect above no longer needs
-  // this guard — it moved to isel, which has no vector equivalent on ≤2.07,
-  // so this op keeps the branchy materialise-then-overwrite form.)
-  if (True == Dst) {
-    vmr(VTMP1, True);
-    True = VTMP1;
+  // Branch-free vector select via GPR isel and VSX xxsel (F5).
+  // GPR isel generates an all-ones (-1) or all-zeros (0) mask from the condition bit,
+  // avoiding the branch and eliminating branch misprediction penalties on data-dependent selects.
+  li(TMP1, -1);
+  li(TMP2, 0);
+  iselcc(TMP1, CC, TMP1, TMP2);
+  if (CTX->HostFeatures.SupportsISA30) {
+    mtvsrdd(VTMP1, TMP1, TMP1);
+  } else {
+    mtvsrd(VTMP1, TMP1);
+    xxpermdi(VTMP1, VTMP1, VTMP1, 0);
   }
-
-  if (Dst != False_) vmr(Dst, False_);
-  PPC64Emitter::Label Done{};
-  bc(InvertCond(CC), &Done);
-  vmr(Dst, True);
-  Bind(&Done);
+  xxsel(Dst, False_, True, VTMP1);
 }
 
 DEF_OP(NZCVSelectIncrement) {
@@ -4236,6 +4233,7 @@ DEF_OP(FCmp) {
     xxpermdi(VTMP2, S2, S2, 0b10);
   }
   xscmpudp(0, VTMP1, VTMP2);
+  FlagsFromFCmp = true;
 
   // Lift CR0.SO and !CR0.LT into XER.OV/CA — arithmetically, both bits fully
   // written, so no XER read and no serializing mtspr (PPC64Emitter.h helper

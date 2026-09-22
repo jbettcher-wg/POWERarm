@@ -860,6 +860,11 @@ public:
     Emit32((31u << 26) | (vrs.idx << 21) | (rt.idx << 16) | (115u << 1) | 1u);
   }
 
+  // mtvsrdd VRT, RA, RB (ISA 3.0) — MTVSRDD with TX=1: move RA to dw0, RB to dw1
+  void mtvsrdd(VR vrt, GPR ra, GPR rb) {
+    Emit32((31u << 26) | (vrt.idx << 21) | (ra.idx << 16) | (rb.idx << 11) | (435u << 1) | 1u);
+  }
+
   // ===== VSX XX3-form (Power ISA 2.07 §1.6.10) =====
   // Layout (LE word bits): bits 0:31
   //   bit 0     = TX

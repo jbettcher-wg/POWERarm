@@ -1040,6 +1040,66 @@ void PPC64JITCore::ProjectXERToCR1() {
 //   CR3.LT=12, CR3.GT=13 (used as scratch for composites)
 // -------------------------------------------------------------------------
 PPC64Emitter::Cond PPC64JITCore::MapNZCVCC(IR::CondClass Cond) {
+  // Direct CR0 condition evaluation when flags were set by DEF_OP(FCmp) (F5).
+  // xscmpudp writes CR0 directly: bit 0 = LT, bit 1 = GT, bit 2 = EQ, bit 3 = SO.
+  // In ARM NZCV terms: N = LT, Z = EQ, C = !LT, V = SO.
+  // This bypasses ProjectXERToCR1, mcrxrx/mfxer, and cross-CR-field logic.
+  if (FlagsFromFCmp) {
+    switch (Cond) {
+    // Z-only
+    case IR::CondClass::EQ:  return CC_EQ;       // {12, 2}
+    case IR::CondClass::NEQ: return CC_NE;       // { 4, 2}
+
+    // N-only (LT in CR0)
+    case IR::CondClass::MI:  return {12, 0};     // CR0.LT
+    case IR::CondClass::PL:  return { 4, 0};     // ¬CR0.LT
+
+    // C-only (C = !LT)
+    case IR::CondClass::UGE: return { 4, 0};     // ¬CR0.LT
+    case IR::CondClass::ULT: return {12, 0};     // CR0.LT
+
+    // V-only (V = Unordered = SO in CR0)
+    case IR::CondClass::VS:  return {12, 3};     // CR0.SO
+    case IR::CondClass::VC:  return { 4, 3};     // ¬CR0.SO
+
+    // SGT / SLE (SGT is GT; SLE is ¬GT)
+    case IR::CondClass::SGT: return {12, 1};     // CR0.GT
+    case IR::CondClass::SLE: return { 4, 1};     // ¬CR0.GT
+
+    // SGE / SLT (SGE is GT | EQ; SLT is LT | SO)
+    case IR::CondClass::SGE:
+      cror(12, 1, 2);                            // CR3.LT = CR0.GT | CR0.EQ
+      return {12, 12};
+    case IR::CondClass::SLT:
+      cror(12, 0, 3);                            // CR3.LT = CR0.LT | CR0.SO
+      return {12, 12};
+
+    // UGT / ULE (UGT is GT | SO; ULE is LT | EQ)
+    case IR::CondClass::UGT:
+      cror(12, 1, 3);                            // CR3.LT = CR0.GT | CR0.SO
+      return {12, 12};
+    case IR::CondClass::ULE:
+      cror(12, 0, 2);                            // CR3.LT = CR0.LT | CR0.EQ
+      return {12, 12};
+
+    // FP conditions
+    case IR::CondClass::FLU:
+      cror(12, 0, 3);                            // CR3.LT = CR0.LT | CR0.SO
+      return {12, 12};
+    case IR::CondClass::FGE:
+      cror(12, 1, 2);                            // CR3.LT = CR0.GT | CR0.EQ
+      return {12, 12};
+    case IR::CondClass::FLEU: return CC_LE;      // { 4, 1}
+    case IR::CondClass::FGT:  return CC_GT;      // {12, 1}
+    case IR::CondClass::FU:   return {12, 3};    // CR0.SO
+    case IR::CondClass::FNU:  return { 4, 3};    // ¬CR0.SO
+
+    default:
+      LOGMAN_MSG_A_FMT("MapNZCVCC: unsupported condition");
+      return CC_EQ;
+    }
+  }
+
   // Must match whatever ProjectXERToCR1() emits below — both come from
   // ProjectXERUsesMcrxrx().
   const uint32_t OVBit = XEROVBitIndex();
@@ -5775,6 +5835,7 @@ CPUBackend::CompiledCode PPC64JITCore::CompileCode(
     // emitted block's trailing register contents may be assumed here.
     InvalidateAESCache();
     XERProjectionValid = false;
+    FlagsFromFCmp = false;
     LastConstantCache.Valid = false;
 
     // The load-and-splat pre-pass that used to walk the block here now rides
@@ -5870,6 +5931,9 @@ CPUBackend::CompiledCode PPC64JITCore::CompileCode(
       // projection itself), plain register moves, and constants.
       if (!(OpCache & kOpCacheKeepXER)) {
         XERProjectionValid = false;
+        if (IROp->Op != IR::OP_FCMP) {
+          FlagsFromFCmp = false;
+        }
       }
 
       // Last-constant cache lifecycle (see LastConstantCache in JITClass.h).

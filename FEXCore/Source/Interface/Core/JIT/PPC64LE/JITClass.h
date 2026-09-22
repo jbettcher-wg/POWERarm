@@ -1245,6 +1245,11 @@ private:
   // switch in CompileCode and the rationale in ProjectXERToCR1).
   bool XERProjectionValid = false;
 
+  // Emit-time flag indicating condition codes in CR0 were set by DEF_OP(FCmp).
+  // When true, MapNZCVCC evaluates ARM condition codes directly against CR0/CR3,
+  // bypassing ProjectXERToCR1 and XER projection entirely (F5).
+  bool FlagsFromFCmp = false;
+
   // Emit-time last-constant cache for DEF_OP(Constant): when the previous
   // materialized constant is still live in its (dynamic, callee-saved) RA
   // register and the new value is within ±32K, emit one addi off it instead
