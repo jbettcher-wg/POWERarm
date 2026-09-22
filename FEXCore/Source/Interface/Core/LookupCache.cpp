@@ -92,6 +92,17 @@ LookupCache::LookupCache(FEXCore::Context::ContextImpl* CTX)
   L1Pointer = PageMemory + CODE_SIZE;
   FEXCore::Allocator::VirtualName("POWERarmMem_Lookup_L1", reinterpret_cast<void*>(L1Pointer), MAX_L1_SIZE);
 
+#ifndef MADV_POPULATE_WRITE
+#define MADV_POPULATE_WRITE 23
+#endif
+  // Startup S4: prefault L1 writable on creation to avoid zero-page read faults followed by COW write faults.
+  if (::madvise(reinterpret_cast<void*>(L1Pointer), MAX_L1_SIZE, MADV_POPULATE_WRITE) != 0) {
+    const size_t HostPage = FEXCore::HostPage::Size();
+    for (size_t Off = 0; Off < MAX_L1_SIZE; Off += HostPage) {
+      *reinterpret_cast<volatile uint8_t*>(L1Pointer + Off) = 0;
+    }
+  }
+
   // THP hints for the two tables that are indexed by a *hash of the guest RIP*
   // rather than walked, so every lookup is an independent dTLB miss candidate.
   // Both are advisory: madvise failure (no THP in the kernel, THP set to
@@ -99,7 +110,7 @@ LookupCache::LookupCache(FEXCore::Context::ContextImpl* CTX)
   // and VirtualTHPControl is already a no-op when the allocator has no THP
   // hook. Neither call changes any address, size or access rule.
   //
-  //  * L1: MAX_L1_ENTRIES * 16 == 16 MiB of reservation, indexed by
+  //  * L1: MAX_L1_ENTRIES * 16 == 2 MiB of reservation, indexed by
   //    (RIP & L1PointerMask). It is densely used from L1Pointer upwards --
   //    the mask only ever selects a prefix -- so THP costs at most one huge
   //    page of slack past the live prefix even at MIN_L1_ENTRIES.

@@ -1165,6 +1165,11 @@ public:
     // is that the post-scrub refill faults at huge-page granularity.
     if (::madvise(reinterpret_cast<void*>(L1Pointer), MAX_L1_SIZE, MADV_DONTNEED) != 0) {
       std::memset(reinterpret_cast<void*>(L1Pointer), 0, MAX_L1_SIZE);
+    } else {
+#ifndef MADV_POPULATE_WRITE
+#define MADV_POPULATE_WRITE 23
+#endif
+      ::madvise(reinterpret_cast<void*>(L1Pointer), MAX_L1_SIZE, MADV_POPULATE_WRITE);
     }
   }
 
@@ -1320,7 +1325,7 @@ public:
   // L1 probe (rldic) when DynamicL1Cache is off — the emitted MB field must
   // track this constant.
   constexpr static size_t MIN_L1_ENTRIES = 8 * 1024;        // Must be a power of 2
-  constexpr static size_t MAX_L1_ENTRIES = 1 * 1024 * 1024; // Must be a power of 2
+  constexpr static size_t MAX_L1_ENTRIES = 128 * 1024;      // Must be a power of 2 (Startup S4: 2 MiB, 32 x 64K pages)
 private:
 
   constexpr static size_t CODE_SIZE = 128 * 1024 * 1024;
