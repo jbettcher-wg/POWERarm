@@ -76,11 +76,23 @@ startup, AOT option, cheaper linking; commit `c4948204c`, same method, CPU 100, 
 
 Warm builds are 3.2x (zlib) and 3.1x (Lua) faster than the M2 baseline.
 
+**After optimization round 4** (scalar FP F1–F6/F8, sound frontend MOV/MVN/NEG alias folds,
+MADD/MSUB/SMULL lowering, commutative constant identities, and zero-allocation `JumpTargetsMap`;
+same method, CPU 100, `m2time.sh`):
+
+| Build | Pi 5 native | Baseline | Round 1 | Rounds 2–3 | **Round 4 (Warm)** | **vs. Pi 5 Native** |
+|---|---|---|---|---|---|---|
+| zlib | 12.6 s | 133.6 s (10.6×) | 46.6 s (3.7×) | 42.3 s (3.4×) | **36.3 s** | **2.88×** |
+| Lua | 12.6 s | 118.3 s (9.4×) | 41.3 s (3.3×) | 38.7 s (3.1×) | **32.1 s** | **2.55×** |
+
+Warm builds are now **3.7× faster on zlib** (133.6 s -> 36.3 s) and **3.7× faster on Lua** (118.3 s -> 32.1 s)
+than baseline, breaking below 3× of native Raspberry Pi 5. On the iteration slice workload (`slice.sh`, CPU 108),
+cold slice improved to 19.77 s and warm slice to 17.21 s.
+
 Remaining costs and next targets are in `OPTIMIZATION-CHECKLIST.md`:
-- merging the register allocator, flag elimination and compare-branch fusion IR walks (translation);
-- scalar FP F1–F8;
-- NEON N1 (string early-exit fusion);
-- P1(b) (context registers across blocks);
+- NEON optimizations (vector FP N5, vector shift splats, FMA NaN gating);
+- P7 (acquire-only and release-only LSE RMWs);
+- P1(b) (context registers across blocks, gated on RA);
 - memory/issue-queue stalls.
 
 ## Exit criteria
