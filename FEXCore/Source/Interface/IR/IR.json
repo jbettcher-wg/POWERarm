@@ -2858,6 +2858,18 @@
       }
     },
     "Crypto": {
+      "FPR = VAESE FPR:$State, FPR:$Key": {
+        "Desc": "AArch64 AESE: ShiftRows(SubBytes(State ^ Key))",
+        "DestSize": "OpSize::i128Bit"
+      },
+      "FPR = VAESD FPR:$State, FPR:$Key": {
+        "Desc": "AArch64 AESD: InvShiftRows(InvSubBytes(State ^ Key))",
+        "DestSize": "OpSize::i128Bit"
+      },
+      "FPR = VAESMC FPR:$Vector": {
+        "Desc": "AArch64 AESMC: MixColumns(Vector)",
+        "DestSize": "OpSize::i128Bit"
+      },
       "FPR = VAESImc FPR:$Vector": {
         "Desc": "Does a stage of the inverse mix column transformation",
         "DestSize": "OpSize::i128Bit"

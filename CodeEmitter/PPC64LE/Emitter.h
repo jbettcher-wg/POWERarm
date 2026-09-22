@@ -1708,6 +1708,16 @@ public:
   //   AESIMC(S)   == vncipher(vcipherlast(S, 0), 0)
   // because vcipherlast(S,0) = ShiftRows(SubBytes(S)) and vncipher's leading
   // InvShiftRows/InvSubBytes then cancel it, leaving pure InvMixColumns.
+  // NOTE on lane layout: this identity holds in ISA (big-endian) byte order.
+  // In ARM64 little-endian lane order (state byte k at LE element k):
+  //   - ShiftRows in LE layout produces the shifted rows plus a 4-byte column
+  //     rotation, so:
+  //       AESE(s, k) = vsldoi(vcipherlast(s ^ k, 0), 4)
+  //       AESD(s, k) = vsldoi(vncipherlast(s ^ k, 0), 12)
+  //   - MixColumns in LE layout is conjugated by 32-bit word byte reversal:
+  //       AESMC(s)   = REV32(vcipher(vncipherlast(REV32(s), 0), 0))
+  //       AESIMC(s)  = REV32(vncipher(vcipherlast(REV32(s), 0), 0))
+  //     (REV32 is native xxbrw on ISA 3.0, or vrlw+vrlh on ISA 2.07).
   //
   // vsbox is plain SubBytes. Being bytewise it is the one AES primitive that
   // commutes with the byte reversal, so it needs no vperm bracketing.

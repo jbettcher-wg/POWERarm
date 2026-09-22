@@ -4,13 +4,11 @@
 // PMULL/PMULL2 (8- and 64-bit), SHA1C/SHA1M/SHA1P/SHA1H/SHA1SU0/SHA1SU1,
 // SHA256H/SHA256H2/SHA256SU0/SHA256SU1, CRC32B-X and CRC32CB-CX.
 //
-// AES: A64 and the IR's x86-shaped AES ops use the same state byte order, so
-//   AESE(s, k)  = ShiftRows(SubBytes(s ^ k))       = AESENCLAST(s ^ k, 0)
-//   AESD(s, k)  = InvShiftRows(InvSubBytes(s ^ k)) = AESDECLAST(s ^ k, 0)
-//   AESMC(s)    = MixColumns(s)                    = AESENC(AESDECLAST(s, 0), 0)
-//   AESIMC(s)   = InvMixColumns(s)                 = AESIMC(s)
-// (AESENC is MixColumns(ShiftRows(SubBytes(x))) ^ key, and AESDECLAST undoes
-// the ShiftRows and SubBytes.)
+// AES: lowered directly via dedicated vector crypto IR operations:
+//   AESE(s, k)  = ShiftRows(SubBytes(s ^ k))       -> _VAESE
+//   AESD(s, k)  = InvShiftRows(InvSubBytes(s ^ k)) -> _VAESD
+//   AESMC(s)    = MixColumns(s)                    -> _VAESMC
+//   AESIMC(s)   = InvMixColumns(s)                 -> _VAESImc
 //
 // SHA-512 (SHA512H/H2/SU0/SU1) and SHA-3 (EOR3/BCAX/RAX1/XAR) are not
 // translated: the reference machine (Cortex-A76) lacks them, so they are
@@ -26,26 +24,19 @@ using namespace FEXCore::IR;
 // ---------------------------------------------------------------------------
 
 bool IRBuilder::AESE(uint32_t Word) {
-  const auto RS = OpSize::i128Bit;
   const uint32_t Rd = Bits(Word, 4, 0);
-  Ref Zero = _VectorImm(RS, OpSize::i8Bit, 0);
-  StoreV(Rd, _VAESEncLast(RS, _VXor(RS, RS, LoadV(Rd), LoadV(Bits(Word, 9, 5))), Zero, Zero));
+  StoreV(Rd, _VAESE(LoadV(Rd), LoadV(Bits(Word, 9, 5))));
   return true;
 }
 
 bool IRBuilder::AESD(uint32_t Word) {
-  const auto RS = OpSize::i128Bit;
   const uint32_t Rd = Bits(Word, 4, 0);
-  Ref Zero = _VectorImm(RS, OpSize::i8Bit, 0);
-  StoreV(Rd, _VAESDecLast(RS, _VXor(RS, RS, LoadV(Rd), LoadV(Bits(Word, 9, 5))), Zero, Zero));
+  StoreV(Rd, _VAESD(LoadV(Rd), LoadV(Bits(Word, 9, 5))));
   return true;
 }
 
 bool IRBuilder::AESMC(uint32_t Word) {
-  const auto RS = OpSize::i128Bit;
-  Ref Zero = _VectorImm(RS, OpSize::i8Bit, 0);
-  Ref Unsubstituted = _VAESDecLast(RS, LoadV(Bits(Word, 9, 5)), Zero, Zero);
-  StoreV(Bits(Word, 4, 0), _VAESEnc(RS, Unsubstituted, Zero, Zero));
+  StoreV(Bits(Word, 4, 0), _VAESMC(LoadV(Bits(Word, 9, 5))));
   return true;
 }
 

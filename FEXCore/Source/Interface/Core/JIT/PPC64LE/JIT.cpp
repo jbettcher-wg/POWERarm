@@ -4894,7 +4894,8 @@ static constexpr uint8_t kOpCacheConstBody = 1u << 3; // ... and needs the per-o
 static constexpr auto OpCacheFlags = [] {
   std::array<uint8_t, static_cast<size_t>(IR::IROps::OP_LAST) + 1> T {};
 
-  for (auto Op : {IR::OP_VAESENC, IR::OP_VAESENCLAST, IR::OP_VAESDEC, IR::OP_VAESDECLAST, IR::OP_VAESIMC}) {
+  for (auto Op : {IR::OP_VAESENC, IR::OP_VAESENCLAST, IR::OP_VAESDEC, IR::OP_VAESDECLAST, IR::OP_VAESIMC,
+                  IR::OP_VAESE, IR::OP_VAESD, IR::OP_VAESMC}) {
     T[static_cast<size_t>(Op)] |= kOpCacheKeepAES;
   }
 

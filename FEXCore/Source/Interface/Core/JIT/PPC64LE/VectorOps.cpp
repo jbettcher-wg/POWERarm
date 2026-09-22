@@ -5760,9 +5760,83 @@ void PPC64JITCore::EmitAESLoadMask() {
   AESMaskCached = true;
 }
 
+// ---------------------------------------------------------------------------
+// AArch64 AES operations
+// ---------------------------------------------------------------------------
+
+// AESE: out = ShiftRows(SubBytes(state ^ key))
+// vcipherlast computes ShiftRows(SubBytes(s ^ k)) in big-endian byte order.
+// In LE layout, this is equivalent to ShiftRows + a 4-byte column rotation.
+// vsldoi 4 restores exact AArch64 Little-Endian lane ordering in 3 instructions.
+DEF_OP(VAESE) {
+  if (IROp->Size != IR::OpSize::i128Bit) { InvalidateAESCache(); Op_Unhandled(IROp, Node); return; }
+  const auto Op    = IROp->C<IR::IROp_VAESE>();
+  const auto Dst   = GetVReg(Node);
+  const auto State = GetVReg(Op->State);
+  const auto Key   = GetVReg(Op->Key);
+
+  vxor(VTMP2, State, Key);
+  vxor(VTMP1, VTMP1, VTMP1);
+  vcipherlast(VTMP2, VTMP2, VTMP1);
+  vsldoi(Dst, VTMP2, VTMP2, 4);
+}
+
+// AESD: out = InvShiftRows(InvSubBytes(state ^ key))
+// vncipherlast computes InvShiftRows(InvSubBytes(s ^ k)) in big-endian byte order.
+// In LE layout, this is equivalent to InvShiftRows + a 12-byte column rotation.
+// vsldoi 12 restores exact AArch64 Little-Endian lane ordering in 3 instructions.
+DEF_OP(VAESD) {
+  if (IROp->Size != IR::OpSize::i128Bit) { InvalidateAESCache(); Op_Unhandled(IROp, Node); return; }
+  const auto Op    = IROp->C<IR::IROp_VAESD>();
+  const auto Dst   = GetVReg(Node);
+  const auto State = GetVReg(Op->State);
+  const auto Key   = GetVReg(Op->Key);
+
+  vxor(VTMP2, State, Key);
+  vxor(VTMP1, VTMP1, VTMP1);
+  vncipherlast(VTMP2, VTMP2, VTMP1);
+  vsldoi(Dst, VTMP2, VTMP2, 12);
+}
+
+// AESMC: out = MixColumns(src).
+// vncipherlast(S,0) = InvShiftRows(InvSubBytes(S)); vcipher's leading
+// ShiftRows/SubBytes then cancel those exactly, leaving MixColumns.
+// In LE lane order, MixColumns is conjugated by 32-bit word byte reversal (REV32).
+// On ISA 3.0, xxbrw reverses words in 1 instruction (4 instructions total).
+DEF_OP(VAESMC) {
+  if (IROp->Size != IR::OpSize::i128Bit) { InvalidateAESCache(); Op_Unhandled(IROp, Node); return; }
+  const auto Op  = IROp->C<IR::IROp_VAESMC>();
+  const auto Dst = GetVReg(Node);
+  const auto Src = GetVReg(Op->Vector);
+
+  if (CTX->HostFeatures.SupportsISA30) {
+    xxbrw(VTMP2, Src);
+    vxor(VTMP1, VTMP1, VTMP1);
+    vncipherlast(VTMP2, VTMP2, VTMP1);
+    vcipher(VTMP2, VTMP2, VTMP1);
+    xxbrw(Dst, VTMP2);
+    return;
+  }
+
+  // ISA 2.07 rotate cascade for rev32
+  vspltisw(VTMP1, -16);
+  vrlw(VTMP2, Src, VTMP1);
+  vspltish(VTMP1, 8);
+  vrlh(VTMP2, VTMP2, VTMP1);
+  vxor(VTMP1, VTMP1, VTMP1);
+  vncipherlast(VTMP2, VTMP2, VTMP1);
+  vcipher(VTMP2, VTMP2, VTMP1);
+  vspltisw(VTMP1, -16);
+  vrlw(Dst, VTMP2, VTMP1);
+  vspltish(VTMP1, 8);
+  vrlh(Dst, Dst, VTMP1);
+}
+
 // AESIMC: out = InvMixColumns(src).
 // vcipherlast(S,0) = ShiftRows(SubBytes(S)); vncipher's leading
 // InvShiftRows/InvSubBytes then cancel those exactly, leaving InvMixColumns.
+// In LE lane order, InvMixColumns is conjugated by 32-bit word byte reversal (REV32).
+// On ISA 3.0, xxbrw reverses words in 1 instruction (4 instructions total).
 DEF_OP(VAESImc) {
   // Same width guard as the four round ops. VAESIMC is 128-bit-only in
   // practice, but this handler is on the AES-family allowlist in
@@ -5774,21 +5848,26 @@ DEF_OP(VAESImc) {
   const auto Src = GetVReg(Op->Vector);
 
   if (CTX->HostFeatures.SupportsISA30) {
-    xxbrq(VTMP2, Src);
+    xxbrw(VTMP2, Src);
     vxor(VTMP1, VTMP1, VTMP1); // stateless zero - never read VZERO's vector half
     vcipherlast(VTMP2, VTMP2, VTMP1);
     vncipher(VTMP2, VTMP2, VTMP1);
-    xxbrq(Dst, VTMP2);
+    xxbrw(Dst, VTMP2);
     return;
   }
 
-  EmitAESLoadMask();
-  vperm(VTMP2, Src, Src, VTMP1);
+  // ISA 2.07 rotate cascade for rev32
+  vspltisw(VTMP1, -16);
+  vrlw(VTMP2, Src, VTMP1);
+  vspltish(VTMP1, 8);
+  vrlh(VTMP2, VTMP2, VTMP1);
   vxor(VTMP1, VTMP1, VTMP1);   // stateless zero - never read VZERO's vector half
   vcipherlast(VTMP2, VTMP2, VTMP1);
   vncipher(VTMP2, VTMP2, VTMP1);
-  xxlor(AsVSX(VTMP1), VTMP3_VSX, VTMP3_VSX);
-  vperm(Dst, VTMP2, VTMP2, VTMP1);
+  vspltisw(VTMP1, -16);
+  vrlw(Dst, VTMP2, VTMP1);
+  vspltish(VTMP1, 8);
+  vrlh(Dst, Dst, VTMP1);
 }
 
 // The four round ops, with two fusions over the naive bracketed form:
