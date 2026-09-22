@@ -304,9 +304,14 @@ DEF_OP(CycleCounter) {
 DEF_OP(Add) {
   auto Op  = IROp->C<IR::IROp_Add>();
   auto Dst = GetReg(Node);
-  auto S1  = GetReg(Op->Src1);
+  auto S1Node = Op->Src1;
+  auto S2Node = Op->Src2;
   uint64_t Const;
-  if (IsInlineConstant(Op->Src2, &Const)) {
+  if (IsInlineConstant(S1Node, &Const) && !IsInlineConstant(S2Node, &Const)) {
+    std::swap(S1Node, S2Node);
+  }
+  auto S1  = GetReg(S1Node);
+  if (IsInlineConstant(S2Node, &Const)) {
     if (Const == 0) {
       if (Dst != S1) mr(Dst, S1);
     } else if (static_cast<int64_t>(Const) >= -32768 &&
@@ -333,7 +338,7 @@ DEF_OP(Add) {
       }
     }
   } else {
-    add(Dst, S1, GetReg(Op->Src2));
+    add(Dst, S1, GetReg(S2Node));
   }
   if (IROp->Size == IR::OpSize::i32Bit) {
     // Mask to 32 bits (zero-extend) — elided when provably dead, see Mask32Tail
@@ -372,27 +377,30 @@ DEF_OP(Sub) {
   bool S2Inline = IsInlineConstant(Op->Src2, &C2);
 
   if (S2Inline) {
-    // Dst = Src1 - C2  →  addi/subf with negated constant
     auto S1 = GetReg(Op->Src1);
-    // Negate in unsigned so C2 = 0x8000...0 cannot trip signed-overflow UB.
-    int64_t NegC = static_cast<int64_t>(~C2 + 1);
-    if (NegC >= -32768 && NegC <= 32767) {
-      addi(Dst, S1, static_cast<int16_t>(NegC));
+    if (C2 == 0) {
+      if (Dst != S1) mr(Dst, S1);
     } else {
-      // Same addis+addi form as DEF_OP(Add): subtracting C2 is adding -C2,
-      // and at i32Bit only the low 32 bits survive the mask below, so the
-      // int32-truncated negation is equivalent there.
-      int64_t V = NegC;
-      if (IROp->Size == IR::OpSize::i32Bit) {
-        V = static_cast<int32_t>(static_cast<uint32_t>(NegC));
-      }
-      int16_t Hi, Lo;
-      if (S1.idx != 0 && SplitAddisAddi(V, Hi, Lo)) {
-        addis(Dst, S1, Hi);
-        addi(Dst, Dst, Lo);
+      // Dst = Src1 - C2  →  addi/subf with negated constant
+      int64_t NegC = static_cast<int64_t>(~C2 + 1);
+      if (NegC >= -32768 && NegC <= 32767) {
+        addi(Dst, S1, static_cast<int16_t>(NegC));
       } else {
-        LoadConstant(TMP4, C2);
-        subf(Dst, TMP4, S1);
+        // Same addis+addi form as DEF_OP(Add): subtracting C2 is adding -C2,
+        // and at i32Bit only the low 32 bits survive the mask below, so the
+        // int32-truncated negation is equivalent there.
+        int64_t V = NegC;
+        if (IROp->Size == IR::OpSize::i32Bit) {
+          V = static_cast<int32_t>(static_cast<uint32_t>(NegC));
+        }
+        int16_t Hi, Lo;
+        if (S1.idx != 0 && SplitAddisAddi(V, Hi, Lo)) {
+          addis(Dst, S1, Hi);
+          addi(Dst, Dst, Lo);
+        } else {
+          LoadConstant(TMP4, C2);
+          subf(Dst, TMP4, S1);
+        }
       }
     }
   } else if (S1Inline) {
@@ -400,8 +408,12 @@ DEF_OP(Sub) {
     // (canonical x86 CF storage when CFInverted=true). PPC's subfic sets CA;
     // route through subf via a TMP register instead, even for small immediates.
     auto S2 = GetReg(Op->Src2);
-    LoadConstant(TMP4, C1);
-    subf(Dst, S2, TMP4);
+    if (C1 == 0) {
+      neg(Dst, S2);
+    } else {
+      LoadConstant(TMP4, C1);
+      subf(Dst, S2, TMP4);
+    }
   } else {
     auto S1 = GetReg(Op->Src1);
     subf(Dst, GetReg(Op->Src2), S1);  // subf RT,RA,RB → RT = RB - RA
@@ -452,16 +464,21 @@ DEF_OP(Not) {
 DEF_OP(Mul) {
   auto Op  = IROp->C<IR::IROp_Mul>();
   auto Dst = GetReg(Node);
-  auto S1  = GetReg(Op->Src1);
+  auto S1Node = Op->Src1;
+  auto S2Node = Op->Src2;
   uint64_t Const;
-  if (IsInlineConstant(Op->Src2, &Const) &&
+  if (IsInlineConstant(S1Node, &Const) && !IsInlineConstant(S2Node, &Const)) {
+    std::swap(S1Node, S2Node);
+  }
+  auto S1  = GetReg(S1Node);
+  if (IsInlineConstant(S2Node, &Const) &&
       static_cast<int64_t>(Const) >= -32768 &&
       static_cast<int64_t>(Const) <= 32767) {
     mulli(Dst, S1, static_cast<int16_t>(Const));
   } else {
-    GPR S2 = IsInlineConstant(Op->Src2, &Const)
+    GPR S2 = IsInlineConstant(S2Node, &Const)
                ? (LoadConstant(TMP4, Const), TMP4)
-               : GetReg(Op->Src2);
+               : GetReg(S2Node);
     if (IROp->Size <= IR::OpSize::i32Bit)
       mullw(Dst, S1, S2);
     else
@@ -852,9 +869,14 @@ DEF_OP(UDiv) {
 DEF_OP(Or) {
   auto Op  = IROp->C<IR::IROp_Or>();
   auto Dst = GetReg(Node);
-  auto S1  = GetReg(Op->Src1);
+  auto S1Node = Op->Src1;
+  auto S2Node = Op->Src2;
   uint64_t Const;
-  if (IsInlineConstant(Op->Src2, &Const)) {
+  if (IsInlineConstant(S1Node, &Const) && !IsInlineConstant(S2Node, &Const)) {
+    std::swap(S1Node, S2Node);
+  }
+  auto S1  = GetReg(S1Node);
+  if (IsInlineConstant(S2Node, &Const)) {
     if (Const == 0) {
       if (Dst != S1) mr(Dst, S1);
     } else if ((Const & 0xFFFF) == Const) {
@@ -875,7 +897,7 @@ DEF_OP(Or) {
       or_(Dst, S1, TMP4);
     }
   } else {
-    or_(Dst, S1, GetReg(Op->Src2));
+    or_(Dst, S1, GetReg(S2Node));
   }
   if (IROp->Size == IR::OpSize::i32Bit) Mask32Tail(Dst, Node);
 }
@@ -888,15 +910,20 @@ DEF_OP(And) {
   // above EmitAndMask.
   auto Op  = IROp->C<IR::IROp_And>();
   auto Dst = GetReg(Node);
-  auto S1  = GetReg(Op->Src1);
+  auto S1Node = Op->Src1;
+  auto S2Node = Op->Src2;
   uint64_t Const;
-  if (IsInlineConstant(Op->Src2, &Const)) {
+  if (IsInlineConstant(S1Node, &Const) && !IsInlineConstant(S2Node, &Const)) {
+    std::swap(S1Node, S2Node);
+  }
+  auto S1  = GetReg(S1Node);
+  if (IsInlineConstant(S2Node, &Const)) {
     if (!EmitAndMask(*this, Dst, S1, Const, IROp->Size == IR::OpSize::i32Bit)) {
       LoadConstant(TMP4, Const);
       and_(Dst, S1, TMP4);
     }
   } else {
-    and_(Dst, S1, GetReg(Op->Src2));
+    and_(Dst, S1, GetReg(S2Node));
   }
   if (IROp->Size == IR::OpSize::i32Bit) Mask32Tail(Dst, Node);
 }
@@ -904,10 +931,17 @@ DEF_OP(And) {
 DEF_OP(Xor) {
   auto Op  = IROp->C<IR::IROp_Xor>();
   auto Dst = GetReg(Node);
-  auto S1  = GetReg(Op->Src1);
+  auto S1Node = Op->Src1;
+  auto S2Node = Op->Src2;
   uint64_t Const;
-  if (IsInlineConstant(Op->Src2, &Const)) {
-    if ((Const & 0xFFFF) == Const) {
+  if (IsInlineConstant(S1Node, &Const) && !IsInlineConstant(S2Node, &Const)) {
+    std::swap(S1Node, S2Node);
+  }
+  auto S1  = GetReg(S1Node);
+  if (IsInlineConstant(S2Node, &Const)) {
+    if (Const == 0) {
+      if (Dst != S1) mr(Dst, S1);
+    } else if ((Const & 0xFFFF) == Const) {
       xori(Dst, S1, static_cast<uint16_t>(Const));
     } else if ((Const & 0xFFFF0000ull) == Const) {
       xoris(Dst, S1, static_cast<uint16_t>(Const >> 16));
@@ -921,7 +955,7 @@ DEF_OP(Xor) {
       xor_(Dst, S1, TMP4);
     }
   } else {
-    xor_(Dst, S1, GetReg(Op->Src2));
+    xor_(Dst, S1, GetReg(S2Node));
   }
   if (IROp->Size == IR::OpSize::i32Bit) Mask32Tail(Dst, Node);
 }
@@ -1171,9 +1205,14 @@ DEF_OP(AndShift) {
 DEF_OP(AndWithFlags) {
   auto Op  = IROp->C<IR::IROp_AndWithFlags>();
   auto Dst = GetReg(Node);
-  auto S1  = GetReg(Op->Src1);
+  auto S1Node = Op->Src1;
+  auto S2Node = Op->Src2;
   uint64_t Const;
-  if (IsInlineConstant(Op->Src2, &Const)) {
+  if (IsInlineConstant(S1Node, &Const) && !IsInlineConstant(S2Node, &Const)) {
+    std::swap(S1Node, S2Node);
+  }
+  auto S1  = GetReg(S1Node);
+  if (IsInlineConstant(S2Node, &Const)) {
     // Every arm here must leave CR0 holding the AND result and must not write
     // XER (the addco below owns CA/OV). andi./andis. and the record-form
     // rotates all satisfy that; the Rc=0 rotate forms DEF_OP(And) uses do not,
@@ -1191,7 +1230,7 @@ DEF_OP(AndWithFlags) {
       and__(Dst, S1, TMP4);  // and. sets CR0
     }
   } else {
-    and__(Dst, S1, GetReg(Op->Src2));
+    and__(Dst, S1, GetReg(S2Node));
   }
   // IR contract for `*WithFlags` logical: clear NZCV.C and NZCV.V (x86 TEST/
   // AND/OR/XOR all clear CF and OF). PPC and./andi. only set CR0; XER.CA/OV
@@ -2000,9 +2039,14 @@ DEF_OP(PExt) {
 DEF_OP(AddWithFlags) {
   auto Op  = IROp->C<IR::IROp_AddWithFlags>();
   auto Dst = GetReg(Node);
-  auto S1  = GetReg(Op->Src1);
+  auto S1Node = Op->Src1;
+  auto S2Node = Op->Src2;
   uint64_t Const;
-  bool S2Inline = IsInlineConstant(Op->Src2, &Const);
+  if (IsInlineConstant(S1Node, &Const) && !IsInlineConstant(S2Node, &Const)) {
+    std::swap(S1Node, S2Node);
+  }
+  auto S1  = GetReg(S1Node);
+  bool S2Inline = IsInlineConstant(S2Node, &Const);
 
   // For sub-64-bit ops, x86 CF is the carry-out of bit N-1 and OF is the signed
   // overflow at the same boundary. PPC's addco. produces those for bit 63.
@@ -2031,7 +2075,7 @@ DEF_OP(AddWithFlags) {
     if (S2Inline) {
       LoadConstant(TMP2, Const << Sh);
     } else {
-      sldi(TMP2, GetReg(Op->Src2), Sh);
+      sldi(TMP2, GetReg(S2Node), Sh);
     }
     addco_(TMP1, TMP1, TMP2);   // CA/OV reflect bit-(N-1) carry / signed overflow; CR0 = N/Z
     srdi(Dst, TMP1, Sh);        // zero-extended operand-size value, CR0 untouched
@@ -2048,7 +2092,7 @@ DEF_OP(AddWithFlags) {
     LoadConstant(TMP4, Const);
     addco_(Dst, S1, TMP4);  // addco. sets CA + SO/OV + CR0
   } else {
-    addco_(Dst, S1, GetReg(Op->Src2));
+    addco_(Dst, S1, GetReg(S2Node));
   }
 }
 
@@ -2110,9 +2154,14 @@ DEF_OP(SubWithFlags) {
 // dispatcher re-set r0=0. Use TMP3 (r5) as the scratch instead.
 DEF_OP(AddNZCV) {
   auto Op = IROp->C<IR::IROp_AddNZCV>();
-  auto S1 = GetReg(Op->Src1);
+  auto S1Node = Op->Src1;
+  auto S2Node = Op->Src2;
   uint64_t Const;
-  bool S2Inline = IsInlineConstant(Op->Src2, &Const);
+  if (IsInlineConstant(S1Node, &Const) && !IsInlineConstant(S2Node, &Const)) {
+    std::swap(S1Node, S2Node);
+  }
+  auto S1 = GetReg(S1Node);
+  bool S2Inline = IsInlineConstant(S2Node, &Const);
 
   // For 8/16/32-bit ops the carry/overflow boundary is bit N-1; do the addco.
   // on operands shifted left by (64-N) so XER.CA/OV reflect that boundary.
@@ -2122,7 +2171,7 @@ DEF_OP(AddNZCV) {
     if (S2Inline) {
       LoadConstant(TMP2, Const << Sh);
     } else {
-      sldi(TMP2, GetReg(Op->Src2), Sh);
+      sldi(TMP2, GetReg(S2Node), Sh);
     }
     addco_(TMP3, TMP1, TMP2);    // CA/OV correct; CR0.LT/EQ from shifted result
     // SF/ZF need a check on the *unshifted* truncated result. CR0 from addco_
@@ -2143,7 +2192,7 @@ DEF_OP(AddNZCV) {
     LoadConstant(TMP4, Const);
     addco_(TMP3, S1, TMP4);                            // CA + SO/OV + CR0
   } else {
-    addco_(TMP3, S1, GetReg(Op->Src2));
+    addco_(TMP3, S1, GetReg(S2Node));
   }
 }
 
@@ -2232,9 +2281,14 @@ void PPC64JITCore::EmitTestNZSetCR(GPR Result, IR::OpSize Size) {
 
 DEF_OP(TestNZ) {
   auto Op = IROp->C<IR::IROp_TestNZ>();
-  auto S1 = GetReg(Op->Src1);
+  auto S1Node = Op->Src1;
+  auto S2Node = Op->Src2;
   uint64_t Const;
-  if (IsInlineConstant(Op->Src2, &Const)) {
+  if (IsInlineConstant(S1Node, &Const) && !IsInlineConstant(S2Node, &Const)) {
+    std::swap(S1Node, S2Node);
+  }
+  auto S1 = GetReg(S1Node);
+  if (IsInlineConstant(S2Node, &Const)) {
     // Same CR0-setting / XER-preserving requirement as DEF_OP(AndWithFlags):
     // only andi., andis. and the record-form rotates qualify.
     if ((Const & 0xFFFF) == Const) {
@@ -2247,7 +2301,7 @@ DEF_OP(TestNZ) {
       and__(TMP3, S1, TMP4);
     }
   } else {
-    and__(TMP3, S1, GetReg(Op->Src2));
+    and__(TMP3, S1, GetReg(S2Node));
   }
   // IR contract: clear C and V (logical ops clear NZCV.C/V). PPC and./andi.
   // only set CR0; XER.CA/OV retain their prior values. Clear them here so

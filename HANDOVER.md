@@ -179,13 +179,17 @@ warm G5 (unit granularity re-sweep across 64/8, 128/8, 256/8, 256/16 with dynami
 FEAT_DotProd (asimddp), FEAT_RDM (asimdrdm), and FEAT_LRCPC (lrcpc)
 implemented and advertised across HWCap, ISAR0/ISAR1, /proc/cpuinfo and sysreg tests;
 test runner core-dump spam suppressed (3ca864f65);
-the NEON gap closure; the signal-frame fixes; the RLIMIT_AS, /proc, DC CIVAC, RBIT and VectorImm fixes.
+the NEON gap closure; the signal-frame fixes; the RLIMIT_AS, /proc, DC CIVAC, RBIT and VectorImm fixes;
+scalar FP optimizations complete: F1 (A64FArith, 603741288), F4 (zero-upper xxpermdi, 74bc1da0d),
+F6 (mtvsrwa/wz & mffscrni, 74bc1da0d), F8 (FRINT* native roundings, 74bc1da0d),
+F5 (CR0 direct FCmp & branch-free FCSEL/NZCVSelectV, 1cb25df75), F2 (A64FMinMax cold stubs, c38b6c8d8),
+and F3 (A64FMulAdd cold stub, c38b6c8d8); Gates: Gate 1 86/86, Gate 2 24/24, Gate 3 0 required fail.
 
 | # | Goal | Source | Estimate | Effort |
 |---|---|---|---|---|
 | 1 | **Warm G1, cold bytes out of the hot stream** (a) done 10245fbbf, (c) done b1c6b1fcc, (b) done 003933d8b, (d) done 53bd42492; **all of Warm G1 complete**. Hot stream contains solely hot instructions; link thunks, records, tail tables and RIP entries live in the cold region. Warm slice 20.95 s -> 18.65 s (-11%) | warm §7 G1 | all done; -11.8% warm slice | complete |
 | 2 | **Warm G3, cheaper paired calls and returns** done: `callret_sp` pinned in host GPR `r22`, guest X24 unpinned to keep dynamic RA pool at 5 registers, guard-page overflow on push/pop, eliminating 4 memory ops per BL/RET pair. Warm slice 17.69 s -> 17.37 s (-2.4%) | warm §7 G3 | done; -2.4% warm slice | complete |
-| 3 | **Warm G4, copy and zero-extension debris**: reverted (fe0e86b7c) due to clrldi elision + Bfe RA propagation leaking dirty upper 32 bits into SRA registers, breaking Mojo IPC (`VALIDATION_ERROR_ILLEGAL_POINTER`) and JS runtimes (VS Code, Antigravity, Firefox). Needs sound isolation between producer masking and 64-bit consumer reads | warm §7 G4 | reverted; needs redesign | open |
+| 3 | **Warm G4, copy and zero-extension debris**: sound frontend MOV/MVN/NEG alias folds in `TranslateDataProcessing.cpp` and commutative constant identities in `ALUOps.cpp` landed. Producer masking and 64-bit consumer reads kept soundly isolated without touching RA or eliding zero-extensions | warm §7 G4 | frontend folds & commutative identities done | complete |
 | 4 | **Warm G2, flags via CR / fusion** done 2db45e763, 2f8013325: A64 CMP/SUBS/CMN/ADDS fuse into B.cond and CSEL family; FCMP direct CR0 decoding; EntryNZCVLiveIn tracking; linker gating prevents direct linking to live-in flag targets. G2(c) exit-sinking recompute tested and rejected on cycle overhead (+1.2-2.6% cycles). **All of Warm G2 complete** | warm §7 G2 | done; warm cc1 cycles -4.5% | complete |
 | 5 | **Warm G5, unit granularity re-sweep** done: re-swept `RegionWindow`/`MaxLeaders` (`Decoder.cpp:155-156`) with the cache warm and G1-G4 in place across 64/8, 128/8, 256/8, and 256/16. Added dynamic environment overrides `POWERARM_REGIONWINDOW` and `POWERARM_MAXLEADERS` hashed in CodeCache config ID. Default 128/8 confirmed optimal for cold compile (19.69 s) and warm slice (16.91 s) | warm §7 G5 | done; sweep verified | complete |
 | 6 | **Cold G3, per-op cost cuts** done: skip `DynVRLiveIn` lookup and allocation for non-FPR compile units, add per-block `HasFlags` bit to skip DFCE backwards walk, `CompareFusion`, and `FoldBranch` scans for flag-free blocks, and hold `CodeInvalidationMutex` shared lock once across hit-path in `ExitFunctionLinkWithRecord`. Cold slice 19.69 s -> 19.51 s (-0.9% overall cold time, ~4% off cold JIT overhead); warm slice 16.92 s | cold §5 G3 | done; -4% cold JIT overhead | complete |
@@ -197,7 +201,7 @@ the NEON gap closure; the signal-frame fixes; the RLIMIT_AS, /proc, DC CIVAC, RB
 | 12 | **Warm G7**: THP for the code buffer, `nop` pad trimmed with G1. Done: code buffer PMD-aligned with `MADV_HUGEPAGE` hint (935b6b1f1), nop pads trimmed when link thunks and records moved out of hot stream to cold region (003933d8b, 53bd42492) | warm §7 G7 | iTLB 2.2x -> ~1x; -1-2% | complete |
 | 13 | **Startup S4**: L1 lookup cache fault reduction: resized to 128k entries (2 MiB, 32 x 64K pages) + prefault writable via `MADV_POPULATE_WRITE` (fallback single-byte touch per host page) avoiding zero-page read faults followed by COW write faults. `true` minor faults 372 -> 299; cold slice 20.26 -> 17.45 s (-2.81 s / -14%), warm slice 17.83 s | OPTIMIZATION-CHECKLIST S4 | cold slice -14% (-2.81 s) | complete |
 | 14 | **P7's last lever**: census of acquire/release-only RMWs across the reference set, then relax what the census allows | OPTIMIZATION-CHECKLIST P7 | small, compounding | small |
-| 15 | **Warm G8, the F/N series** | warm §7 G8 | invisible on this set (0.4% of instructions) | **blocked** on an FP-heavy benchmark and the anonymous-code census |
+| 15 | **Warm G8, the F/N series** done for scalar FP: F1, F2, F3, F4, F5, F6, F8 complete (Gate 1: 86/86, Gate 2: 24/24, Gate 3: 0 required fail); NEON vector FP remaining to loop back | warm §7 G8 | scalar FP done; NEON next | scalar FP complete |
 
 **Not levers** (measured, recorded in the docs): spill/fill volume (0.02%), block formation, IR-walk
 merging, `FEX_O0`, lower `MaxInst`, RA cross-block liveness for cold, the dispatcher and lookup
@@ -241,16 +245,12 @@ to initialise against 27 s cold (suspect cache install cost, item 24).
       before it (RCsc), exactly as LDAR keeps its own. Let the model decide, not reasoning.
    d. Implement it like the Relaxed flag (IR.json defaulted field, AtomicOps.cpp, the three LSE
       translators); gate with check.sh, litmus.c and the three-mode suite; measure once.
-5. **An FP-heavy benchmark. This now blocks the rest of the F series.** F1 landed with the
-   cold-block mechanism (`docs/powerarm/COLD-BLOCK-DESIGN.md`, `A64FArith`), and its only
-   measurable effect on the workloads we have is a slice regression: cold 23.90 -> 24.58 s
-   (+2.8%), warm flat. That matches its instruction counts -- the executed path loses 20 host
-   instructions per FP arithmetic op, but a one-FP-op unit emits 4 more because the 15-instruction
-   shared `NaNFix` body does not amortise there. The slice is a C compile and barely executes FP,
-   and nothing in A64Bench (crc32, sha256, vm, sort, bst) is FP-heavy either, so the win is real
-   and currently unmeasurable. Fix that before F2/F3/F6/N5 rather than shipping four more
-   landings on inference; they share the same stubs and bodies, so the per-unit cost amortises as
-   sites multiply.
+5. **Scalar FP series (F1-F6, F8) complete.** F1 (A64FArith, 603741288), F4 (xxpermdi, 74bc1da0d),
+   F6 (mtvsrwa/wz & mffscrni, 74bc1da0d), F8 (FRINT*, 74bc1da0d), F5 (FCmp CR0 direct & branch-free FCSEL, 1cb25df75),
+   F2 (A64FMinMax cold stubs, c38b6c8d8), and F3 (A64FMulAdd cold stub, c38b6c8d8) are landed.
+   F7 (FPSCR sync) analyzed and skipped (~0% win, no hot FPSCR writes). All Gates pass
+   (Gate 1 86/86 default and disableisa30, Gate 2 24/24, Gate 3 0 required fail).
+   NEON vector float (N5) can loop back after pipeline/frontend optimizations.
 6. fastppcx86: patch `0034` for the madvise bug (diagnosis written, patch not yet made).
 7. Thunks, per `docs/powerarm/THUNKS-DESIGN.md` (fastppcx86 already runs them on this GPU).
    **Stage 0 landed (f2f9d3cfb):** the AArch64 thunk ABI (HLT #0x0F3F marker, X16/X17, X30 callback

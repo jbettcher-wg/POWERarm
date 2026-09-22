@@ -47,6 +47,10 @@ bool IRBuilder::AddSubImmediate(uint32_t Word, bool IsSub, bool SetFlags) {
   Ref ImmRef = Constant(Imm);
 
   if (!SetFlags) {
+    if (Imm == 0) {
+      StoreRegSP(Rd, Is64, Src);
+      return true;
+    }
     StoreRegSP(Rd, Is64, IsSub ? _Sub(Size, Src, ImmRef) : _Add(Size, Src, ImmRef));
     return true;
   }
@@ -94,6 +98,19 @@ bool IRBuilder::LogicalImmediate(uint32_t Word) {
   const uint32_t Rn = Bits(Word, 9, 5);
   const uint32_t Rd = Bits(Word, 4, 0);
   const auto Size = SizeFor(Is64);
+
+  // MOV bitmask immediate aliases:
+  // ORR/EOR Xd, XZR, #imm -> 0 | imm = imm (MOV alias)
+  if ((Opc == 0b01 || Opc == 0b10) && Rn == 31) {
+    StoreRegSP(Rd, Is64, Constant(Imm));
+    return true;
+  }
+  // AND Xd, XZR, #imm -> 0 & imm = 0
+  if (Opc == 0b00 && Rn == 31) {
+    StoreRegSP(Rd, Is64, Constant(0));
+    return true;
+  }
+
   Ref Src = LoadX(Rn);
   Ref ImmRef = Constant(Imm);
 
@@ -390,15 +407,40 @@ bool IRBuilder::LogicalShifted(uint32_t Word) {
   const uint32_t Amount = Bits(Word, 15, 10);
   const uint32_t Rn = Bits(Word, 9, 5);
   const uint32_t Rd = Bits(Word, 4, 0);
+  const uint32_t Rm = Bits(Word, 20, 16);
   if (!Is64 && Amount >= 32) {
     return false;
   }
   const auto Size = SizeFor(Is64);
 
-  Ref Operand = ShiftReg(LoadX(Bits(Word, 20, 16)), ShiftType, Amount, Is64);
+  Ref Operand = ShiftReg(LoadX(Rm), ShiftType, Amount, Is64);
   if (Invert) {
     Operand = _Not(OpSize::i64Bit, Operand);
   }
+
+  // MOV/MVN aliases:
+  // ORR/ORN with Rn==31: 0 | Operand = Operand (MOV/MVN alias)
+  // EOR/EON with Rn==31: 0 ^ Operand = Operand (MOV/MVN alias)
+  if ((Opc == 0b01 || Opc == 0b10) && Rn == 31) {
+    StoreReg(Rd, Is64, Operand);
+    return true;
+  }
+  // ORR/EOR with Rm==31: Src | 0 = Src, Src ^ 0 = Src
+  if ((Opc == 0b01 || Opc == 0b10) && !Invert && Amount == 0 && Rm == 31) {
+    StoreReg(Rd, Is64, LoadX(Rn));
+    return true;
+  }
+  // AND/BIC with Rn==31: 0 & Operand = 0
+  if (Opc == 0b00 && Rn == 31) {
+    StoreReg(Rd, Is64, Constant(0));
+    return true;
+  }
+  // AND with Rm==31: Src & 0 = 0
+  if (Opc == 0b00 && !Invert && Amount == 0 && Rm == 31) {
+    StoreReg(Rd, Is64, Constant(0));
+    return true;
+  }
+
   Ref Src = LoadX(Rn);
 
   switch (Opc) {
@@ -418,12 +460,37 @@ bool IRBuilder::AddSubShifted(uint32_t Word) {
   const uint32_t Amount = Bits(Word, 15, 10);
   const uint32_t Rn = Bits(Word, 9, 5);
   const uint32_t Rd = Bits(Word, 4, 0);
+  const uint32_t Rm = Bits(Word, 20, 16);
   if (ShiftType == 0b11 || (!Is64 && Amount >= 32)) {
     return false;
   }
   const auto Size = SizeFor(Is64);
 
-  Ref Operand = ShiftReg(LoadX(Bits(Word, 20, 16)), ShiftType, Amount, Is64);
+  Ref Operand = ShiftReg(LoadX(Rm), ShiftType, Amount, Is64);
+
+  if (!SetFlags) {
+    if (!IsSub && Rn == 31) {
+      // ADD Rd, XZR, Operand -> 0 + Operand = Operand
+      StoreReg(Rd, Is64, Operand);
+      return true;
+    }
+    if (IsSub && Rn == 31) {
+      // SUB Rd, XZR, Operand -> 0 - Operand = -Operand (NEG alias)
+      StoreReg(Rd, Is64, _Neg(Size, Operand));
+      return true;
+    }
+    if (!IsSub && Rm == 31 && Amount == 0) {
+      // ADD Rd, Rn, XZR -> Rn + 0 = Rn
+      StoreReg(Rd, Is64, LoadX(Rn));
+      return true;
+    }
+    if (IsSub && Rm == 31 && Amount == 0) {
+      // SUB Rd, Rn, XZR -> Rn - 0 = Rn
+      StoreReg(Rd, Is64, LoadX(Rn));
+      return true;
+    }
+  }
+
   Ref Src = LoadX(Rn);
 
   if (!SetFlags) {
