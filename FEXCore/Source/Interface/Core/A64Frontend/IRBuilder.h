@@ -569,6 +569,66 @@ private:
     bool IsEntryPoint;
   };
 
+  struct JumpTargetEntry {
+    uint64_t first;
+    JumpTargetInfo second;
+  };
+
+  class JumpTargetsMap {
+  public:
+    using iterator = JumpTargetEntry*;
+    using const_iterator = const JumpTargetEntry*;
+
+    JumpTargetsMap() {
+      Storage.reserve(16);
+    }
+
+    void clear() noexcept {
+      Storage.clear();
+    }
+
+    iterator begin() noexcept { return Storage.data(); }
+    iterator end() noexcept { return Storage.data() + Storage.size(); }
+    const_iterator begin() const noexcept { return Storage.data(); }
+    const_iterator end() const noexcept { return Storage.data() + Storage.size(); }
+    size_t size() const noexcept { return Storage.size(); }
+    bool empty() const noexcept { return Storage.empty(); }
+
+    iterator find(uint64_t PC) noexcept {
+      for (size_t i = 0; i < Storage.size(); ++i) {
+        if (Storage[i].first == PC) {
+          return Storage.data() + i;
+        }
+      }
+      return end();
+    }
+
+    const_iterator find(uint64_t PC) const noexcept {
+      for (size_t i = 0; i < Storage.size(); ++i) {
+        if (Storage[i].first == PC) {
+          return Storage.data() + i;
+        }
+      }
+      return end();
+    }
+
+    bool contains(uint64_t PC) const noexcept {
+      return find(PC) != end();
+    }
+
+    std::pair<iterator, bool> try_emplace(uint64_t PC, JumpTargetInfo Info) {
+      auto It = find(PC);
+      if (It != end()) {
+        return {It, false};
+      }
+      Storage.push_back({PC, Info});
+      return {Storage.data() + (Storage.size() - 1), true};
+    }
+
+  private:
+    fextl::vector<JumpTargetEntry> Storage;
+  };
+
   struct HandlerEntry {
     std::string_view Name;
     InstHandler Handler;
@@ -576,7 +636,7 @@ private:
   static const HandlerEntry HandlerTable[];
 
   [[maybe_unused]] FEXCore::Context::ContextImpl* CTX;
-  fextl::map<uint64_t, JumpTargetInfo> JumpTargets;
+  JumpTargetsMap JumpTargets;
   FEXCore::IR::IROp_IRHeader* CurrentHeader {};
   uint64_t CurrentPC {};
 
