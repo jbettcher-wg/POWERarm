@@ -870,6 +870,11 @@ public:
     Emit32((31u << 26) | (vrt.idx << 21) | (ra.idx << 16) | (rb.idx << 11) | (435u << 1) | 1u);
   }
 
+  // mtvsrws VRT, RA (ISA 3.0) — MTVSRWS with TX=1: move word and splat across all 4 words
+  void mtvsrws(VR vrt, GPR ra) {
+    Emit32((31u << 26) | (vrt.idx << 21) | (ra.idx << 16) | (403u << 1) | 1u);
+  }
+
   // ===== VSX XX3-form (Power ISA 2.07 §1.6.10) =====
   // Layout (LE word bits): bits 0:31
   //   bit 0     = TX
@@ -1068,6 +1073,24 @@ public:
     Emit32((60u << 26) | (vrt << 21) | (vrb << 11) | ((xo & 0x1FFu) << 2) |
            (1u << 1) /*BX*/ | 1u /*TX*/);
   }
+  // xxbrh XT, XB — vector byte-reverse halfwords (ISA 3.0).
+  void xxbrh(VR t, VR b) {
+    Emit32((60u << 26) | (t.idx << 21) | (7u << 16) | (b.idx << 11) |
+           ((475u & 0x1FFu) << 2) | (1u << 1) /*BX*/ | 1u /*TX*/);
+  }
+
+  // xxbrw XT, XB — vector byte-reverse words (ISA 3.0).
+  void xxbrw(VR t, VR b) {
+    Emit32((60u << 26) | (t.idx << 21) | (15u << 16) | (b.idx << 11) |
+           ((475u & 0x1FFu) << 2) | (1u << 1) /*BX*/ | 1u /*TX*/);
+  }
+
+  // xxbrd XT, XB — vector byte-reverse doublewords (ISA 3.0).
+  void xxbrd(VR t, VR b) {
+    Emit32((60u << 26) | (t.idx << 21) | (23u << 16) | (b.idx << 11) |
+           ((475u & 0x1FFu) << 2) | (1u << 1) /*BX*/ | 1u /*TX*/);
+  }
+
   // xxbrq XT, XB — vector byte-reverse quadword. ISA 3.0 (POWER9) ONLY:
   // emitting this on POWER8 is a SIGILL, so every call site must be gated on
   // HostFeatures.SupportsISA30 with a 2.07 fallback arm (see

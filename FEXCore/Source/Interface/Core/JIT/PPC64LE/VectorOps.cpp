@@ -1606,9 +1606,9 @@ DEF_OP(VSQSHL) {
 // ---------------------------------------------------------------------------
 
 DEF_OP(VRev32) {
-  // Reverse ElemSz-sized elements within each 32-bit container, via the
-  // rotate cascade (docs/EMITTER_REVIEW.md finding 6; same construction as
-  // VRev64 below): rotate each word 16 swaps its halfwords; rotate each
+  // Reverse ElemSz-sized elements within each 32-bit container.
+  // On ISA 3.0: 8-bit elements within 32-bit words is native xxbrw (1 instruction).
+  // Otherwise, rotate cascade: rotate each word 16 swaps its halfwords; rotate each
   // halfword 8 swaps its bytes. i16 = one rotate, i8 = both. No perm
   // control, no stack staging, no load.
   const auto Op = IROp->C<IR::IROp_VRev32>();
@@ -1617,6 +1617,10 @@ DEF_OP(VRev32) {
   const auto Src = GetVReg(Op->Vector);
   if (ElemSz != IR::OpSize::i8Bit && ElemSz != IR::OpSize::i16Bit) {
     if (Dst != Src) vmr(Dst, Src);
+    return;
+  }
+  if (CTX->HostFeatures.SupportsISA30 && ElemSz == IR::OpSize::i8Bit) {
+    xxbrw(Dst, Src);
     return;
   }
   vspltisw(VTMP1, -16); // vrlw reads low 5 bits of each word = 16
@@ -1632,25 +1636,35 @@ DEF_OP(VRev64) {
   const auto ElemSz = Op->Header.ElementSize;
   const auto Dst = GetVReg(Node);
   const auto Src = GetVReg(Op->Vector);
-  // Reverse ElemSz-sized elements within each 64-bit lane, via the P8-legal
-  // rotate cascade — no perm control, no stack staging, no lvx (the old
-  // lowering was 15 insns of LoadConstant+std+lvx+vperm per emission; see
-  // docs/EMITTER_REVIEW.md finding 6):
-  //   rotate each doubleword by 32  (vrld)  — swaps the two words
-  //   rotate each word by 16        (vrlw)  — swaps halfwords within words
-  //   rotate each halfword by 8     (vrlh)  — swaps bytes within halfwords
-  // i32 needs only the first, i16 the first two, i8 all three.
-  // Shift-amount vectors, all splat-built (no memory):
-  //   32 per doubleword: vspltisw 8, doubled twice (vrld reads low 6 bits).
-  //   16 per word:       vspltisw -16 (0xFFFFFFF0; vrlw reads low 5 = 16).
-  //   8 per halfword:    vspltish 8.
   if (ElemSz == IR::OpSize::i64Bit) {
     if (Dst != Src) vmr(Dst, Src);
     return;
   }
-  // VTMP1 = {32,32} per doubleword lane (as words: each word holds 8->16->32;
-  // vrld only consumes bits 58:63 of each doubleword, so the high word's
-  // copy of the value is harmless).
+  // On ISA 3.0: xxbrd/xxbrw/xxbrh reverse elements directly without rotate constants.
+  if (CTX->HostFeatures.SupportsISA30) {
+    switch (ElemSz) {
+    case IR::OpSize::i8Bit:
+      xxbrd(Dst, Src);
+      return;
+    case IR::OpSize::i16Bit:
+      xxbrd(Dst, Src);
+      xxbrh(Dst, Dst);
+      return;
+    case IR::OpSize::i32Bit:
+      xxbrd(Dst, Src);
+      xxbrw(Dst, Dst);
+      return;
+    default:
+      break;
+    }
+  }
+  // Reverse ElemSz-sized elements within each 64-bit lane, via the P8-legal
+  // rotate cascade — no perm control, no stack staging, no lvx:
+  //   rotate each doubleword by 32  (vrld)  — swaps the two words
+  //   rotate each word by 16        (vrlw)  — swaps halfwords within words
+  //   rotate each halfword by 8     (vrlh)  — swaps bytes within halfwords
+  // Shift-amount vectors, all splat-built (no memory):
+  // VTMP1 = {32,32} per doubleword lane.
   vspltisw(VTMP1, 8);
   vadduwm(VTMP1, VTMP1, VTMP1);
   vadduwm(VTMP1, VTMP1, VTMP1);
@@ -3283,6 +3297,41 @@ DEF_OP(VInsElement) {
     return;
   }
 
+  if (CTX->HostFeatures.SupportsISA30) {
+    switch (ElemSz) {
+    case IR::OpSize::i8Bit:
+      vspltb(VTMP2, SrcVec, SplatByteIdx(SrcIdx));
+      break;
+    case IR::OpSize::i16Bit:
+      vsplth(VTMP2, SrcVec, SplatHalfIdx(SrcIdx));
+      break;
+    case IR::OpSize::i32Bit:
+      vspltw(VTMP2, SrcVec, SplatWordIdx(SrcIdx));
+      break;
+    default:
+      Op_Unhandled(IROp, Node);
+      return;
+    }
+    if (Dst != DestVec) {
+      vmr(Dst, DestVec);
+    }
+    const uint8_t elem_bytes = (uint8_t)IR::OpSizeToSize(ElemSz);
+    const uint32_t uimm = (16u - elem_bytes) - (DestIdx * elem_bytes);
+    switch (ElemSz) {
+    case IR::OpSize::i8Bit:
+      vinsertb(Dst, VTMP2, uimm);
+      return;
+    case IR::OpSize::i16Bit:
+      vinserth(Dst, VTMP2, uimm);
+      return;
+    case IR::OpSize::i32Bit:
+      vinsertw(Dst, VTMP2, uimm);
+      return;
+    default:
+      break;
+    }
+  }
+
   // i32 same-index insert at a doubleword *boundary* lane (LE element 0 or 3)
   // is a 2-insn xxsldwi pair, not a vperm. This is the movss/movsd-adjacent
   // reg-reg path: MOVScalarOpImpl/VMOVScalarOpImpl emit exactly
@@ -3401,9 +3450,29 @@ DEF_OP(VInsGPR) {
     return;
   }
 
+  uint8_t elem_bytes = (uint8_t)IR::OpSizeToSize(ElemSz);
+  if (CTX->HostFeatures.SupportsISA30) {
+    if (Dst != DestVec) {
+      vmr(Dst, DestVec);
+    }
+    const uint32_t uimm = (16u - elem_bytes) - (DestIdx * elem_bytes);
+    switch (ElemSz) {
+    case IR::OpSize::i8Bit:
+      vinsertb(Dst, VTMP2, uimm);
+      return;
+    case IR::OpSize::i16Bit:
+      vinserth(Dst, VTMP2, uimm);
+      return;
+    case IR::OpSize::i32Bit:
+      vinsertw(Dst, VTMP2, uimm);
+      return;
+    default:
+      break;
+    }
+  }
+
   // Now insert element 0 of VTMP2 into DestIdx of DestVec.
   // Reuse VInsElement pattern:
-  uint8_t elem_bytes = (uint8_t)IR::OpSizeToSize(ElemSz);
   uint8_t N = (uint8_t)(16 / elem_bytes);
   uint8_t dest_phys_start = (uint8_t)((N - 1 - DestIdx) * elem_bytes);
   // SrcIdx=0 in VTMP2. Element 0 in VTMP2: in LE, element 0 is at phys bytes [8..15]
@@ -4756,6 +4825,31 @@ DEF_OP(VDupFromGPR) {
   const auto Dst   = GetVReg(Node);
   const auto Src   = GetReg(Op->Src);
 
+  // On ISA 3.0:
+  // - 32-bit: mtvsrws splats word across all 4 elements in 1 instruction
+  // - 64-bit: mtvsrdd splats doubleword across both elements in 1 instruction
+  // - 8/16-bit: mtvsrws into VTMP1 splats across all words, then vspltb/vsplth
+  if (CTX->HostFeatures.SupportsISA30) {
+    switch (ElemSz) {
+    case IR::OpSize::i8Bit:
+      mtvsrws(VTMP1, Src);
+      vspltb(Dst, VTMP1, SplatByteIdx(0));
+      return;
+    case IR::OpSize::i16Bit:
+      mtvsrws(VTMP1, Src);
+      vsplth(Dst, VTMP1, SplatHalfIdx(0));
+      return;
+    case IR::OpSize::i32Bit:
+      mtvsrws(Dst, Src);
+      return;
+    case IR::OpSize::i64Bit:
+      mtvsrdd(Dst, Src, Src);
+      return;
+    default:
+      break;
+    }
+  }
+
   // mtvsrd defines BE dword 0 (phys[0..7]); BE dword 1 (phys[8..15]) is
   // undefined per ISA. SplatByteIdx(0)=15/SplatHalfIdx(0)=7/SplatWordIdx(0)=3
   // all read from the undefined half — duplicate the defined dword into both
@@ -4773,9 +4867,6 @@ DEF_OP(VDupFromGPR) {
     vspltw(Dst, VTMP1, SplatWordIdx(0));
     break;
   case IR::OpSize::i64Bit:
-    // VTMP1 above is already Src duplicated into both doublewords, which is
-    // exactly the i64 result -- the old stack roundtrip recomputed it. Still
-    // no vsldoi(VTMP1, VTMP1, ..., 8): that would read the ISA-undefined half.
     vmr(Dst, VTMP1);
     break;
   default:
