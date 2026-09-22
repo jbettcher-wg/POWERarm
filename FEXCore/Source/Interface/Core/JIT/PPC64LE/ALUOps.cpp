@@ -3765,7 +3765,11 @@ DEF_OP(GetRoundingMode) {
   // survives for the flag-sensitive paths that may sit between this and a
   // downstream Jcc.
   auto Dst = GetReg(Node);
-  mffs(f(0));   // f0 = FPSCR
+  if (CTX->HostFeatures.SupportsISA30) {
+    mffsl(f(0));   // f0 = FPSCR lightweight (0.7 cycles, non-serializing)
+  } else {
+    mffs(f(0));    // f0 = FPSCR (ISA 2.07 fallback)
+  }
   mffprd(Dst, f(0));
   rldicl(Dst, Dst, 0, 62);   // Dst = raw RN (0-3)
   sldi(TMP2, Dst, 2);        // TMP2 = RN * 4 (nibble shift amount)
@@ -3799,40 +3803,57 @@ DEF_OP(SetRoundingMode) {
   li(TMP1, 0x1230);           // packed x86 -> PPC RN map
   srd(TMP1, TMP1, TMP2);      // 64-bit shift; shift amount is 0-12
   rldicl(TMP1, TMP1, 0, 60);  // isolate the low nibble = new RN
-  mffs(f(0));
-  mffprd(TMP3, f(0));
-  rldicr(TMP3, TMP3, 0, 61);  // clear C bits 0-1 (= FPSCR RN field)
-  or_(TMP3, TMP3, TMP1);
-  mtfprd(f(0), TMP3);
-  mtfsf(0xFF, f(0));
+
+  if (CTX->HostFeatures.SupportsISA30) {
+    mtfprd(f(0), TMP1);
+    mffscrn(f(0), f(0));      // lightweight update of FPSCR.RN (no pipeline drain)
+  } else {
+    mffs(f(0));
+    mffprd(TMP3, f(0));
+    rldicr(TMP3, TMP3, 0, 61);  // clear C bits 0-1 (= FPSCR RN field)
+    or_(TMP3, TMP3, TMP1);
+    mtfprd(f(0), TMP3);
+    mtfsf(0xFF, f(0));
+  }
 }
 
 DEF_OP(PushRoundingMode) {
   auto Op  = IROp->C<IR::IROp_PushRoundingMode>();
   auto Dst = GetReg(Node);
 
-  // Save full FPSCR to Dst — PopRoundingMode will restore from this.
-  mffs(f(0));
-  mffprd(Dst, f(0));
-
   // Map x86 rounding mode to PPC FPSCR RN (compile-time constant).
   // x86: 0=near, 1=down, 2=up, 3=trunc; PPC: 0=near, 1=trunc, 2=up, 3=down
   static constexpr uint8_t MapTable[4] = { 0, 3, 2, 1 };
   const uint32_t NewRN = MapTable[Op->RoundMode & 3];
 
-  rldicr(TMP1, Dst, 0, 61);   // clear C bits 0-1 (FPSCR RN field)
-  ori(TMP1, TMP1, NewRN);     // insert new RN
-  mtfprd(f(0), TMP1);
-  mtfsf(0xFF, f(0));
+  if (CTX->HostFeatures.SupportsISA30) {
+    // mffscrni sets FPSCR.RN = NewRN and returns previous control bits in f0
+    mffscrni(f(0), NewRN);
+    mffprd(Dst, f(0));
+  } else {
+    // Save full FPSCR to Dst — PopRoundingMode will restore from this.
+    mffs(f(0));
+    mffprd(Dst, f(0));
+
+    rldicr(TMP1, Dst, 0, 61);   // clear C bits 0-1 (FPSCR RN field)
+    ori(TMP1, TMP1, NewRN);     // insert new RN
+    mtfprd(f(0), TMP1);
+    mtfsf(0xFF, f(0));
+  }
 }
 
 DEF_OP(PopRoundingMode) {
   auto Op    = IROp->C<IR::IROp_PopRoundingMode>();
   auto Saved = GetReg(Op->FPCR);
 
-  // Restore the full FPSCR saved by PushRoundingMode.
-  mtfprd(f(0), Saved);
-  mtfsf(0xFF, f(0));
+  if (CTX->HostFeatures.SupportsISA30) {
+    mtfprd(f(0), Saved);
+    mffscrn(f(0), f(0));      // restores previous FPSCR.RN from saved bits 62:63
+  } else {
+    // Restore the full FPSCR saved by PushRoundingMode.
+    mtfprd(f(0), Saved);
+    mtfsf(0xFF, f(0));
+  }
 }
 
 // =========================================================================

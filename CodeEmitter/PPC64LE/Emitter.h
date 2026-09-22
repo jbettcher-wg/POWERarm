@@ -2036,6 +2036,9 @@ public:
   void mffscrn(FPR frt, FPR frb) {
     Emit32((63u << 26) | (frt.idx << 21) | (22u << 16) | (frb.idx << 11) | (583u << 1));
   }
+  void mffsl(FPR frt) {
+    Emit32((63u << 26) | (frt.idx << 21) | (24u << 16) | (583u << 1));
+  }
 
   // =========================================================================
   // Load immediate large (pseudo-instructions using multiple instructions)
