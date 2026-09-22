@@ -218,8 +218,16 @@ private:
 
   Ref DecodeSRANode(const IROp_Header* IROp, Ref Node) {
     if (IROp->Op == OP_LOADREGISTER) {
+      const auto* Op = IROp->C<IR::IROp_LoadRegister>();
+      if (Op->Class == RegClass::FPR && Op->Reg >= 16) {
+        return nullptr;
+      }
       return Node;
     } else if (IROp->Op == OP_STOREREGISTER) {
+      const auto Reg = PhysicalRegister(Node);
+      if (Reg.AsRegClass() == RegClass::FPRFixed && Reg.Reg >= 16) {
+        return nullptr;
+      }
       auto V = IROp->C<IR::IROp_StoreRegister>()->Value;
       V.ClearKill();
       return IR->GetNode(V);
@@ -321,7 +329,7 @@ private:
     Ref Candidate = nullptr;
     uint32_t BestDistance = UINT32_MAX;
     uint8_t BestReg = ~0;
-    uint32_t Allocated = ((1u << Class->Count) - 1) & ~Class->Available;
+    uint32_t Allocated = ((Class->Count == 32) ? ~0u : ((1u << Class->Count) - 1)) & ~Class->Available;
 
     foreach_bit(i, Allocated) {
       Ref Node = Class->RegToSSA[i];
@@ -481,7 +489,7 @@ private:
 };
 
 void ConstrainedRAPass::AddRegisters(IR::RegClass Class, uint32_t RegisterCount) {
-  LOGMAN_THROW_A_FMT(RegisterCount <= 31, "Up to 31 regs supported");
+  LOGMAN_THROW_A_FMT(RegisterCount <= 32, "Up to 32 regs supported");
 
   Classes[FEXCore::ToUnderlying(Class)].Count = RegisterCount;
 }
@@ -606,7 +614,7 @@ void ConstrainedRAPass::Run(IREmitter* IREmit_) {
 
     // At the start of each block, all registers are available.
     for (auto& Class : Classes) {
-      Class.Available = (1u << Class.Count) - 1;
+      Class.Available = (Class.Count == 32) ? ~0u : ((1u << Class.Count) - 1);
     }
 
     auto BlockIROp = BlockHeader->CW<IR::IROp_CodeBlock>();

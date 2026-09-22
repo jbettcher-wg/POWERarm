@@ -224,8 +224,8 @@ static_assert(CPUState::VectorOffset(CPUState::NUM_VREGS) <= 32767, "v[] must st
 inline constexpr std::array<uint8_t, 17> StaticGPRGuestReg = {
   0, 1, 2, 3, 4, 5, 6, 7, 8, 19, 20, 21, 22, 23, 29, 30, CPUState::SP_INDEX,
 };
-// Guest V registers held in the static vector slots: V0-V15.
-inline constexpr size_t NumStaticVectorRegs = 16;
+// Guest V registers held in the static vector slots: V0-V31 (V0-V15 in host v0-v15, V16-V31 in host vs16-vs31).
+inline constexpr size_t NumStaticVectorRegs = 32;
 
 struct InternalThreadState;
 

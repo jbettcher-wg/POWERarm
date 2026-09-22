@@ -228,8 +228,8 @@ namespace {
     return !IROp->C<IROp_VFAddScalarInsert>()->ZeroUpperBits;
   }
 
-  // Number of guest XMMs held in static vector registers (SRAFPR = v0..v15).
-  constexpr uint32_t kNumSRAFPRs = 16;
+  // Number of guest vector registers held in static vector registers (V0..V31).
+  constexpr uint32_t kNumSRAFPRs = 32;
 
   // Which FPRFixed register does this StoreRegister write? The frontend stamps
   // it into the node's Reg byte rather than into the op struct, which is the

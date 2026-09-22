@@ -636,6 +636,24 @@ void SignalDelegator::SpillSRA(FEXCore::Core::InternalThreadState* Thread, void*
     memcpy(&Thread->CurrentFrame->State.v[i][0], &FPR, sizeof(__uint128_t));
   }
 
+#ifdef ARCHITECTURE_ppc64le
+  // Spill pinned VSX low bank vector registers (guest V16-V31 in host vs16-vs31)
+  if (ArchHelpers::Context::HasPPCVSXLowBankDW1(ucontext)) {
+    for (size_t i = 16; i < FEXCore::Core::NumStaticVectorRegs; i++) {
+      uint64_t dw0 = ArchHelpers::Context::GetPPCVSXLowBankDW0(ucontext, i);
+      uint64_t dw1 = ArchHelpers::Context::GetPPCVSXLowBankDW1(ucontext, i);
+      Thread->CurrentFrame->State.v[i][0] = dw1;
+      Thread->CurrentFrame->State.v[i][1] = dw0;
+    }
+  } else {
+    for (size_t i = 16; i < FEXCore::Core::NumStaticVectorRegs; i++) {
+      uint64_t dw0 = ArchHelpers::Context::GetPPCVSXLowBankDW0(ucontext, i);
+      Thread->CurrentFrame->State.v[i][0] = 0;
+      Thread->CurrentFrame->State.v[i][1] = dw0;
+    }
+  }
+#endif
+
   // Guest NZCV lives in CR0 (N, Z) and XER (C, V) while in JIT code.
   Thread->CurrentFrame->State.nzcv = static_cast<uint32_t>(ArchHelpers::Context::GetArmPState(ucontext));
 

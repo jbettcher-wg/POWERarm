@@ -850,8 +850,10 @@ private:
     const auto RegClass = Reg.AsRegClass();
     LOGMAN_THROW_A_FMT(RegClass == IR::RegClass::FPRFixed || RegClass == IR::RegClass::FPR,
                        "Unexpected RegClass: {}", Reg.Class);
-    if (RegClass == IR::RegClass::FPRFixed)
+    if (RegClass == IR::RegClass::FPRFixed) {
+      LOGMAN_THROW_A_FMT(Reg.Reg < 16, "GetVReg called on low-bank FPRFixed {}", Reg.Reg);
       return StaticFPRegisters[Reg.Reg];
+    }
     return GeneralFPRegisters[Reg.Reg];
   }
 
@@ -861,6 +863,34 @@ private:
       return GetVReg(IR::PhysicalRegister(W));
     }
     return GetVReg(IR::PhysicalRegister(IR->GetNode(W)));
+  }
+
+  static constexpr PPC64Emitter::VSXR GetSRAVSXReg(uint32_t Reg) {
+    if (Reg < 16) {
+      return PPC64Emitter::vsx(32u + Reg);
+    }
+    return PPC64Emitter::vsx(Reg);
+  }
+
+  [[nodiscard]]
+  PPC64Emitter::VSXR GetVSXReg(IR::PhysicalRegister Reg) const {
+    const auto RegClass = Reg.AsRegClass();
+    LOGMAN_THROW_A_FMT(RegClass == IR::RegClass::FPRFixed || RegClass == IR::RegClass::FPR,
+                       "Unexpected RegClass: {}", Reg.Class);
+    if (RegClass == IR::RegClass::FPRFixed)
+      return GetSRAVSXReg(Reg.Reg);
+    return PPC64Emitter::toVSX(GeneralFPRegisters[Reg.Reg]);
+  }
+
+  [[nodiscard]] PPC64Emitter::VSXR GetVSXReg(IR::Ref Node) const {
+    return GetVSXReg(IR::PhysicalRegister(Node));
+  }
+
+  [[nodiscard]] PPC64Emitter::VSXR GetVSXReg(IR::OrderedNodeWrapper W) const {
+    if (W.IsImmediate()) {
+      return GetVSXReg(IR::PhysicalRegister(W));
+    }
+    return GetVSXReg(IR::PhysicalRegister(IR->GetNode(W)));
   }
 
   [[nodiscard]]

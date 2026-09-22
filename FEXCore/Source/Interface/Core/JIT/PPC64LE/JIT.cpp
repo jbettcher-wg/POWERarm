@@ -2358,7 +2358,7 @@ PPC64JITCore::PPC64JITCore(FEXCore::Context::ContextImpl* ctx,
   RAPass->AddRegisters(IR::RegClass::GPR,      GeneralRegisters.size());
   RAPass->AddRegisters(IR::RegClass::GPRFixed,  StaticRegisters.size());
   RAPass->AddRegisters(IR::RegClass::FPR,       GeneralFPRegisters.size());
-  RAPass->AddRegisters(IR::RegClass::FPRFixed,  StaticFPRegisters.size());
+  RAPass->AddRegisters(IR::RegClass::FPRFixed,  FEXCore::Core::NumStaticVectorRegs);
   RAPass->PairRegs = PairRegisters;
 }
 

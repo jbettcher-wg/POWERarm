@@ -61,6 +61,19 @@ void PPC64EmitterBase::SpillStaticRegs(GPR tmp) {
     stvx(SRAFPR[i], STATE, tmp);
   }
 
+  // Spill pinned VSX low bank (V16-V31 in vs16-vs31) to State.v[16..31]
+  for (size_t i = 16; i < 32; ++i) {
+    int32_t v_off = static_cast<int32_t>(
+      offsetof(FEXCore::Core::CpuStateFrame, State.v[i][0]));
+    LoadImm32(tmp, static_cast<uint32_t>(v_off));
+    if (EmitterCTX->HostFeatures.SupportsISA30) {
+      stxvx(PPC64Emitter::vsx(i), STATE, tmp);
+    } else {
+      xxpermdi(VTMP3_VSX, PPC64Emitter::vsx(i), PPC64Emitter::vsx(i), 2);
+      stxvd2x(VTMP3_VSX, STATE, tmp);
+    }
+  }
+
   // Spill CALLRET_SP to State.callret_sp
   int32_t callret_sp_off = static_cast<int32_t>(
     offsetof(FEXCore::Core::CpuStateFrame, State.callret_sp));
@@ -166,6 +179,19 @@ void PPC64EmitterBase::FillStaticRegs(FillMode Mode) {
       offsetof(FEXCore::Core::CpuStateFrame, State.v[i][0]));
     LoadImm32(TMP1, static_cast<uint32_t>(v_off));
     lvx(SRAFPR[i], STATE, TMP1);
+  }
+
+  // Fill pinned VSX low bank (V16-V31 in vs16-vs31) from State.v[16..31]
+  for (size_t i = 16; i < 32; ++i) {
+    int32_t v_off = static_cast<int32_t>(
+      offsetof(FEXCore::Core::CpuStateFrame, State.v[i][0]));
+    LoadImm32(TMP1, static_cast<uint32_t>(v_off));
+    if (EmitterCTX->HostFeatures.SupportsISA30) {
+      lxvx(PPC64Emitter::vsx(i), STATE, TMP1);
+    } else {
+      lxvd2x(PPC64Emitter::vsx(i), STATE, TMP1);
+      xxpermdi(PPC64Emitter::vsx(i), PPC64Emitter::vsx(i), PPC64Emitter::vsx(i), 2);
+    }
   }
 
   // Restore NZCV across the dispatcher / C++ slow paths. Inverse of the

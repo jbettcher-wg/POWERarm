@@ -550,9 +550,9 @@ DEF_OP(StoreMemRev) {
 DEF_OP(LoadRegister) {
   auto Op = IROp->C<IR::IROp_LoadRegister>();
   if (Op->Class == IR::RegClass::FPR) {
-    auto Dst = GetVReg(Node);
-    auto Src = StaticFPRegisters[Op->Reg];
-    if (Dst != Src) vmr(Dst, Src);
+    auto Dst = GetVSXReg(Node);
+    auto Src = GetSRAVSXReg(Op->Reg);
+    if (Dst.idx != Src.idx) xxlor(Dst, Src, Src);
   } else {
     auto Dst = GetReg(Node);
     auto Src = StaticRegisters[Op->Reg];
@@ -565,9 +565,9 @@ DEF_OP(StoreRegister) {
   const auto Reg = IR::PhysicalRegister(Node);
   const auto RegClass = Reg.AsRegClass();
   if (RegClass == IR::RegClass::FPRFixed) {
-    auto Dst = GetVReg(Reg);
-    auto Src = GetVReg(Op->Value);
-    if (Dst != Src) vmr(Dst, Src);
+    auto Dst = GetVSXReg(Reg);
+    auto Src = GetVSXReg(Op->Value);
+    if (Dst.idx != Src.idx) xxlor(Dst, Src, Src);
   } else {
     auto Dst = GetReg(Reg);
     auto Src = GetReg(Op->Value);
