@@ -1642,6 +1642,21 @@ public:
   // vbpermq (POWER8+): bit permute quadword
   void vbpermq(VR vrt, VR vra, VR vrb) { EmitVX(vrt.idx, vra.idx, vrb.idx, 1356); }
 
+  // ISA 3.0 vector extract right-indexed (vextu*rx)
+  void vextubrx(GPR rt, GPR ra, VR vrb) { EmitVX(rt.idx, ra.idx, vrb.idx, 1805); }
+  void vextuhrx(GPR rt, GPR ra, VR vrb) { EmitVX(rt.idx, ra.idx, vrb.idx, 1869); }
+  void vextuwrx(GPR rt, GPR ra, VR vrb) { EmitVX(rt.idx, ra.idx, vrb.idx, 1933); }
+
+  // ISA 3.0 vector insert (vinsert*)
+  void vinsertb(VR vrt, VR vrb, uint32_t uimm) { EmitVX(vrt.idx, uimm & 0xFu, vrb.idx, 781); }
+  void vinserth(VR vrt, VR vrb, uint32_t uimm) { EmitVX(vrt.idx, uimm & 0xFu, vrb.idx, 845); }
+  void vinsertw(VR vrt, VR vrb, uint32_t uimm) { EmitVX(vrt.idx, uimm & 0xFu, vrb.idx, 909); }
+  void vinsertd(VR vrt, VR vrb, uint32_t uimm) { EmitVX(vrt.idx, uimm & 0xFu, vrb.idx, 973); }
+
+  // ISA 3.0 vector count trailing / leading zero least-significant bits byte
+  void vctzlsbb(GPR rt, VR vrb) { EmitVX(rt.idx, 1, vrb.idx, 1538); }
+  void vclzlsbb(GPR rt, VR vrb) { EmitVX(rt.idx, 0, vrb.idx, 1538); }
+
   // POWER8 ISA 2.07 crypto (AES + carry-less polynomial multiply + perm-xor).
   // VX-form except vpermxor which is VA-form. vsbox takes only VRA (VRB=0).
   //

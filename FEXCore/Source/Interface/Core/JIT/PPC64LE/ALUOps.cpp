@@ -4294,12 +4294,35 @@ DEF_OP(VExtractToGPR) {
     //   Index 0 (LE elem 0, phys[8..15]) -> rotate by 8 so phys[8..15] becomes phys[0..7]
     //   Index 1 (LE elem 1, phys[0..7])  -> read directly
     if (Index == 0) {
-      vsldoi(VTMP1, Vec, Vec, 8);
-      mfvsrd(Dst, VTMP1);
+      if (CTX->HostFeatures.SupportsISA30) {
+        mfvsrld(Dst, Vec);
+      } else {
+        vsldoi(VTMP1, Vec, Vec, 8);
+        mfvsrd(Dst, VTMP1);
+      }
     } else {
       mfvsrd(Dst, Vec);
     }
     return;
+  }
+
+  if (CTX->HostFeatures.SupportsISA30) {
+    switch (ElemSz) {
+    case IR::OpSize::i8Bit:
+      li(TMP1, Index);
+      vextubrx(Dst, TMP1, Vec);
+      return;
+    case IR::OpSize::i16Bit:
+      li(TMP1, Index * 2);
+      vextuhrx(Dst, TMP1, Vec);
+      return;
+    case IR::OpSize::i32Bit:
+      li(TMP1, Index * 4);
+      vextuwrx(Dst, TMP1, Vec);
+      return;
+    default:
+      break;
+    }
   }
 
   // Splat LE element Index to all lanes, mfvsrd physical bytes 8-15, shift down.
