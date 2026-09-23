@@ -13,8 +13,38 @@
 # A second positive control corrupts one character of a copy of a golden and
 # requires the comparison to report it.
 set -u
+
+# Re-entry, used only by the threadexit loop near the bottom of this file: it
+# runs the whole loop through `setsid` so the runs -- and anything the
+# emulator forks off them -- land in a process group of their own, which the
+# caller then reaps. Nothing else uses this; cwd is already OUTDIR.
+if [ "${1:-}" = --threadexit-loop ]; then
+  te_emu=$2
+  te_total=$3
+  te_batch=$4
+  echo $$ > threadexit_loop.pgid
+  te_runs=0
+  while [ "$te_runs" -lt "$te_total" ]; do
+    te_i=0
+    while [ "$te_i" -lt "$te_batch" ] && [ "$te_runs" -lt "$te_total" ]; do
+      # (The braces keep the shell's own "Segmentation fault" notice off the output.)
+      { (
+        ulimit -c 0 2> /dev/null
+        "$te_emu" ./threadexit > /dev/null 2>&1
+        echo $? >> threadexit_loop.codes
+      ) & } 2> /dev/null
+      te_i=$((te_i + 1))
+      te_runs=$((te_runs + 1))
+    done
+    wait
+  done
+  exit 0
+fi
+
 emu=${1:?usage: run.sh POWERARM_BINARY OUTDIR}
 out=${2:?usage: run.sh POWERARM_BINARY OUTDIR}
+# Absolute, so the re-entry above still resolves after the cd.
+me=$(cd "$(dirname "$0")" && pwd)/$(basename "$0")
 cd "$out" || exit 2
 
 # A cache directory of this run's own. Every test here is a fresh binary of a
@@ -312,6 +342,57 @@ if [ -f hostfault.golden ]; then
     report PASS hostfault_report "one report line first, unwinder fault survived, with and without SA_NODEFER handlers"
   else
     report FAIL hostfault_report "${hf_fail% ;}"
+  fi
+fi
+
+# Thread teardown racing process exit. threadexit runs once above like any
+# other test; that only proves it can pass. The race needs repetition and
+# concurrency, so run it again in parallel batches and require every exit to
+# be 0. A regression shows up as 139 (SIGSEGV/SI_KERNEL: the kernel could not
+# write a signal frame onto an alt stack that had already been freed) or as
+# 191 (128 + SIGNAL_FOR_PAUSE: the handler's dead-thread escape had set that
+# real-time signal to SIG_DFL process-wide). Both came from the same window
+# in SignalDelegator::UninstallTLSState.
+#
+# The code cache stays at its default (on), and that is load-bearing: with it
+# off the race is there but essentially never fires, because nothing else
+# holds FEX's allocator mutex long enough for the window to matter. On, the
+# exit save's own allocation traffic contends it and roughly half of these
+# runs died before the fix. Its cache directory is the suite's own (see
+# POWERARM_APP_CACHE_LOCATION at the top of this file).
+#
+# The loop runs in a session of its own (setsid) and kills that process group
+# when it is done. A guest whose threads are still running at exit makes the
+# code cache fork a save writer, and such a writer can deadlock inside fork(2)
+# itself, reparent to init and sit in futex_do_wait for good -- a separate,
+# pre-existing bug that has nothing to do with this test but that the test
+# would otherwise leave ~50 instances of behind on every suite run. The group
+# is reaped only after every direct child has been waited for, so anything
+# still in it is one of those. Without setsid the loop still runs; it just
+# cannot clean up after the emulator.
+if [ -f threadexit ]; then
+  te_total=96
+  te_batch=8
+  : > threadexit_loop.codes
+  rm -f threadexit_loop.pgid
+  if command -v setsid > /dev/null 2>&1 && setsid --wait true > /dev/null 2>&1; then
+    setsid --wait sh "$me" --threadexit-loop "$emu" "$te_total" "$te_batch" > /dev/null 2>&1
+    te_pg=$(cat threadexit_loop.pgid 2> /dev/null || echo)
+    case $te_pg in
+    '' | *[!0-9]*) ;;
+    *) kill -KILL -- -"$te_pg" 2> /dev/null ;;
+    esac
+    rm -f threadexit_loop.pgid
+  else
+    sh "$me" --threadexit-loop "$emu" "$te_total" "$te_batch" > /dev/null 2>&1
+    rm -f threadexit_loop.pgid
+  fi
+  te_bad=$(awk '$1 != 0' threadexit_loop.codes | wc -l)
+  te_ran=$(wc -l < threadexit_loop.codes)
+  if [ "$te_bad" = 0 ] && [ "$te_ran" = "$te_total" ]; then
+    report PASS threadexit_loop "$te_total exits with threads mid-teardown, all clean"
+  else
+    report FAIL threadexit_loop "$te_bad of $te_ran (of $te_total) did not exit 0: $(sort -n threadexit_loop.codes | uniq -c | tr '\n' ' ')"
   fi
 fi
 

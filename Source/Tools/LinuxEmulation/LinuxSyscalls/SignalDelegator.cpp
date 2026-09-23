@@ -499,15 +499,31 @@ static void SignalHandlerThunk(int Signal, siginfo_t* Info, void* UContext) {
   if (Signal == SIGSEGV || Signal == SIGBUS || Signal == SIGILL || Signal == SIGFPE) {
     TraceSyncSignal(Signal, Info, _context);
   }
-  auto ThreadObject = GetThreadFromAltStack(_context->uc_stack);
-  if (!ThreadObject) {
-    // No valid alt-stack: cannot dispatch this signal through FEX. Restore
-    // the default disposition and return -- the kernel will re-deliver on
-    // resume, preserving the original fault NIP/siginfo in the coredump.
+  // Both escapes below restore the default disposition so a genuine fault
+  // re-raises with its original NIP/siginfo instead of looping in this
+  // handler. SIGNAL_FOR_PAUSE is not a fault: FEX raises it itself, at threads
+  // it has already been told about, and its SIG_DFL is "terminate the
+  // process" (real-time signal 63). sigaction is process-wide, so one
+  // exiting thread taking an escape would arm every future pause signal in
+  // the process to kill it -- the same teardown race as the alt-stack one in
+  // UninstallTLSState, presenting as exit 128+63. A pause aimed at a thread
+  // FEX can no longer dispatch to is simply spent: the thread is on its way
+  // out, and the waiter it belongs to (ThreadManager::WaitForIdle) is woken by
+  // HandleThreadDeletion's refcount, not by this handler. Drop it and return.
+  const auto DeadThreadEscape = [Signal]() {
+    if (static_cast<size_t>(Signal) == SignalDelegator::SIGNAL_FOR_PAUSE) {
+      return;
+    }
     struct sigaction sa {};
     sa.sa_handler = SIG_DFL;
     sigemptyset(&sa.sa_mask);
     sigaction(Signal, &sa, nullptr);
+  };
+
+  auto ThreadObject = GetThreadFromAltStack(_context->uc_stack);
+  if (!ThreadObject) {
+    // No valid alt-stack: cannot dispatch this signal through FEX.
+    DeadThreadEscape();
     return;
   }
   // UAF guard (Steam SteamRT3 teardown race, 2026-05-15): the kernel can
@@ -515,8 +531,8 @@ static void SignalHandlerThunk(int Signal, siginfo_t* Info, void* UContext) {
   // (which sets ThreadInfo.IsZombie before leaking the slab). If the
   // object is marked zombie or the TID does not match the current kernel
   // TID, the ThreadObject is dead-mail and dereferencing ->Thread /
-  // ->SignalInfo crashes. Fall through to default disposition; coredump
-  // preserves original siginfo.
+  // ->SignalInfo crashes. Take the escape above; for a fault that means the
+  // default disposition, and the coredump preserves the original siginfo.
   const uint32_t HostTid = FHU::Syscalls::gettid();
   const pid_t HostPid = ::getpid();
   // If PID changed (process forked), update the thread object's PID and TID.
@@ -527,10 +543,7 @@ static void SignalHandlerThunk(int Signal, siginfo_t* Info, void* UContext) {
   const bool ObjIsZombie = ThreadObject->ThreadInfo.IsZombie.load(std::memory_order_acquire);
   const uint32_t ObjTid = ThreadObject->ThreadInfo.TID.load(std::memory_order_relaxed);
   if (ObjIsZombie || ObjTid != HostTid) {
-    struct sigaction sa {};
-    sa.sa_handler = SIG_DFL;
-    sigemptyset(&sa.sa_mask);
-    sigaction(Signal, &sa, nullptr);
+    DeadThreadEscape();
     return;
   }
   FEXCORE_PROFILE_ACCUMULATION(ThreadObject->Thread, AccumulatedSignalTime);
@@ -2520,21 +2533,65 @@ void SignalDelegator::RegisterTLSState(FEX::HLE::ThreadStateObject* Thread) {
 }
 
 void SignalDelegator::UninstallTLSState(FEX::HLE::ThreadStateObject* Thread) {
-  TLS_ThreadObject = nullptr;
-  FEXCore::Allocator::munmap(Thread->SignalInfo.AltStackPtr, SIGSTKSZ * 16);
-
-  Thread->SignalInfo.AltStackPtr = nullptr;
-
+  // ORDER IS LOAD-BEARING, and it is the kernel -- not this process -- that
+  // reads the memory being freed here.
+  //
+  // `sigaltstack` hands the kernel a base and a length that it keeps in
+  // task_struct (sas_ss_sp/sas_ss_size). From then until SS_DISABLE, every
+  // signal delivered to this thread with an SA_ONSTACK handler -- which is all
+  // of FEX's, including SIGNAL_FOR_PAUSE -- has its frame written there by
+  // setup_rt_frame. Freeing the memory first leaves the kernel pointing at a
+  // range this process no longer owns, and a signal in that window makes the
+  // frame write fail. The kernel's answer to that is force_sigsegv(): SIGSEGV
+  // is reset to SIG_DFL and raised, which is unblockable and takes the whole
+  // process down with si_code SI_KERNEL and si_addr 0 -- no guest fault, no
+  // handler, nothing in the log. Under the 64-bit allocator the window is not
+  // even "unmapped": OSAllocator_64Bit::Munmap re-reserves the range PROT_NONE,
+  // so the pages are present and the write faults just the same.
+  //
+  // That window used to be the whole of this function, and the exiting thread
+  // is exactly where a signal shows up: a guest _exit runs this while another
+  // guest thread's exit_group has ThreadManager::Stop() -> NotifyPause()
+  // tgkill'ing SIGNAL_FOR_PAUSE at every thread still on the list -- and this
+  // thread is still on it, because DestroyThread removes it later. Short-lived
+  // multi-threaded guests (ugrep, ripgrep, any pool that exits with work in
+  // flight) hit it constantly.
+  //
+  // So: disable first, free second. After SS_DISABLE the kernel writes signal
+  // frames to the thread's ordinary host stack, which is live -- we are running
+  // on it.
   stack_t altstack {};
   altstack.ss_flags = SS_DISABLE;
 
-  // Uninstall the alt stack
   const int Result = sigaltstack(&altstack, nullptr);
   if (Result == -1) {
-    LogMan::Msg::EFmt("Failed to uninstall alternative signal stack {}", strerror(errno));
+    // The only realistic failure is EPERM, which means this is being called
+    // while running ON the alt stack. Unmapping it then is instantly fatal,
+    // and handing the kernel a dangling registration is the bug above, so
+    // leak the mapping instead. The thread object is leaked already
+    // (ThreadManager::HandleThreadDeletion), so this changes no lifetime.
+    LogMan::Msg::EFmt("Failed to uninstall alternative signal stack {}; leaking it rather than freeing memory the "
+                      "kernel still writes signal frames to",
+                      strerror(errno));
+  } else {
+    FEXCore::Allocator::munmap(Thread->SignalInfo.AltStackPtr, SIGSTKSZ * 16);
   }
 
+  Thread->SignalInfo.AltStackPtr = nullptr;
+
   FEXCore::Allocator::UninstallTLSData(Thread->Thread);
+
+  // Cleared last, and for the same reason the disable comes first. A signal
+  // delivered during the teardown above now lands on the ordinary stack, where
+  // GetThreadFromAltStack can no longer read the thread pointer out of the
+  // (disabled) alt stack and falls back to this. With it already nulled,
+  // SignalHandlerThunk takes its "no valid alt-stack" escape and sets the
+  // signal to SIG_DFL -- and for SIGNAL_FOR_PAUSE, which is real-time signal
+  // 63, SIG_DFL is "terminate the process". That is the same teardown race
+  // wearing a different exit code (128+63 = 191). The object stays valid
+  // because HandleThreadDeletion leaks it, and the IsZombie/TID guards in the
+  // thunk already cover a signal that arrives after the thread is gone.
+  TLS_ThreadObject = nullptr;
 }
 
 void SignalDelegator::FrontendRegisterHostSignalHandler(int Signal, bool Required) {

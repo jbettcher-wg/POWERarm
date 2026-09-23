@@ -53,7 +53,11 @@ fi
 gcc -static -O2 -o callret "$here/callret.c"
 gcc -static -O2 -o sigpreempt "$here/sigpreempt.c"
 gcc -static -O2 -o sigedit "$here/sigedit.c"
-corpus="$corpus callret sigpreempt sigedit"
+# Threads leaving through a raw SYS_exit while main leaves through
+# exit_group. One run proves nothing on its own (it is a race); run.sh loops
+# it. Natively it is silent and exits 0, and so is the golden.
+gcc -static -O2 -pthread -o threadexit "$here/threadexit.c"
+corpus="$corpus callret sigpreempt sigedit threadexit"
 # POWERarm configuration for run.sh (<test>.env): vdso_syscalls counts
 # syscalls with a seccomp filter, and seccomp emulation is opt-in there.
 echo POWERARM_NEEDSSECCOMP=1 > vdso_syscalls.env
