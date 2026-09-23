@@ -142,7 +142,7 @@ code when their mode is executable or they are ELF files (shared libraries are
 often installed 0644). A segment is written to a temp file and published with
 `link(2)` under a shared `flock`. When
 all eight names are taken, the writer merges them into `<name>` under an
-exclusive `flock` (`LOCK_NB`, so it skips if busy). Readers take no lock: a
+exclusive `flock`. Readers take no lock: a
 mapped segment stays valid if a compaction unlinks it. There is no `fsync`.
 Entry hashes are checked when the reading boot differs from the writer's
 (`/proc/sys/kernel/random/boot_id`), which is when a crash could have torn the
@@ -193,6 +193,39 @@ run is a new build, so a new ConfigId, and with the default directory the
 suites' namespaces competed with the apps the cache exists for until the
 hour-old sweep took them.
 
+**The writing is forked off the guest thread.** Collecting the blocks needs the
+process (the code buffer walk under `CodeBufferWriteMutex`, and the guest's own
+bytes); writing them out does not. So a periodic or unmap pass builds its
+segments and then forks a writer, which writes the temp files, takes the
+namespace locks, compacts and sweeps while the guest runs on. Without it that
+work was on whichever guest thread reached the trigger inside `mmap`, `munmap`
+or `mprotect`: ~3 us per block, and once a namespace has all eight segment
+names, a whole-namespace rewrite (726 MB for VS Code's) per pass. The exit save
+is forked already (cold G4). `POWERARM_CODECACHEFORKWRITER=0` puts the writing
+back on the guest thread.
+
+The writer is a fork of a live multi-threaded guest, so it only writes: it takes
+no lock of the emulator's, reads no guest memory and never returns to emulation.
+It comes from `fork(3)` (whose `pthread_atfork` handlers leave the allocator
+consistent, which the raw `clone(2)` of a guest fork does not do), the parent
+forks twice and reaps the intermediate so the writer is init's child rather than
+the guest's -- invisible to the guest's `wait(2)`, and never a zombie -- and the
+writer drops every inherited descriptor: a shell's `$(guest ...)` reads the
+guest's stdout until every writer closes it, so a writer parked on a lock would
+otherwise hang the command substitution. It says nothing (`LogMan`'s handler can
+want a lock another thread held at the fork); what it wrote is in the counters,
+which it reports through a page shared with its parent. An `alarm(2)` bounds its
+life at a minute, and at most two run at once.
+
+Because the writer waits for the namespace lock (up to 20 s) instead of giving
+the segment up the moment `flock` says busy, a pass no longer loses what it
+compiled. It used to: nothing re-kept the records of a dropped segment, so with
+eight segments present -- where every periodic pass wants the exclusive lock --
+two processes of the same app saving in the same minute cost one of them
+everything since its last pass, for good. A pass that still publishes on the
+guest thread (the writer fork refused, or turned off) hands its records back to
+the next pass instead.
+
 **Processes.** A fork child forgets the parent's unsaved compiles. SMC modes
 whose per-block metadata is not stored disable loading: semantic patch, lazy
 invalidation, cheap tier, and store emulation or backpatch. The code map writer
@@ -221,6 +254,11 @@ now runs only for `POWERARM_SERVERCODECACHE=1`.
   links libraries it only initialises compiles fewer than 10 blocks. The
   program closes its stderr before exiting, and the counters still reach the
   log.
+- **Lock busy:** another process holds `LOCK_EX` on a library's namespace lock
+  for the whole guest run. The guest's `dlclose` pass cannot publish, and its
+  blocks must not be lost: the forked writer is parked on the lock (its temp
+  file is there, no segment is), and once the holder lets go the segment
+  appears and a later run loads it. Skipped without host `flock(1)`.
 - **Evict:** 20 MiB of another build's cache (a namespace this build's header
   check rejects), written last so a pure LRU would keep it, next to this
   build's namespaces under a cap just below the total. The other build's goes
@@ -283,10 +321,13 @@ warm and 11.9 s with the cache off (measured before the merge).
 The owner asked for three evaluations. Each was measured with the guest on
 CPU 100 and background work allowed on the physical cores 112/116/120/124.
 
-**Asynchronous cache writes: not implemented.** A cold Lua build spends
-1.5 s of 91.5 s writing segments, summed over all 116 processes
-(`save-ms`). A writer cannot outlive `exit_group`, so moving the write off the
-guest thread would need a forked helper per process, costing more than 1.3%.
+**Asynchronous cache writes: not implemented** -- overturned, twice. A cold Lua
+build spends 1.5 s of 91.5 s writing segments, summed over all 116 processes
+(`save-ms`), and the conclusion rested on "a writer cannot outlive
+`exit_group`". It can: cold G4 forks the exit save, and the periodic and unmap
+passes fork theirs (above). The premise was measured on a build's short
+processes, which is not where the cost is; a long-lived app pays the same write
+over and over, plus a compaction.
 
 **Background pre-translation and install: implemented, measured slower,
 removed.** A per-process `SCHED_IDLE` thread was placed outside the guest's

@@ -116,6 +116,7 @@ public:
   bool IsGeneratingCache = false;
 
   FEX_CONFIG_OPT(EnableCodeCaching, ENABLECODECACHINGWIP);
+  FEX_CONFIG_OPT(ForkWriter, CODECACHEFORKWRITER);
 
   // Held across a SaveNewBlocks pass in place of the shared CodeInvalidationMutex.
   // The save does unbounded, cross-process I/O (a blocking flock on the cache .lock,
@@ -210,9 +211,29 @@ public:
 
   struct CacheSegment;
   struct FileCache;
+  // One built segment waiting to be linked into its namespace, and the counters
+  // a forked writer reports through the page it shares with this process.
+  struct PendingSegment;
+  struct SaveWriterStats;
 
 private:
   FileCache* GetFileCache(const ExecutableFileInfo& FileInfo);
+
+  // Links built segments into their namespaces. WaitSeconds > 0 waits that long
+  // for a busy namespace lock (a forked writer, which nothing waits on); 0 gives
+  // the segment up at once (a guest thread, which everything waits on). Counters
+  // go to Shared when it is set, to Stats otherwise. Returns how many were
+  // written, and marks each PendingSegment with its own result.
+  size_t PublishSegments(std::span<PendingSegment> Pending, uint64_t ConfigId, uint64_t WaitSeconds, SaveWriterStats* Shared);
+  // Publishes Pending in a forked child and returns true, or false when the
+  // caller must publish them itself. See the block comment in CodeCache.cpp.
+  bool ForkSegmentWriter(std::span<PendingSegment> Pending, uint64_t ConfigId, const fextl::string& SweepDir, uint64_t CapBytes);
+  // The MAP_SHARED page the forked writers report through, created on first use.
+  SaveWriterStats* GetSaveWriterStats();
+
+  // Only touched under SaveIOLock.
+  SaveWriterStats* WriterStats {};
+  uint64_t LastWriterForkSeconds {};
 
   bool LoadEnabled = false;
 

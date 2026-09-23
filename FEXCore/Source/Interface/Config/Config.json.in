@@ -72,6 +72,21 @@
           "evicts apps that are still in use and makes them cold again."
         ]
       },
+      "CodeCacheForkWriter": {
+        "Type": "bool",
+        "Default": "true",
+        "Desc": [
+          "Write the code cache's periodic and unmap segments in a forked child.",
+          "The guest thread that reaches a save trigger (inside mmap, munmap or",
+          "mprotect) collects the blocks and forks; the child writes the segment,",
+          "waits for the namespace lock, compacts when all eight segment names are",
+          "taken and sweeps the directory. Without it that work -- of the order of",
+          "a second once a namespace needs compacting -- runs on the guest thread,",
+          "and a segment whose namespace lock is busy is dropped instead of waited",
+          "for. The exit save has its own writer either way.",
+          "Turn it off with POWERARM_CODECACHEFORKWRITER=0."
+        ]
+      },
       "EnableCodeCacheValidation": {
         "Type": "bool",
         "Default": "false",

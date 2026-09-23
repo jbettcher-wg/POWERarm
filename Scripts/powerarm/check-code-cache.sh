@@ -28,6 +28,9 @@
 #              library it dlopens and dlcloses, and DT_NEEDED libraries whose
 #              only code run is their constructors and destructors. It closes
 #              its stderr before exiting, and the counters must still arrive.
+#   lockbusy   a save pass whose namespace lock another process holds: its
+#              blocks must not be lost. The writer is forked and waits for the
+#              lock, so they are written once it frees, and they load.
 #   evict      over the size cap, a namespace of another emulator build is
 #              evicted before any of this build's, however recently it was
 #              written.
@@ -362,6 +365,56 @@ wait_gone() {
   done
   return 1
 }
+
+# ---------------------------------------------------------------------------
+# lockbusy
+# A pass that could not take its namespace's flock used to drop the segment
+# AND its records, so those blocks were gone for good: with all eight segment
+# names taken every periodic pass wants the exclusive lock, so two processes
+# saving in the same minute cost one of them everything it had compiled
+# (COLD-ROUND2 1.2(a); the comment claiming a later pass would write them was
+# wrong). The writer is forked now and waits for the lock instead.
+if command -v flock > /dev/null; then
+  mkdir -p "$w/lba" "$w/lbb/cache"
+  run "$w/lba" -- ./dropprog ./libdrop.so > /dev/null 2> "$w/lbprime.log"
+  ns=$(ls "$w/lba/cache" 2> /dev/null | grep '^libdrop\.so-' | grep -v '\.lock$' | head -1)
+  if [ -z "$ns" ]; then
+    bad "lockbusy: the prime run wrote no libdrop cache"
+  else
+    # A holder keeps LOCK_EX on the library's lock in the fresh cache for the
+    # whole guest run: the save cannot publish while it runs. -o keeps the lock
+    # out of the sleep child, so killing the holder really releases it.
+    : > "$w/lbb/cache/$ns.lock"
+    flock -o "$w/lbb/cache/$ns.lock" sleep 600 &
+    holder=$!
+    sleep 0.5
+    out=$(run "$w/lbb" -- ./dropprog ./libdrop.so 2> "$w/lockbusy.log")
+    [ "$out" = "$dropref" ] || bad "lockbusy: guest printed '$out', cache off '$dropref'"
+    parked=no
+    if wait_for 20 "$w/lbb/cache/$ns.tmp.*"; then
+      parked=yes
+      ls "$w/lbb/cache/$ns" > /dev/null 2>&1 &&
+        bad "lockbusy: a segment was published while the namespace lock was held"
+    fi
+    sleeper=$(pgrep -P "$holder" 2> /dev/null)
+    kill "$holder" 2> /dev/null
+    # shellcheck disable=SC2086
+    [ -n "$sleeper" ] && kill $sleeper 2> /dev/null
+    wait "$holder" 2> /dev/null
+    if [ "$parked" = no ]; then
+      bad "lockbusy: no writer was waiting for the busy namespace lock"
+    elif wait_for 40 "$w/lbb/cache/$ns"; then
+      ok "lockbusy: blocks of a pass that lost the namespace lock were written once it freed"
+    else
+      bad "lockbusy: blocks of a pass that lost the namespace lock never reached the cache"
+    fi
+    warm=$(run "$w/lbb" -- ./dropprog ./libdrop.so 2> "$w/lockbusy2.log")
+    [ "$warm" = "$dropref" ] && [ "$(counter loaded "$w/lockbusy2.log")" -gt 0 ] &&
+      ok "lockbusy: the delayed segment loads" || bad "lockbusy: the delayed segment did not load"
+  fi
+else
+  echo "skip lockbusy: host flock(1) not found"
+fi
 
 # ---------------------------------------------------------------------------
 # evict

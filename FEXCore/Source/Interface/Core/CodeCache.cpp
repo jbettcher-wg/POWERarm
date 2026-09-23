@@ -48,10 +48,13 @@
 #include <limits>
 #include <link.h>
 #include <optional>
+#include <csignal>
 #include <sys/file.h>
 #include <sys/mman.h>
 #include <sys/stat.h>
+#include <sys/syscall.h>
 #include <sys/uio.h>
+#include <sys/wait.h>
 #include <time.h>
 #include <unistd.h>
 
@@ -1248,6 +1251,20 @@ uint64_t CodeCache::ComputeCodeMapId(std::string_view Filename, int FD) {
   return SanitizeId(XXH3_64bits_digest(&State));
 }
 
+// Counters of the segment writers this process forks, in a page it shares
+// with them. See "Publishing a pass's segments, and the forked writer".
+struct CodeCache::SaveWriterStats {
+  std::atomic<uint64_t> SavedBlocks;
+  std::atomic<uint64_t> SavedSegments;
+  std::atomic<uint64_t> Compactions;
+  // Segments a writer could not publish: the namespace lock stayed busy for
+  // PublishLockWaitSeconds, or the temp file could not be written.
+  std::atomic<uint64_t> LostSegments;
+  // Writers running now. A writer killed outright cannot decrement it, so it is
+  // only believed for as long as a writer can live.
+  std::atomic<int32_t> Active;
+};
+
 bool CodeCache::WantsSave(bool IgnoreInterval) {
   // Two independent triggers so neither a burst of compilation nor a long quiet
   // stretch can leave an unbounded amount of work unsaved.
@@ -1295,6 +1312,14 @@ void CodeCache::ResetAfterFork() {
   // did not survive the fork.
   BlocksSinceSave.store(0, std::memory_order_relaxed);
   RanPeriodicPass.store(false, std::memory_order_relaxed);
+  // The writers this process forked report to a page it shares with them; the
+  // child gets a page of its own, so its stats line describes the child alone
+  // (and it cannot decrement an Active count it never incremented).
+  if (WriterStats) {
+    ::munmap(WriterStats, sizeof(SaveWriterStats));
+    WriterStats = nullptr;
+  }
+  LastWriterForkSeconds = 0;
   {
     std::lock_guard lk {RelocationSinkMutex};
     CompiledBlocks.clear();
@@ -1312,6 +1337,16 @@ void CodeCache::DumpStats() {
   auto L = [](const std::atomic<uint64_t>& A) {
     return A.load(std::memory_order_relaxed);
   };
+  // What this process's forked writers have published so far. They report into
+  // a shared page, so their work is this process's, wherever it ran; a writer
+  // still running when this line is printed is not in it.
+  uint64_t WrittenBlocks = 0, WrittenSegments = 0, WriterCompactions = 0, LostSegments = 0;
+  if (WriterStats) {
+    WrittenBlocks = L(WriterStats->SavedBlocks);
+    WrittenSegments = L(WriterStats->SavedSegments);
+    WriterCompactions = L(WriterStats->Compactions);
+    LostSegments = L(WriterStats->LostSegments);
+  }
   // The private copy of stderr, unless the guest has since put something else
   // on that descriptor number.
   const auto& Out = StatsStream();
@@ -1320,11 +1355,12 @@ void CodeCache::DumpStats() {
   if (Out.FD >= 0 && ::fstat(Out.FD, &St) == 0 && St.st_dev == Out.Dev && St.st_ino == Out.Ino) {
     FD = Out.FD;
   }
-  const auto Line = fextl::fmt::format("POWERarm code cache [{}]: loaded {} not-in-index {} no-file {} bad-entry {} guest-mismatch {} not-exec {} "
-                                       "reloc-failed {} saved {} blocks in {} segments, {} compactions; save-ms {} lookup-ms {}\n",
-                                       ::getpid(), L(Stats.Loaded), L(Stats.NotInIndex), L(Stats.NoFile), L(Stats.BadEntry),
-                                       L(Stats.GuestMismatch), L(Stats.NotExecutable), L(Stats.RelocFailed), L(Stats.SavedBlocks),
-                                       L(Stats.SavedSegments), L(Stats.Compactions), L(Stats.SaveNS) / 1000000, L(Stats.LoadNS) / 1000000);
+  const auto Line = fextl::fmt::format(
+    "POWERarm code cache [{}]: loaded {} not-in-index {} no-file {} bad-entry {} guest-mismatch {} not-exec {} "
+    "reloc-failed {} saved {} blocks in {} segments, {} compactions, {} lost; save-ms {} lookup-ms {}\n",
+    ::getpid(), L(Stats.Loaded), L(Stats.NotInIndex), L(Stats.NoFile), L(Stats.BadEntry), L(Stats.GuestMismatch), L(Stats.NotExecutable),
+    L(Stats.RelocFailed), L(Stats.SavedBlocks) + WrittenBlocks, L(Stats.SavedSegments) + WrittenSegments,
+    L(Stats.Compactions) + WriterCompactions, LostSegments, L(Stats.SaveNS) / 1000000, L(Stats.LoadNS) / 1000000);
   (void)::write(FD, Line.data(), Line.size());
 }
 
@@ -2117,6 +2153,226 @@ namespace {
   }
 } // namespace
 
+// =============================================================================
+// Publishing a pass's segments, and the forked writer
+//
+// A save pass has two halves. Collecting the blocks needs this process:
+// CollectLiveBlocks walks the code buffer under CodeBufferWriteMutex and reads
+// the guest's own bytes. Publishing them does not: it writes a temp file, takes
+// the namespace flock, links the temp into a free segment name (or, when all
+// MaxSegments names are taken, folds the whole namespace and it into one) and
+// sweeps the directory. That half is file I/O over a finished snapshot, and on
+// a namespace at MaxSegments it rewrites the namespace whole -- 726 MB for VS
+// Code's -- on whichever guest thread happened to reach the save trigger inside
+// an mmap, munmap or mprotect, while it holds SaveIOLock and, inside the walk,
+// CodeBufferWriteMutex. So the pass forks and the child publishes. Cold G4
+// already proved the tool on the exit save (a forked writer outlives its
+// parent); this is the same writer on the periodic and unmap passes, which are
+// the ones a long-lived app pays over and over.
+//
+// The child is a fork of a live multi-threaded guest, so it only ever writes:
+//   * no FEX lock is taken, no guest memory is read, no guest state is touched,
+//     and it never returns into emulation -- it _exit()s;
+//   * it comes from ::fork(), whose pthread_atfork handlers leave the allocator
+//     consistent in the child (jemalloc registers them; the raw clone(2) of
+//     ForkGuest does not run them). The built segments are inherited
+//     copy-on-write, so the fork copies page tables, not data;
+//   * the parent forks twice and reaps the intermediate, so the writer is
+//     init's child and not the guest's: a guest calling wait(2) can neither see
+//     it nor reap it, and no zombie waits for a parent that never waits;
+//   * it takes the namespace lock with a bounded wait instead of dropping the
+//     segment the moment the lock is busy, which is what lost the blocks of
+//     every pass that raced a sibling (COLD-ROUND2 1.2(a)); and an alarm bounds
+//     its whole life, so a lock a crashed sibling still holds costs one
+//     segment, never a stray process.
+//
+// Nothing waits for the writer. What it could not publish is counted, not
+// recovered: keeping the records for a child that is about to write them is how
+// the relocation sink grows without bound in a long-lived process. The pass
+// that publishes on the guest thread does hand its records back (see
+// SaveNewBlocks), because there nothing else will write them.
+// =============================================================================
+namespace {
+  // How long a writer child waits for a busy namespace lock before giving its
+  // segment up, and the hard bound on the child's whole life.
+  constexpr uint64_t PublishLockWaitSeconds = 20;
+  constexpr unsigned WriterLifetimeSeconds = 60;
+  // Writers of this process that may still be running before a pass publishes
+  // its segments itself instead. A lock held longer than one writer's wait is a
+  // sibling compacting a large namespace; queueing more writers behind it only
+  // spends forks.
+  constexpr int32_t MaxConcurrentWriters = 2;
+
+  // flock(LOCK_NB) with a bounded wait. A blocking flock(2) cannot be used even
+  // in a child: a crashed sibling's lock survives until its core dump drains,
+  // and a writer parked on that forever is exactly the stray process a forked
+  // writer must not become.
+  bool LockWithDeadline(int FD, int Operation, uint64_t WaitSeconds) {
+    const uint64_t Deadline = MonotonicSeconds() + WaitSeconds;
+    for (;;) {
+      if (::flock(FD, Operation | LOCK_NB) == 0) {
+        return true;
+      }
+      if ((errno != EWOULDBLOCK && errno != EINTR) || MonotonicSeconds() >= Deadline) {
+        return false;
+      }
+      const struct timespec Pause {.tv_sec = 0, .tv_nsec = 20 * 1000 * 1000};
+      ::nanosleep(&Pause, nullptr);
+    }
+  }
+
+  // Links Temp into a free segment name of Base, or folds every segment plus
+  // Temp into one when all MaxSegments names are taken. Temp is unlinked either
+  // way; the blocks are on disk only if this returns true.
+  bool PublishTempSegment(const fextl::string& Base, const fextl::string& Temp, uint64_t ConfigId, uint64_t FileId, uint64_t WaitSeconds,
+                          uint64_t* Compactions) {
+    bool Written = false;
+    const auto LockPath = Base + ".lock";
+    const int LockFD = ::open(LockPath.c_str(), O_RDWR | O_CREAT | O_CLOEXEC, 0644);
+    if (LockFD != -1) {
+      if (LockWithDeadline(LockFD, LOCK_SH, WaitSeconds)) {
+        for (size_t i = 0; i < MaxSegments && !Written; ++i) {
+          if (::link(Temp.c_str(), SegmentPath(Base, i).c_str()) == 0) {
+            Written = true;
+          } else if (errno != EEXIST) {
+            break;
+          }
+        }
+        ::flock(LockFD, LOCK_UN);
+      }
+      if (!Written && LockWithDeadline(LockFD, LOCK_EX, WaitSeconds)) {
+        // Every segment name is taken: fold them, and this segment, into one.
+        Written = CompactSegments(Base, Temp, ConfigId, FileId);
+        if (Written && Compactions) {
+          ++*Compactions;
+        }
+        ::flock(LockFD, LOCK_UN);
+      }
+      ::close(LockFD);
+    }
+    ::unlink(Temp.c_str());
+    return Written;
+  }
+} // namespace
+
+// One target's blocks, built and waiting for a segment name.
+struct CodeCache::PendingSegment {
+  fextl::string Base;
+  fextl::string Filename;
+  uint64_t FileId;
+  SegmentBuilder Builder;
+  // Indices into the pass's KeepRecord, so a segment that could not be written
+  // can hand its records back to a later pass.
+  fextl::vector<uint32_t> Records;
+  bool Written = false;
+};
+
+CodeCache::SaveWriterStats* CodeCache::GetSaveWriterStats() {
+  if (!WriterStats) {
+    // MAP_SHARED: the writers and this process must see one page, not a copy
+    // each, or a writer's counters die with it and the stats line understates
+    // every save this process made.
+    void* Page = ::mmap(nullptr, sizeof(SaveWriterStats), PROT_READ | PROT_WRITE, MAP_SHARED | MAP_ANONYMOUS, -1, 0);
+    if (Page == MAP_FAILED) {
+      return nullptr;
+    }
+    WriterStats = new (Page) SaveWriterStats {};
+  }
+  return WriterStats;
+}
+
+size_t CodeCache::PublishSegments(std::span<PendingSegment> Pending, uint64_t ConfigId, uint64_t WaitSeconds, SaveWriterStats* Shared) {
+  size_t Written = 0;
+  for (auto& P : Pending) {
+    std::error_code EC;
+    std::filesystem::create_directories(std::filesystem::path(std::string_view {P.Base}).parent_path(), EC);
+    auto Temp = WriteTempSegment(P.Base, [&](int FD) { return WriteSegment(FD, P.Builder, ConfigId, P.FileId); });
+    uint64_t Compactions = 0;
+    P.Written = !Temp.empty() && PublishTempSegment(P.Base, Temp, ConfigId, P.FileId, WaitSeconds, &Compactions);
+    if (Shared) {
+      // A writer says nothing: LogMan's handler can take a lock (stdio's) that
+      // another thread held at the fork, and the counters carry this anyway.
+      Shared->Compactions.fetch_add(Compactions, std::memory_order_relaxed);
+      if (P.Written) {
+        Shared->SavedBlocks.fetch_add(P.Builder.Blocks.size(), std::memory_order_relaxed);
+        Shared->SavedSegments.fetch_add(1, std::memory_order_relaxed);
+      } else {
+        Shared->LostSegments.fetch_add(1, std::memory_order_relaxed);
+      }
+    } else {
+      Stats.Compactions.fetch_add(Compactions, std::memory_order_relaxed);
+      if (P.Written) {
+        Stats.SavedBlocks.fetch_add(P.Builder.Blocks.size(), std::memory_order_relaxed);
+        Stats.SavedSegments.fetch_add(1, std::memory_order_relaxed);
+        LogMan::Msg::IFmt("Code cache: wrote {} blocks for {}", P.Builder.Blocks.size(), P.Filename);
+      } else if (Temp.empty()) {
+        LogMan::Msg::EFmt("Code cache: cannot write a segment for {}", P.Base);
+      }
+    }
+    Written += P.Written ? 1 : 0;
+  }
+  return Written;
+}
+
+bool CodeCache::ForkSegmentWriter(std::span<PendingSegment> Pending, uint64_t ConfigId, const fextl::string& SweepDir, uint64_t CapBytes) {
+  auto* Shared = GetSaveWriterStats();
+  if (!Shared) {
+    return false;
+  }
+  const uint64_t Now = MonotonicSeconds();
+  if (Shared->Active.load(std::memory_order_relaxed) >= MaxConcurrentWriters && Now < LastWriterForkSeconds + WriterLifetimeSeconds) {
+    return false;
+  }
+
+  const pid_t Middle = ::fork();
+  if (Middle < 0) {
+    return false;
+  }
+  if (Middle == 0) {
+    // The intermediate exists only so that the writer is not this guest's child.
+    if (::fork() == 0) {
+      Shared->Active.fetch_add(1, std::memory_order_relaxed);
+      // Every descriptor the guest had open is inherited, and holding one open
+      // makes this process something the world waits for: a shell's $(guest)
+      // reads the guest's stdout until EVERY writer closes it, so a writer
+      // parked on a namespace lock hung the command substitution for its whole
+      // wait. The writer needs none of them -- it opens the files it writes by
+      // name -- so it takes /dev/null for the three standard ones and drops the
+      // rest. A fatal fault in a writer is then a core, not a message.
+      if (const int Null = ::open("/dev/null", O_RDWR); Null != -1) {
+        ::dup2(Null, STDIN_FILENO);
+        ::dup2(Null, STDOUT_FILENO);
+        ::dup2(Null, STDERR_FILENO);
+        if (Null > STDERR_FILENO) {
+          ::close(Null);
+        }
+      }
+#ifdef SYS_close_range
+      ::syscall(SYS_close_range, 3, ~0U, 0);
+#endif
+      // Its own alarm, on a clean handler: whatever happens below -- a lock
+      // nobody releases, a host lock inherited mid-use -- this process is gone
+      // within the minute. Timers do not cross a fork, so this one is its own.
+      ::signal(SIGALRM, SIG_DFL);
+      ::alarm(WriterLifetimeSeconds);
+      const size_t Count = PublishSegments(Pending, ConfigId, PublishLockWaitSeconds, Shared);
+      if (Count != 0 && !SweepDir.empty()) {
+        SweepCacheDirectory(SweepDir, CapBytes);
+      }
+      Shared->Active.fetch_sub(1, std::memory_order_relaxed);
+      ::_exit(0);
+    }
+    ::_exit(0);
+  }
+  LastWriterForkSeconds = Now;
+  // The intermediate only forks and exits; reaping it here is what keeps the
+  // writer out of the guest's wait(2) and out of the process table.
+  int Status = 0;
+  while (::waitpid(Middle, &Status, 0) < 0 && errno == EINTR) { }
+  return true;
+}
+
+
 bool CodeCache::CompactAllSegments(const fextl::string& Base, uint64_t FileId) {
   if (Base.empty()) {
     return false;
@@ -2194,7 +2450,8 @@ size_t CodeCache::SaveNewBlocks(Core::InternalThreadState&, std::span<const Code
   // cannot defer them.
   const bool LastChance = Kind != CodeCacheSaveKind::Periodic;
 
-  size_t SegmentsWritten = 0;
+  // Built here, published below -- in a forked writer where one is possible.
+  fextl::vector<PendingSegment> Pending;
   for (const auto& Target : Targets) {
     const auto& Section = Target.Section;
     const auto& Base = Target.BasePath;
@@ -2273,60 +2530,61 @@ size_t CodeCache::SaveNewBlocks(Core::InternalThreadState&, std::span<const Code
       continue;
     }
 
-    std::error_code EC;
-    std::filesystem::create_directories(std::filesystem::path(std::string_view {Base}).parent_path(), EC);
-    auto Temp = WriteTempSegment(Base, [&](int FD) { return WriteSegment(FD, Builder, ConfigId, FileId); });
-    if (Temp.empty()) {
-      LogMan::Msg::EFmt("Code cache: cannot write a segment for {}", Base);
-      continue;
+    PendingSegment P;
+    P.Base = Base;
+    P.Filename = Section.FileInfo.Filename;
+    P.FileId = FileId;
+    P.Builder = std::move(Builder);
+    P.Records.reserve(Candidates.size());
+    for (uint64_t Guest : Candidates) {
+      P.Records.push_back(static_cast<uint32_t>(ByGuest[Guest]));
     }
-
-    const auto LockPath = Base + ".lock";
-    int LockFD = ::open(LockPath.c_str(), O_RDWR | O_CREAT | O_CLOEXEC, 0644);
-    bool Written = false;
-    if (LockFD != -1) {
-      // Non-blocking: a sibling (or a crashed sibling whose lock survives until
-      // its core dump drains) can hold the exclusive lock for an unbounded time,
-      // and blocking here would stall this thread indefinitely. It is only a
-      // cache, so on EWOULDBLOCK the segment is simply deferred (unlinked below)
-      // and written by a later pass.
-      if (::flock(LockFD, LOCK_SH | LOCK_NB) == 0) {
-        for (size_t i = 0; i < MaxSegments && !Written; ++i) {
-          if (::link(Temp.c_str(), SegmentPath(Base, i).c_str()) == 0) {
-            Written = true;
-          } else if (errno != EEXIST) {
-            break;
-          }
-        }
-        ::flock(LockFD, LOCK_UN);
-      }
-      if (!Written && ::flock(LockFD, LOCK_EX | LOCK_NB) == 0) {
-        // Every segment name is taken: fold them, and this segment, into one.
-        Written = CompactSegments(Base, Temp, ConfigId, FileId);
-        Stats.Compactions.fetch_add(Written ? 1 : 0, std::memory_order_relaxed);
-        ::flock(LockFD, LOCK_UN);
-      }
-      ::close(LockFD);
-    }
-    ::unlink(Temp.c_str());
-
-    if (Written) {
-      ++SegmentsWritten;
-      Stats.SavedBlocks.fetch_add(Builder.Blocks.size(), std::memory_order_relaxed);
-      Stats.SavedSegments.fetch_add(1, std::memory_order_relaxed);
-      LogMan::Msg::IFmt("Code cache: wrote {} blocks for {}", Builder.Blocks.size(), Section.FileInfo.Filename);
-    }
+    Pending.push_back(std::move(P));
   }
 
   const bool OneShot = (Kind == CodeCacheSaveKind::Final) && !RanPeriodicPass.load(std::memory_order_relaxed);
-  if (SegmentsWritten != 0 && !OneShot) {
-    // Every base path is in the one cache directory.
+  // Every base path is in the one cache directory.
+  fextl::string SweepDir;
+  uint64_t CapBytes = 0;
+  if (!OneShot) {
     for (const auto& Target : Targets) {
       if (!Target.BasePath.empty()) {
         const int64_t CapMiB = FEXCore::Config::Get_CODECACHEMAXSIZE();
-        const auto Dir = std::filesystem::path(std::string_view {Target.BasePath}).parent_path();
-        SweepCacheDirectory(fextl::string {Dir.string()}, CapMiB > 0 ? static_cast<uint64_t>(CapMiB) << 20 : 0);
+        CapBytes = CapMiB > 0 ? static_cast<uint64_t>(CapMiB) << 20 : 0;
+        SweepDir = fextl::string {std::filesystem::path(std::string_view {Target.BasePath}).parent_path().string()};
         break;
+      }
+    }
+  }
+
+  size_t SegmentsWritten = 0;
+  if (!Pending.empty()) {
+    // The final pass already runs in a forked writer of its own, with no parent
+    // left to stall (cold G4); every other pass is on a guest thread and hands
+    // the writing to one.
+    const bool Forked = Kind != CodeCacheSaveKind::Final && ForkWriter() && ForkSegmentWriter(Pending, ConfigId, SweepDir, CapBytes);
+    if (Forked) {
+      SegmentsWritten = Pending.size();
+    } else {
+      SegmentsWritten = PublishSegments(Pending, ConfigId, 0, nullptr);
+      if (Kind != CodeCacheSaveKind::Final) {
+        for (const auto& P : Pending) {
+          if (!P.Written) {
+            // The namespace lock was busy (a sibling appending or compacting),
+            // or the segment could not be written. Hand the records back: this
+            // pass published nothing for them and no writer will. Dropping them
+            // here is what lost the blocks of every process that raced a
+            // sibling -- with MaxSegments names taken every periodic pass wants
+            // the exclusive lock, so two processes saving in the same minute
+            // cost one of them its blocks for good.
+            for (uint32_t Index : P.Records) {
+              KeepRecord[Index] = true;
+            }
+          }
+        }
+      }
+      if (SegmentsWritten != 0 && !SweepDir.empty()) {
+        SweepCacheDirectory(SweepDir, CapBytes);
       }
     }
   }
