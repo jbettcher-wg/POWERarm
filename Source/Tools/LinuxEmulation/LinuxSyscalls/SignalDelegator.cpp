@@ -77,16 +77,56 @@ static bool SigTraceEnabled() {
 
 namespace {
 thread_local FEX::HLE::ThreadStateObject* TLS_ThreadObject {};
-}
 
-static FEX::HLE::ThreadStateObject* GetThreadFromAltStack(const stack_t& alt_stack) {
+// The alt-stack header: the two words immediately below ss_sp, written once by
+// RegisterTLSState and read on every single signal delivery.
+//
+//   [ss_sp - 16] cookie, keyed to ss_sp
+//   [ss_sp -  8] the owning ThreadStateObject
+//
+// Both sit inside the mprotect(PROT_READ) guard page at the bottom of the
+// mapping, so an alt-stack overflow faults instead of rewriting them. What
+// they cannot survive is the mapping going away: UninstallTLSState munmaps it,
+// and once the kernel hands that address range to the next mmap, the word at
+// ss_sp - 8 is whatever the new tenant put there. Reading it blind -- the
+// behaviour until 2026-09-22 -- turns a torn-down thread into a wild pointer
+// dereference inside a signal handler; only an exactly-zero word fell back to
+// TLS, and zero is the one garbage value that mapping is least likely to hold.
+//
+// The cookie is mixed with ss_sp so a verbatim copy of the header at some
+// other address is rejected too, and a header that does not carry it is not
+// trusted at all: TLS_ThreadObject is then the only answer, and a null from
+// that is a bail the caller reports rather than a pointer it dereferences.
+constexpr uint64_t AltStackCookieMagic = 0x504f5741524d5f53ULL; // "POWARM_S"
+constexpr size_t AltStackHeaderSize = 16;
+
+uint64_t AltStackCookieFor(const void* StackBase) {
+  return AltStackCookieMagic ^ reinterpret_cast<uint64_t>(StackBase);
+}
+} // namespace
+
+///< CookieRejected, when given, reports that the alt-stack header did not carry
+///< this process's cookie and the back-pointer beside it was therefore ignored.
+static FEX::HLE::ThreadStateObject* GetThreadFromAltStack(const stack_t& alt_stack, bool* CookieRejected = nullptr) {
+  if (CookieRejected) {
+    *CookieRejected = false;
+  }
   // The thread object lives just before the alt-stack begin. If the alt-stack
   // is disabled or has no base, fall back to thread-local storage.
   if ((alt_stack.ss_flags & SS_DISABLE) || alt_stack.ss_sp == nullptr) {
     return TLS_ThreadObject;
   }
+  const uint64_t Base = reinterpret_cast<uint64_t>(alt_stack.ss_sp);
+  uint64_t Cookie {};
   FEX::HLE::ThreadStateObject* ThreadObject {};
-  memcpy(&ThreadObject, reinterpret_cast<void*>(reinterpret_cast<uint64_t>(alt_stack.ss_sp) - 8), sizeof(void*));
+  memcpy(&Cookie, reinterpret_cast<void*>(Base - AltStackHeaderSize), sizeof(Cookie));
+  memcpy(&ThreadObject, reinterpret_cast<void*>(Base - sizeof(void*)), sizeof(void*));
+  if (Cookie != AltStackCookieFor(alt_stack.ss_sp)) {
+    if (CookieRejected) {
+      *CookieRejected = true;
+    }
+    return TLS_ThreadObject;
+  }
   if (!ThreadObject) {
     ThreadObject = TLS_ThreadObject;
   }
@@ -486,6 +526,143 @@ static void TraceSyncSignal(int Signal, siginfo_t* Info, ucontext_t* _context) {
 #endif
 }
 
+// The dispatcher emits three words that are illegal on purpose: a guest
+// rt_sigreturn lands on SignalHandlerReturnAddress{,RT} and the pause path on
+// PauseReturnInstruction, each trapping into HandleSIGILL, which recognises
+// the PC and restores the thread. A trap on one of them is never a program
+// error, it is FEX's own control flow -- so it must never reach the default
+// disposition, which kills the process with a NIP that looks like a wild jump
+// into an anonymous r-xp mapping. That is exactly the VS Code (Electron) and
+// Antigravity SIGILL/ILL_ILLOPC signature: the thunk bailed out below before
+// HandleSIGILL could run, because the thread was inside its teardown window.
+//
+// The addresses come from the delegator's SignalDelegatorConfig, which
+// ContextImpl::InitCore fills in before any thread registers; RegisterTLSState
+// republishes them here so the thunk can classify a PC with no thread object
+// in hand. Zero means "not published", and a zero PC never classifies.
+namespace {
+  std::atomic<uint64_t> DispatcherSigReturn {};
+  std::atomic<uint64_t> DispatcherSigReturnRT {};
+  std::atomic<uint64_t> DispatcherPauseReturn {};
+
+  enum class SentinelKind {
+    None,
+    SigReturn,
+    SigReturnRT,
+    PauseReturn,
+  };
+
+  SentinelKind ClassifySentinel(uint64_t PC) {
+    if (PC == 0) {
+      return SentinelKind::None;
+    }
+    if (PC == DispatcherSigReturn.load(std::memory_order_relaxed)) {
+      return SentinelKind::SigReturn;
+    }
+    if (PC == DispatcherSigReturnRT.load(std::memory_order_relaxed)) {
+      return SentinelKind::SigReturnRT;
+    }
+    if (PC == DispatcherPauseReturn.load(std::memory_order_relaxed)) {
+      return SentinelKind::PauseReturn;
+    }
+    return SentinelKind::None;
+  }
+
+  const char* SentinelName(SentinelKind Kind) {
+    switch (Kind) {
+    case SentinelKind::SigReturn: return "sigreturn";
+    case SentinelKind::SigReturnRT: return "sigreturn-rt";
+    case SentinelKind::PauseReturn: return "pause-return";
+    case SentinelKind::None: break;
+    }
+    return "none";
+  }
+
+  // One line, hand-formatted and written with write(2), for a thunk bail.
+  // This runs in a signal handler on a thread FEX has already half-dismantled,
+  // so no fmt, no allocation, no locks -- the same rules the fatal host-fault
+  // report above plays by, and the same SignalSafeLine.
+  //
+  // Unconditional rather than behind an env var: every caller is about to end
+  // either the thread or the process, and an unattended crash of this class
+  // has to arrive already explained. Naming the bail is the whole point; the
+  // 2026-09-22 cores could be narrowed to "one of these two" and no further.
+  void ReportThunkBail(const char* Kind, const char* Action, int Signal, const siginfo_t* Info, const stack_t& AltStack, uint64_t HostPC,
+                       SentinelKind Sentinel, const FEX::HLE::ThreadStateObject* ThreadObject, bool HaveObjectState, bool ObjIsZombie,
+                       uint32_t ObjTid, bool CookieRejected) {
+    SignalSafeLine Line;
+    Line.Str("POWERarm-SIGBAIL ");
+    Line.Str(Kind);
+    Line.Str(" sig=");
+    Line.SDec(Signal);
+    Line.Str(" code=");
+    Line.SDec(Info->si_code);
+    Line.Str(" pc=0x");
+    Line.Hex(HostPC);
+    Line.Str(" sentinel=");
+    Line.Str(SentinelName(Sentinel));
+    Line.Str(" tid=");
+    Line.Dec(FHU::Syscalls::gettid());
+    Line.Str(" obj=0x");
+    Line.Hex(reinterpret_cast<uint64_t>(ThreadObject));
+    if (HaveObjectState) {
+      Line.Str(" zombie=");
+      Line.Dec(ObjIsZombie ? 1 : 0);
+      Line.Str(" obj_tid=");
+      Line.Dec(ObjTid);
+    } else {
+      Line.Str(" zombie=<none> obj_tid=<none>");
+    }
+    Line.Str(" ss_sp=0x");
+    Line.Hex(reinterpret_cast<uint64_t>(AltStack.ss_sp));
+    Line.Str(" ss_flags=0x");
+    Line.Hex(static_cast<uint32_t>(AltStack.ss_flags));
+    Line.Str(" ss_cookie=");
+    Line.Str(CookieRejected ? "bad" : "ok");
+    Line.Str(" action=");
+    Line.Str(Action);
+    Line.Char('\n');
+    Line.Write(STDERR_FILENO);
+  }
+
+  // What becomes of a signal the thunk can neither dispatch nor recover.
+  //
+  // A synchronous fault has to go back to the default disposition: returning
+  // re-runs the faulting instruction, the kernel re-delivers, and the core
+  // then carries the original NIP and siginfo -- which is the entire reason
+  // these bails restore SIG_DFL at all.
+  //
+  // An asynchronous signal is the opposite case and used to be treated the
+  // same, which was a bug of its own. Returning consumes it, so SIG_DFL buys
+  // nothing here; what it does instead is disarm the guest's handler
+  // PROCESS-wide, so the next SIGUSR1 (or the pause signal, or SIGCHLD) to
+  // arrive anywhere kills the process outright. One missed delivery in one
+  // thread's teardown window became a later, unrelated, unexplainable death.
+  // Drop it and leave the disposition alone.
+  bool IsSyncFault(int Signal, const siginfo_t* Info) {
+    return (Signal == SIGSEGV || Signal == SIGBUS || Signal == SIGILL || Signal == SIGFPE || Signal == SIGTRAP) && Info->si_code > 0;
+  }
+
+  // A sentinel trap this thunk cannot route back into the dispatcher. The
+  // thread is stopped inside rt_sigreturn (or the pause return) with a guest
+  // context that can no longer be restored, so there is nothing left to resume
+  // -- but the process is not the one at fault and must not be taken down with
+  // it. End this thread only.
+  //
+  // SYS_exit, not exit_group and not the FEX exit path: async-signal-safe, and
+  // both callers are threads whose ThreadStateObject is already gone or
+  // already released by HandleThreadDeletion (call-ret stack unmapped, seccomp
+  // filters freed), so there is no FEX teardown left to run and resuming guest
+  // code would only fault on the freed mappings a moment later. A trapped
+  // thread holds no FEX mutex: the sentinel is reached from the rt_sigreturn
+  // syscall implementation, which takes only a deferred-signal refcount.
+  [[noreturn]] void ExitTrappedThread() {
+    for (;;) {
+      ::syscall(SYS_exit, 0);
+    }
+  }
+} // namespace
+
 static void SignalHandlerThunk(int Signal, siginfo_t* Info, void* UContext) {
   if (FatalReportTid.load(std::memory_order_relaxed) != 0) [[unlikely]] {
     if (FaultInFatalReport(Signal, Info)) {
@@ -499,15 +676,37 @@ static void SignalHandlerThunk(int Signal, siginfo_t* Info, void* UContext) {
   if (Signal == SIGSEGV || Signal == SIGBUS || Signal == SIGILL || Signal == SIGFPE) {
     TraceSyncSignal(Signal, Info, _context);
   }
-  auto ThreadObject = GetThreadFromAltStack(_context->uc_stack);
+
+  // Captured before anything can rewrite the context, and before the
+  // thread-object lookup, because both bails below need it.
+  const uint64_t HostPC = ArchHelpers::Context::GetPc(UContext);
+  const SentinelKind Sentinel = ClassifySentinel(HostPC);
+
+  bool CookieRejected = false;
+  auto ThreadObject = GetThreadFromAltStack(_context->uc_stack, &CookieRejected);
+  if (CookieRejected) [[unlikely]] {
+    // Recoverable (TLS answered, or is about to be reported as a bail), but
+    // never expected: say so, or a corrupted back-pointer stays invisible
+    // right up until the day TLS is null too.
+    ReportThunkBail("altstack-cookie", ThreadObject ? "tls-fallback" : "no-fallback", Signal, Info, _context->uc_stack, HostPC, Sentinel,
+                    ThreadObject, false, false, 0, true);
+  }
   if (!ThreadObject) {
-    // No valid alt-stack: cannot dispatch this signal through FEX. Restore
-    // the default disposition and return -- the kernel will re-deliver on
-    // resume, preserving the original fault NIP/siginfo in the coredump.
-    struct sigaction sa {};
-    sa.sa_handler = SIG_DFL;
-    sigemptyset(&sa.sa_mask);
-    sigaction(Signal, &sa, nullptr);
+    // No alt-stack back-pointer and no TLS: this thread is past
+    // UninstallTLSState, or never had FEX state at all. There is nothing to
+    // dispatch the signal through.
+    const bool Trapped = Sentinel != SentinelKind::None;
+    const bool Fault = IsSyncFault(Signal, Info);
+    ReportThunkBail("no-thread-object", Trapped ? "thread-exit" : (Fault ? "default-disposition" : "drop"), Signal, Info,
+                    _context->uc_stack, HostPC, Sentinel, ThreadObject, false, false, 0, CookieRejected);
+    if (Trapped) {
+      ExitTrappedThread();
+    }
+    if (Fault) {
+      // The kernel will re-deliver on resume, preserving the original fault
+      // NIP/siginfo in the coredump.
+      RestoreDefaultDisposition(Signal);
+    }
     return;
   }
   // UAF guard (Steam SteamRT3 teardown race, 2026-05-15): the kernel can
@@ -527,10 +726,37 @@ static void SignalHandlerThunk(int Signal, siginfo_t* Info, void* UContext) {
   const bool ObjIsZombie = ThreadObject->ThreadInfo.IsZombie.load(std::memory_order_acquire);
   const uint32_t ObjTid = ThreadObject->ThreadInfo.TID.load(std::memory_order_relaxed);
   if (ObjIsZombie || ObjTid != HostTid) {
-    struct sigaction sa {};
-    sa.sa_handler = SIG_DFL;
-    sigemptyset(&sa.sa_mask);
-    sigaction(Signal, &sa, nullptr);
+    if (Sentinel != SentinelKind::None) {
+      if (!ObjIsZombie) {
+        // Stale bookkeeping, not a dead object. Whichever way the lookup went,
+        // the answer belongs to THIS thread by construction -- the alt-stack
+        // header is per-thread and cookie-checked, and TLS is per-thread by
+        // definition -- so a TID field that disagrees is a field FEX failed to
+        // update, not evidence that the object is someone else's. Restoring is
+        // both safe and the only correct outcome.
+        const bool Restored =
+          ThreadObject->SignalInfo.Delegator->HandleSentinelTrap(ThreadObject, Signal, Info, UContext);
+        ReportThunkBail("object-not-live", Restored ? "restore" : "thread-exit", Signal, Info, _context->uc_stack, HostPC, Sentinel,
+                        ThreadObject, true, ObjIsZombie, ObjTid, CookieRejected);
+        if (Restored) {
+          return;
+        }
+        ExitTrappedThread();
+      }
+      // Zombie: HandleThreadDeletion has already unmapped this thread's
+      // call-ret stack and freed its seccomp filters, so a restored guest
+      // context would fault on FEX's own freed memory within a few blocks.
+      // Nothing to go back to; end the thread instead of the process.
+      ReportThunkBail("object-not-live", "thread-exit", Signal, Info, _context->uc_stack, HostPC, Sentinel, ThreadObject, true, ObjIsZombie,
+                      ObjTid, CookieRejected);
+      ExitTrappedThread();
+    }
+    const bool Fault = IsSyncFault(Signal, Info);
+    ReportThunkBail("object-not-live", Fault ? "default-disposition" : "drop", Signal, Info, _context->uc_stack, HostPC, Sentinel,
+                    ThreadObject, true, ObjIsZombie, ObjTid, CookieRejected);
+    if (Fault) {
+      RestoreDefaultDisposition(Signal);
+    }
     return;
   }
   FEXCORE_PROFILE_ACCUMULATION(ThreadObject->Thread, AccumulatedSignalTime);
@@ -1308,6 +1534,15 @@ bool SignalDelegator::HandleSIGILL(FEXCore::Core::InternalThreadState* Thread, i
   }
 
   return false;
+}
+
+bool SignalDelegator::HandleSentinelTrap(FEX::HLE::ThreadStateObject* ThreadObject, int Signal, void* Info, void* UContext) {
+  // Deliberately NOT the HandleSignal path. This thread failed the thunk's
+  // liveness checks, so the host-handler chain, the deferred-signal
+  // bookkeeping and any guest delivery are all off the table. HandleSIGILL is
+  // the single step the trapped PC actually needs, and it touches only this
+  // thread's own saved context and the ucontext the kernel handed us.
+  return HandleSIGILL(ThreadObject->Thread, Signal, Info, UContext);
 }
 
 bool SignalDelegator::HandleSignalPause(FEXCore::Core::InternalThreadState* Thread, int Signal, void* info, void* ucontext) {
@@ -2483,6 +2718,17 @@ void SignalDelegator::RegisterTLSState(FEX::HLE::ThreadStateObject* Thread) {
   TLS_ThreadObject = Thread;
   FEXCore::Allocator::RegisterTLSData(Thread->Thread);
 
+  // Publish the dispatcher's deliberate traps for SignalHandlerThunk, which is
+  // a free function with no delegator to ask. ContextImpl::InitCore has run
+  // SetConfig by the time any thread registers (FEXInterpreter calls InitCore
+  // before the parent thread's RegisterTLSState), so these are the real
+  // addresses from the first registration onwards. Re-storing the same values
+  // per thread is three relaxed stores and keeps the publish next to the one
+  // place that is guaranteed to be after SetConfig.
+  DispatcherSigReturn.store(Config.SignalHandlerReturnAddress, std::memory_order_relaxed);
+  DispatcherSigReturnRT.store(Config.SignalHandlerReturnAddressRT, std::memory_order_relaxed);
+  DispatcherPauseReturn.store(Config.PauseReturnInstruction, std::memory_order_relaxed);
+
   Thread->SignalInfo.Delegator = this;
 
   // Set up our signal alternative stack
@@ -2490,13 +2736,16 @@ void SignalDelegator::RegisterTLSState(FEX::HLE::ThreadStateObject* Thread) {
   Thread->SignalInfo.AltStackPtr = FEXCore::Allocator::mmap(nullptr, SIGSTKSZ * 16, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
   FEXCore::Allocator::VirtualName("POWERarmMem_Misc", reinterpret_cast<void*>(Thread->SignalInfo.AltStackPtr), SIGSTKSZ * 16);
   stack_t altstack {};
-  altstack.ss_sp = reinterpret_cast<void*>(reinterpret_cast<uint64_t>(Thread->SignalInfo.AltStackPtr) + 8);
-  altstack.ss_size = SIGSTKSZ * 16 - 8;
+  altstack.ss_sp = reinterpret_cast<void*>(reinterpret_cast<uint64_t>(Thread->SignalInfo.AltStackPtr) + AltStackHeaderSize);
+  altstack.ss_size = SIGSTKSZ * 16 - AltStackHeaderSize;
   altstack.ss_flags = 0;
   LOGMAN_THROW_A_FMT(!!altstack.ss_sp, "Couldn't allocate stack pointer");
 
-  // Copy the thread object to the start of the alt-stack
-  memcpy(Thread->SignalInfo.AltStackPtr, &Thread, sizeof(void*));
+  // Write the alt-stack header (see GetThreadFromAltStack): the cookie, then
+  // the thread object at ss_sp - 8, which is where every delivery reads it.
+  const uint64_t Cookie = AltStackCookieFor(altstack.ss_sp);
+  memcpy(Thread->SignalInfo.AltStackPtr, &Cookie, sizeof(Cookie));
+  memcpy(reinterpret_cast<void*>(reinterpret_cast<uint64_t>(Thread->SignalInfo.AltStackPtr) + sizeof(Cookie)), &Thread, sizeof(void*));
 
   // Protect the first page of the alt-stack for overflow protection.
   // HOST: alt-stack overflow guard. mprotect rounds the length up to the host page, so
@@ -2520,11 +2769,14 @@ void SignalDelegator::RegisterTLSState(FEX::HLE::ThreadStateObject* Thread) {
 }
 
 void SignalDelegator::UninstallTLSState(FEX::HLE::ThreadStateObject* Thread) {
-  TLS_ThreadObject = nullptr;
-  FEXCore::Allocator::munmap(Thread->SignalInfo.AltStackPtr, SIGSTKSZ * 16);
-
-  Thread->SignalInfo.AltStackPtr = nullptr;
-
+  // Order matters, and it used to be the other way round. Unmapping the alt
+  // stack while the kernel still has sas_ss_sp pointing at it leaves a window
+  // in which any delivery tries to build its frame on unmapped memory: the
+  // kernel cannot, and force_sigsegv kills the process outright -- no thunk,
+  // no report, a core that blames whatever the thread happened to be doing.
+  // Disable first, so a delivery in the window lands on the normal stack and
+  // resolves through TLS_ThreadObject instead, which is why that is cleared
+  // last rather than first.
   stack_t altstack {};
   altstack.ss_flags = SS_DISABLE;
 
@@ -2533,6 +2785,11 @@ void SignalDelegator::UninstallTLSState(FEX::HLE::ThreadStateObject* Thread) {
   if (Result == -1) {
     LogMan::Msg::EFmt("Failed to uninstall alternative signal stack {}", strerror(errno));
   }
+
+  FEXCore::Allocator::munmap(Thread->SignalInfo.AltStackPtr, SIGSTKSZ * 16);
+  Thread->SignalInfo.AltStackPtr = nullptr;
+
+  TLS_ThreadObject = nullptr;
 
   FEXCore::Allocator::UninstallTLSData(Thread->Thread);
 }

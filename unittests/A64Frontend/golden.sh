@@ -53,7 +53,10 @@ fi
 gcc -static -O2 -o callret "$here/callret.c"
 gcc -static -O2 -o sigpreempt "$here/sigpreempt.c"
 gcc -static -O2 -o sigedit "$here/sigedit.c"
-corpus="$corpus callret sigpreempt sigedit"
+# Threaded: a guest signal handler returning through rt_sigreturn while its
+# thread is torn down, and again while the process exits under it.
+gcc -static -O2 -pthread -o sigteardown "$here/sigteardown.c"
+corpus="$corpus callret sigpreempt sigedit sigteardown"
 # POWERarm configuration for run.sh (<test>.env): vdso_syscalls counts
 # syscalls with a seccomp filter, and seccomp emulation is opt-in there.
 echo POWERARM_NEEDSSECCOMP=1 > vdso_syscalls.env

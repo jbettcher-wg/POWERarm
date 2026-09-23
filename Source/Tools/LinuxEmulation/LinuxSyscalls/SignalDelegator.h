@@ -163,6 +163,21 @@ public:
 
   void SpillSRA(FEXCore::Core::InternalThreadState* Thread, void* ucontext, uint32_t IgnoreMask);
 
+  /**
+   * @brief SignalHandlerThunk's last resort when a thread traps on one of the
+   * dispatcher's deliberate sentinel words but fails the thunk's liveness
+   * checks.
+   *
+   * The trapped PC says the thread is inside rt_sigreturn (or the pause
+   * return), so the trap is FEX's own control flow and handing it to the
+   * default disposition ends the whole process at an address that reads as a
+   * wild jump. Routes straight to HandleSIGILL, skipping the handler chain and
+   * the deferred-signal bookkeeping that a half-dismantled thread cannot be
+   * walked through. True when the thread state was restored and the host
+   * handler may simply return.
+   */
+  bool HandleSentinelTrap(FEX::HLE::ThreadStateObject* ThreadObject, int Signal, void* Info, void* UContext);
+
 private:
   // Called from the thunk handler to handle the signal
   void HandleGuestSignal(FEX::HLE::ThreadStateObject* ThreadObject, int Signal, void* Info, void* UContext);
