@@ -4311,7 +4311,18 @@ DEF_OP(LoadFPSR) {
     vsldoi(VTMP1, VTMP1, VTMP1, 8);
     mfvsrd(TMP1, VTMP1);
   }
-  andi_(TMP1, TMP1, 1);
+  // Isolate VSCR.SAT (bit 0) with clrldi, NOT andi_. `andi.` has no
+  // non-record form on PPC — it always writes CR0 — and CR0 is where this
+  // backend keeps the guest's packed N/Z (N = CR0.LT, Z = CR0.EQ; see
+  // DEF_OP(LoadNZCV)/DEF_OP(StoreNZCV) below). Reading FPSR is not a
+  // flag-setting guest instruction, so CR0 is live with guest NZCV here and
+  // andi. destroyed it: with SAT=0 the AND result is zero, so CR0.EQ was set
+  // and the guest's Z became 1 (and N 0) behind a sequence like
+  // `cmp x0,#1 / mrs x1,fpsr / b.eq`. clrldi is rldicl, Rc=0 — same one
+  // instruction, no CR0 write. Nothing else in LoadFPSR/StoreFPSR records:
+  // or_/and_/rldicl are the Rc=0 spellings (the `_` there only dodges the
+  // C++ keyword), and mtvscr/mfvscr/mtvsrd do not touch CR.
+  clrldi(TMP1, TMP1, 63);
   sldi(TMP1, TMP1, 27);
   or_(Dst, Dst, TMP1);
   stw(Dst, Offset, STATE);
