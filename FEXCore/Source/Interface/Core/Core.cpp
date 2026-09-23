@@ -811,6 +811,9 @@ void ContextImpl::UnlockAfterFork(FEXCore::Core::InternalThreadState* LiveThread
 
   Profiler::PostForkAction(Child);
   if (Child) {
+    // The translate-ahead helper did not come across the fork; drop its queue
+    // and its bookkeeping so the child can start a helper of its own.
+    TranslateAheadHelper.ResetAfterFork();
     if (CodeMapWriter) {
       CodeMapWriter->ResetAfterFork();
     }
@@ -1337,6 +1340,21 @@ uintptr_t ContextImpl::CompileBlock(FEXCore::Core::CpuStateFrame* Frame, uint64_
   for (auto [GuestAddr, HostAddr] : CompiledCode.EntryPoints) {
     Thread->LookupCache->AddBlockMapping(Thread, GuestAddr, BlockBegin, CodePages, HostAddr, StartAddr, HashedRangeLength, GuestHash,
                                          BranchImmSites, CompiledCode.ExitRIPSites, MovImmSites, CompiledCode.MovImmWindows);
+  }
+
+  // Cold G2: hand this unit's constant exit targets to the translate-ahead
+  // helper, which compiles them while the guest is still executing this unit.
+  // See Interface/Core/TranslateAhead.h.
+  //
+  // Units the helper compiles queue their own successors too, one level
+  // deeper, up to the depth budget in TranslateAhead.h: the helper has to be
+  // working on what the guest wants in a hundred microseconds, not on what it
+  // wants next, or it loses every race and both threads compile the same unit.
+  if (CompiledCode.NumConstExitTargets && Config.TranslateAhead() && Config.TranslateAheadDepth() > 0) {
+    TranslateAheadHelper.SetMaxDepth(static_cast<uint8_t>(std::min<int32_t>(Config.TranslateAheadDepth(), 255)));
+    for (uint8_t i = 0; i < CompiledCode.NumConstExitTargets; ++i) {
+      TranslateAheadHelper.Queue(Thread, CompiledCode.ConstExitTargets[i]);
+    }
   }
 
   if (CodeMapWriter) {

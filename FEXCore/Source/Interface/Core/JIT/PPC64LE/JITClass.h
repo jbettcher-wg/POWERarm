@@ -1098,14 +1098,58 @@ private:
   // S3.7-C0: byte offset of this block's BlockBegin within the whole
   // CodeBuffer. Relocation Header.Offset must be WHOLE-BUFFER relative
   // because ApplyCodeRelocations indexes from the buffer base, while
-  // GetOffset() is relative to the per-block SetBuffer at JIT.cpp:2246.
-  // Snapshotted just BEFORE SetBuffer opens the block's window because
-  // CodeBuffers.LatestOffset is advanced later at JIT.cpp:2486. Mirror
-  // of ARM64's fixup loop at JIT/JIT.cpp:1111 — ARM64 does the same
-  // offset += LatestOffset arithmetic in a post-loop pass; snapshotting
-  // once at the top of CompileCode is the same numerically and needs no
-  // post-loop walk.
+  // GetOffset() is relative to the per-block SetBuffer window.
+  //
+  // STAGED EMISSION: emission no longer knows where the block will land (it
+  // writes into the per-thread staging buffer below), so this is 0 for the
+  // whole emission window and is set to the real placement offset in
+  // PublishStagedBlock, which also rebases every relocation this block
+  // recorded while staging. ARM64 does the same post-loop `offset +=
+  // LatestOffset` walk.
   uint64_t BlockBufferOffset {};
+
+  // -----------------------------------------------------------------------
+  // Per-thread staging buffer (Cold G2 prerequisite)
+  // -----------------------------------------------------------------------
+  // PPC64 used to emit straight into the shared CodeBuffer with
+  // CodeBufferWriteMutex held for the whole emission window, so two threads
+  // could never translate at the same time. Emission now goes into this
+  // private, non-executable buffer with no lock held, and the finished block
+  // is copied into the shared buffer under a short lock (PublishStagedBlock).
+  // Same model as the arm64 backend's TempCodeBuffer.
+  //
+  // The last host page of the mapping is PROT_NONE, so an emission overrun
+  // faults exactly as it did when the target was the shared buffer's tail
+  // guard page — except that it no longer strands CodeBufferWriteMutex.
+  uint8_t* StagingBuffer {};
+  size_t StagingMapped {};   // whole mapping, guard page included
+  size_t StagingCapacity {}; // writable bytes = StagingMapped - one host page
+
+  // Grows the staging buffer to hold at least Bytes and returns its base.
+  uint8_t* EnsureStagingBuffer(size_t Bytes);
+
+  // Cold G2: note a compile-time-constant exit destination of this unit, for
+  // the translate-ahead helper. Deduplicated (a unit's two exit arms often
+  // share a target, and a loop's backedge repeats) and capped, so the cost is
+  // a handful of compares on the exit path of a compile and nothing at all at
+  // run time.
+  void RecordConstExitTarget(uint64_t GuestRIP) {
+    if (!GuestRIP || CodeData.NumConstExitTargets >= CompiledCode::kMaxConstExitTargets) {
+      return;
+    }
+    for (uint8_t i = 0; i < CodeData.NumConstExitTargets; ++i) {
+      if (CodeData.ConstExitTargets[i] == GuestRIP) {
+        return;
+      }
+    }
+    CodeData.ConstExitTargets[CodeData.NumConstExitTargets++] = GuestRIP;
+  }
+
+  // Index into Relocations of the first relocation this compile unit recorded
+  // while staging; PublishStagedBlock rebases [this, size()) by the placement
+  // offset. Relocations recorded *after* publication already carry final
+  // offsets.
+  size_t RelocationsAtBlockStart {};
 
   // Load a named thunk's function pointer into Reg via LoadConstant, recording
   // a RELOC_NAMED_THUNK_MOVE relocation for code-cache patching.

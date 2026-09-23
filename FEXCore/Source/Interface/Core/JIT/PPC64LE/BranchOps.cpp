@@ -406,6 +406,11 @@ DEF_OP(ExitFunction) {
   if (IsInlineConstant(Op->NewRIP, &NewRIP) ||
       IsInlineEntrypointOffset(Op->NewRIP, &NewRIP)) {
     ConstRIP = true;
+    // Cold G2: this is where control provably goes next. Record it for the
+    // translate-ahead helper, independently of whether the exit is *linkable*
+    // (block linking is interlocked off in several configurations, but the
+    // successor is known all the same).
+    RecordConstExitTarget(NewRIP);
   }
 
   // Emission of the constant destination RIP is a closure because the sink

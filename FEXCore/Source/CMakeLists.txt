@@ -21,6 +21,7 @@ set(SRCS
   Interface/Core/CodeCache.cpp
   Interface/Core/Core.cpp
   Interface/Core/CPUBackend.cpp
+  Interface/Core/TranslateAhead.cpp
   Interface/Core/Addressing.cpp
   Interface/Core/A64Frontend/DecodeTable.cpp
   Interface/Core/A64Frontend/Decoder.cpp

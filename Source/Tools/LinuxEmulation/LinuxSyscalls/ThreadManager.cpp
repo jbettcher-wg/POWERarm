@@ -303,6 +303,13 @@ void ThreadManager::DestroyThread(FEX::HLE::ThreadStateObject* Thread, bool Need
     LOGMAN_THROW_A_FMT(It != Threads.end(), "Thread wasn't in Threads");
     Threads.erase(It);
     if (Threads.empty()) {
+      // Last guest thread. Stop the translate-ahead helper here, not only in
+      // Stop(): a thread that leaves through SYS_exit (rather than exit_group)
+      // ends only itself, so a live helper would hold the whole process open
+      // as a thread of an otherwise-zombie thread group, and the parent's
+      // wait() would never return. Found by the A64Frontend suite, whose
+      // hand-written tests exit with SYS_exit.
+      Thread->Thread->CTX->StopBackgroundTranslation();
       Thread->Thread->CTX->FlushAndCloseCodeMap();
     }
   }
@@ -461,6 +468,13 @@ void ThreadManager::Step() {
 }
 
 void ThreadManager::Stop(bool IgnoreCurrentThread) {
+  // Terminal stop. Take the translate-ahead helper down with the guest
+  // threads: every caller goes on to save (and, for the code cache, fork()
+  // without the LockBeforeFork handshake), and a helper still compiling would
+  // either be inherited mid-lock by that child or add blocks underneath the
+  // save pass. Idempotent and free when no helper was started.
+  CTX->StopBackgroundTranslation();
+
   pid_t tid = FHU::Syscalls::gettid();
   FEX::HLE::ThreadStateObject* CurrentThread {};
 

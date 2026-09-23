@@ -620,6 +620,50 @@
           "2: also a per-VMA-name breakdown from /proc/self/smaps."
         ]
       },
+      "TranslateAhead": {
+        "Type": "bool",
+        "Default": "false",
+        "Desc": [
+          "Cold G2: after a compile unit is published, translate its",
+          "compile-time-constant exit targets on a helper thread so the guest",
+          "finds them already in the lookup cache when it gets there. One",
+          "helper per process, started on the first speculation, never started",
+          "in a process that compiles nothing, running SCHED_IDLE off the",
+          "requesting thread's SMT siblings.",
+          "OFF BY DEFAULT, for three independent reasons.",
+          "(1) It measured slower. The guest reaches a unit's successor about a",
+          "microsecond after publishing it while compiling that successor takes",
+          "twelve, so the helper loses every race that matters and spends its",
+          "time on exits the guest never takes: depth 1 moved 1.4k of 23.5k",
+          "compiles off the guest thread and grew the code cache 32%, depth 8",
+          "moved 1.0k and grew it 77%, and both cost wall time.",
+          "(2) A helper thread is VISIBLE TO THE GUEST. /proc/self/task's link",
+          "count is 2 + threads, and guests act on it: Chromium's sandbox",
+          "refuses to start a zygote in a multi-threaded process",
+          "(sandbox/linux/services/thread_helpers.cc), and the A64Frontend",
+          "procdirfd test checks the same nlink.",
+          "(3) It costs address space a guest may have budgeted: the",
+          "A64Frontend rlimit_as and forkexec tests, which run a guest under",
+          "RLIMIT_AS=4 GiB, fail with it on.",
+          "So: enabling this is a measurement tool, not a supported mode. The",
+          "mechanism is kept because only the predictor is weak -- something",
+          "that knows which exit is actually taken would reuse all of it -- and",
+          "because the staged emission it rests on is what lets any two threads",
+          "translate at once. See the cold research 4.4 and CODE-CACHE.md's",
+          "C12, which failed the same way for the same reason."
+        ]
+      },
+      "TranslateAheadDepth": {
+        "Type": "int32",
+        "Default": "2",
+        "Desc": [
+          "How many compile units ahead of the guest the translate-ahead helper",
+          "may speculate. 1 means only units the guest itself compiled feed the",
+          "queue; higher values let the helper follow the successors of units it",
+          "compiled, at the cost of translating code the guest never reaches.",
+          "0 disables speculation entirely, as does TranslateAhead=0."
+        ]
+      },
       "SMCSoftInvalidate": {
         "Type": "bool",
         "Default": "false",

@@ -5,6 +5,7 @@
 #include "Interface/Core/CPUBackend.h"
 #ifdef ARCHITECTURE_ppc64le
 #include "Interface/Core/JIT/PPC64LE/PPC64Dispatcher.h"
+#include "Interface/Core/TranslateAhead.h"
 #endif
 #include <Interface/IR/IntrusiveIRList.h>
 #include <FEXCore/Config/Config.h>
@@ -411,6 +412,8 @@ public:
     FEX_CONFIG_OPT(SMCCheapTier, SMCCHEAPTIER);
     FEX_CONFIG_OPT(SMCCheapTierThreshold, SMCCHEAPTIERTHRESHOLD);
     FEX_CONFIG_OPT(SMCCheapTierMaxInst, SMCCHEAPTIERMAXINST);
+    FEX_CONFIG_OPT(TranslateAhead, TRANSLATEAHEAD);
+    FEX_CONFIG_OPT(TranslateAheadDepth, TRANSLATEAHEADDEPTH);
     FEX_CONFIG_OPT(SMCSoftInvalidate, SMCSOFTINVALIDATE);
     FEX_CONFIG_OPT(SMCSemanticPatch, SMCSEMANTICPATCH);
     // SMC Idea 3 uses these two only to decide whether to build the code-granule
@@ -462,6 +465,18 @@ public:
 #endif
   CodeCache CodeCache;
   fextl::unique_ptr<CodeMapWriter> CodeMapWriter;
+
+  // Cold G2: the translate-ahead helper. Idle (and threadless) until a
+  // compiled unit hands it a constant exit target; see TranslateAhead.h.
+  TranslateAheadService TranslateAheadHelper {this};
+
+  // Stops and joins the translate-ahead helper. Must run before anything
+  // fork()s for the code-cache writer (that fork is a raw fork(), not the
+  // LockBeforeFork/UnlockAfterFork pair, so a helper holding any internal lock
+  // would strand it in the child) and before the context tears down.
+  void StopBackgroundTranslation() override {
+    TranslateAheadHelper.Shutdown();
+  }
 
   SignalDelegator* SignalDelegation {};
 

@@ -18,6 +18,7 @@ $end_info$
 #include <FEXCore/fextl/vector.h>
 #include <FEXCore/fextl/map.h>
 
+#include <array>
 #include <cstdint>
 
 namespace FEXCore::CPU {
@@ -327,6 +328,17 @@ namespace CPU {
       // materialised its tagged guest immediates into, each carrying the index
       // of the MovImmSite it came from. Same population rules as above.
       FEXCore::SMC::MovImmWindows MovImmWindows;
+
+      // Cold G2: the compile-time-constant destination RIPs this unit's
+      // ExitFunctions carry, i.e. where control provably goes next. Fed to the
+      // translate-ahead helper so it can compile them before the guest
+      // arrives. A fixed array, not a vector: this is on the compile path of
+      // every unit and must not allocate. Deduplicated and capped at
+      // kMaxConstExitTargets (both arms of a conditional exit, plus a little
+      // room), which bounds the speculation fan-out per unit.
+      static constexpr size_t kMaxConstExitTargets = 4;
+      std::array<uint64_t, kMaxConstExitTargets> ConstExitTargets {};
+      uint8_t NumConstExitTargets {};
     };
 
     // The block header/tail live at namespace scope (see above) so CodeBuffer
