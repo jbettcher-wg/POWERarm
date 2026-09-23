@@ -82,13 +82,21 @@ void IRValidation::Run(IREmitter* IREmit) {
     const auto BlockID = CurrentIR.GetID(BlockNode);
     BlockInfo* CurrentBlock = &OffsetToBlockMap.try_emplace(BlockID).first->second;
 
-    // We only allow defs local to a single block, so clear live set per block
-    NodeIsLive.MemClear(Count);
+    // Defs are local to a single allocation region, so clear the live set per
+    // region. A block whose RegionPred is set continues its predecessor's
+    // region (warm G6: the A64 frontend carries its GPR value cache across
+    // that edge and the RA allocates the two together), so its live set and
+    // spill slots are inherited rather than reset. Blocks emitted between the
+    // predecessor and the continuation leave their own defs in the set, which
+    // only makes the check more permissive, never wrong.
+    if (BlockIROp->RegionPred == 0) {
+      NodeIsLive.MemClear(Count);
 
-    // Reset spill-slot ownership at every block boundary — slots are
-    // strictly block-local.
-    if (CurrentIR.PostRA() && !SlotOwnerClass.empty()) {
-      std::fill(SlotOwnerClass.begin(), SlotOwnerClass.end(), RegClass::Invalid);
+      // Reset spill-slot ownership at every region boundary — slots are
+      // strictly region-local.
+      if (CurrentIR.PostRA() && !SlotOwnerClass.empty()) {
+        std::fill(SlotOwnerClass.begin(), SlotOwnerClass.end(), RegClass::Invalid);
+      }
     }
 
     for (auto [CodeNode, IROp] : CurrentIR.GetCode(BlockNode)) {

@@ -147,8 +147,29 @@ private:
   };
 
   // IP of next-use of each source. IPs are measured from the end of the
-  // block, so we don't need to size the block up-front.
+  // region, so we don't need to size it up-front.
   fextl::vector<uint32_t> NextUses;
+
+  // Allocation regions (warm G6). Normally one block, since a block can be
+  // entered from anywhere and nothing may be assumed about the register file
+  // at its head. The A64 frontend marks the exception: a block whose only
+  // in-unit predecessor is the block that branches into it, and that carries
+  // the frontend's GPR value cache across that edge, sets
+  // IROp_CodeBlock::RegionPred to its predecessor's ID + 1. Such a block is
+  // allocated as a continuation of that predecessor -- registers are not
+  // freed and spill slots are not recycled at the edge -- so the values the
+  // frontend kept live actually survive in their host registers. Everything
+  // the region does is still one straight-line path: the successor runs only
+  // after the predecessor, so a backward walk over the chain sees every live
+  // range exactly as it does inside a single block.
+  //
+  // Region holds the chain currently being allocated, predecessor first.
+  fextl::vector<Ref> Region;
+  // RegionNext[ID] is the block that continues block ID's region, or nullptr.
+  // RegionIsMember[ID] is set for every block that is some region's
+  // continuation, i.e. must not start a region of its own.
+  fextl::vector<Ref> RegionNext;
+  fextl::vector<bool> RegionIsMember;
 
   bool AnySpilled {};
 
@@ -267,60 +288,72 @@ private:
   // the next set bit and then clearing on each iteration.
 #define foreach_bit(b, x) for (uint32_t __x = (x), b; ((b) = __builtin_ffs(__x) - 1, __x); __x &= ~(1u << (b)))
 
-  void CalculateNextUses(IROp_CodeBlock* BlockIROp, IROp_Header* Until) {
+  // Next-use distances for the rest of the current allocation REGION, measured
+  // from the region's end. A region is one block in all but the warm-G6 case,
+  // where the frontend has chained a block onto its sole in-unit predecessor
+  // (IROp_CodeBlock::RegionPred); the walk then has to cover every block from
+  // the region end back to Until, because the forward pass keeps popping
+  // SourcesNextUses straight through the internal block boundaries.
+  void CalculateNextUses(IROp_Header* Until) {
     SourcesNextUses.clear();
     // resize() alone leaves stale next-use entries from earlier blocks (the
     // SSA count doesn't change between calls). Today that is benign only by
     // accident — dead defs are the sole readers of stale entries, and a
     // stale 0 means "spill me first", which is the right answer for a dead
-    // def anyway. Zero explicitly so the "0 = no later use in this block"
+    // def anyway. Zero explicitly so the "0 = no later use in this region"
     // invariant is real rather than accidental.
     NextUses.assign(IR->GetSSACount(), 0);
 
-    // IP relative to the end of the block.
+    // IP relative to the end of the region.
     uint32_t IP = 1;
+    bool Done = false;
 
-    // We grab these nodes this way so we can iterate easily
-    auto CodeBegin = IR->at(BlockIROp->Begin);
-    auto CodeLast = IR->at(BlockIROp->Last);
+    for (size_t RI = Region.size(); RI-- > 0 && !Done;) {
+      auto* BlockIROp = IR->GetOp<IROp_CodeBlock>(Region[RI]);
 
-    while (1) {
-      auto [CodeNode, IROp] = CodeLast();
-      if (IROp == Until) {
-        break;
-      }
-      // End of iteration gunk
+      // We grab these nodes this way so we can iterate easily
+      auto CodeBegin = IR->at(BlockIROp->Begin);
+      auto CodeLast = IR->at(BlockIROp->Last);
 
-      const int NumArgs = IR::GetRAArgs(IROp->Op);
-      for (int i = NumArgs - 1; i >= 0; --i) {
-        auto V = IROp->Args[i];
-        V.ClearKill();
-
-        if (IsValidArg(V)) {
-          const uint32_t Index = V.ID().Value;
-
-          SourcesNextUses.push_back(NextUses[Index]);
-          NextUses[Index] = IP;
+      while (1) {
+        auto [CodeNode, IROp] = CodeLast();
+        if (IROp == Until) {
+          Done = true;
+          break;
         }
-      }
+        // End of iteration gunk
 
-      // IP is relative to block end and we iterate backwards, so increment.
-      ++IP;
+        const int NumArgs = IR::GetRAArgs(IROp->Op);
+        for (int i = NumArgs - 1; i >= 0; --i) {
+          auto V = IROp->Args[i];
+          V.ClearKill();
 
-      // Rest is iteration gunk
-      if (CodeLast == CodeBegin) {
-        break;
+          if (IsValidArg(V)) {
+            const uint32_t Index = V.ID().Value;
+
+            SourcesNextUses.push_back(NextUses[Index]);
+            NextUses[Index] = IP;
+          }
+        }
+
+        // IP is relative to region end and we iterate backwards, so increment.
+        ++IP;
+
+        // Rest is iteration gunk
+        if (CodeLast == CodeBegin) {
+          break;
+        }
+        --CodeLast;
       }
-      --CodeLast;
     }
 
     SourceIndex = SourcesNextUses.size();
   }
 
-  void SpillReg(RegisterClassData* Class, IROp_CodeBlock* Block, IROp_Header* Exclude) {
+  void SpillReg(RegisterClassData* Class, IROp_Header* Exclude) {
     // We're about to use next-use information, so calculate it.
     if (!AnySpilled) {
-      CalculateNextUses(Block, Exclude);
+      CalculateNextUses(Exclude);
     }
 
     // Find the best node to spill according to the "furthest-first" heuristic.
@@ -419,7 +452,7 @@ private:
   };
 
   // Assign a register for a given Node, spilling if necessary.
-  void AssignReg(IROp_Header* IROp, IROp_CodeBlock* Block, Ref CodeNode, IROp_Header* Pivot) {
+  void AssignReg(IROp_Header* IROp, Ref CodeNode, IROp_Header* Pivot) {
     const uint32_t Node = IR->GetID(CodeNode).Value;
 
     // Prioritize preferred registers.
@@ -478,7 +511,7 @@ private:
     // Spill to make room in the register file.
     if (!Class->Available) {
       IREmit->SetWriteCursorBefore(CodeNode);
-      SpillReg(Class, Block, Pivot);
+      SpillReg(Class, Pivot);
     }
 
     // Assign a free register in the appropriate class.
@@ -600,31 +633,77 @@ void ConstrainedRAPass::Run(IREmitter* IREmit_) {
   SSAToReg.resize(IR->GetSSACount(), PhysicalRegister::Invalid());
   Seen.resize(IR->GetSSACount(), false);
 
+  // Region prepass. RegionPred is 0 on every block unless the frontend asked
+  // for a continuation, so an ordinary unit pays one walk of the block list
+  // and allocates nothing.
+  const uint32_t BlockCount = IR->GetHeader()->BlockCount;
+  bool AnyRegion = false;
   for (auto [BlockNode, BlockHeader] : IR->GetBlocks()) {
-    // Spilling is local, so reset this per-block
+    auto BlockIROp = BlockHeader->C<IR::IROp_CodeBlock>();
+    if (BlockIROp->RegionPred == 0 || BlockIROp->ID >= BlockCount) {
+      continue;
+    }
+    const uint32_t PredID = BlockIROp->RegionPred - 1;
+    // The predecessor is always emitted before its continuation, and each
+    // block continues at most one region; anything else is ignored, which
+    // costs the optimisation and nothing else.
+    if (PredID >= BlockIROp->ID) {
+      continue;
+    }
+    if (!AnyRegion) {
+      RegionNext.assign(BlockCount, nullptr);
+      RegionIsMember.assign(BlockCount, false);
+      AnyRegion = true;
+    }
+    if (RegionNext[PredID] || RegionIsMember[BlockIROp->ID]) {
+      continue;
+    }
+    RegionNext[PredID] = BlockNode;
+    RegionIsMember[BlockIROp->ID] = true;
+  }
+
+  for (auto [BlockNode, BlockHeader] : IR->GetBlocks()) {
+    auto BlockIROp = BlockHeader->CW<IR::IROp_CodeBlock>();
+
+    // Blocks that continue another block's region are allocated with it.
+    if (AnyRegion && BlockIROp->ID < BlockCount && RegionIsMember[BlockIROp->ID]) {
+      continue;
+    }
+
+    Region.clear();
+    Region.push_back(BlockNode);
+    if (AnyRegion) {
+      for (Ref Next = RegionNext[BlockIROp->ID]; Next;) {
+        Region.push_back(Next);
+        Next = RegionNext[IR->GetOp<IROp_CodeBlock>(Next)->ID];
+      }
+    }
+
+    // Spilling is region-local, so reset this per-region
     AnySpilled = false;
 
-    // Phase 1 of spill-slot reuse: reset per-block bookkeeping.  Slots do not
-    // cross block boundaries (spilling is strictly block-local), so the
-    // high-water mark and pool both restart fresh each block.
+    // Phase 1 of spill-slot reuse: reset per-region bookkeeping.  Slots do not
+    // cross region boundaries (spilling is strictly region-local), so the
+    // high-water mark and pool both restart fresh each region.
     BlockSpills.clear();
     FreeSlots.clear();
     BlockSlotHighWater = 0;
     ForwardIP = 0;
 
-    // At the start of each block, all registers are available.
+    // At the start of each region, all registers are available.
     for (auto& Class : Classes) {
       Class.Available = (Class.Count == 32) ? ~0u : ((1u << Class.Count) - 1);
     }
 
-    auto BlockIROp = BlockHeader->CW<IR::IROp_CodeBlock>();
-
-    // Backwards pass: analyze kill bits and SRA affinities
-    {
+    // Backwards pass: analyze kill bits and SRA affinities. Over the whole
+    // region, last block first, so a value used in a later block of the chain
+    // keeps its register until its real last use.
+    for (size_t RI = Region.size(); RI-- > 0;) {
+      auto* RegionBlockIROp = IR->GetOp<IROp_CodeBlock>(Region[RI]);
       // Reverse iteration is not yet working with the iterators
       // We grab these nodes this way so we can iterate easily
-      auto CodeBegin = IR->at(BlockIROp->Begin);
-      auto CodeLast = IR->at(BlockIROp->Last);
+      auto CodeBegin = IR->at(RegionBlockIROp->Begin);
+      auto CodeLast = IR->at(RegionBlockIROp->Last);
 
       while (1) {
         auto [CodeNode, IROp] = CodeLast();
@@ -681,149 +760,154 @@ void ConstrainedRAPass::Run(IREmitter* IREmit_) {
     // NextUses currently contains first use distances, the exact initialization
     // assumed by the forward pass. Do not reset it.
 
-    // Last nontrivial instruction, for merging as we go.
-    Ref LastNode = nullptr;
-
     // Forward pass: Assign registers, spilling & optimizing as we go.
-    for (auto [CodeNode, IROp] : IR->GetCode(BlockNode)) {
-      bool AnySpilledBeforeThisInstruction = AnySpilled;
+    for (size_t RI = 0; RI < Region.size(); ++RI) {
+      // Last nontrivial instruction, for merging as we go. Reset at every block
+      // boundary: post-RA merging rewrites a pair of instructions the backend
+      // emits back to back, and a block boundary is a branch target, so the
+      // predecessor's last instruction is never adjacent to it.
+      Ref LastNode = nullptr;
 
-      // These do not read or write registers, and must be skipped for merging.
-      // Since we'd be doing this check anyway for merging, do the check now so
-      // we can skip the rest of the logic too.
-      if (IROp->Op == OP_GUESTOPCODE || IROp->Op == OP_INLINECONSTANT) {
-        continue;
-      }
+      for (auto [CodeNode, IROp] : IR->GetCode(Region[RI])) {
+        bool AnySpilledBeforeThisInstruction = AnySpilled;
 
-      // Phase 1 of spill-slot reuse: ForwardIP holds the current instruction's
-      // IP for the duration of this iteration; SpillReg reads it as DefIP for
-      // any spills emitted here.  Incremented at the bottom of the loop body.
-
-      // Static registers must be consistent at SRA load/store. Evict to ensure.
-      if (auto Node = DecodeSRANode(IROp, CodeNode); Node != nullptr) {
-        auto Reg = DecodeSRAReg(IROp, CodeNode);
-        RegisterClassData* Class = &Classes[Reg.Class];
-
-        if (!(Class->Available & (1u << Reg.Reg))) {
-          Ref Old = Class->RegToSSA[Reg.Reg];
-
-          if (Old != Node) {
-            // Before inserting instructions, we need to set the cursor and
-            // reset LastNode so we don't merge across an inserted copy.
-            // Otherwise, we would erroneously miss the copy when determining if
-            // we can merge, and end up unsoundly merging a mov+xchg sequence.
-            IREmit->SetWriteCursorBefore(CodeNode);
-            LastNode = nullptr;
-
-            Ref Copy;
-
-            if (Reg.AsRegClass() == RegClass::FPRFixed) {
-              IROp_Header* Header = IR->GetOp<IROp_Header>(Old);
-              Copy = IREmit->_VMov(Header->Size, OrderedNodeWrapper::FromImmediate(Reg.Raw));
-            } else {
-              Copy = IREmit->_Copy(OrderedNodeWrapper::FromImmediate(Reg.Raw));
-            }
-
-            FreeReg(Reg);
-            AssignReg(IR->GetOp<IROp_Header>(Copy), BlockIROp, Copy, IROp);
-            RemapReg(Old, PhysicalRegister(Copy));
-          }
-        }
-      }
-
-      // Fill all sources that are not already in the register file.
-      //
-      // This happens before freeing killed sources, since we need all sources in
-      // the register file simultaneously.
-      //
-      // Also update next-use info, again only relevant if we've spilled.
-      int NumArgs = IR::GetRAArgs(IROp->Op);
-
-      if (AnySpilledBeforeThisInstruction) {
-        for (int s = 0; s < NumArgs; ++s) {
-          auto V = IROp->Args[s];
-          V.ClearKill();
-
-          if (!IsValidArg(V)) {
-            continue;
-          }
-
-          Ref Old = IR->GetNode(V);
-
-          SourceIndex--;
-          LOGMAN_THROW_A_FMT(SourceIndex >= 0, "Consistent source count");
-          NextUses[V.ID().Value] = SourcesNextUses[SourceIndex];
-
-          if (!IsInRegisterFile(Old)) {
-            IREmit->SetWriteCursorBefore(CodeNode);
-            LastNode = nullptr;
-
-            Ref Fill = InsertFill(Old);
-
-            AssignReg(IR->GetOp<IROp_Header>(Fill), BlockIROp, Fill, IROp);
-            RemapReg(Old, PhysicalRegister(Fill));
-          }
-        }
-      }
-
-      for (int s = 0; s < NumArgs; ++s) {
-        if (IROp->Args[s].IsInvalid()) {
+        // These do not read or write registers, and must be skipped for merging.
+        // Since we'd be doing this check anyway for merging, do the check now so
+        // we can skip the rest of the logic too.
+        if (IROp->Op == OP_GUESTOPCODE || IROp->Op == OP_INLINECONSTANT) {
           continue;
         }
 
-        bool Kill = IROp->Args[s].HasKill();
-        IROp->Args[s].ClearKill();
-        Ref Node = IR->GetNode(IROp->Args[s]);
-        auto ID = IR->GetID(Node).Value;
-        auto Reg = SSAToReg[ID];
+        // Phase 1 of spill-slot reuse: ForwardIP holds the current instruction's
+        // IP for the duration of this iteration; SpillReg reads it as DefIP for
+        // any spills emitted here.  Incremented at the bottom of the loop body.
 
-        if (!Reg.IsInvalid()) {
-          if (Kill) {
-            LOGMAN_THROW_A_FMT(IsInRegisterFile(Node), "sources in file");
-            FreeReg(Reg);
+        // Static registers must be consistent at SRA load/store. Evict to ensure.
+        if (auto Node = DecodeSRANode(IROp, CodeNode); Node != nullptr) {
+          auto Reg = DecodeSRAReg(IROp, CodeNode);
+          RegisterClassData* Class = &Classes[Reg.Class];
 
-            // Phase 2 of spill-slot reuse: if the dying SSA had been spilled,
-            // its slot is now reclaimable.  The kill bit fires on the LAST
-            // consumer of the original SSA; any intermediate InsertFill
-            // re-reads are already past.  Zero out SpillSlots[ID] so a stray
-            // double-release is impossible (the entry is also harmless to
-            // leave, but zero documents intent).
-            if (ID < SpillSlots.size() && SpillSlots[ID] != 0) {
-              ReleaseSlot(SpillSlots[ID] - 1);
-              SpillSlots[ID] = 0;
+          if (!(Class->Available & (1u << Reg.Reg))) {
+            Ref Old = Class->RegToSSA[Reg.Reg];
+
+            if (Old != Node) {
+              // Before inserting instructions, we need to set the cursor and
+              // reset LastNode so we don't merge across an inserted copy.
+              // Otherwise, we would erroneously miss the copy when determining if
+              // we can merge, and end up unsoundly merging a mov+xchg sequence.
+              IREmit->SetWriteCursorBefore(CodeNode);
+              LastNode = nullptr;
+
+              Ref Copy;
+
+              if (Reg.AsRegClass() == RegClass::FPRFixed) {
+                IROp_Header* Header = IR->GetOp<IROp_Header>(Old);
+                Copy = IREmit->_VMov(Header->Size, OrderedNodeWrapper::FromImmediate(Reg.Raw));
+              } else {
+                Copy = IREmit->_Copy(OrderedNodeWrapper::FromImmediate(Reg.Raw));
+              }
+
+              FreeReg(Reg);
+              AssignReg(IR->GetOp<IROp_Header>(Copy), Copy, IROp);
+              RemapReg(Old, PhysicalRegister(Copy));
             }
           }
-
-          IROp->Args[s].SetImmediate(Reg.Raw);
         }
-      }
 
-      // Assign destinations.
-      if (GetHasDest(IROp->Op) && PhysicalRegister(CodeNode).IsInvalid()) {
-        AssignReg(IROp, BlockIROp, CodeNode, IROp);
-      }
+        // Fill all sources that are not already in the register file.
+        //
+        // This happens before freeing killed sources, since we need all sources in
+        // the register file simultaneously.
+        //
+        // Also update next-use info, again only relevant if we've spilled.
+        int NumArgs = IR::GetRAArgs(IROp->Op);
 
-      if (IsTrivial(CodeNode, IROp)) {
-        // Delete instructions that only exist for RA
-        IREmit->RemovePostRA(CodeNode);
-      } else if (LastNode && TryPostRAMerge(LastNode, CodeNode, IROp)) {
-        // Merge adjacent instructions
-        IREmit->RemovePostRA(LastNode);
-        LastNode = nullptr;
-      } else {
-        LastNode = CodeNode;
-      }
+        if (AnySpilledBeforeThisInstruction) {
+          for (int s = 0; s < NumArgs; ++s) {
+            auto V = IROp->Args[s];
+            V.ClearKill();
 
-      // Phase 1 of spill-slot reuse: advance the per-block IP counter so that
-      // the next instruction's spills (if any) carry a distinct DefIP.
-      ++ForwardIP;
+            if (!IsValidArg(V)) {
+              continue;
+            }
+
+            Ref Old = IR->GetNode(V);
+
+            SourceIndex--;
+            LOGMAN_THROW_A_FMT(SourceIndex >= 0, "Consistent source count");
+            NextUses[V.ID().Value] = SourcesNextUses[SourceIndex];
+
+            if (!IsInRegisterFile(Old)) {
+              IREmit->SetWriteCursorBefore(CodeNode);
+              LastNode = nullptr;
+
+              Ref Fill = InsertFill(Old);
+
+              AssignReg(IR->GetOp<IROp_Header>(Fill), Fill, IROp);
+              RemapReg(Old, PhysicalRegister(Fill));
+            }
+          }
+        }
+
+        for (int s = 0; s < NumArgs; ++s) {
+          if (IROp->Args[s].IsInvalid()) {
+            continue;
+          }
+
+          bool Kill = IROp->Args[s].HasKill();
+          IROp->Args[s].ClearKill();
+          Ref Node = IR->GetNode(IROp->Args[s]);
+          auto ID = IR->GetID(Node).Value;
+          auto Reg = SSAToReg[ID];
+
+          if (!Reg.IsInvalid()) {
+            if (Kill) {
+              LOGMAN_THROW_A_FMT(IsInRegisterFile(Node), "sources in file");
+              FreeReg(Reg);
+
+              // Phase 2 of spill-slot reuse: if the dying SSA had been spilled,
+              // its slot is now reclaimable.  The kill bit fires on the LAST
+              // consumer of the original SSA; any intermediate InsertFill
+              // re-reads are already past.  Zero out SpillSlots[ID] so a stray
+              // double-release is impossible (the entry is also harmless to
+              // leave, but zero documents intent).
+              if (ID < SpillSlots.size() && SpillSlots[ID] != 0) {
+                ReleaseSlot(SpillSlots[ID] - 1);
+                SpillSlots[ID] = 0;
+              }
+            }
+
+            IROp->Args[s].SetImmediate(Reg.Raw);
+          }
+        }
+
+        // Assign destinations.
+        if (GetHasDest(IROp->Op) && PhysicalRegister(CodeNode).IsInvalid()) {
+          AssignReg(IROp, CodeNode, IROp);
+        }
+
+        if (IsTrivial(CodeNode, IROp)) {
+          // Delete instructions that only exist for RA
+          IREmit->RemovePostRA(CodeNode);
+        } else if (LastNode && TryPostRAMerge(LastNode, CodeNode, IROp)) {
+          // Merge adjacent instructions
+          IREmit->RemovePostRA(LastNode);
+          LastNode = nullptr;
+        } else {
+          LastNode = CodeNode;
+        }
+
+        // Phase 1 of spill-slot reuse: advance the per-region IP counter so that
+        // the next instruction's spills (if any) carry a distinct DefIP.
+        ++ForwardIP;
+      }
     }
 
     if (AnySpilled) {
-      LOGMAN_THROW_A_FMT(SourceIndex == 0, "Consistent source count in block");
+      LOGMAN_THROW_A_FMT(SourceIndex == 0, "Consistent source count in region");
     }
 
-    // Phase 1 of spill-slot reuse: roll this block's peak slot usage into the
+    // Phase 1 of spill-slot reuse: roll this region's peak slot usage into the
     // function-wide high-water mark, which becomes the final SpillSlots count.
     GlobalSlotHighWater = std::max(GlobalSlotHighWater, BlockSlotHighWater);
   }
@@ -841,6 +925,9 @@ void ConstrainedRAPass::Run(IREmitter* IREmit_) {
   Seen.clear();
   BlockSpills.clear();
   FreeSlots.clear();
+  Region.clear();
+  RegionNext.clear();
+  RegionIsMember.clear();
 
   IR->GetHeader()->PostRA = true;
 }

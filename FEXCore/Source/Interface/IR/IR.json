@@ -169,7 +169,7 @@
         "SwitchGen": false,
         "JITDispatchOverride": "NoOp"
       },
-      "CodeBlock SSA:$Begin, SSA:$Last, u32:$ID, i1:$EntryPoint{false}, u32:$GuestEntryOffset{0}, i1:$HasFlags{false}": {
+      "CodeBlock SSA:$Begin, SSA:$Last, u32:$ID, i1:$EntryPoint{false}, u32:$GuestEntryOffset{0}, i1:$HasFlags{false}, u32:$RegionPred{0}": {
         "SwitchGen": false,
         "RAOverride": "0",
         "JITDispatchOverride": "NoOp"
