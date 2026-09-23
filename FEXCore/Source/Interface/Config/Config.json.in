@@ -625,14 +625,26 @@
     "Hacks": {
       "SMCChecks": {
         "Type": "uint8",
-        "Default": "FEXCore::Config::CONFIG_SMC_MTRACK",
-        "TextDefault": "mtrack",
+        "Default": "FEXCore::Config::CONFIG_SMC_ICACHE",
+        "TextDefault": "icache",
         "ArgumentHandler": "SMCCheckHandler",
         "Desc": [
-          "Checks code for modification before execution.",
+          "How a guest code change is discovered.",
           "\tnone: No checks",
-          "\tmtrack: Page tracking based invalidation (default)",
-          "\tfull: Validate code before every run (slow)"
+          "\tmtrack: Page tracking based invalidation (x86 inheritance: write-",
+          "\t     protect every code page and rediscover writes by SIGSEGV)",
+          "\tfull: Validate code before every run (slow)",
+          "\ticache: (default) take the guest at its word. AArch64 requires the",
+          "\t     writer of an instruction to announce it (DDI 0487 B2.2.5), and",
+          "\t     we advertise CTR_EL0.DIC=0, so every JIT in the guest issues",
+          "\t     IC IVAU per 64 bytes it wrote and then DSB; ISB. IC IVAU",
+          "\t     invalidates the translations of exactly those 64 bytes and ISB",
+          "\t     ends a block, so no page is ever write-protected and no SMC",
+          "\t     fault is ever taken. The one guest behaviour this stops",
+          "\t     tolerating is code that rewrites already-executed bytes without",
+          "\t     flushing, which is broken on a Cortex-A76 too. Use mtrack to",
+          "\t     get the fault-based model back.",
+          "See docs/powerarm/research/cold-translation/LATENCY-ROUND3.md X1."
         ]
       },
       "HostPageMode": {

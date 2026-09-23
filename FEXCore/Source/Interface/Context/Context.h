@@ -383,6 +383,8 @@ public:
                                                           uint64_t NearHostPC, uint64_t MaxDelta) override;
   uint64_t GetJITCodeBufferGeneration() const override;
   bool GuestRangeOverlapsCompiledCode(FEXCore::Core::InternalThreadState* Thread, uint64_t Start, uint64_t Length) override;
+  bool GuestRangeProvablyHasNoCode(FEXCore::Core::InternalThreadState* Thread, uint64_t Start, uint64_t Length) override;
+  void InvalidateCodeBuffersCodeRangePrecise(uint64_t Start, uint64_t Length) override;
   bool TrySemanticPatchCodeRange(uint64_t Start, uint64_t Length, const void* NewBytes, const char** Reason) override;
 
   ///// Cheap compile tier for churn arenas (FEX_SMCCHEAPTIER) /////
@@ -522,6 +524,11 @@ public:
   ContextImpl(const FEXCore::HostFeatures& Features);
 
   static void ThreadRemoveCodeEntryFromJit(FEXCore::Core::CpuStateFrame* Frame, uint64_t GuestRIP);
+
+  // SMCChecks=icache: the guest executed IC IVAU on `Address`. Invalidates the
+  // translations of the 64-byte line it names. Called straight out of JIT code
+  // by DEF_OP(ICacheInvalidate); see Interface/Core/SMCICache.h.
+  static void ICacheInvalidateFromJit(FEXCore::Core::CpuStateFrame* Frame, uint64_t Address);
 
   // This is used as a replacement for the SMC writes in the mono callsite backpatcher that avoids atomic operations
   // (safe as the invalidation mutex is locked) and manually invalidates the modified range. Allowing SMC to be detected
@@ -716,5 +723,13 @@ private:
 
   std::mutex CodeBufferListLock;
   fextl::vector<std::weak_ptr<CPU::CodeBuffer>> CodeBufferList;
+  // How many entries CodeBufferList held the last time it was written or
+  // pruned, under CodeBufferListLock. Only ever read as "is it exactly one?",
+  // which lets GuestRangeProvablyHasNoCode answer from the calling thread's own
+  // bitmap without taking the lock in the overwhelmingly common single-buffer
+  // case. A stale-high value costs a lock acquisition; a stale-low one is
+  // impossible, because the only way to grow the list is under the same lock
+  // and it stores the new size before releasing it.
+  std::atomic<size_t> LiveCodeBufferCount {0};
 };
 } // namespace FEXCore::Context

@@ -4173,6 +4173,69 @@ DEF_OP(ThreadRemoveCodeEntry) {
   ld(r2, 24, r1);
 }
 
+// SMCChecks=icache: the guest ran IC IVAU on the address in $Addr.
+//
+// Same ELFv2 indirect-call shape as DEF_OP(ThreadRemoveCodeEntry) above,
+// including the r2 save into the dispatcher frame's reserved TOC slot before
+// SpillForABICall shifts r1. The one difference is the second argument: a live
+// guest register rather than a baked constant, so it is moved into r4 BEFORE
+// the spill, while it is still in a host register the allocator owns.
+//
+// SpillForABICall writes the static registers back into CPUState, so guest
+// state is coherent for the whole call — which matters, because the helper may
+// block on the exclusive CodeInvalidationMutex and a signal may be delivered
+// while it does.
+//
+// Returning into this same block is safe even when the helper erased the block
+// we are executing: erasing removes it from BlockList and severs INBOUND links
+// (a word patch in other blocks' code), it never frees or rewrites this block's
+// host code. This unit runs to its next exit and is simply not findable again
+// afterwards — the in-flight semantics the architecture already permits.
+DEF_OP(ICacheInvalidate) {
+  auto Op = IROp->C<IR::IROp_ICacheInvalidate>();
+  const int kABISpill = static_cast<int>(a64::kDynRegSaveSize);
+
+  // Mini-frame layout (64 bytes), same shape as MonoBackpatcherWrite above:
+  //   [r1+ 0]  back chain
+  //   [r1+ 8]  Func ptr (ICacheInvalidateFromJit)
+  //   [r1+16]  LR save
+  //   [r1+24]  Addr arg
+  //   [r1+40]  TOC save
+  //   [r1+48..56] padding
+  //
+  // The guest address must be stashed BEFORE SpillForABICall: it lives in an
+  // RA-allocated host register that PushDynamicRegs is about to save and that
+  // the marshalling below would otherwise clobber. Reloads carry +kABISpill
+  // because the spill shifts r1 down by exactly that much.
+  const auto AddrReg = GetReg(Op->Addr);
+
+  stdu(r1, -64, r1);
+  mflr(r(0));
+  std(r(0), 16, r1);
+
+  ld(TMP1, static_cast<int16_t>(offsetof(FEXCore::Core::CpuStateFrame, Pointers.ICacheInvalidateFromJIT)), STATE);
+  std(TMP1, 8, r1);
+  std(AddrReg, 24, r1);
+
+  SpillForABICall(TMP1);
+
+  mr(r3, STATE);                 // arg0: Frame*
+  ld(r4, 24 + kABISpill, r1);    // arg1: guest address IC IVAU named
+  ld(r(12), 8 + kABISpill, r1);  // r12 = callee (ELFv2 global-entry contract)
+
+  std(r2, 40 + kABISpill, r1);
+  mtctr(r(12));
+  bctrl();
+  ld(r2, 40 + kABISpill, r1);
+
+  FillForABICall();
+
+  ld(r(0), 16, r1);
+  mtlr(r(0));
+  addi(r1, r1, 64);
+  li(r(0), 0);
+}
+
 // =========================================================================
 // LoadNZCV / StoreNZCV — flag register save/restore
 // =========================================================================

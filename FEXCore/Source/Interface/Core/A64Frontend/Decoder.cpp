@@ -76,9 +76,21 @@ bool Decoder::CheckIfCacheable(FEXCore::Core::InternalThreadState& Thread, uint6
   return true;
 }
 
+// ISB (SY and every CRm): 1101 0101 0000 0011 0011 CRm 1101 1111.
+static bool IsISB(uint32_t Word) {
+  return (Word & 0xFFFFF0FF) == 0xD50330DF;
+}
+
 // True if Word ends a block: it transfers control, or it is an
 // exception-generating instruction. See the Decoder.h block comment.
-static bool EndsBlock(uint32_t Word) {
+//
+// ISBEndsBlock is set under SMCChecks=icache, where ISB is a context
+// synchronisation event the translation must honour by exiting to the
+// dispatcher (IRBuilder::ISB). Decoding past it would only produce dead IR.
+static bool EndsBlock(uint32_t Word, bool ISBEndsBlock) {
+  if (ISBEndsBlock && IsISB(Word)) {
+    return true;
+  }
   // Unconditional branch (immediate): B, BL.
   if ((Word & 0x7C000000) == 0x14000000) {
     return true;
@@ -199,6 +211,7 @@ void Decoder::DecodeInstructionsAtEntry(FEXCore::Core::InternalThreadState*, uin
   const uint64_t RegionWindow = GetRegionWindow();
   const size_t MaxLeaders = GetMaxLeaders();
   const bool FollowBranches = CTX->Config.Multiblock() && Cap > 1 && MaxLeaders > 1;
+  const bool ISBEndsBlock = CTX->Config.SMCChecks == FEXCore::Config::CONFIG_SMC_ICACHE;
   // Slot range: a region may reach RegionWindow below the entry, and a linear
   // run from the entry is never cut short by the window (it is bounded by Cap).
   const uint64_t WindowLow = PC >= RegionWindow ? PC - RegionWindow : 0;
@@ -276,7 +289,7 @@ void Decoder::DecodeInstructionsAtEntry(FEXCore::Core::InternalThreadState*, uin
         SetFlag(InstPC, StopBit);
         break;
       }
-      if (EndsBlock(Word)) {
+      if (EndsBlock(Word, ISBEndsBlock)) {
         SetFlag(InstPC, StopBit);
         if (FollowBranches) {
           const auto Succ = GetDirectSuccessors(Word, InstPC);

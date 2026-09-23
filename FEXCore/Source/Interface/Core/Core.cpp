@@ -15,6 +15,7 @@ $end_info$
 #include "Interface/Core/ArchHelpers/Arm64Emitter.h"
 #endif
 #include "Interface/Core/LookupCache.h"
+#include "Interface/Core/SMCICache.h"
 #include "Interface/Core/SMCSoftInvalidate.h"
 #include "Interface/Core/SMCSemanticPatch.h"
 #include "Interface/Core/CPUBackend.h"
@@ -291,7 +292,13 @@ ContextImpl::ContextImpl(const FEXCore::HostFeatures& Features)
   // ever looks at it. This must be decided here, before the first CodeBuffer
   // (and therefore the first GuestToHostMap) is created; see the constructor in
   // Interface/Core/LookupCache.cpp for why it can never be switched on later.
-  if (Config.SMCStoreEmulation() || Config.SMCStoreBackpatch() || Config.SMCSemanticPatch()) {
+  //
+  // SMCChecks=icache consults the same bitmap from the IC IVAU helper, as the
+  // lock-free "no translation lives in this 64-byte line" gate, so it enables
+  // it unconditionally. The bitmap's granule IS the IminLine we advertise in
+  // CTR_EL0, which is what makes that answer exact rather than conservative.
+  if (Config.SMCStoreEmulation() || Config.SMCStoreBackpatch() || Config.SMCSemanticPatch() ||
+      Config.SMCChecks == FEXCore::Config::CONFIG_SMC_ICACHE) {
     FEXCore::SMC::CodeGranuleTrackingEnabled.store(true, std::memory_order_release);
   }
 
@@ -854,6 +861,7 @@ void ContextImpl::OnCodeBufferAllocated(const fextl::shared_ptr<CPU::CodeBuffer>
   {
     std::scoped_lock lk {CodeBufferListLock};
     CodeBufferList.emplace_back(Buffer);
+    LiveCodeBufferCount.store(CodeBufferList.size(), std::memory_order_release);
   }
 }
 
@@ -1338,8 +1346,13 @@ uintptr_t ContextImpl::CompileBlock(FEXCore::Core::CpuStateFrame* Frame, uint64_
   }
 
   for (auto [GuestAddr, HostAddr] : CompiledCode.EntryPoints) {
+    // [StartAddr, StartAddr+Length) is the frontend's decoded span for this
+    // unit and is recorded unconditionally: it is what SMCChecks=icache filters
+    // on when an IC IVAU names a 64-byte line. HashedRangeLength beside it is
+    // the SMC v3 hash window and is zero unless FEX_SMCSOFTINVALIDATE is on.
     Thread->LookupCache->AddBlockMapping(Thread, GuestAddr, BlockBegin, CodePages, HostAddr, StartAddr, HashedRangeLength, GuestHash,
-                                         BranchImmSites, CompiledCode.ExitRIPSites, MovImmSites, CompiledCode.MovImmWindows);
+                                         StartAddr, Length, BranchImmSites, CompiledCode.ExitRIPSites, MovImmSites,
+                                         CompiledCode.MovImmWindows);
   }
 
   // Cold G2: hand this unit's constant exit targets to the translate-ahead
@@ -1397,7 +1410,7 @@ uintptr_t ContextImpl::RegisterCachedBlock(FEXCore::Core::InternalThreadState* T
   }
 
   Thread->LookupCache->AddBlockMapping(Thread, GuestRIP, reinterpret_cast<uintptr_t>(Block.BlockBegin), CodePages, Block.HostCode,
-                                       Block.StartAddr, HashedRangeLength, GuestHash);
+                                       Block.StartAddr, HashedRangeLength, GuestHash, Block.StartAddr, Block.Length);
   return reinterpret_cast<uintptr_t>(Block.HostCode);
 }
 
@@ -1452,6 +1465,70 @@ void ContextImpl::InvalidateCodeBuffersCodeRange(uint64_t Start, uint64_t Length
       it = CodeBufferList.erase(it);
     }
   }
+  LiveCodeBufferCount.store(CodeBufferList.size(), std::memory_order_release);
+}
+
+// SMCChecks=icache. Same walk as InvalidateCodeBuffersCodeRange, but each
+// buffer erases only the blocks whose decoded guest bytes overlap the range
+// rather than every block on the pages it touches. See LATENCY-ROUND3 X1 and
+// GuestToHostMap::InvalidateRangePrecise.
+void ContextImpl::InvalidateCodeBuffersCodeRangePrecise(uint64_t Start, uint64_t Length) {
+  FEXCORE_PROFILE_SCOPED("InvalidateCodeBuffersCodeRangePrecise");
+
+  LOGMAN_THROW_A_FMT(CodeInvalidationMutex.is_write_owned(), "CodeInvalidationMutex needs to be unique_locked here");
+
+  RecordCodeRangeInvalidation(Start, Length);
+  if (auto* CompileLog = GetCompileLog()) {
+    CompileLog->RecordInvalidate(Length);
+  }
+
+  std::scoped_lock lk {CodeBufferListLock};
+  auto it = CodeBufferList.begin();
+  while (it != CodeBufferList.end()) {
+    if (auto Strong = it->lock()) {
+      Strong->LookupCache->InvalidateRangePrecise(Start, Length);
+      it++;
+    } else {
+      it = CodeBufferList.erase(it);
+    }
+  }
+  LiveCodeBufferCount.store(CodeBufferList.size(), std::memory_order_release);
+}
+
+// SMCChecks=icache's gate. See FEXCore/Core/Context.h for the contract,
+// Interface/Core/SMCICache.h for the soundness argument this participates in,
+// and Interface/Core/SMCCodeGranules.h for the bitmap's own ordering rules.
+bool ContextImpl::GuestRangeProvablyHasNoCode(FEXCore::Core::InternalThreadState* Thread, uint64_t Start, uint64_t Length) {
+  // The common case is one live CodeBuffer, and then the only bitmap in the
+  // process is the one this thread already holds a pointer to. Ask it without
+  // taking CodeBufferListLock -- which the invalidation walk holds -- so a
+  // __clear_cache loop over fresh code never contends with anything.
+  //
+  // LiveCodeBufferCount is stored under CodeBufferListLock on every growth and
+  // every prune. A stale-high read costs one uncontended mutex; a stale-low
+  // read would have to come from a growth this thread has not yet observed, and
+  // a CodeBuffer born after that growth starts EMPTY -- a translation only
+  // appears in it once some thread compiles into it, which happens-after the
+  // growth it had to observe to reach the buffer at all.
+  if (Thread && LiveCodeBufferCount.load(std::memory_order_acquire) == 1) {
+    return Thread->LookupCache->GranulesProvablyClear(Start, Length);
+  }
+
+  std::scoped_lock lk {CodeBufferListLock};
+  bool AllClear = true;
+  auto it = CodeBufferList.begin();
+  while (it != CodeBufferList.end()) {
+    if (auto Strong = it->lock()) {
+      if (!Strong->LookupCache->CodeGranules.ProvablyClear(Start, Length)) {
+        AllClear = false;
+      }
+      it++;
+    } else {
+      it = CodeBufferList.erase(it);
+    }
+  }
+  LiveCodeBufferCount.store(CodeBufferList.size(), std::memory_order_release);
+  return AllClear;
 }
 
 uintptr_t ContextImpl::TryRelinkSoftInvalidatedBlock(FEXCore::Core::InternalThreadState* Thread, uint64_t GuestRIP) {
@@ -1551,8 +1628,8 @@ uintptr_t ContextImpl::TryRelinkSoftInvalidatedBlock(FEXCore::Core::InternalThre
   // soft-invalidated block ineligible for patching from then on.
   Thread->LookupCache->AddBlockMapping(Thread, GuestRIP, Retained->BlockBegin, Retained->CodePages,
                                        reinterpret_cast<void*>(Retained->HostCode), Retained->GuestRangeStart, Retained->GuestRangeLength,
-                                       Retained->GuestHash, Retained->BranchImmSites, Retained->ExitRIPSites, Retained->MovImmSites,
-                                       Retained->MovImmWindows);
+                                       Retained->GuestHash, Retained->ExtentStart, Retained->ExtentLength, Retained->BranchImmSites,
+                                       Retained->ExitRIPSites, Retained->MovImmSites, Retained->MovImmWindows);
 
   if (SMCAuditCompileFD() >= 0) {
     dprintf(SMCAuditCompileFD(), "relink rip=%lx host=%lx pages=%zu\n", GuestRIP, Retained->HostCode, Retained->CodePages.size());
@@ -1575,6 +1652,7 @@ void ContextImpl::SoftInvalidateCodeBuffersCodeRange(uint64_t Start, uint64_t Le
       it = CodeBufferList.erase(it);
     }
   }
+  LiveCodeBufferCount.store(CodeBufferList.size(), std::memory_order_release);
 }
 
 void ContextImpl::InvalidateThreadCachedCodeRange(FEXCore::Core::InternalThreadState* Thread, uint64_t Start, uint64_t Length) {
@@ -1643,6 +1721,29 @@ void ContextImpl::SettleLazySMCDrainIfPending(FEXCore::Core::InternalThreadState
 
 void ContextImpl::ThreadRemoveCodeEntryFromJit(FEXCore::Core::CpuStateFrame* Frame, uint64_t GuestRIP) {
   static_cast<ContextImpl*>(Frame->Thread->CTX)->SyscallHandler->InvalidateGuestCodeRange(Frame->Thread, GuestRIP, 1);
+}
+
+// SMCChecks=icache. Called out of JIT code by DEF_OP(ICacheInvalidate), which
+// has already spilled the static registers, so guest state is coherent for the
+// whole of this and a signal may be taken inside it.
+//
+// The bitmap gate is the entire point: a JIT that just wrote a fresh block into
+// fresh memory answers "clear" in a handful of dependent loads and no lock, so
+// a __clear_cache loop over a kilobyte of new code costs 16 of those and
+// nothing else. Only a flush that actually lands on translated bytes pays for
+// the exclusive lock. See Interface/Core/SMCICache.h.
+void ContextImpl::ICacheInvalidateFromJit(FEXCore::Core::CpuStateFrame* Frame, uint64_t Address) {
+  auto* Thread = Frame->Thread;
+  auto* CTX = static_cast<ContextImpl*>(Thread->CTX);
+
+  // IC IVAU ignores the bits below IminLine; so do we.
+  const uint64_t LineBase = FEXCore::SMC::ICacheLineBase(Address);
+
+  if (CTX->GuestRangeProvablyHasNoCode(Thread, LineBase, FEXCore::SMC::ICacheLineSize)) {
+    return;
+  }
+
+  CTX->SyscallHandler->InvalidateGuestICacheLine(Thread, LineBase);
 }
 
 std::optional<CustomIRResult>

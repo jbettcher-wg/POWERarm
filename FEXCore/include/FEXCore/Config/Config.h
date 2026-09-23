@@ -28,6 +28,8 @@ namespace Handler {
       return "1";
     } else if (Value == "full") {
       return "2";
+    } else if (Value == "icache") {
+      return "3";
     }
     return "0";
   }
@@ -45,6 +47,14 @@ enum ConfigSMCChecks {
   CONFIG_SMC_NONE,
   CONFIG_SMC_MTRACK,
   CONFIG_SMC_FULL,
+  // The guest's own cache maintenance is the invalidation protocol: IC IVAU
+  // invalidates the translations of the 64 bytes it names and ISB ends a block.
+  // Nothing is write-protected, so no SIGSEGV ever announces a code write.
+  // AArch64-only by construction -- it rests on the architecture requiring the
+  // writer to announce a code change (DDI 0487 B2.2.5) and on us advertising
+  // CTR_EL0.DIC=0, which makes every real runtime issue that announcement.
+  // See docs/powerarm/research/cold-translation/LATENCY-ROUND3.md section X1.
+  CONFIG_SMC_ICACHE,
 };
 
 enum class LayerType {

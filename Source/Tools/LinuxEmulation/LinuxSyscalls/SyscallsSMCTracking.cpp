@@ -275,6 +275,16 @@ bool SyscallHandler::HandleSegfault(FEXCore::Core::InternalThreadState* Thread, 
     return true;
   }
 
+  // SMCChecks=icache never write-protects a guest page (MarkGuestExecutableRange
+  // returns early for anything but mtrack), so no SEGV_ACCERR below this point
+  // can be ours: every one of them is the guest writing to memory it protected
+  // itself, and swallowing it -- by "unprotecting" a page the guest deliberately
+  // made read-only -- would turn a guest fault into silent corruption. The
+  // CallRet-stack guard above is the one non-SMC case and has already run.
+  if (_SyscallHandler->SMCChecks == FEXCore::Config::CONFIG_SMC_ICACHE) {
+    return false;
+  }
+
   // The SIGSEGV that brought us here may have interrupted a JIT block
   // currently executing under a shared_lock on CodeInvalidationMutex (taken
   // by ContextImpl::CompileBlock or PPC64LE ExitFunctionLink).  The
@@ -1703,6 +1713,67 @@ void SyscallHandler::InvalidateGuestCodeRange(FEXCore::Core::InternalThreadState
   InvalidateCodeRangeIfNecessary(Thread, Start, Length);
 }
 
+// SMCChecks=icache. The guest ran IC IVAU over [LineBase, LineBase+64); the
+// bitmap has already said that some translation lives there, so this is the
+// authoritative half. See FEXCore/Source/Interface/Core/SMCICache.h.
+//
+// MIRROR FAN-OUT. IC IVAU operates on a PIPT instruction cache (we advertise
+// CTR_EL0.ICachePOL = 0b11), so it invalidates by PHYSICAL address: a JIT that
+// writes through a writable alias of a shared mapping and flushes THAT VA is
+// correct on hardware, and every other alias of the same page must lose its
+// translations too. Private anonymous pages -- which is what V8 and JSC use --
+// have no mirrors and skip the walk entirely.
+//
+// LOCK ORDER. VMATracking.Mutex is taken (shared) and DROPPED before anything
+// asks for CodeInvalidationMutex, for the reason spelled out in HandleSegfault:
+// the order everywhere else is CodeInvalidationMutex first, VMATracking second
+// (CompileBlock holds the former shared while MarkGuestExecutableRange takes
+// the latter shared, and fork's LockBeforeFork takes both in that order), so
+// holding VMATracking here while asking for the exclusive CodeInvalidationMutex
+// deadlocks against a concurrent fork().
+void SyscallHandler::InvalidateGuestICacheLine(FEXCore::Core::InternalThreadState* Thread, uint64_t LineBase) {
+  // The IminLine we advertise in CTR_EL0 (SystemRegisters.h), which is also the
+  // SMC granule bitmap's granule. FEXCore::SMC::ICacheLineSize is the same
+  // constant on the other side of the interface; it lives in an internal
+  // FEXCore header this translation unit deliberately does not reach into.
+  constexpr uint64_t LineSize = 64;
+
+  // Enough for a dual-mapped arena and then some; a resource with more aliases
+  // than this falls back to invalidating the one the guest named plus the ones
+  // that fit, which is what HandleSegfault's MaxMirrors budget does too.
+  constexpr size_t MaxMirrors = 32;
+  uint64_t Lines[MaxMirrors];
+  size_t LineCount = 0;
+  Lines[LineCount++] = LineBase;
+
+  {
+    auto lk = FEXCore::GuardSignalDeferringSection<std::shared_lock>(VMATracking.Mutex, Thread);
+
+    auto Entry = VMATracking.FindVMAEntry(LineBase);
+    if (Entry != VMATracking.VMAs.end() && Entry->second.Flags.Shared && Entry->second.Resource) {
+      const auto Offset = LineBase - Entry->first + Entry->second.Offset;
+      auto VMA = Entry->second.Resource->FirstVMA;
+      while (VMA && LineCount < MaxMirrors) {
+        if (VMA->Offset <= Offset && (VMA->Offset + VMA->Length) > Offset) {
+          const uint64_t MirrorLine = Offset - VMA->Offset + VMA->Base;
+          if (MirrorLine != LineBase) {
+            Lines[LineCount++] = MirrorLine;
+          }
+        }
+        VMA = VMA->ResourceNextVMA;
+      }
+    }
+  }
+
+  if (LineCount == 1) {
+    TM.InvalidateGuestCodeRangePrecise(Thread, LineBase, LineSize);
+  } else {
+    TM.InvalidateGuestCodeRangesPrecise(Thread, Lines, LineCount, LineSize);
+  }
+
+  SMC_AUDIT("[%d] icache flush line=%lx mirrors=%zu\n", FHU::Syscalls::gettid(), LineBase, LineCount - 1);
+}
+
 static FEXCore::ExecutableFileSectionInfo BuildSectionInfo(const VMATracking::MappedResource& Resource, uint64_t Base, uint64_t Size) {
   // The section keeps the file info alive: it is consumed after the
   // VMATracking lock is released (FinishTrackedMmap/FinishTrackedMprotect ->
@@ -2301,6 +2372,12 @@ void* SyscallHandler::GuestMmap(bool Is64Bit, FEXCore::Core::InternalThreadState
   // below is unconditional, so the skip records for the range retire with it.
   ClearSMCImmutableSkippedRange(Result & FEXCore::Utils::FEX_GUEST_PAGE_MASK, FEXCore::AlignUp(Result + Size, FEXCore::Utils::FEX_GUEST_PAGE_SIZE));
 
+  // SMCChecks=icache: the mapping whose pages were once made executable is
+  // gone, so its "the kernel would not re-sync these" records go with it --
+  // otherwise a fresh mapping at the same VA would inherit them and its first
+  // PROT_EXEC mprotect would skip the invalidation it owes.
+  ClearSMCEverExecRange(Result & FEXCore::Utils::FEX_GUEST_PAGE_MASK, FEXCore::AlignUp(Result + Size, FEXCore::Utils::FEX_GUEST_PAGE_SIZE));
+
   // 64K (S4c): the mapping that owned these granules is gone.
   NoteGranuleRangeGone(Result & FEXCore::Utils::FEX_GUEST_PAGE_MASK, FEXCore::AlignUp(Result + Size, FEXCore::Utils::FEX_GUEST_PAGE_SIZE));
   // FEX_SMCLAZYINVAL: same reasoning. The mmap retired whatever was there and
@@ -2411,6 +2488,13 @@ uint64_t SyscallHandler::GuestMunmap(bool Is64Bit, FEXCore::Core::InternalThread
   ClearSMCImmutableSkippedRange(reinterpret_cast<uint64_t>(addr) & FEXCore::Utils::FEX_GUEST_PAGE_MASK,
                                 FEXCore::AlignUp(reinterpret_cast<uint64_t>(addr) + Size, FEXCore::Utils::FEX_GUEST_PAGE_SIZE));
 
+  // SMCChecks=icache: the mapping whose pages were once made executable is
+  // gone, so its "the kernel would not re-sync these" records go with it --
+  // otherwise a fresh mapping at the same VA would inherit them and its first
+  // PROT_EXEC mprotect would skip the invalidation it owes.
+  ClearSMCEverExecRange(reinterpret_cast<uint64_t>(addr) & FEXCore::Utils::FEX_GUEST_PAGE_MASK,
+                        FEXCore::AlignUp(reinterpret_cast<uint64_t>(addr) + Size, FEXCore::Utils::FEX_GUEST_PAGE_SIZE));
+
   // 64K (S4c): the mapping that owned these granules is gone.
   NoteGranuleRangeGone(reinterpret_cast<uint64_t>(addr) & FEXCore::Utils::FEX_GUEST_PAGE_MASK,
                        FEXCore::AlignUp(reinterpret_cast<uint64_t>(addr) + Size, FEXCore::Utils::FEX_GUEST_PAGE_SIZE));
@@ -2508,6 +2592,13 @@ uint64_t SyscallHandler::GuestMremap(bool Is64Bit, FEXCore::Core::InternalThread
 
     ClearSMCImmutableSkippedRange(OldBase, OldTop);
     bool SettleNew = ClearSMCImmutableSkippedRange(NewBase, NewTop);
+
+    // SMCChecks=icache: the mapping whose pages were once made executable is
+    // gone, so its "the kernel would not re-sync these" records go with it --
+    // otherwise a fresh mapping at the same VA would inherit them and its first
+    // PROT_EXEC mprotect would skip the invalidation it owes.
+    ClearSMCEverExecRange(OldBase, OldTop);
+    ClearSMCEverExecRange(NewBase, NewTop);
 
     // 64K (S4c): both ends changed backing.
     NoteGranuleRangeGone(OldBase, OldTop);
@@ -2708,6 +2799,50 @@ uint64_t SyscallHandler::GuestMprotect(FEXCore::Core::InternalThreadState* Threa
       // protection state we no longer control.
       ClearSMCLazyDirtyRange(Base, Top);
     }
+  }
+
+  // SMCChecks=icache: follow the kernel's own PG_dcache_clean rule instead of
+  // invalidating on every protection change. See the block comment on
+  // SMCEverExecPages in Syscalls.h.
+  //
+  //   * PROT_EXEC granted to pages that have not been granted it by an earlier
+  //     mprotect: invalidate. Bytes may have arrived by read(2) or any other
+  //     route that issues no IC IVAU, and this is the point the guest is
+  //     allowed to branch into them.
+  //   * PROT_EXEC granted to pages that have: nothing. A W^X flip costs
+  //     nothing, because anything the guest changed while the range was
+  //     writable it also flushed -- and if it did not, it is broken on a
+  //     Cortex-A76 too, whose PG_dcache_clean page the kernel likewise did not
+  //     re-sync.
+  //   * No PROT_EXEC at all: nothing. This is the W half of a W^X flip, and
+  //     invalidating here would give the X half back nothing to keep -- which
+  //     is the whole cost this mode exists to remove. It is the same argument
+  //     FEX_SMCMPROTECTDEFER already makes for the same transition (Syscalls.h,
+  //     SMCDeferredDirtyPages): with PROT_EXEC withheld the guest may not
+  //     legally execute from the range, so no stale translation can be
+  //     LEGITIMATELY reached. What this gives up, and mtrack does not, is
+  //     faulting a guest that strips PROT_EXEC from code and then branches into
+  //     it anyway; that guest gets the old code instead of SIGSEGV. A mapping
+  //     change (munmap, mmap over, mremap, madvise DONTNEED) still invalidates
+  //     unconditionally, so a stale block can never outlive its memory.
+  //
+  // Mapping changes -- munmap, mmap over, mremap -- are NOT protection changes
+  // and keep invalidating unconditionally; they are handled where they happen.
+  if (SMCICacheActive()) {
+    const auto Base = reinterpret_cast<uint64_t>(addr) & FEXCore::Utils::FEX_GUEST_PAGE_MASK;
+    const auto Top = FEXCore::AlignUp(reinterpret_cast<uint64_t>(addr) + len, FEXCore::Utils::FEX_GUEST_PAGE_SIZE);
+    if (prot & PROT_EXEC) {
+      const bool AlreadySynced = SMCEverExecCovers(Base, Top);
+      MarkSMCEverExecRange(Base, Top);
+      if (!AlreadySynced) {
+        SMC_AUDIT("[%d] icache mprotect SYNC base=%lx top=%lx prot=%x\n", FHU::Syscalls::gettid(), Base, Top, prot);
+        InvalidateCodeRangeIfNecessary(Thread, reinterpret_cast<uint64_t>(addr), len);
+      } else {
+        SMC_AUDIT("[%d] icache mprotect WX-FLIP base=%lx top=%lx prot=%x\n", FHU::Syscalls::gettid(), Base, Top, prot);
+      }
+    }
+    FinishTrackedMprotect(Thread, addr, prot);
+    return Result;
   }
 
   // A re-arm outranks the W^X deferral: the deferral's soundness argument is

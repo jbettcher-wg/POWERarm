@@ -71,6 +71,12 @@ public:
     return false;
   }
   virtual void InvalidateGuestCodeRange(FEXCore::Core::InternalThreadState* Thread, uint64_t Start, uint64_t Length) {}
+  // SMCChecks=icache: the guest ran IC IVAU over the 64-byte line starting at
+  // LineBase. Invalidate every translation whose decoded guest bytes overlap
+  // it, in this process, and fan the invalidation out over every mirror of a
+  // shared mapping (IC IVAU on a PIPT instruction cache invalidates by physical
+  // address, so flushing one alias is correct on hardware).
+  virtual void InvalidateGuestICacheLine(FEXCore::Core::InternalThreadState* Thread, uint64_t LineBase) {}
   virtual void MarkOvercommitRange(uint64_t Start, uint64_t Length) {}
   virtual void UnmarkOvercommitRange(uint64_t Start, uint64_t Length) {}
   virtual ExecutableRangeInfo QueryGuestExecutableRange(FEXCore::Core::InternalThreadState* Thread, uint64_t Address) = 0;

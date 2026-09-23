@@ -250,6 +250,25 @@ public:
   FEX_DEFAULT_VISIBILITY virtual bool GuestRangeOverlapsCompiledCode(FEXCore::Core::InternalThreadState* Thread, uint64_t Start, uint64_t Length) = 0;
 
   /**
+   * @brief SMCChecks=icache: can the SMC code-granule bitmap PROVE that no
+   *        translation anywhere in this process covers [Start, Start+Length)?
+   *
+   * Lock-free and allowed false negatives ("not provably clear" when in fact
+   * clear) but never a false positive. Every live CodeBuffer is consulted, not
+   * just the calling thread's, because a buffer the thread has migrated off can
+   * still hold a translation of these bytes for a thread that has not.
+   */
+  FEX_DEFAULT_VISIBILITY virtual bool GuestRangeProvablyHasNoCode(FEXCore::Core::InternalThreadState* Thread, uint64_t Start, uint64_t Length) = 0;
+
+  /**
+   * @brief SMCChecks=icache: erase only the translations whose decoded guest
+   *        bytes overlap [Start, Start+Length), in every live CodeBuffer.
+   *
+   * MUST be called with the exclusive CodeInvalidationMutex held.
+   */
+  FEX_DEFAULT_VISIBILITY virtual void InvalidateCodeBuffersCodeRangePrecise(uint64_t Start, uint64_t Length) = 0;
+
+  /**
    * @brief SMC Idea 4: try to service a guest code write by patching translated
    *        code instead of invalidating it.
    *

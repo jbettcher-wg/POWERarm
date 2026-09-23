@@ -408,6 +408,63 @@ public:
     }
   }
 
+  // SMCChecks=icache. Same lock protocol as the plain form above, but each
+  // code buffer erases only the blocks whose decoded guest bytes overlap the
+  // range, rather than every block registered on the pages it touches.
+  //
+  // The per-thread lookup scrub is deliberately the UNMODIFIED legacy one:
+  // InvalidateThreadCachedCodeRange is page-granular over CachedCodePages and
+  // takes each thread's lookup write lock (plus one CallRet-stack madvise per
+  // thread when FEX_SHADOWRETSTACK is on). A thread's L1/L2 entry for an erased
+  // block would otherwise dispatch straight into host code that is no longer
+  // reachable through BlockList, so the scrub is required; making it precise
+  // means touching the L1 index, which is owned elsewhere.
+  void InvalidateGuestCodeRangePrecise(FEXCore::Core::InternalThreadState* CallingThread, uint64_t Start, uint64_t Length) {
+    FEXCore::ReleaseAllPendingSharedLocks();
+
+    auto& InvalMutex = CTX->GetCodeInvalidationMutex();
+    TakeCodeInvalidationWriteLockOrSteal(InvalMutex);
+    struct UniqueGuard {
+      FEXCore::Utils::WritePriorityMutex::Mutex& M;
+      ~UniqueGuard() { M.unlock(); }
+    } CodeInvalidationlk {InvalMutex};
+
+    CTX->InvalidateCodeBuffersCodeRangePrecise(Start, Length);
+    {
+      std::lock_guard lk(ThreadCreationMutex);
+      for (auto& Thread : Threads) {
+        CTX->InvalidateThreadCachedCodeRange(Thread->Thread, Start, Length);
+      }
+    }
+  }
+
+  // Several lines (the mirrors of a shared mapping) under ONE exclusive
+  // acquisition, so a dual-mapped JIT arena does not convoy on the lock once
+  // per alias.
+  void InvalidateGuestCodeRangesPrecise(FEXCore::Core::InternalThreadState* CallingThread, const uint64_t* Starts, size_t Count,
+                                        uint64_t Length) {
+    FEXCore::ReleaseAllPendingSharedLocks();
+
+    auto& InvalMutex = CTX->GetCodeInvalidationMutex();
+    TakeCodeInvalidationWriteLockOrSteal(InvalMutex);
+    struct UniqueGuard {
+      FEXCore::Utils::WritePriorityMutex::Mutex& M;
+      ~UniqueGuard() { M.unlock(); }
+    } CodeInvalidationlk {InvalMutex};
+
+    for (size_t i = 0; i < Count; ++i) {
+      CTX->InvalidateCodeBuffersCodeRangePrecise(Starts[i], Length);
+    }
+    {
+      std::lock_guard lk(ThreadCreationMutex);
+      for (auto& Thread : Threads) {
+        for (size_t i = 0; i < Count; ++i) {
+          CTX->InvalidateThreadCachedCodeRange(Thread->Thread, Starts[i], Length);
+        }
+      }
+    }
+  }
+
   void InvalidateGuestCodeRange(FEXCore::Core::InternalThreadState* CallingThread, uint64_t Start, uint64_t Length,
                                 FEXCore::Context::CodeRangeInvalidationFn after_callback) {
     FEXCore::ReleaseAllPendingSharedLocks();

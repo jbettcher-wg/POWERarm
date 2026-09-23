@@ -76,6 +76,11 @@
 //         clearing is deliberately NOT attempted: several blocks share a
 //         granule, so subtracting one block's bits could clear another's.
 //         Page-level clear plus re-set on the next compile/relink is correct.
+//   CLEAR GuestToHostMap::InvalidateRangePrecise (SMCChecks=icache) -- the one
+//         path that erases SOME of a page's blocks and keeps the rest. It does
+//         not subtract the erased blocks' bits; it RECOMPUTES the page's word
+//         as the union of what the surviving blocks need, which is exact. See
+//         RecomputePageWord below and Interface/Core/SMCICache.h.
 //   CLEAR GuestToHostMap::ClearCache -- BlockList is emptied there (CodeBuffer
 //         swap / ClearCodeCache), so every bit must go.
 //
@@ -180,32 +185,62 @@ public:
   // therefore suffice; no CAS is needed.
   // ---------------------------------------------------------------------
 
+  // The bits [Start, Start+Length) occupies inside PageBase. A zero length, or
+  // an extent that does not intersect the page at all, conservatively covers
+  // the whole page -- that is what keeps the "a registered code page always has
+  // at least the bits its block needs" invariant true even when a caller's
+  // notion of the block extent and its code-page list disagree (multiblock
+  // across discontiguous pages).
+  //
+  // Shared by the SET path and by RecomputePageWord below so the two cannot
+  // drift: if they did, a recompute could clear a bit a set had installed.
+  static uint64_t PageMaskFor(uint64_t PageBase, uint64_t Start, uint64_t Length) {
+    if (!Length) {
+      return ~0ULL;
+    }
+    const uint64_t PageEnd = PageBase + (1ULL << kPageShift);
+    const uint64_t Lo = Start > PageBase ? Start : PageBase;
+    const uint64_t HiExcl = (Start + Length) < PageEnd ? (Start + Length) : PageEnd;
+    if (Lo >= HiExcl) {
+      return ~0ULL;
+    }
+    const uint32_t FirstBit = static_cast<uint32_t>((Lo - PageBase) >> kGranuleShift);
+    const uint32_t LastBit = static_cast<uint32_t>((HiExcl - 1 - PageBase) >> kGranuleShift);
+    return BitRangeMask(FirstBit, LastBit);
+  }
+
   // Set the granules covering [Start, Start+Length) that fall inside the single
-  // page PageBase. If the intersection is empty the WHOLE page is set instead,
-  // which keeps the "a registered code page always has at least the bits its
-  // block needs" invariant even when a caller's notion of the block extent and
-  // its code-page list disagree (multiblock across discontiguous pages).
+  // page PageBase.
   void SetPageRange(uint64_t PageBase, uint64_t Start, uint64_t Length) {
     Leaf* L = GetOrCreateLeaf(PageBase);
     if (!L) {
       return;
     }
 
-    uint64_t Mask = ~0ULL;
-    if (Length) {
-      const uint64_t PageEnd = PageBase + (1ULL << kPageShift);
-      const uint64_t Lo = Start > PageBase ? Start : PageBase;
-      const uint64_t HiExcl = (Start + Length) < PageEnd ? (Start + Length) : PageEnd;
-      if (Lo < HiExcl) {
-        const uint32_t FirstBit = static_cast<uint32_t>((Lo - PageBase) >> kGranuleShift);
-        const uint32_t LastBit = static_cast<uint32_t>((HiExcl - 1 - PageBase) >> kGranuleShift);
-        Mask = BitRangeMask(FirstBit, LastBit);
-      }
-      // else: empty intersection -> conservative full page (Mask stays ~0).
-    }
-
+    const uint64_t Mask = PageMaskFor(PageBase, Start, Length);
     uint64_t* Word = &L->Words[WordIndex(PageBase)];
     __atomic_store_n(Word, __atomic_load_n(Word, __ATOMIC_RELAXED) | Mask, __ATOMIC_RELEASE);
+  }
+
+  // Replace a page's word outright with one the caller derived from the blocks
+  // that are STILL live on it. Used only by SMCChecks=icache's byte-precise
+  // invalidation (GuestToHostMap::InvalidateRangePrecise).
+  //
+  // This is the one place a bit is cleared without the whole page going with
+  // it, and the reason the blanket "never clear per block" rule above does not
+  // apply: the caller does not subtract one block's bits, it recomputes the
+  // union of every surviving block's bits, under the same write lock, while
+  // holding ContextImpl::CodeInvalidationMutex EXCLUSIVELY -- so no compile can
+  // be adding a block whose SET would be lost. Without this, a JIT arena page
+  // whose blocks have all been erased would keep answering "not provably clear"
+  // forever, and every later IC IVAU into it would take the exclusive lock to
+  // find nothing.
+  void RecomputePageWord(uint64_t PageBase, uint64_t Word) {
+    Leaf* L = FindLeaf(PageBase);
+    if (!L) {
+      return;
+    }
+    __atomic_store_n(&L->Words[WordIndex(PageBase)], Word, __ATOMIC_RELEASE);
   }
 
   void ClearPage(uint64_t PageBase) {

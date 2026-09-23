@@ -2354,6 +2354,11 @@ PPC64JITCore::PPC64JITCore(FEXCore::Context::ContextImpl* ctx,
   Ptrs.ThreadRemoveCodeEntryFromJIT =
     reinterpret_cast<uintptr_t>(&FEXCore::Context::ContextImpl::ThreadRemoveCodeEntryFromJit);
 
+  // SMCChecks=icache: DEF_OP(ICacheInvalidate) (ALUOps.cpp) loads this out of
+  // the frame for every guest IC IVAU. Always set -- the op is only emitted in
+  // that mode, but the slot must never be a null bctrl target if it is.
+  Ptrs.ICacheInvalidateFromJIT = reinterpret_cast<uintptr_t>(&FEXCore::Context::ContextImpl::ICacheInvalidateFromJit);
+
   // Tell the register allocator how many registers the PPC64 backend provides.
   RAPass = Thread->PassManager->GetPass<IR::RegisterAllocationPass>("RA");
   RAPass->AddRegisters(IR::RegClass::GPR,      GeneralRegisters.size());

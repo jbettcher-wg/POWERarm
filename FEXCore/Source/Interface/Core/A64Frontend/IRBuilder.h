@@ -126,6 +126,10 @@ public:
   bool HINT(uint32_t Word); bool Barrier(uint32_t Word); bool CLREX(uint32_t Word);
   bool MRS(uint32_t Word); bool MSR_reg(uint32_t Word);
   bool DC_ZVA(uint32_t Word); bool CacheMaintenanceNop(uint32_t Word);
+  // SMCChecks=icache splits these two out of the nop/hint group: IC IVAU
+  // becomes the invalidation itself and ISB ends the block. In every other mode
+  // they fall through to CacheMaintenanceNop / HINT unchanged.
+  bool IC_IVAU(uint32_t Word); bool ISB(uint32_t Word);
   bool UnallocatedEncoding(uint32_t Word);
   // Loads and stores.
   bool LDR_lit_gen(uint32_t Word); bool LDRSW_lit(uint32_t Word); bool PRFM_lit(uint32_t Word);

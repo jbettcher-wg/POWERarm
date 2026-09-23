@@ -135,14 +135,15 @@ inline Mode CheckHostPageSize(bool ConfigAvailable = false, Mode DefaultMode = M
                     "  * guest mmap/mprotect/munmap below the host page go through the granule table\n"
                     "    in the permissive tier: a granule is mapped/protected as the union of its\n"
                     "    live guest pages, so a guest cannot rely on a fault inside a shared granule (S4b),\n"
-                    "  * SMC tracking (SMCChecks=mtrack) arms whole host pages and re-arms after a\n"
-                    "    write to a shared granule (S4c).\n"
+                    "  * SMC tracking arms nothing under the default SMCChecks=icache (the guest's own\n"
+                    "    IC IVAU is the invalidation), and under SMCChecks=mtrack arms whole host pages\n"
+                    "    and re-arms after a write to a shared granule (S4c).\n"
                     "\n"
                     "A guest that depends on sub-granule faults (GC write barriers, guard pages) may misbehave.\n"
                     "\n"
                     "POWERARM_HOSTPAGEMODE=auto (default) runs natively when every PT_LOAD of the program\n"
                     "and its interpreter has p_align >= the host page and emulates otherwise; =native never\n"
-                    "emulates; =force emulates with the configured SMCChecks (recommended: mtrack);\n"
+                    "emulates; =force emulates with the configured SMCChecks (icache or mtrack);\n"
                     "=degrade emulates and forces SMCChecks=full, which is several times slower;\n"
                     "=abort refuses to start.\n",
                     SelectedMode == Mode::Abort ? "FATAL" : "WARNING", HostPageSize,

@@ -35,7 +35,7 @@ done
 gcc -O2 -o madvfile "$here/madvfile.c" "$here/madvfile.S"
 
 # Static libc programs.
-corpus="hello printf_float strmem fpmath lse lseminmax lsecasp litmus nosve cntvct vdso vdso_syscalls hlt thunk_callback hoststack procdirfd dcmaint forkexec hostfault exclusive_pair"
+corpus="hello printf_float strmem fpmath lse lseminmax lsecasp litmus nosve cntvct vdso vdso_syscalls hlt thunk_callback hoststack procdirfd dcmaint forkexec hostfault exclusive_pair icflush icpartial icfresh"
 for t in $corpus; do
   gcc -static -O2 -o "$t" "$here/$t.c" -lm
 done

@@ -725,6 +725,17 @@
                 ],
         "HasSideEffects": true
       },
+      "ICacheInvalidate GPR:$Addr": {
+        "Desc": ["SMCChecks=icache: the guest executed IC IVAU on $Addr.",
+                 "Invalidates every translation whose decoded guest bytes lie in",
+                 "the 64-byte line containing $Addr (the IminLine advertised in",
+                 "CTR_EL0). Lowers to a host helper call; the common case, a JIT",
+                 "flushing code it just wrote into fresh memory, returns after a",
+                 "lock-free granule-bitmap probe.",
+                 "See FEXCore/Source/Interface/Core/SMCICache.h."
+                ],
+        "HasSideEffects": true
+      },
       "CacheLineZero GPR:$Addr": {
         "Desc": ["Does a 64 byte zero at the address specified",
                  "Writing zeroes to memory",

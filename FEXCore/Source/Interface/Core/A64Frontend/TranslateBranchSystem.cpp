@@ -260,6 +260,43 @@ bool IRBuilder::DC_ZVA(uint32_t Word) {
   return true;
 }
 
+// SMCChecks=icache: IC IVAU is the guest telling us which 64 bytes of code it
+// just rewrote, and when they must become visible. Lower it to the helper that
+// invalidates exactly those bytes' translations.
+//
+// In every other mode this stays the nop it has always been -- mtrack
+// rediscovers the same writes by write-protecting the page and taking a
+// SIGSEGV. See Interface/Core/SMCICache.h for the whole argument.
+bool IRBuilder::IC_IVAU(uint32_t Word) {
+  if (CTX->Config.SMCChecks != FEXCore::Config::CONFIG_SMC_ICACHE) {
+    return CacheMaintenanceNop(Word);
+  }
+  _ICacheInvalidate(LoadX(Bits(Word, 4, 0)));
+  return true;
+}
+
+// SMCChecks=icache: ISB is a context synchronisation event. After one, the PE
+// must re-fetch -- which in this model means re-look-up -- so end the block and
+// exit to the dispatcher at the next PC. That is what makes "patch my own
+// block, ISB, continue" correct: the continuation misses (or finds an entry the
+// IC IVAU erased) and is recompiled from the new bytes. BEFORE the ISB the old
+// translation may keep running, exactly as DDI 0487 B2.2.5 permits.
+//
+// The exit is emitted directly rather than left to FinishOp: ExitToPC would
+// emit an in-unit Jump if the next PC happens to be another block of this
+// compile unit, and an in-unit jump is not a re-look-up.
+//
+// Decoder::EndsBlock agrees with this in icache mode, so nothing past the ISB
+// is decoded into dead IR.
+bool IRBuilder::ISB(uint32_t Word) {
+  if (CTX->Config.SMCChecks != FEXCore::Config::CONFIG_SMC_ICACHE) {
+    return HINT(Word);
+  }
+  ExitFunction(_InlineEntrypointOffset(OpSize::i64Bit, CurrentPC + INSTRUCTION_SIZE - Entry));
+  BlockSetPC = true;
+  return true;
+}
+
 bool IRBuilder::CacheMaintenanceNop(uint32_t) {
   // DC CVAU and IC IVAU: cache flushes for code the guest wrote. SMC tracking
   // (mtrack) already invalidates translations of written pages.

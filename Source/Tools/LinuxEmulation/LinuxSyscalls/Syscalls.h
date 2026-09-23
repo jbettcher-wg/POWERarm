@@ -740,6 +740,74 @@ public:
   // for the immutability assumption.
   // - VMATracking.Mutex must be unique_locked before calling
   void RevokeSMCFileImmutabilityLocked(uint64_t Base, uint64_t Top);
+
+  ///// SMCChecks=icache: the PG_dcache_clean rule for mprotect /////
+  //
+  // arm64 Linux syncs the I-cache for a page only the FIRST time a PTE for it
+  // becomes executable: __sync_icache_dcache is called from set_pte_at when the
+  // page is exec-mapped and PG_dcache_clean is clear, and it then SETS
+  // PG_dcache_clean (arch/arm64/mm/flush.c). A page flipped RX -> RW -> RX is
+  // therefore NOT re-synced by the kernel, which is exactly why SpiderMonkey,
+  // V8 and JSC flush after every patch rather than relying on the W^X flip.
+  //
+  // So under icache an mprotect that grants PROT_EXEC must invalidate only when
+  // the pages have not been granted PROT_EXEC by an mprotect before: bytes may
+  // have arrived there by read(2) or by a host-side write that issues no
+  // IC IVAU. Once a page has been through one such flip, every later W^X flip
+  // costs nothing, because the guest's own IC IVAU has already done the precise
+  // work for anything it changed in between.
+  //
+  // The set records only pages an mprotect has granted PROT_EXEC. A page mapped
+  // executable by mmap and never mprotected is absent, so its first PROT_EXEC
+  // mprotect invalidates -- strictly more conservative than the kernel's rule,
+  // and the direction that cannot be wrong.
+  //
+  // Records are dropped when the mapping under them goes away (munmap, an mmap
+  // over the range, mremap), so a fresh mapping at the same VA does not inherit
+  // "already synced". Those paths invalidate unconditionally anyway; dropping
+  // the record keeps the NEXT mprotect honest.
+  //
+  // Same atomic-count fast path as the two sets above: in any mode but icache
+  // nothing is ever recorded and every query is one relaxed load.
+  std::mutex SMCEverExecMutex;
+  std::atomic<uint64_t> SMCEverExecCount {0};
+  fextl::set<uint64_t> SMCEverExecPages;
+
+  bool SMCICacheActive() const {
+    return SMCChecks == FEXCore::Config::CONFIG_SMC_ICACHE;
+  }
+
+  // True when EVERY page of [Base, Top) has already been granted PROT_EXEC by
+  // an earlier mprotect, i.e. when the kernel would not re-sync them either.
+  bool SMCEverExecCovers(uint64_t Base, uint64_t Top) {
+    if (SMCEverExecCount.load(std::memory_order_acquire) == 0) {
+      return false;
+    }
+    std::lock_guard lk {SMCEverExecMutex};
+    for (uint64_t Page = Base; Page < Top; Page += FEXCore::Utils::FEX_GUEST_PAGE_SIZE) {
+      if (!SMCEverExecPages.count(Page)) {
+        return false;
+      }
+    }
+    return true;
+  }
+
+  void MarkSMCEverExecRange(uint64_t Base, uint64_t Top) {
+    std::lock_guard lk {SMCEverExecMutex};
+    for (uint64_t Page = Base; Page < Top; Page += FEXCore::Utils::FEX_GUEST_PAGE_SIZE) {
+      SMCEverExecPages.insert(Page);
+    }
+    SMCEverExecCount.store(SMCEverExecPages.size(), std::memory_order_release);
+  }
+
+  void ClearSMCEverExecRange(uint64_t Base, uint64_t Top) {
+    if (SMCEverExecCount.load(std::memory_order_acquire) == 0) {
+      return;
+    }
+    std::lock_guard lk {SMCEverExecMutex};
+    SMCEverExecPages.erase(SMCEverExecPages.lower_bound(Base), SMCEverExecPages.lower_bound(Top));
+    SMCEverExecCount.store(SMCEverExecPages.size(), std::memory_order_release);
+  }
   ///// Lazy SMC invalidation (FEX_SMCLAZYINVAL) /////
   //
   // DELIBERATELY UNSOUND FOR SPEED. The full design note, the drain-point
@@ -862,6 +930,7 @@ public:
   }
 
   void InvalidateGuestCodeRange(FEXCore::Core::InternalThreadState* Thread, uint64_t Start, uint64_t Length) override;
+  void InvalidateGuestICacheLine(FEXCore::Core::InternalThreadState* Thread, uint64_t LineBase) override;
   std::optional<FEXCore::ExecutableFileSectionInfo>
   LookupExecutableFileSection(FEXCore::Core::InternalThreadState* Thread, uint64_t GuestAddr) final override;
 

@@ -57,13 +57,15 @@ const IRBuilder::HandlerEntry IRBuilder::HandlerTable[] = {
   // System. Every hint (NOP, YIELD, WFE, WFI, SEV, SEVL, BTI, PAC*SP, ...) is a NOP.
   {"HINT", &IRBuilder::HINT}, {"NOP", &IRBuilder::HINT}, {"YIELD", &IRBuilder::HINT},
   {"WFE", &IRBuilder::HINT}, {"WFI", &IRBuilder::HINT}, {"SEV", &IRBuilder::HINT}, {"SEVL", &IRBuilder::HINT},
-  // DSB/DMB carry ordering a weakly-ordered host must reproduce; only ISB is a
-  // pure instruction-fetch barrier, which mtrack SMC tracking already covers.
-  {"DSB", &IRBuilder::Barrier}, {"DMB", &IRBuilder::Barrier}, {"ISB", &IRBuilder::HINT},
+  // DSB/DMB carry ordering a weakly-ordered host must reproduce. ISB is a pure
+  // instruction-fetch barrier: under mtrack SMC tracking already covers it and
+  // it is a HINT; under SMCChecks=icache it is a context synchronisation event
+  // that forces a re-look-up, so it ends the block.
+  {"DSB", &IRBuilder::Barrier}, {"DMB", &IRBuilder::Barrier}, {"ISB", &IRBuilder::ISB},
   {"CLREX", &IRBuilder::CLREX},
   {"MRS", &IRBuilder::MRS}, {"MSR_reg", &IRBuilder::MSR_reg},
   {"DC_ZVA", &IRBuilder::DC_ZVA},
-  {"DC_CVAU", &IRBuilder::CacheMaintenanceNop}, {"IC_IVAU", &IRBuilder::CacheMaintenanceNop},
+  {"DC_CVAU", &IRBuilder::CacheMaintenanceNop}, {"IC_IVAU", &IRBuilder::IC_IVAU},
   {"DC_CVAC", &IRBuilder::CacheMaintenanceNop}, {"DC_CIVAC", &IRBuilder::CacheMaintenanceNop},
   {"DC_CVAP", &IRBuilder::CacheMaintenanceNop},
   {"UnallocatedEncoding", &IRBuilder::UnallocatedEncoding},

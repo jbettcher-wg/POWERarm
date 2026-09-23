@@ -137,6 +137,21 @@ struct GuestToHostMap {
     uint64_t GuestRangeLength = 0;
     uint64_t GuestHash = 0;
 
+    // The block's decoded guest extent, ALWAYS recorded (unlike the pair above,
+    // which is the SMC v3 hash window and stays zero unless
+    // FEX_SMCSOFTINVALIDATE is on). This is what SMCChecks=icache's
+    // byte-precise InvalidateRangePrecise filters on.
+    //
+    // It is NOT recoverable from JITCodeTail: that records {RIP = the compile
+    // unit's ENTRY, GuestSize = DecodedMaxAddress - DecodedMinAddress}, and a
+    // multiblock unit that followed a backward branch has
+    // DecodedMinAddress < RIP -- so [RIP, RIP+GuestSize) misses the bytes below
+    // the entry. Filtering on that pair would silently keep a translation of
+    // code the guest just rewrote. ExtentLength == 0 means "unknown" and is
+    // treated as overlapping everything.
+    uint64_t ExtentStart = 0;
+    uint64_t ExtentLength = 0;
+
     // SMC Idea 4 (FEX_SMCSEMANTICPATCH): the block's direct rel32 branch
     // immediates (guest side) and the host windows its ExitFunctions baked
     // constant destination RIPs into. Both empty => block ineligible for
@@ -191,7 +206,8 @@ struct GuestToHostMap {
   // Adds to Guest -> Host code mapping
   const BlockEntry& AddBlockMapping(uint64_t Address, uint64_t BlockBegin, const fextl::vector<uint64_t>& CodePages, void* HostCode,
                                     const LookupCacheWriteLockToken&, uint64_t GuestRangeStart = 0, uint64_t GuestRangeLength = 0,
-                                    uint64_t GuestHash = 0, const FEXCore::SMC::BranchImmSites& BranchImmSites = {},
+                                    uint64_t GuestHash = 0, uint64_t ExtentStart = 0, uint64_t ExtentLength = 0,
+                                    const FEXCore::SMC::BranchImmSites& BranchImmSites = {},
                                     const FEXCore::SMC::ExitRIPSites& ExitRIPSites = {}, const FEXCore::SMC::MovImmSites& MovImmSites = {},
                                     const FEXCore::SMC::MovImmWindows& MovImmWindows = {}) {
     // This may replace an existing mapping
@@ -201,7 +217,7 @@ struct GuestToHostMap {
     //       one of the two blocks in this case.
     return BlockList
       .insert_or_assign(Address, BlockEntry {(uintptr_t)HostCode, BlockBegin, CodePages, GuestRangeStart, GuestRangeLength, GuestHash,
-                                             BranchImmSites, ExitRIPSites, MovImmSites, MovImmWindows})
+                                             ExtentStart, ExtentLength, BranchImmSites, ExitRIPSites, MovImmSites, MovImmWindows})
       .first->second;
   }
 
@@ -260,6 +276,16 @@ struct GuestToHostMap {
   bool Erase(uint64_t Address, const LookupCacheWriteLockToken& token) {
     SeverLinks(Address, token);
     return BlockList.erase(Address) != 0;
+  }
+
+  // Does this block's decoded guest extent intersect [Start, End)?
+  // An unknown extent (custom IR, anything that never recorded one) answers
+  // yes: a false positive costs a recompile, a false negative runs stale code.
+  static bool EntryOverlaps(const BlockEntry& Entry, uint64_t Start, uint64_t End) {
+    if (Entry.ExtentLength == 0) {
+      return true;
+    }
+    return Entry.ExtentStart < End && (Entry.ExtentStart + Entry.ExtentLength) > Start;
   }
 
   // --- SMC v3 soft-invalidate -----------------------------------------------
@@ -728,6 +754,77 @@ private:
 public:
 #endif // ARCHITECTURE_ppc64le
 
+  // SMCChecks=icache: erase only the blocks whose decoded guest bytes actually
+  // overlap [Start, Start+Length) -- the 64-byte line an IC IVAU named -- and
+  // leave the rest of the page registered.
+  //
+  // WHY THIS IS EXACT AND NOT MERELY CONSERVATIVE. The guest tells us the line;
+  // every block records the extent it decoded (BlockEntry::ExtentStart/Length);
+  // so "does this translation contain any of those bytes" is answerable without
+  // re-reading guest memory. The page-granular InvalidateRange above erases
+  // every block on the page because a SIGSEGV only ever told it a page.
+  //
+  // The granule bits for the page are RECOMPUTED, not subtracted: the union of
+  // what the surviving blocks need. Subtracting the erased block's bits would
+  // be wrong (several blocks share a 64-byte granule, SMCCodeGranules.h), and
+  // leaving them alone would be slow (a JIT arena page whose blocks have all
+  // been erased would answer "not provably clear" forever and send every later
+  // flush of it through the exclusive lock to find nothing). Recomputing is
+  // exact, and safe here because the caller holds CodeInvalidationMutex
+  // exclusively, so no compile can be setting a bit we would overwrite.
+  //
+  // Returns the number of blocks erased, for the audit counter.
+  size_t InvalidateRangePrecise(uint64_t Start, uint64_t Length) {
+    auto lk = AcquireWriteLock();
+
+    const uint64_t End = Start + Length;
+    auto lower = CodePages.lower_bound(Start >> 12);
+    auto upper = CodePages.upper_bound((End - 1) >> 12);
+
+    size_t Erased = 0;
+    for (auto it = lower; it != upper;) {
+      auto& Entries = it->second;
+      const uint64_t PageBase = it->first << 12;
+      size_t Kept = 0;
+      uint64_t SurvivingBits = 0;
+      for (size_t i = 0; i < Entries.size(); ++i) {
+        const uint64_t EntryAddr = Entries[i];
+        auto Block = BlockList.find(EntryAddr);
+        if (Block == BlockList.end()) {
+          // Stale page-vector entry: the block already left through another of
+          // its pages. Drop it here too rather than carrying it forever.
+          continue;
+        }
+        if (!EntryOverlaps(Block->second, Start, End)) {
+          Entries[Kept++] = EntryAddr;
+          SurvivingBits |=
+            FEXCore::SMC::CodeGranuleBitmap::PageMaskFor(PageBase, Block->second.ExtentStart, Block->second.ExtentLength);
+          continue;
+        }
+        Erase(EntryAddr, lk);
+        ++Erased;
+      }
+      Entries.resize(Kept);
+
+      if (CodeGranules.Enabled()) {
+        CodeGranules.RecomputePageWord(PageBase, SurvivingBits);
+      }
+
+      if (Entries.empty()) {
+        it = CodePages.erase(it);
+        InvalidateCodePagesMemo();
+      } else {
+        ++it;
+      }
+    }
+
+    // A retained (soft-invalidated) copy of any of those blocks must go too:
+    // its hash was taken over bytes that have just changed, so revalidating it
+    // would republish a stale translation. Page-granular, as everywhere else.
+    DropRetainedRange(Start, Length, lk);
+    return Erased;
+  }
+
   void InvalidateRange(uint64_t Start, uint64_t Length) {
     auto lk = AcquireWriteLock();
 
@@ -1036,6 +1133,14 @@ public:
     return Shared->AddBlockExecutableRange(Addresses, Start, Length, lk, GuestRangeStart, GuestRangeLength);
   }
 
+  // SMCChecks=icache: the granule bitmap alone, with no fallback to the locked
+  // walk below. This caller wants the lock-free half only -- a "not provably
+  // clear" answer sends it to the exclusive invalidation path, which is
+  // authoritative by construction, so a locked read here would be wasted.
+  bool GranulesProvablyClear(uint64_t Start, uint64_t Length) const {
+    return Shared->CodeGranules.ProvablyClear(Start, Length);
+  }
+
   // SMC store-emulation support: does [Start, Start+Length) intersect any
   // compiled block's guest bytes? See GuestToHostMap::RangeOverlapsCompiledCode
   // for the authoritative semantics.
@@ -1070,15 +1175,16 @@ public:
   // Adds to Guest -> Host code mapping
   void AddBlockMapping(FEXCore::Core::InternalThreadState* Thread, uint64_t Address, uint64_t BlockBegin, const fextl::vector<uint64_t>& CodePages,
                        void* HostCode, uint64_t GuestRangeStart = 0, uint64_t GuestRangeLength = 0, uint64_t GuestHash = 0,
-                       const FEXCore::SMC::BranchImmSites& BranchImmSites = {}, const FEXCore::SMC::ExitRIPSites& ExitRIPSites = {},
-                       const FEXCore::SMC::MovImmSites& MovImmSites = {}, const FEXCore::SMC::MovImmWindows& MovImmWindows = {}) {
+                       uint64_t ExtentStart = 0, uint64_t ExtentLength = 0, const FEXCore::SMC::BranchImmSites& BranchImmSites = {},
+                       const FEXCore::SMC::ExitRIPSites& ExitRIPSites = {}, const FEXCore::SMC::MovImmSites& MovImmSites = {},
+                       const FEXCore::SMC::MovImmWindows& MovImmWindows = {}) {
     std::optional<FEXCore::SHMStats::AccumulationBlock<uint64_t>> LockTime(
       Thread->ThreadStats ? &Thread->ThreadStats->AccumulatedCacheWriteLockTime : nullptr);
     auto lk = Shared->AcquireWriteLock();
     LockTime.reset();
 
     const auto& Entry = Shared->AddBlockMapping(Address, BlockBegin, CodePages, HostCode, lk, GuestRangeStart, GuestRangeLength, GuestHash,
-                                                BranchImmSites, ExitRIPSites, MovImmSites, MovImmWindows);
+                                                ExtentStart, ExtentLength, BranchImmSites, ExitRIPSites, MovImmSites, MovImmWindows);
 
     // There is no need to update L1 or L2, they will get updated on first lookup
     // However, adding to L1 here increases performance

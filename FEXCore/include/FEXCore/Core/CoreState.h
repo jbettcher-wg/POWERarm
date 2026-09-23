@@ -236,6 +236,9 @@ struct JITPointers {
   uint64_t PrintVectorValue {};
   uint64_t PrintMsgValue {};
   uint64_t ThreadRemoveCodeEntryFromJIT {};
+  // SMCChecks=icache: ContextImpl::ICacheInvalidateFromJit, called by
+  // DEF_OP(ICacheInvalidate) when the guest runs IC IVAU.
+  uint64_t ICacheInvalidateFromJIT {};
   uint64_t SyscallHandlerObj {};
   uint64_t SyscallHandlerFunc {};
   uint64_t ExitFunctionLink {};
