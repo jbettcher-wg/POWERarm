@@ -594,3 +594,35 @@ to initialise against 27 s cold (suspect cache install cost, item 24).
     - Gates on the merged tree: 94/0 in all three modes, 94/0 again with `SMCCHECKS=mtrack`,
       check-code-cache 32 ok, check-rootfs-server OK. Headless Firefox renders identically under
       both SMC modes. Not promoted by me.
+
+46. **sleeve: the TUI was never usable, and `add` could not see most binaries** (2026-09-23,
+    sleeve repo at `68b1fab`, 22 -> 50 tests). Jordan's report was "almost none of the keyboard
+    shortcuts work, only cycling and quitting" — three separate causes, all real:
+    - **Every shortcut ran its work inside the FTXUI event handler**, which cannot repaint until
+      the handler returns. A scan froze the screen 3-5 s; a health check up to **120 s**, because
+      `Health::RunCheck` discards `CheckOptions::timeout_seconds` outside `Timed` mode so the
+      TUI's 20 s was never what ran. Scan, theme reload, health, add-selected, preview and write
+      now run on a worker through a one-slot `Job`: immediate repaint with a live spinner, input
+      still flowing, escape cancels, a second press refused rather than raced. No worker touches
+      `AppState` — it sees only a refcounted shared block, results are copied out on the UI
+      thread, and a cancelled job's wake is unhooked under the mutex so an orphan cannot post into
+      a destroyed screen. Clean under ThreadSanitizer.
+    - **The scan screen could not display a result at all**: it built its checkbox list once at
+      construction from an empty `scan_result` and never rebuilt it, so every scan ended on
+      "Empty container" under a header claiming it had found apps. "Add doesn't work" was
+      literally true — there was never anything to tick.
+    - The legend advertised `[a] add` and `[r] rootfs`, neither bound (and `ScreenTab::RootFS` has
+      no screen), and the theme watcher consumed whatever keypress arrived beside a theme change.
+    - **`sleeve add` gated on `has_interp`, which the 64-byte probe never sets**, so every PIE —
+      i.e. essentially every modern binary — was invisible to `add` while `scan` found it.
+    - RootFS discovery is now backend-scoped and **verified**, not inferred: it reads the ELF
+      machine of the tree's own `/usr/bin/env` or `/bin/sh`, re-rooting absolute symlink targets
+      the way the guest kernel would. `rootfs use` / `set rootfs=` refuse an unresolvable name and
+      write an absolute path — the sleeve-side half of the `POWERARM_PORTABLE` + named-rootfs
+      silent-fallback trap. `StartupNotify=false` is generated now (per-app opt-in via
+      `sleeve set NAME startupnotify=on`), which is the stuck Omarchy launch indicator.
+    - Open, in Core and deliberately not fixed there: `Health::RunCheck` ignoring its caller's
+      timeout; `Scanner::ScanOptions` having no cancel token or progress hook (escape abandons a
+      scan rather than stopping it); `Process::ProcessOptions` exposing no handle on the child, so
+      a health check cannot be killed; and `MainScreen` regenerating all three files and hashing
+      what is on disk on every frame.
