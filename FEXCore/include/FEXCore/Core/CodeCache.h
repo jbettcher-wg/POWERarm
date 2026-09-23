@@ -323,4 +323,11 @@ public:
   virtual void DumpStats() = 0;
 };
 
+// The code cache's segment writer is this binary re-exec'd with this as
+// argv[1] (see the writer-process block comment in CodeCache.cpp). main() must
+// hand such an invocation to CodeCacheWriterMain before it sets anything up:
+// the writer publishes finished cache files and needs no part of the emulator.
+inline constexpr char CodeCacheWriterArgument[] = "--codecache-writer";
+int CodeCacheWriterMain(int ArgC, char** ArgV);
+
 } // namespace FEXCore

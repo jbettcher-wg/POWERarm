@@ -32,6 +32,7 @@ $end_info$
 #include "Thunks.h"
 
 #include <FEXCore/Config/Config.h>
+#include <FEXCore/Core/CodeCache.h>
 #include <FEXCore/Core/Context.h>
 #include <FEXCore/Core/CoreState.h>
 // Explicit rather than transitive: the host-page-size gate takes offsetof/sizeof
@@ -512,6 +513,13 @@ static int StealFEXFDFromEnv(const char* Env) {
 }
 
 int main(int argc, char** argv, char** const envp) {
+  // The code cache's segment writer is this binary re-exec'd (CodeCache.cpp).
+  // It publishes finished cache files off a socket and wants none of the
+  // emulator, so it is dispatched before any of it is set up.
+  if (argc >= 2 && std::string_view {argv[1]} == FEXCore::CodeCacheWriterArgument) {
+    return FEXCore::CodeCacheWriterMain(argc, argv);
+  }
+
   // Host page size is a runtime quantity (64K port). Latch it before anything maps
   // memory; every accessor self-initialises too, so a missed call cannot return 0.
   FEX::HLE::StartupTimer.Init();

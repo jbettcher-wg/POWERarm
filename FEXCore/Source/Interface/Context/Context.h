@@ -212,7 +212,7 @@ public:
   struct CacheSegment;
   struct FileCache;
   // One built segment waiting to be linked into its namespace, and the counters
-  // a forked writer reports through the page it shares with this process.
+  // the writer process reports through the page it shares with this one.
   struct PendingSegment;
   struct SaveWriterStats;
   // Which cache directories a pass sweeps after it published: the working one
@@ -223,21 +223,35 @@ private:
   FileCache* GetFileCache(const ExecutableFileInfo& FileInfo);
   void RunSweeps(const SweepPlan& Sweeps);
 
-  // Links built segments into their namespaces. WaitSeconds > 0 waits that long
-  // for a busy namespace lock (a forked writer, which nothing waits on); 0 gives
-  // the segment up at once (a guest thread, which everything waits on). Counters
-  // go to Shared when it is set, to Stats otherwise. Returns how many were
-  // written, and marks each PendingSegment with its own result.
-  size_t PublishSegments(std::span<PendingSegment> Pending, uint64_t ConfigId, uint64_t WaitSeconds, SaveWriterStats* Shared);
-  // Publishes Pending in a forked child and returns true, or false when the
-  // caller must publish them itself. See the block comment in CodeCache.cpp.
-  bool ForkSegmentWriter(std::span<PendingSegment> Pending, uint64_t ConfigId, const SweepPlan& Sweeps);
-  // The MAP_SHARED page the forked writers report through, created on first use.
+  // Links built segments into their namespaces, on the calling thread and
+  // without waiting for a busy namespace lock -- this is a guest thread, and
+  // everything in the process waits on it. Segments a writer has already taken
+  // are skipped. Returns how many were written, and marks each PendingSegment
+  // with its own result.
+  size_t PublishSegments(std::span<PendingSegment> Pending, uint64_t ConfigId);
+  // Writes each pending segment to its temp file and hands the publish to this
+  // process's writer, starting one if needed. Returns how many it handed over;
+  // the rest keep their temp file for PublishSegments. See the block comment in
+  // CodeCache.cpp.
+  size_t HandSegmentsToWriter(std::span<PendingSegment> Pending, uint64_t ConfigId, const SweepPlan& Sweeps);
+  bool StartSegmentWriter();
+  void CloseSegmentWriter();
+  // The MAP_SHARED page the writers report through, created on first use; a
+  // memfd, because an exec'd writer can inherit a descriptor but no mapping.
   SaveWriterStats* GetSaveWriterStats();
 
   // Only touched under SaveIOLock.
   SaveWriterStats* WriterStats {};
-  uint64_t LastWriterForkSeconds {};
+  int WriterStatsFD {-1};
+  // The socket this process's writer takes its requests on, and the pid that
+  // opened it: a fork child inherits the socket but not the right to use it.
+  int WriterSocket {-1};
+  pid_t WriterOwnerPid {0};
+  // A writer that could not be started is not tried again in this process, and
+  // one that keeps dying is not restarted without end.
+  bool WriterSpawnFailed {false};
+  uint32_t WriterSpawns {};
+  static constexpr uint32_t MaxWriterSpawns = 4;
 
   bool LoadEnabled = false;
 

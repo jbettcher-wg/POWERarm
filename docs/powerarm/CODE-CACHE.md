@@ -215,7 +215,7 @@ opens is never copied at all. That copy is the one place the hot tier costs
 something, and it happens once per namespace per boot.
 
 **Write-back is off the guest thread.** After a segment is published or a
-namespace compacted, the forked writer (below) mirrors what changed: one segment
+namespace compacted, the writer process (below) mirrors what changed: one segment
 for an append, the whole namespace after a compaction, which is where the names
 the durable tier must lose are decided. A segment is copied only if it validates
 -- magic, version, header hash, and a file long enough for the extent its header
@@ -231,38 +231,51 @@ is validated on install exactly as before, so neither tier can make a process ru
 wrong code. `POWERARM_CODECACHEHOTTIER=0` leaves one tier, the durable one,
 behaving exactly as it did before this existed.
 
-**The writing is forked off the guest thread.** Collecting the blocks needs the
+**The publishing runs in a writer process.** Collecting the blocks needs the
 process (the code buffer walk under `CodeBufferWriteMutex`, and the guest's own
-bytes); writing them out does not. So a periodic or unmap pass builds its
-segments and then forks a writer, which writes the temp files, takes the
-namespace locks, compacts and sweeps while the guest runs on. Without it that
-work was on whichever guest thread reached the trigger inside `mmap`, `munmap`
-or `mprotect`: ~3 us per block, and once a namespace has all eight segment
-names, a whole-namespace rewrite (726 MB for VS Code's) per pass. The exit save
-is forked already (cold G4). `POWERARM_CODECACHEFORKWRITER=0` puts the writing
-back on the guest thread.
+bytes); publishing them does not. So a periodic or unmap pass writes each
+segment to its temp file and hands the rest -- the namespace lock, the link, the
+compaction, the write-back to the durable tier and the directory sweep -- to a
+writer process, and the guest runs on. Without it that work was on whichever
+guest thread reached the trigger inside `mmap`, `munmap` or `mprotect`: ~3 us
+per block, and once a namespace has all eight segment names, a whole-namespace
+rewrite (726 MB for VS Code's) per pass. The exit save has a writer of its own
+(cold G4). `POWERARM_CODECACHEFORKWRITER=0` puts the whole publish back on the
+guest thread.
 
-The writer is a fork of a live multi-threaded guest, so it only writes: it takes
-no lock of the emulator's, reads no guest memory and never returns to emulation.
-It comes from `fork(3)` (whose `pthread_atfork` handlers leave the allocator
-consistent, which the raw `clone(2)` of a guest fork does not do), the parent
-forks twice and reaps the intermediate so the writer is init's child rather than
-the guest's -- invisible to the guest's `wait(2)`, and never a zombie -- and the
-writer drops every inherited descriptor: a shell's `$(guest ...)` reads the
-guest's stdout until every writer closes it, so a writer parked on a lock would
-otherwise hang the command substitution. It says nothing (`LogMan`'s handler can
-want a lock another thread held at the fork); what it wrote is in the counters,
-which it reports through a page shared with its parent. An `alarm(2)` bounds its
-life at a minute, and at most two run at once.
+The writer is this binary re-exec'd, not a fork of the guest. It is started by
+the first pass with something to publish, through `posix_spawn(3)` --
+`clone(CLONE_VM|CLONE_VFORK)` plus `execve(2)` -- with `/proc/self/exe`, an
+empty environment (the guest's own `LD_PRELOAD` would otherwise be applied to
+it) and `--codecache-writer`, which `main` dispatches before it sets anything
+up. A `fork(2)` here was the wrong tool twice over: a fork of a multi-threaded
+guest inherits every lock the other threads held, and such a writer could
+deadlock inside `fork(2)` itself, reparent to init and sit in a futex for good
+(~1 per 2 exits of a threaded guest), and on the way there it copied the page
+tables of a multi-GB Electron process on every pass. What comes out of an
+`execve` shares no memory with the emulator and so can hold no lock of it.
+
+The writer takes its requests -- paths and ids, never guest state -- on a
+`SOCK_SEQPACKET` socket, which is non-blocking on the emulator's end: nothing
+ever waits for it, and a writer still busy with a large compaction simply takes
+no request, so that pass publishes the segment itself. The spawned image forks
+once and leaves, so the writer is init's child and not the guest's -- invisible
+to the guest's `wait(2)`, and never a zombie -- and it holds no descriptor of
+the guest's: `/dev/null` on the three standard ones, the socket on 0, the
+counter page (a `memfd`, since an exec'd process can inherit a descriptor but no
+mapping) on 3, and the rest closed, because a shell's `$(guest ...)` reads the
+guest's stdout until every holder closes it. An `alarm(2)` bounds any one
+request. It ends when every sender has closed the socket, which is after the
+guest has exited.
 
 Because the writer waits for the namespace lock (up to 20 s) instead of giving
-the segment up the moment `flock` says busy, a pass no longer loses what it
-compiled. It used to: nothing re-kept the records of a dropped segment, so with
-eight segments present -- where every periodic pass wants the exclusive lock --
-two processes of the same app saving in the same minute cost one of them
-everything since its last pass, for good. A pass that still publishes on the
-guest thread (the writer fork refused, or turned off) hands its records back to
-the next pass instead.
+the segment up the moment `flock` says busy -- and outlives the guest while it
+waits -- a pass no longer loses what it compiled. It used to: nothing re-kept
+the records of a dropped segment, so with eight segments present -- where every
+periodic pass wants the exclusive lock -- two processes of the same app saving
+in the same minute cost one of them everything since its last pass, for good. A
+pass that publishes on the guest thread instead (no writer, or turned off) hands
+its records back to the next pass.
 
 **Processes.** A fork child forgets the parent's unsaved compiles. SMC modes
 whose per-block metadata is not stored disable loading: semantic patch, lazy
@@ -301,7 +314,7 @@ now runs only for `POWERARM_SERVERCODECACHE=1`.
   tier is wiped.
 - **Lock busy:** another process holds `LOCK_EX` on a library's namespace lock
   for the whole guest run. The guest's `dlclose` pass cannot publish, and its
-  blocks must not be lost: the forked writer is parked on the lock (its temp
+  blocks must not be lost: the writer process is parked on the lock (its temp
   file is there, no segment is), and once the holder lets go the segment
   appears and a later run loads it. Skipped without host `flock(1)`.
 - **Evict:** 20 MiB of another build's cache (a namespace this build's header

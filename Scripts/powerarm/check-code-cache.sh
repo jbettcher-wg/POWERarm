@@ -29,8 +29,9 @@
 #              only code run is their constructors and destructors. It closes
 #              its stderr before exiting, and the counters must still arrive.
 #   lockbusy   a save pass whose namespace lock another process holds: its
-#              blocks must not be lost. The writer is forked and waits for the
-#              lock, so they are written once it frees, and they load.
+#              blocks must not be lost. The writer process outlives the guest
+#              and waits for the lock, so they are written once it frees, and
+#              they load.
 #   evict      over the size cap, a namespace of another emulator build is
 #              evicted before any of this build's, however recently it was
 #              written.
@@ -363,7 +364,7 @@ cp libdrop.so libdrop2.so
 cp libdrop.so libdrop3.so
 dropref=$(run - -- ./dropprog ./libdrop.so)
 
-# wait_for SECONDS GLOB / wait_gone SECONDS GLOB : the forked cache writer
+# wait_for SECONDS GLOB / wait_gone SECONDS GLOB : the cache writer process
 # publishes and sweeps after the guest has moved on, so both are polled for.
 wait_for() {
   local i=0
@@ -393,7 +394,8 @@ wait_gone() {
 # names taken every periodic pass wants the exclusive lock, so two processes
 # saving in the same minute cost one of them everything it had compiled
 # (COLD-ROUND2 1.2(a); the comment claiming a later pass would write them was
-# wrong). The writer is forked now and waits for the lock instead.
+# wrong). The writer process waits for the lock instead, and outlives the
+# guest while it does.
 if command -v flock > /dev/null; then
   lbdir=$(working "$w/lbb")
   mkdir -p "$w/lba" "$lbdir"

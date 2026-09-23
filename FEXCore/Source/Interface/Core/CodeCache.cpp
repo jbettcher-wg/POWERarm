@@ -49,8 +49,10 @@
 #include <link.h>
 #include <optional>
 #include <csignal>
+#include <spawn.h>
 #include <sys/file.h>
 #include <sys/mman.h>
+#include <sys/socket.h>
 #include <sys/stat.h>
 #include <sys/syscall.h>
 #include <sys/uio.h>
@@ -1105,7 +1107,7 @@ namespace {
 //               copied at startup, and a namespace no process opens is never
 //               copied at all.
 //   write-back  after a segment is published or a namespace compacted, in the
-//               forked writer -- the guest thread never waits for the disk. A
+//               writer process -- the guest thread never waits for the disk. A
 //               segment is copied only if it validates (magic, version, header
 //               hash, and a file long enough for the extent the header
 //               declares), and it lands with rename(2). So a torn or truncated
@@ -1469,7 +1471,11 @@ CodeCache::CodeCache(ContextImpl& CTX_)
                 !FEXCore::Config::Get_SMCSTOREBACKPATCH();
   StatsStream();
 }
-CodeCache::~CodeCache() = default;
+CodeCache::~CodeCache() {
+  // The writer ends when every sender has closed its socket; this is the last
+  // one this process holds.
+  CloseSegmentWriter();
+}
 
 uint64_t CodeCache::ComputeCodeMapId(std::string_view Filename, int FD) {
   if (Filename.empty()) {
@@ -1498,8 +1504,8 @@ uint64_t CodeCache::ComputeCodeMapId(std::string_view Filename, int FD) {
   return SanitizeId(XXH3_64bits_digest(&State));
 }
 
-// Counters of the segment writers this process forks, in a page it shares
-// with them. See "Publishing a pass's segments, and the forked writer".
+// Counters of this process's segment writers, in a page it shares with them.
+// See "Publishing a pass's segments, and the writer process".
 struct CodeCache::SaveWriterStats {
   std::atomic<uint64_t> SavedBlocks;
   std::atomic<uint64_t> SavedSegments;
@@ -1507,9 +1513,6 @@ struct CodeCache::SaveWriterStats {
   // Segments a writer could not publish: the namespace lock stayed busy for
   // PublishLockWaitSeconds, or the temp file could not be written.
   std::atomic<uint64_t> LostSegments;
-  // Writers running now. A writer killed outright cannot decrement it, so it is
-  // only believed for as long as a writer can live.
-  std::atomic<int32_t> Active;
 };
 
 bool CodeCache::WantsSave(bool IgnoreInterval) {
@@ -1559,14 +1562,19 @@ void CodeCache::ResetAfterFork() {
   // did not survive the fork.
   BlocksSinceSave.store(0, std::memory_order_relaxed);
   RanPeriodicPass.store(false, std::memory_order_relaxed);
-  // The writers this process forked report to a page it shares with them; the
-  // child gets a page of its own, so its stats line describes the child alone
-  // (and it cannot decrement an Active count it never incremented).
+  // The parent's writer reports into a page it shares with the parent, and the
+  // socket the child inherited is the parent's too. The child drops both and
+  // starts a writer of its own when it has something to publish, so its stats
+  // line describes the child alone.
+  CloseSegmentWriter();
   if (WriterStats) {
     ::munmap(WriterStats, sizeof(SaveWriterStats));
     WriterStats = nullptr;
   }
-  LastWriterForkSeconds = 0;
+  if (WriterStatsFD != -1) {
+    ::close(WriterStatsFD);
+    WriterStatsFD = -1;
+  }
   {
     std::lock_guard lk {RelocationSinkMutex};
     CompiledBlocks.clear();
@@ -1584,9 +1592,9 @@ void CodeCache::DumpStats() {
   auto L = [](const std::atomic<uint64_t>& A) {
     return A.load(std::memory_order_relaxed);
   };
-  // What this process's forked writers have published so far. They report into
-  // a shared page, so their work is this process's, wherever it ran; a writer
-  // still running when this line is printed is not in it.
+  // What this process's writers have published so far. They report into a page
+  // they share with it, so their work is this process's wherever it ran; a
+  // writer still working when this line is printed is not in it.
   uint64_t WrittenBlocks = 0, WrittenSegments = 0, WriterCompactions = 0, LostSegments = 0;
   if (WriterStats) {
     WrittenBlocks = L(WriterStats->SavedBlocks);
@@ -2413,7 +2421,7 @@ namespace {
 } // namespace
 
 // =============================================================================
-// Publishing a pass's segments, and the forked writer
+// Publishing a pass's segments, and the writer process
 //
 // A save pass has two halves. Collecting the blocks needs this process:
 // CollectLiveBlocks walks the code buffer under CodeBufferWriteMutex and reads
@@ -2423,49 +2431,75 @@ namespace {
 // sweeps the directory. That half is file I/O over a finished snapshot, and on
 // a namespace at MaxSegments it rewrites the namespace whole -- 726 MB for VS
 // Code's -- on whichever guest thread happened to reach the save trigger inside
-// an mmap, munmap or mprotect, while it holds SaveIOLock and, inside the walk,
-// CodeBufferWriteMutex. So the pass forks and the child publishes. Cold G4
-// already proved the tool on the exit save (a forked writer outlives its
-// parent); this is the same writer on the periodic and unmap passes, which are
-// the ones a long-lived app pays over and over.
+// an mmap, munmap or mprotect, while it holds SaveIOLock.
 //
-// The child is a fork of a live multi-threaded guest, so it only ever writes:
-//   * no FEX lock is taken, no guest memory is read, no guest state is touched,
-//     and it never returns into emulation -- it _exit()s;
-//   * it comes from ::fork(), whose pthread_atfork handlers leave the allocator
-//     consistent in the child (jemalloc registers them; the raw clone(2) of
-//     ForkGuest does not run them). The built segments are inherited
-//     copy-on-write, so the fork copies page tables, not data;
-//   * the parent forks twice and reaps the intermediate, so the writer is
-//     init's child and not the guest's: a guest calling wait(2) can neither see
-//     it nor reap it, and no zombie waits for a parent that never waits;
-//   * it takes the namespace lock with a bounded wait instead of dropping the
-//     segment the moment the lock is busy, which is what lost the blocks of
-//     every pass that raced a sibling (COLD-ROUND2 1.2(a)); and an alarm bounds
-//     its whole life, so a lock a crashed sibling still holds costs one
-//     segment, never a stray process.
+// So the pass hands that half to a WRITER PROCESS: this binary re-exec'd (see
+// RunCodeCacheWriter at the bottom of this file), reading publish requests off
+// a socket. It is spawned by the first pass that has something to publish, and
+// it lives until every sender has closed the socket -- which is after this
+// process has exited. That is what lets a segment whose namespace lock is busy
+// still be written once the lock frees, instead of the pass dropping its blocks
+// (and, before COLD-ROUND2 1.2(a), its records with them).
 //
-// Nothing waits for the writer. What it could not publish is counted, not
-// recovered: keeping the records for a child that is about to write them is how
-// the relocation sink grows without bound in a long-lived process. The pass
-// that publishes on the guest thread does hand its records back (see
-// SaveNewBlocks), because there nothing else will write them.
+// It is NOT a fork of the guest, and that is the whole point:
+//
+//   * fork(2) from a multi-threaded process gives the child one thread and
+//     every lock the others were holding. A writer forked from a periodic save
+//     could deadlock inside fork(2) itself, reparent to init and sit in a futex
+//     for good, and it copied the page tables of a multi-GB Electron process on
+//     every pass on the way there. This one comes from posix_spawn(3) --
+//     clone(CLONE_VM|CLONE_VFORK) plus execve(2): no page tables are copied, no
+//     pthread_atfork handler runs, and what comes out of the exec shares no
+//     memory with this process, so it can hold no lock of it.
+//   * it is not this process's child either: the spawned image forks once and
+//     leaves, so the writer is init's. A guest calling wait(2) can neither see
+//     it nor reap it, and this process reaps the intermediate before returning.
+//   * it holds no descriptor of the guest's: /dev/null on the three standard
+//     ones, the socket on 0, the counter page on 3, and the rest closed. A
+//     shell's $(guest) reads the guest's stdout until every holder closes it,
+//     and a writer parked on a namespace lock must not be one of them.
+//   * nothing waits for it. The socket is non-blocking, so a writer still busy
+//     with a large compaction simply takes no request: that pass publishes the
+//     segment itself and hands its records back, exactly as a pass with no
+//     writer at all does.
+//
+// What crosses the socket is paths and ids, never guest state: the segment is
+// already a file by the time the request that names it is sent. The guest
+// thread pays for writing that file -- with a hot tier, a write to a tmpfs --
+// and for nothing else.
 // =============================================================================
+
+struct CodeCache::SweepPlan {
+  // The working tier's directory and its cap, then the durable tier's. With
+  // one tier only the first pair is set.
+  fextl::string Dir;
+  uint64_t CapBytes {};
+  fextl::string DurableDir;
+  uint64_t DurableCapBytes {};
+};
+
 namespace {
-  // How long a writer child waits for a busy namespace lock before giving its
-  // segment up, and the hard bound on the child's whole life.
+  // How long a publish waits for a busy namespace lock before giving its
+  // segment up. Only the writer ever waits: a guest thread publishing for
+  // itself takes 0, because everything in this process waits on it.
   constexpr uint64_t PublishLockWaitSeconds = 20;
-  constexpr unsigned WriterLifetimeSeconds = 60;
-  // Writers of this process that may still be running before a pass publishes
-  // its segments itself instead. A lock held longer than one writer's wait is a
-  // sibling compacting a large namespace; queueing more writers behind it only
-  // spends forks.
-  constexpr int32_t MaxConcurrentWriters = 2;
+  // The writer's bound on one request: a whole-namespace compaction and the
+  // write-back of its result, on a loaded box, plus the lock wait above. If it
+  // fires the writer dies with a temp file the sweep removes later; nothing
+  // published is ever half-written, because every publish is a link(2) or a
+  // rename(2) of a file that was complete before it was named.
+  constexpr unsigned WriterRequestSeconds = 300;
+  // The counter page's descriptor in the writer.
+  constexpr int WriterStatsChildFD = 3;
+  // One request: the header below and five paths. A pass whose paths do not fit
+  // publishes for itself.
+  constexpr size_t MaxWriterRequestBytes = 8192;
+  constexpr uint32_t WriterRequestMagic = 0x5041'4357; // 'PACW'
 
   // flock(LOCK_NB) with a bounded wait. A blocking flock(2) cannot be used even
-  // in a child: a crashed sibling's lock survives until its core dump drains,
-  // and a writer parked on that forever is exactly the stray process a forked
-  // writer must not become.
+  // in the writer: a crashed sibling's lock survives until its core dump drains,
+  // and a writer parked on that forever is exactly the stray process this must
+  // not become.
   bool LockWithDeadline(int FD, int Operation, uint64_t WaitSeconds) {
     const uint64_t Deadline = MonotonicSeconds() + WaitSeconds;
     for (;;) {
@@ -2517,16 +2551,154 @@ namespace {
     ::unlink(Temp.c_str());
     return Result;
   }
-} // namespace
 
-struct CodeCache::SweepPlan {
-  // The working tier's directory and its cap, then the durable tier's. With
-  // one tier only the first pair is set.
-  fextl::string Dir;
-  uint64_t CapBytes {};
-  fextl::string DurableDir;
-  uint64_t DurableCapBytes {};
-};
+  // Everything one publish needs, on either side of the writer socket: the
+  // namespace, the durable namespace behind it (empty with one tier) and the
+  // finished temp file to link into it.
+  struct PublishJob {
+    fextl::string Base;
+    fextl::string DurableBase;
+    fextl::string Temp;
+    uint64_t ConfigId {};
+    uint64_t FileId {};
+    uint64_t Blocks {};
+    uint64_t WaitSeconds {};
+  };
+
+  // The publish itself. The same code on a guest thread and in the writer; only
+  // WaitSeconds differs, and the temp file is consumed either way.
+  PublishResult RunPublish(const PublishJob& Job) {
+    const auto Published = PublishTempSegment(Job.Base, Job.Temp, Job.ConfigId, Job.FileId, Job.WaitSeconds);
+    if (Published.Written && !Job.DurableBase.empty()) {
+      // Mirror what changed, no more: one segment for an append, the whole
+      // namespace after a compaction, which is where the names the durable tier
+      // must lose are decided.
+      if (Published.Compacted) {
+        WriteBackNamespace(Job.Base, Job.DurableBase);
+      } else {
+        WriteBackSegment(Job.Base, Job.DurableBase, Published.Index);
+      }
+    }
+    return Published;
+  }
+
+  void RunSweepPlan(const CodeCache::SweepPlan& Sweeps) {
+    if (!Sweeps.Dir.empty()) {
+      SweepCacheDirectory(Sweeps.Dir, Sweeps.CapBytes);
+    }
+    if (!Sweeps.DurableDir.empty()) {
+      SweepCacheDirectory(Sweeps.DurableDir, Sweeps.DurableCapBytes);
+    }
+  }
+
+  // One publish as it crosses the socket: this header, then Base, DurableBase,
+  // Temp, the sweep directory and the durable sweep directory, each
+  // NUL-terminated, in that order. Both ends are the same build of the same
+  // binary -- the writer IS this binary -- so the layout needs nothing beyond
+  // the magic, which is there to disown a stray sender on a descriptor the
+  // guest happened to inherit.
+  struct WriterRequest {
+    uint32_t Magic;
+    uint32_t Bytes;
+    uint64_t ConfigId;
+    uint64_t FileId;
+    uint64_t Blocks;
+    uint64_t CapBytes;
+    uint64_t DurableCapBytes;
+    uint32_t WaitSeconds;
+    uint32_t Reserved;
+  };
+
+  // Returns the encoded size, or 0 when the paths do not fit one record.
+  size_t EncodeWriterRequest(char* Out, const PublishJob& Job, const CodeCache::SweepPlan& Sweeps) {
+    const std::array<const fextl::string*, 5> Paths {&Job.Base, &Job.DurableBase, &Job.Temp, &Sweeps.Dir, &Sweeps.DurableDir};
+    size_t Bytes = sizeof(WriterRequest);
+    for (const auto* Path : Paths) {
+      Bytes += Path->size() + 1;
+    }
+    if (Bytes > MaxWriterRequestBytes) {
+      return 0;
+    }
+    WriterRequest Header {};
+    Header.Magic = WriterRequestMagic;
+    Header.Bytes = static_cast<uint32_t>(Bytes);
+    Header.ConfigId = Job.ConfigId;
+    Header.FileId = Job.FileId;
+    Header.Blocks = Job.Blocks;
+    Header.CapBytes = Sweeps.CapBytes;
+    Header.DurableCapBytes = Sweeps.DurableCapBytes;
+    Header.WaitSeconds = static_cast<uint32_t>(Job.WaitSeconds);
+    std::memcpy(Out, &Header, sizeof(Header));
+    size_t Offset = sizeof(Header);
+    for (const auto* Path : Paths) {
+      std::memcpy(Out + Offset, Path->c_str(), Path->size() + 1);
+      Offset += Path->size() + 1;
+    }
+    return Bytes;
+  }
+
+  // The writer's side of the same record. False for anything that is not one.
+  bool DecodeWriterRequest(const char* In, size_t Bytes, PublishJob& Job, CodeCache::SweepPlan& Sweeps) {
+    WriterRequest Header {};
+    if (Bytes < sizeof(Header) || Bytes > MaxWriterRequestBytes) {
+      return false;
+    }
+    std::memcpy(&Header, In, sizeof(Header));
+    if (Header.Magic != WriterRequestMagic || Header.Bytes != Bytes || In[Bytes - 1] != '\0') {
+      return false;
+    }
+    fextl::string* const Paths[] = {&Job.Base, &Job.DurableBase, &Job.Temp, &Sweeps.Dir, &Sweeps.DurableDir};
+    size_t Offset = sizeof(Header);
+    for (auto* Path : Paths) {
+      if (Offset >= Bytes) {
+        return false;
+      }
+      const size_t Length = ::strnlen(In + Offset, Bytes - Offset);
+      if (Offset + Length >= Bytes) {
+        return false;
+      }
+      Path->assign(In + Offset, Length);
+      Offset += Length + 1;
+    }
+    if (Offset != Bytes) {
+      return false;
+    }
+    Job.ConfigId = Header.ConfigId;
+    Job.FileId = Header.FileId;
+    Job.Blocks = Header.Blocks;
+    Job.WaitSeconds = Header.WaitSeconds;
+    Sweeps.CapBytes = Header.CapBytes;
+    Sweeps.DurableCapBytes = Header.DurableCapBytes;
+    return true;
+  }
+
+  // False when the caller must publish the segment itself: the writer's socket
+  // is full (it is busy with a larger namespace) or it is gone, in which case
+  // Socket is closed here so a later pass starts a fresh writer.
+  bool SendPublishRequest(int& Socket, const PublishJob& Job, const CodeCache::SweepPlan& Sweeps) {
+    char Buffer[MaxWriterRequestBytes];
+    const size_t Bytes = EncodeWriterRequest(Buffer, Job, Sweeps);
+    if (Bytes == 0) {
+      return false;
+    }
+    for (;;) {
+      // MSG_NOSIGNAL: a writer that died must not raise SIGPIPE in the guest.
+      const ssize_t Sent = ::send(Socket, Buffer, Bytes, MSG_NOSIGNAL | MSG_DONTWAIT);
+      if (Sent == static_cast<ssize_t>(Bytes)) {
+        return true;
+      }
+      if (Sent < 0 && errno == EINTR) {
+        continue;
+      }
+      if (Sent < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
+        return false;
+      }
+      ::close(Socket);
+      Socket = -1;
+      return false;
+    }
+  }
+} // namespace
 
 // One target's blocks, built and waiting for a segment name.
 struct CodeCache::PendingSegment {
@@ -2536,6 +2708,10 @@ struct CodeCache::PendingSegment {
   fextl::string Filename;
   uint64_t FileId;
   SegmentBuilder Builder;
+  // The temp file holding the built segment, once it has been written. A pass
+  // writes it before handing the segment to the writer, so a segment the writer
+  // would not take is published here without serialising it twice.
+  fextl::string Temp;
   // Indices into the pass's KeepRecord, so a segment that could not be written
   // can hand its records back to a later pass.
   fextl::vector<uint32_t> Records;
@@ -2543,57 +2719,55 @@ struct CodeCache::PendingSegment {
 };
 
 CodeCache::SaveWriterStats* CodeCache::GetSaveWriterStats() {
-  if (!WriterStats) {
-    // MAP_SHARED: the writers and this process must see one page, not a copy
-    // each, or a writer's counters die with it and the stats line understates
-    // every save this process made.
-    void* Page = ::mmap(nullptr, sizeof(SaveWriterStats), PROT_READ | PROT_WRITE, MAP_SHARED | MAP_ANONYMOUS, -1, 0);
-    if (Page == MAP_FAILED) {
-      return nullptr;
-    }
-    WriterStats = new (Page) SaveWriterStats {};
+  if (WriterStats) {
+    return WriterStats;
   }
+  // A memfd rather than an anonymous mapping: the writer is exec'd, so it can
+  // inherit no mapping of this process, but it can inherit a descriptor and map
+  // it itself. MAP_SHARED either way -- the writers and this process must see
+  // one page, not a copy each, or a writer's counters die with it and the stats
+  // line understates every save this process made.
+  const int FD = ::memfd_create("powerarm-codecache-stats", MFD_CLOEXEC);
+  if (FD == -1) {
+    return nullptr;
+  }
+  void* Page = MAP_FAILED;
+  if (::ftruncate(FD, sizeof(SaveWriterStats)) == 0) {
+    Page = ::mmap(nullptr, sizeof(SaveWriterStats), PROT_READ | PROT_WRITE, MAP_SHARED, FD, 0);
+  }
+  if (Page == MAP_FAILED) {
+    ::close(FD);
+    return nullptr;
+  }
+  WriterStatsFD = FD;
+  WriterStats = new (Page) SaveWriterStats {};
   return WriterStats;
 }
 
-size_t CodeCache::PublishSegments(std::span<PendingSegment> Pending, uint64_t ConfigId, uint64_t WaitSeconds, SaveWriterStats* Shared) {
+// Publishes on the calling thread, which is a guest thread: it never waits for
+// a busy namespace lock, because everything in this process waits on it.
+// Segments a writer has taken (Written already set) are skipped.
+size_t CodeCache::PublishSegments(std::span<PendingSegment> Pending, uint64_t ConfigId) {
   size_t Written = 0;
   for (auto& P : Pending) {
+    if (P.Written) {
+      continue;
+    }
     std::error_code EC;
     std::filesystem::create_directories(std::filesystem::path(std::string_view {P.Base}).parent_path(), EC);
-    auto Temp = WriteTempSegment(P.Base, [&](int FD) { return WriteSegment(FD, P.Builder, ConfigId, P.FileId); });
-    const auto Published = Temp.empty() ? PublishResult {} : PublishTempSegment(P.Base, Temp, ConfigId, P.FileId, WaitSeconds);
-    const uint64_t Compactions = Published.Compacted ? 1 : 0;
+    auto Temp = P.Temp.empty() ? WriteTempSegment(P.Base, [&](int FD) { return WriteSegment(FD, P.Builder, ConfigId, P.FileId); }) :
+                                 std::move(P.Temp);
+    P.Temp.clear();
+    const PublishJob Job {P.Base, P.DurableBase, Temp, ConfigId, P.FileId, P.Builder.Blocks.size(), 0};
+    const auto Published = Temp.empty() ? PublishResult {} : RunPublish(Job);
     P.Written = Published.Written;
-    if (P.Written && !P.DurableBase.empty()) {
-      // Mirror what changed, no more: one segment for an append, the whole
-      // namespace after a compaction, which is where the names the durable tier
-      // must lose are decided.
-      if (Published.Compacted) {
-        WriteBackNamespace(P.Base, P.DurableBase);
-      } else {
-        WriteBackSegment(P.Base, P.DurableBase, Published.Index);
-      }
-    }
-    if (Shared) {
-      // A writer says nothing: LogMan's handler can take a lock (stdio's) that
-      // another thread held at the fork, and the counters carry this anyway.
-      Shared->Compactions.fetch_add(Compactions, std::memory_order_relaxed);
-      if (P.Written) {
-        Shared->SavedBlocks.fetch_add(P.Builder.Blocks.size(), std::memory_order_relaxed);
-        Shared->SavedSegments.fetch_add(1, std::memory_order_relaxed);
-      } else {
-        Shared->LostSegments.fetch_add(1, std::memory_order_relaxed);
-      }
-    } else {
-      Stats.Compactions.fetch_add(Compactions, std::memory_order_relaxed);
-      if (P.Written) {
-        Stats.SavedBlocks.fetch_add(P.Builder.Blocks.size(), std::memory_order_relaxed);
-        Stats.SavedSegments.fetch_add(1, std::memory_order_relaxed);
-        LogMan::Msg::IFmt("Code cache: wrote {} blocks for {}", P.Builder.Blocks.size(), P.Filename);
-      } else if (Temp.empty()) {
-        LogMan::Msg::EFmt("Code cache: cannot write a segment for {}", P.Base);
-      }
+    Stats.Compactions.fetch_add(Published.Compacted ? 1 : 0, std::memory_order_relaxed);
+    if (P.Written) {
+      Stats.SavedBlocks.fetch_add(P.Builder.Blocks.size(), std::memory_order_relaxed);
+      Stats.SavedSegments.fetch_add(1, std::memory_order_relaxed);
+      LogMan::Msg::IFmt("Code cache: wrote {} blocks for {}", P.Builder.Blocks.size(), P.Filename);
+    } else if (Temp.empty()) {
+      LogMan::Msg::EFmt("Code cache: cannot write a segment for {}", P.Base);
     }
     Written += P.Written ? 1 : 0;
   }
@@ -2601,70 +2775,145 @@ size_t CodeCache::PublishSegments(std::span<PendingSegment> Pending, uint64_t Co
 }
 
 void CodeCache::RunSweeps(const SweepPlan& Sweeps) {
-  if (!Sweeps.Dir.empty()) {
-    SweepCacheDirectory(Sweeps.Dir, Sweeps.CapBytes);
-  }
-  if (!Sweeps.DurableDir.empty()) {
-    SweepCacheDirectory(Sweeps.DurableDir, Sweeps.DurableCapBytes);
-  }
+  RunSweepPlan(Sweeps);
 }
 
-bool CodeCache::ForkSegmentWriter(std::span<PendingSegment> Pending, uint64_t ConfigId, const SweepPlan& Sweeps) {
-  auto* Shared = GetSaveWriterStats();
-  if (!Shared) {
+void CodeCache::CloseSegmentWriter() {
+  if (WriterSocket != -1) {
+    ::close(WriterSocket);
+    WriterSocket = -1;
+  }
+  WriterOwnerPid = 0;
+}
+
+// Starts this process's writer if it has none. Called under SaveIOLock, so at
+// most one pass is ever in here.
+bool CodeCache::StartSegmentWriter() {
+  if (WriterSocket != -1) {
+    if (WriterOwnerPid == ::getpid()) {
+      return true;
+    }
+    // A fork child holding its parent's socket. Let it start a writer of its
+    // own rather than report its segments through the parent's counters.
+    ::close(WriterSocket);
+    WriterSocket = -1;
+  }
+  // A writer that will not start, or that keeps dying under a send, is not
+  // tried forever: past this the pass publishes for itself.
+  if (WriterSpawnFailed || WriterSpawns >= MaxWriterSpawns) {
     return false;
   }
-  const uint64_t Now = MonotonicSeconds();
-  if (Shared->Active.load(std::memory_order_relaxed) >= MaxConcurrentWriters && Now < LastWriterForkSeconds + WriterLifetimeSeconds) {
+  ++WriterSpawns;
+
+  int Pair[2] {-1, -1};
+  if (::socketpair(AF_UNIX, SOCK_SEQPACKET | SOCK_CLOEXEC, 0, Pair) != 0) {
+    WriterSpawnFailed = true;
     return false;
+  }
+  // This end only: the writer's end must block in recv(2). A record is all or
+  // nothing on a SOCK_SEQPACKET socket, so a full buffer costs a segment's
+  // handover and never half of one.
+  ::fcntl(Pair[0], F_SETFL, O_NONBLOCK);
+
+  // Out of 0..3, so the dup2s below cannot clobber one another whatever numbers
+  // the originals happen to have.
+  const int SocketDup = ::fcntl(Pair[1], F_DUPFD_CLOEXEC, 10);
+  const int StatsDup = GetSaveWriterStats() ? ::fcntl(WriterStatsFD, F_DUPFD_CLOEXEC, 10) : -1;
+  const int NullFD = ::open("/dev/null", O_RDWR | O_CLOEXEC);
+
+  pid_t Spawned = -1;
+  int Err = ENOMEM;
+  if (SocketDup != -1 && NullFD != -1) {
+    posix_spawn_file_actions_t Actions;
+    posix_spawnattr_t Attr;
+    posix_spawn_file_actions_init(&Actions);
+    posix_spawnattr_init(&Attr);
+    posix_spawn_file_actions_adddup2(&Actions, SocketDup, STDIN_FILENO);
+    posix_spawn_file_actions_adddup2(&Actions, NullFD, STDOUT_FILENO);
+    posix_spawn_file_actions_adddup2(&Actions, NullFD, STDERR_FILENO);
+    if (StatsDup != -1) {
+      posix_spawn_file_actions_adddup2(&Actions, StatsDup, WriterStatsChildFD);
+    }
+    // Nothing of this thread's signal state: the writer runs with an empty mask
+    // and default dispositions, and arms one alarm of its own.
+    sigset_t Empty, All;
+    sigemptyset(&Empty);
+    sigfillset(&All);
+    posix_spawnattr_setsigmask(&Attr, &Empty);
+    posix_spawnattr_setsigdefault(&Attr, &All);
+    posix_spawnattr_setflags(&Attr, POSIX_SPAWN_SETSIGMASK | POSIX_SPAWN_SETSIGDEF);
+
+    char Arg0[] = "POWERarm-codecache-writer";
+    char Arg1[sizeof(CodeCacheWriterArgument)];
+    std::memcpy(Arg1, CodeCacheWriterArgument, sizeof(Arg1));
+    char StatsArg[] = "stats";
+    char* ArgV[] = {Arg0, Arg1, StatsDup != -1 ? StatsArg : nullptr, nullptr};
+    // The emulator's own environment, which is the one it started under and
+    // resolved its own libraries with -- an installation that needs
+    // LD_LIBRARY_PATH to find libPOWERarmCore needs it here too. The writer
+    // reads nothing out of it: it returns from main before any configuration is
+    // loaded, and every path it works on arrives in a request.
+    Err = ::posix_spawn(&Spawned, "/proc/self/exe", &Actions, &Attr, ArgV, ::environ);
+    posix_spawnattr_destroy(&Attr);
+    posix_spawn_file_actions_destroy(&Actions);
   }
 
-  const pid_t Middle = ::fork();
-  if (Middle < 0) {
+  if (SocketDup != -1) {
+    ::close(SocketDup);
+  }
+  if (StatsDup != -1) {
+    ::close(StatsDup);
+  }
+  if (NullFD != -1) {
+    ::close(NullFD);
+  }
+  // Only the writer holds the far end now, so its recv(2) sees EOF when this
+  // process is gone.
+  ::close(Pair[1]);
+  if (Err != 0) {
+    ::close(Pair[0]);
+    WriterSpawnFailed = true;
+    LogMan::Msg::DFmt("Code cache: no writer process ({}); publishing on the guest thread", Err);
     return false;
   }
-  if (Middle == 0) {
-    // The intermediate exists only so that the writer is not this guest's child.
-    if (::fork() == 0) {
-      Shared->Active.fetch_add(1, std::memory_order_relaxed);
-      // Every descriptor the guest had open is inherited, and holding one open
-      // makes this process something the world waits for: a shell's $(guest)
-      // reads the guest's stdout until EVERY writer closes it, so a writer
-      // parked on a namespace lock hung the command substitution for its whole
-      // wait. The writer needs none of them -- it opens the files it writes by
-      // name -- so it takes /dev/null for the three standard ones and drops the
-      // rest. A fatal fault in a writer is then a core, not a message.
-      if (const int Null = ::open("/dev/null", O_RDWR); Null != -1) {
-        ::dup2(Null, STDIN_FILENO);
-        ::dup2(Null, STDOUT_FILENO);
-        ::dup2(Null, STDERR_FILENO);
-        if (Null > STDERR_FILENO) {
-          ::close(Null);
-        }
-      }
-#ifdef SYS_close_range
-      ::syscall(SYS_close_range, 3, ~0U, 0);
-#endif
-      // Its own alarm, on a clean handler: whatever happens below -- a lock
-      // nobody releases, a host lock inherited mid-use -- this process is gone
-      // within the minute. Timers do not cross a fork, so this one is its own.
-      ::signal(SIGALRM, SIG_DFL);
-      ::alarm(WriterLifetimeSeconds);
-      const size_t Count = PublishSegments(Pending, ConfigId, PublishLockWaitSeconds, Shared);
-      if (Count != 0) {
-        RunSweeps(Sweeps);
-      }
-      Shared->Active.fetch_sub(1, std::memory_order_relaxed);
-      ::_exit(0);
-    }
-    ::_exit(0);
-  }
-  LastWriterForkSeconds = Now;
-  // The intermediate only forks and exits; reaping it here is what keeps the
-  // writer out of the guest's wait(2) and out of the process table.
+  // The spawned image forks the writer out of this process's children and
+  // leaves. Reaping it here is what keeps the writer out of a guest's wait(2)
+  // and out of the process table; it is a fork and an _exit away, and this is
+  // the only wait this process ever does for it.
   int Status = 0;
-  while (::waitpid(Middle, &Status, 0) < 0 && errno == EINTR) { }
+  while (::waitpid(Spawned, &Status, 0) < 0 && errno == EINTR) { }
+  WriterSocket = Pair[0];
+  WriterOwnerPid = ::getpid();
   return true;
+}
+
+// Writes each pending segment to its temp file and hands the publish to the
+// writer. Returns how many it handed over; the rest keep their temp file and
+// are published by the caller.
+size_t CodeCache::HandSegmentsToWriter(std::span<PendingSegment> Pending, uint64_t ConfigId, const SweepPlan& Sweeps) {
+  if (!StartSegmentWriter()) {
+    return 0;
+  }
+  size_t Handed = 0;
+  for (auto& P : Pending) {
+    std::error_code EC;
+    std::filesystem::create_directories(std::filesystem::path(std::string_view {P.Base}).parent_path(), EC);
+    // Written here, published there. The segment is a finished file before the
+    // request that names it is sent, so nothing of this process's memory has to
+    // cross and a writer that never gets to it leaves a temp file for the sweep
+    // rather than anything in the namespace.
+    P.Temp = WriteTempSegment(P.Base, [&](int FD) { return WriteSegment(FD, P.Builder, ConfigId, P.FileId); });
+    if (P.Temp.empty()) {
+      continue;
+    }
+    const PublishJob Job {P.Base, P.DurableBase, P.Temp, ConfigId, P.FileId, P.Builder.Blocks.size(), PublishLockWaitSeconds};
+    if (!SendPublishRequest(WriterSocket, Job, Sweeps)) {
+      continue;
+    }
+    P.Written = true;
+    ++Handed;
+  }
+  return Handed;
 }
 
 
@@ -2755,7 +3004,7 @@ size_t CodeCache::SaveNewBlocks(Core::InternalThreadState&, std::span<const Code
   // cannot defer them.
   const bool LastChance = Kind != CodeCacheSaveKind::Periodic;
 
-  // Built here, published below -- in a forked writer where one is possible.
+  // Built here, published below -- by the writer process where there is one.
   fextl::vector<PendingSegment> Pending;
   for (const auto& Target : Targets) {
     const auto& Section = Target.Section;
@@ -2881,33 +3130,35 @@ size_t CodeCache::SaveNewBlocks(Core::InternalThreadState&, std::span<const Code
 
   size_t SegmentsWritten = 0;
   if (!Pending.empty()) {
-    // The final pass already runs in a forked writer of its own, with no parent
-    // left to stall (cold G4); every other pass is on a guest thread and hands
-    // the writing to one.
-    const bool Forked = Kind != CodeCacheSaveKind::Final && ForkWriter() && ForkSegmentWriter(Pending, ConfigId, Sweeps);
-    if (Forked) {
-      SegmentsWritten = Pending.size();
-    } else {
-      SegmentsWritten = PublishSegments(Pending, ConfigId, 0, nullptr);
-      if (Kind != CodeCacheSaveKind::Final) {
-        for (const auto& P : Pending) {
-          if (!P.Written) {
-            // The namespace lock was busy (a sibling appending or compacting),
-            // or the segment could not be written. Hand the records back: this
-            // pass published nothing for them and no writer will. Dropping them
-            // here is what lost the blocks of every process that raced a
-            // sibling -- with MaxSegments names taken every periodic pass wants
-            // the exclusive lock, so two processes saving in the same minute
-            // cost one of them its blocks for good.
-            for (uint32_t Index : P.Records) {
-              KeepRecord[Index] = true;
-            }
+    // The final pass publishes here: the image is ending, and where it has a
+    // writer at all that writer is the process it was itself forked into
+    // (cold G4). Every other pass is on a guest thread and hands the publish
+    // to the writer process.
+    const size_t Handed = Kind != CodeCacheSaveKind::Final && ForkWriter() ? HandSegmentsToWriter(Pending, ConfigId, Sweeps) : 0;
+    // Whatever the writer would not take -- there is none, it is busy with a
+    // larger namespace, or the record did not fit -- is published here, without
+    // waiting for a busy namespace lock.
+    SegmentsWritten = Handed + PublishSegments(Pending, ConfigId);
+    if (Kind != CodeCacheSaveKind::Final) {
+      for (const auto& P : Pending) {
+        if (!P.Written) {
+          // The namespace lock was busy (a sibling appending or compacting),
+          // or the segment could not be written. Hand the records back: this
+          // pass published nothing for them and no writer will. Dropping them
+          // here is what lost the blocks of every process that raced a
+          // sibling -- with MaxSegments names taken every periodic pass wants
+          // the exclusive lock, so two processes saving in the same minute
+          // cost one of them its blocks for good.
+          for (uint32_t Index : P.Records) {
+            KeepRecord[Index] = true;
           }
         }
       }
-      if (SegmentsWritten != 0) {
-        RunSweeps(Sweeps);
-      }
+    }
+    // The writer sweeps after every request it takes, so this is only for the
+    // segments published above.
+    if (Handed == 0 && SegmentsWritten != 0) {
+      RunSweeps(Sweeps);
     }
   }
 
@@ -3229,4 +3480,98 @@ bool CodeCache::ApplyCodeRelocationsSplit(uint64_t GuestEntry, std::span<std::by
   return true;
 }
 
+// =============================================================================
+// The writer process
+//
+// main() dispatches here, before it sets anything else up, when this binary is
+// exec'd with CodeCacheWriterArgument (StartSegmentWriter). Everything a
+// request needs is in the request: the segment is already a file, so this
+// process opens no guest file, reads no guest memory, takes no emulator lock
+// and loads no configuration. It ends when every sender has closed the socket,
+// which for the process that spawned it is when that process exits -- so a
+// segment whose namespace lock was busy is still published once the lock frees,
+// after the guest is gone.
+// =============================================================================
+int RunCodeCacheWriter(int ArgC, char** ArgV) {
+  // Out of the emulator's children: it waits for THIS pid, so leaving here
+  // makes the writer init's child instead. A guest calling wait(2) can then
+  // neither see it nor reap it, and nothing is left for a parent that never
+  // waits. This process must go either way -- the emulator is waiting for
+  // exactly this pid -- so a fork that fails means no writer, and the pass that
+  // finds the socket closed publishes for itself.
+  if (const pid_t Child = ::fork(); Child != 0) {
+    ::_exit(Child > 0 ? 0 : 1);
+  }
+
+  // Nothing here is relative, and a writer that outlives its guest should not
+  // be what keeps the guest's directory alive or a filesystem busy.
+  [[maybe_unused]] const int Chdir = ::chdir("/");
+
+  // 0 is the request socket, 1 and 2 are /dev/null and 3 is the counter page
+  // when the emulator passed one. Every other descriptor is the guest's -- its
+  // stdout among them, which a shell's $(guest) reads until every holder closes
+  // it, and a writer parked on a namespace lock must not be a holder.
+#ifdef SYS_close_range
+  ::syscall(SYS_close_range, WriterStatsChildFD + 1, ~0U, 0);
+#endif
+
+  CodeCache::SaveWriterStats* Stats = nullptr;
+  if (ArgC >= 3 && ArgV[2] && std::string_view {ArgV[2]} == "stats") {
+    void* Page = ::mmap(nullptr, sizeof(CodeCache::SaveWriterStats), PROT_READ | PROT_WRITE, MAP_SHARED, WriterStatsChildFD, 0);
+    if (Page != MAP_FAILED) {
+      Stats = static_cast<CodeCache::SaveWriterStats*>(Page);
+    }
+  }
+  ::close(WriterStatsChildFD);
+
+  // A clean handler for the per-request alarm, and no SIGPIPE: a write-back
+  // whose descriptor went away is an error to check, not a death.
+  ::signal(SIGALRM, SIG_DFL);
+  ::signal(SIGPIPE, SIG_IGN);
+
+  for (;;) {
+    alignas(8) char Buffer[MaxWriterRequestBytes];
+    // Unarmed while idle: an idle writer is waiting for work, not stuck.
+    ::alarm(0);
+    const ssize_t Bytes = ::recv(STDIN_FILENO, Buffer, sizeof(Buffer), 0);
+    if (Bytes == 0) {
+      // Every sender has closed the socket.
+      break;
+    }
+    if (Bytes < 0) {
+      if (errno == EINTR) {
+        continue;
+      }
+      break;
+    }
+
+    PublishJob Job;
+    CodeCache::SweepPlan Sweeps;
+    if (!DecodeWriterRequest(Buffer, static_cast<size_t>(Bytes), Job, Sweeps)) {
+      continue;
+    }
+    ::alarm(WriterRequestSeconds);
+    const auto Published = RunPublish(Job);
+    if (Stats) {
+      Stats->Compactions.fetch_add(Published.Compacted ? 1 : 0, std::memory_order_relaxed);
+      if (Published.Written) {
+        Stats->SavedBlocks.fetch_add(Job.Blocks, std::memory_order_relaxed);
+        Stats->SavedSegments.fetch_add(1, std::memory_order_relaxed);
+      } else {
+        Stats->LostSegments.fetch_add(1, std::memory_order_relaxed);
+      }
+    }
+    RunSweepPlan(Sweeps);
+  }
+
+  ::alarm(0);
+  return 0;
+}
+
 } // namespace FEXCore::Context
+
+namespace FEXCore {
+int CodeCacheWriterMain(int ArgC, char** ArgV) {
+  return FEXCore::Context::RunCodeCacheWriter(ArgC, ArgV);
+}
+} // namespace FEXCore
