@@ -20,7 +20,6 @@ $end_info$
 #include <FEXCore/IR/IR.h>
 #include <FEXCore/Utils/Allocator.h>
 #include <FEXCore/Utils/MathUtils.h>
-#include <FEXCore/Utils/Event.h>
 #include <FEXCore/Utils/THP.h>
 #include <FEXCore/Utils/SignalScopeGuards.h>
 
@@ -46,6 +45,7 @@ $end_info$
 #include <sys/fsuid.h>
 #include <fcntl.h>
 #include <atomic>
+#include <chrono>
 #include <stdlib.h>
 
 // FEX_TRACE_CLONE=1: log child-side thread bring-up so we can pair a
@@ -102,20 +102,71 @@ ARG_TO_STR(idtype_t, "%u")
 
 namespace FEX::HLE {
 
-struct ExecutionThreadHandler {
-  FEXCore::Context::Context* CTX;
-  FEX::HLE::ThreadStateObject* Thread;
-  Event ThreadWaiting {};
+// The bring-up payload a guest thread is started with, shared by the thread
+// that issued the clone and the thread it creates.
+//
+// It used to be a plain local in CreateNewThread, on the assumption that the
+// parent stays parked in that function until the child is running. It does
+// not. A thread sitting in a host syscall that is sent SignalEvent::Stop --
+// which every exit_group does, via ThreadManager::Stop -- has its context
+// hijacked by SignalDelegator::HandleSignalPause: SP goes back to
+// Frame->ReturningStackLocation and PC to the thread-stop handler, so every
+// host C++ frame the thread was in, CreateNewThread's among them, is abandoned
+// without ever being unwound. The parent then runs its own teardown and hands
+// its pivot stack back to the dead-stack pool, where the next spawn reuses or
+// unmaps it. A child that had not yet run its first instruction would then
+// read Thread out of that recycled memory and store through it -- the residual
+// `POWERarm-SIGBAIL no-thread-object` SIGSEGV at ThreadHandler+80, which is
+// `Thread->ThreadInfo.PID = ::getpid()` below.
+//
+// So the payload is heap allocated and owned by both sides: whoever drops the
+// last reference frees it. A hijacked parent never drops its own, which leaks
+// a hundred-odd bytes of a process that is already on its way out and is
+// exactly the point -- the child's reference can never be the one that
+// outlives the storage.
+//
+// All three handshakes are InterruptableConditionVariable rather than Event
+// for the same reason: Event waits on a std::condition_variable under a
+// std::mutex, and a parent hijacked while holding that mutex would wedge the
+// child in the matching notify forever.
+struct ExecutionThreadHandler : public FEXCore::Allocator::FEXAllocOperators {
+  FEXCore::Context::Context* CTX {};
+  FEX::HLE::ThreadStateObject* Thread {};
+  // The creating thread's own state object. Thread state objects are
+  // deliberately leaked (the UAF mitigation in
+  // ThreadManager::HandleThreadDeletion), so this pointer stays readable for as
+  // long as the child needs it, and its zombie flag is how the child tells
+  // "the parent has not reached the handshake yet" from "the parent is gone and
+  // never will".
+  FEX::HLE::ThreadStateObject* Parent {};
+  FEXCore::InterruptableConditionVariable ThreadWaiting {};
 
   // Pause on thread start handling.
   FEXCore::InterruptableConditionVariable StartRunningCV {};
   FEXCore::InterruptableConditionVariable StartRunningResponse {};
+
+  ///< Drop this side's share of the payload, freeing it once both are gone.
+  void Release() {
+    if (Users.fetch_sub(1, std::memory_order_acq_rel) == 1) {
+      delete this;
+    }
+  }
+
+private:
+  ///< The parent and the child, until each releases.
+  std::atomic<uint32_t> Users {2};
 };
+
+// How long the child sleeps between checks that its parent is still coming.
+// Only ever reached when the parent is late, so it costs nothing on the
+// ordinary path; short enough that an abandoned thread leaves promptly.
+constexpr static auto StartRunningPoll = std::chrono::milliseconds(20);
 
 static void* ThreadHandler(void* Data) {
   ExecutionThreadHandler* Handler = reinterpret_cast<ExecutionThreadHandler*>(Data);
   auto CTX = Handler->CTX;
   auto Thread = Handler->Thread;
+  auto Parent = Handler->Parent;
 
   Thread->ThreadInfo.PID = ::getpid();
   Thread->ThreadInfo.TID = FHU::Syscalls::gettid();
@@ -131,11 +182,38 @@ static void* ThreadHandler(void* Data) {
   // Now notify the thread that we are initialized
   Handler->ThreadWaiting.NotifyOne();
 
-  Handler->StartRunningCV.Wait();
+  // Bounded, because the go-ahead may never come: see ExecutionThreadHandler.
+  // Once the parent's own state object is marked zombie its teardown has run to
+  // completion, so there is nobody left to start this thread.
+  bool Abandoned {};
+  while (!Handler->StartRunningCV.WaitFor(StartRunningPoll)) {
+    if (!Parent || !Parent->ThreadInfo.IsZombie.load(std::memory_order_acquire)) {
+      continue;
+    }
+    // The parent may have got the go-ahead out just before it died. A zero
+    // timeout is a non-blocking retest of the very same condition variable.
+    Abandoned = !Handler->StartRunningCV.WaitFor(std::chrono::nanoseconds(0));
+    break;
+  }
 
-  // Notify the parent thread that it can continue.
-  // Handler is a stack object on the parent thread, and will be invalid after notification.
+  if (Abandoned) {
+    // Nothing is waiting on the response, and this thread never reached
+    // TrackThread, so it is on no thread list. Undo what was set up above and
+    // leave; DestroyThread tolerates a thread that was never tracked.
+    Handler->Release();
+    CloneChildTrace::EmitLine("CLONE-CHILD-ABANDONED tid=", (uint64_t)Thread->ThreadInfo.TID.load());
+    FEXCore::ReleaseAllPendingSharedLocks();
+    FEX::HLE::_SyscallHandler->UninstallTLSState(Thread);
+    FEX::HLE::_SyscallHandler->TM.DestroyThread(Thread);
+    return nullptr;
+  }
+
+  // Notify the parent thread that it can continue, then drop this side's share
+  // of the payload. The parent holds its own until its wait returns, so the
+  // notify above can never be writing into freed storage.
   Handler->StartRunningResponse.NotifyOne();
+  Handler->Release();
+  Handler = nullptr;
 
   CloneChildTrace::EmitLine("CLONE-CHILD-EXEC tid=", (uint64_t)Thread->ThreadInfo.TID.load());
   CTX->ExecuteThread(Thread->Thread);
@@ -174,15 +252,17 @@ FEX::HLE::ThreadStateObject* CreateNewThread(FEXCore::Context::Context* CTX, FEX
   }
   // POWERARM-M1-TODO(syscalls): the new thread resumes at State.pc, so this relies on the A64 frontend storing the address after svc #0 in State.pc before the Syscall op runs (as ELR_EL1 holds it on arm64); x86 needed rip += 2 here. Unverified until the frontend lands; CLONE_THREAD is outside M1.
 
-  // Initialize a new thread for execution.
-  ExecutionThreadHandler Arg {
-    .CTX = CTX,
-    .Thread = NewThread,
-  };
-  NewThread->ExecutionThread = FEXCore::Threads::Thread::Create(ThreadHandler, &Arg);
+  // Initialize a new thread for execution. The payload is heap allocated and
+  // jointly owned because this thread can be hijacked out of this function at
+  // any point below without unwinding it -- see ExecutionThreadHandler.
+  auto* Arg = new ExecutionThreadHandler {};
+  Arg->CTX = CTX;
+  Arg->Thread = NewThread;
+  Arg->Parent = FEX::HLE::ThreadManager::GetStateObjectFromCPUState(Frame);
+  NewThread->ExecutionThread = FEXCore::Threads::Thread::Create(ThreadHandler, Arg);
 
   // Wait for the thread to have started.
-  Arg.ThreadWaiting.Wait();
+  Arg->ThreadWaiting.Wait();
 
   if (FEX::HLE::_SyscallHandler->NeedXIDCheck()) {
     // The first time an application creates a thread, GLIBC installs their SETXID signal handler.
@@ -239,10 +319,15 @@ FEX::HLE::ThreadStateObject* CreateNewThread(FEXCore::Context::Context* CTX, FEX
   FEX::HLE::_SyscallHandler->TM.TrackThread(NewThread);
 
   // Start running the thread
-  Arg.StartRunningCV.NotifyOne();
+  Arg->StartRunningCV.NotifyOne();
 
   // Wait for the thread to start running.
-  Arg.StartRunningResponse.Wait();
+  Arg->StartRunningResponse.Wait();
+
+  // Drop this side's share of the payload. A parent hijacked out of this
+  // function never gets here, and that is what keeps the storage alive under a
+  // child that is still using it.
+  Arg->Release();
 
   return NewThread;
 }

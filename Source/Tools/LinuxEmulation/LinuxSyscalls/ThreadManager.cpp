@@ -300,17 +300,26 @@ void ThreadManager::DestroyThread(FEX::HLE::ThreadStateObject* Thread, bool Need
   {
     std::lock_guard lk(ThreadCreationMutex);
     auto It = std::find(Threads.begin(), Threads.end(), Thread);
-    LOGMAN_THROW_A_FMT(It != Threads.end(), "Thread wasn't in Threads");
-    Threads.erase(It);
-    if (Threads.empty()) {
-      // Last guest thread. Stop the translate-ahead helper here, not only in
-      // Stop(): a thread that leaves through SYS_exit (rather than exit_group)
-      // ends only itself, so a live helper would hold the whole process open
-      // as a thread of an otherwise-zombie thread group, and the parent's
-      // wait() would never return. Found by the A64Frontend suite, whose
-      // hand-written tests exit with SYS_exit.
-      Thread->Thread->CTX->StopBackgroundTranslation();
-      Thread->Thread->CTX->FlushAndCloseCodeMap();
+    // A thread whose creation was abandoned never reached TrackThread and so is
+    // on no list: the creating thread was hijacked out of CreateNewThread by a
+    // stop signal before it got that far, and the child tears itself down from
+    // ThreadHandler's abandoned path (Syscalls/Thread.cpp). It still has to
+    // undo everything CreateThread set up, so keep going -- but leave the list,
+    // and the last-thread handling that belongs to the tracked threads, alone.
+    // (erase(end()) would be undefined; the assertion that used to stand here
+    // only caught it in assertions builds.)
+    if (It != Threads.end()) {
+      Threads.erase(It);
+      if (Threads.empty()) {
+        // Last guest thread. Stop the translate-ahead helper here, not only in
+        // Stop(): a thread that leaves through SYS_exit (rather than exit_group)
+        // ends only itself, so a live helper would hold the whole process open
+        // as a thread of an otherwise-zombie thread group, and the parent's
+        // wait() would never return. Found by the A64Frontend suite, whose
+        // hand-written tests exit with SYS_exit.
+        Thread->Thread->CTX->StopBackgroundTranslation();
+        Thread->Thread->CTX->FlushAndCloseCodeMap();
+      }
     }
   }
 
