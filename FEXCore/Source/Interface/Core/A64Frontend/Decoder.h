@@ -89,6 +89,14 @@ public:
     DecodedBlockStatus BlockStatus {};
     bool IsEntryPoint {};
     bool ForceFullSMCDetection {};
+    // Intra-unit predecessor census (warm G6). PredCount saturates at 2;
+    // SolePredEntry is the entry PC of the only in-unit predecessor when
+    // PredCount == 1, and 0 otherwise. Over-counting is safe (it only costs
+    // the optimisation), under-counting is not, so a block whose terminator
+    // is not a direct branch with statically known successors is given a
+    // conservative fallthrough edge. See DecodeInstructionsAtEntry.
+    uint8_t PredCount {};
+    uint64_t SolePredEntry {};
   };
 
   struct DecodedBlockInformation final {

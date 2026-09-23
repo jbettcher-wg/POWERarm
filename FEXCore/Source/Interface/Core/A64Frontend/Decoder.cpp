@@ -359,6 +359,41 @@ void Decoder::DecodeInstructionsAtEntry(FEXCore::Core::InternalThreadState*, uin
     BlockInfo.Blocks.push_back(Block);
   }
 
+  // Intra-unit predecessor census (warm G6). A block with exactly one in-unit
+  // predecessor may inherit the frontend's GPR value cache from it
+  // (IRBuilder::SetNewBlockIfChanged), because every path that reaches it ran
+  // that predecessor's code first. The count must never be too LOW, so only a
+  // terminator whose in-unit successors are statically exact (the direct
+  // branch forms GetDirectSuccessors decodes) is trusted; everything else --
+  // a run cut short by the cap or by the next leader, BL/BR/RET/SVC, an
+  // unimplemented word -- gets a conservative fallthrough edge, which can only
+  // cost the optimisation, never correctness.
+  for (auto& From : BlockInfo.Blocks) {
+    if (From.NumInstructions == 0) {
+      continue;
+    }
+    const auto& Last = From.DecodedInstructions[From.NumInstructions - 1];
+    DirectSuccessors Succ {{}, 0};
+    if (From.BlockStatus == DecodedBlockStatus::SUCCESS && Last.Matcher && Last.Matcher->Handler) {
+      Succ = GetDirectSuccessors(Last.Word, Last.PC);
+    }
+    const bool Exact = Succ.Count > 0;
+    const uint32_t Count = Exact ? Succ.Count : 1;
+    for (uint32_t i = 0; i < Count; ++i) {
+      const uint64_t Target = Exact ? Succ.Target[i] : (From.Entry + From.Size);
+      for (auto& To : BlockInfo.Blocks) {
+        if (To.Entry != Target) {
+          continue;
+        }
+        if (To.PredCount < 2) {
+          ++To.PredCount;
+        }
+        To.SolePredEntry = To.PredCount == 1 ? From.Entry : 0;
+        break;
+      }
+    }
+  }
+
   if (BlockInfo.Blocks.empty()) {
     DecodedBuffer[0] = {.PC = PC, .Word = 0, .Matcher = nullptr};
     BlockInfo.Blocks.push_back(DecodedBlocks {

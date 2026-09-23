@@ -567,7 +567,15 @@ private:
     Ref BlockEntry;
     bool HaveEmitted;
     bool IsEntryPoint;
+    // Warm G6. SolePred: the decoder's census found exactly one in-unit
+    // predecessor for this block (Decoder::DecodedBlocks::SolePredEntry).
+    // PredBlock: the IR block that holds the branch into it, recorded when
+    // the edge is created (ExitToPC / EmitConditionalExit).
+    bool SolePred;
+    Ref PredBlock;
   };
+
+  bool CacheSurvivesEdge(const JumpTargetInfo& Target, uint64_t PC) const;
 
   struct JumpTargetEntry {
     uint64_t first;
@@ -644,10 +652,22 @@ private:
   static constexpr uint64_t GPR_CACHE_WINDOW = 8 * INSTRUCTION_SIZE;
   struct GPRCacheEntry {
     Ref Value {};
-    Ref Block {};
     uint64_t PC {};
   };
   std::array<GPRCacheEntry, 31> GPRCache {};
+  // The IR block the cache currently describes. Every entry is an SSA value
+  // computed in this block, so the cache is dropped whenever the emission
+  // cursor moves to a different block -- except across an intra-unit edge the
+  // register allocator has been told to treat as one allocation region
+  // (SetNewBlockIfChanged, IROp_CodeBlock::RegionPred), where CacheBlock moves
+  // with the cursor and the values stay live.
+  Ref CacheBlock {};
+  void SyncGPRCache() {
+    if (CacheBlock != GetCurrentBlock()) {
+      GPRCache = {};
+      CacheBlock = GetCurrentBlock();
+    }
+  }
   bool BlockSetPC {};
   bool ShouldDump {};
 };
