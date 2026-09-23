@@ -28,6 +28,17 @@
 #              library it dlopens and dlcloses, and DT_NEEDED libraries whose
 #              only code run is their constructors and destructors. It closes
 #              its stderr before exiting, and the counters must still arrive.
+#   lockbusy   a save pass whose namespace lock another process holds: its
+#              blocks must not be lost. The writer is forked and waits for the
+#              lock, so they are written once it frees, and they load.
+#   evict      over the size cap, a namespace of another emulator build is
+#              evicted before any of this build's, however recently it was
+#              written.
+#   reseed     with a hot tier: what a run published is in both tiers, and a
+#              wiped hot tier (a reboot) is seeded back from the durable one,
+#              with nothing recompiled.
+#   torn       a half-written hot segment must not reach the durable tier, and
+#              the durable copy must still load after the hot one is gone.
 #   lld        programs linked by lld (the Claude CLI's and Chromium's linker)
 #              compile next to nothing warm: one with lld's default 64K
 #              layout, whose text is 64K-congruent at a file offset that is not
@@ -78,6 +89,12 @@ run() {
   env -i PATH=/usr/bin:/bin HOME="$w/home" TMPDIR="$w/run" LC_ALL=C POWERARM_SERVERSOCKETPATH="$w/run/server.sock" \
     POWERARM_PORTABLE=1 POWERARM_ROOTFS="$rootfs" "${envs[@]}" "$emu" "$@"
 }
+
+# working CACHEROOT : the directory the emulator really reads and writes under
+# CACHEROOT -- the hot tier when the build has one (CodeCacheHotTier), the
+# durable cache otherwise. `tier` is set once the first cached run has made it.
+tier=cache
+working() { echo "$1/$tier"; }
 
 # counter FIELD FILE... : sum of one counter over every process in the stats lines of the given logs.
 counter() {
@@ -154,25 +171,33 @@ compile_all() { # OUTDIR CACHEDIR [ENV...]
 }
 compile_all "$w/cold" "$w/cache"
 compile_all "$w/warm" "$w/cache"
+[ -d "$w/cache/hot" ] && tier=hot
+echo "tiers: working=$tier$([ $tier = hot ] && echo ' (durable cache/ behind it)')"
 loaded=$(counter loaded "$w"/warm/*.log)
 badentry=$(counter bad-entry "$w"/cold/*.log "$w"/warm/*.log)
 [ "$loaded" -gt 100000 ] && ok "warm: $loaded blocks loaded" || bad "warm: only $loaded blocks loaded"
 [ "$badentry" = 0 ] && ok "no entry failed its hash" || bad "$badentry entries failed their hash"
-ls "$w/cache/cache" | grep -q '\.tmp\.' && bad "temp files left in the cache" || ok "no temp files left"
-too_many=$(ls "$w/cache/cache" | grep -v '\.lock$' | sed 's/\.[0-9]*$//' | sort | uniq -c | awk '$1 > 8' | wc -l)
+settle=0
+while [ "$settle" -lt 40 ] && ls "$w/cache"/*/*.tmp.* > /dev/null 2>&1; do sleep 0.25; settle=$((settle + 1)); done
+ls "$w/cache"/*/*.tmp.* > /dev/null 2>&1 && bad "temp files left in the cache" || ok "no temp files left"
+too_many=0
+for d in "$w/cache"/*/; do
+  n=$(ls "$d" | grep -v '\.lock$' | grep -v '^\.' | sed 's/\.[0-9]*$//' | sort | uniq -c | awk '$1 > 8' | wc -l)
+  too_many=$((too_many + n))
+done
 [ "$too_many" = 0 ] && ok "at most 8 segments per file" || bad "$too_many files have more than 8 segments"
 
 # ---------------------------------------------------------------------------
 # isa30
 # One compile first, with the cache directory read-only so nothing it compiles is
 # written back: the default-config cache is warm, and none of it may load.
-chmod a-w "$w/cache/cache"
+chmod a-w "$w/cache/cache" "$(working "$w/cache")"
 run "$w/cache" POWERARM_HOSTFEATURES=disableisa30 -- /usr/bin/gcc -O2 -c u1.c -o "$w/isa/first.o" 2> "$w/isa/first.log"
-chmod u+w "$w/cache/cache"
+chmod u+w "$w/cache/cache" "$(working "$w/cache")"
 cmp -s "$w/ref/u1.o" "$w/isa/first.o" && [ "$(counter loaded "$w/isa/first.log")" = 0 ] && [ "$(counter no-file "$w/isa/first.log")" -gt 0 ] &&
   ok "isa30: nothing loaded across the ISA 3.0 switch" || { bad "isa30: first disableisa30 process loaded blocks or produced a different object"; cat "$w/isa/first.log"; }
 compile_all "$w/isa" "$w/cache" POWERARM_HOSTFEATURES=disableisa30
-ids=$(ls "$w/cache/cache" | grep '^cc1-' | grep -v '\.lock$' | sed 's/\.[0-9]*$//' | sort -u | wc -l)
+ids=$(ls "$(working "$w/cache")" | grep '^cc1-' | grep -v '\.lock$' | sed 's/\.[0-9]*$//' | sort -u | wc -l)
 [ "$ids" = 2 ] && ok "isa30: disableisa30 wrote a separate cc1 cache ($ids config ids)" || bad "isa30: expected 2 cc1 cache names, found $ids"
 
 # ---------------------------------------------------------------------------
@@ -181,20 +206,20 @@ cp prog1 "$w/bin/prog"
 for pass in 1 2; do out=$(run "$w/pc" -- "$w/bin/prog" 2> "$w/prog$pass.log"); done
 [ "$out" = "value 1" ] && [ "$(counter loaded "$w/prog2.log")" -gt 0 ] && ok "replace: prog1 cached and loaded" || bad "replace: prog1 run: '$out'"
 ino=$(stat -c %i "$w/bin/prog")
-old=$(ls "$w/pc/cache" | grep '^prog-' | grep -v '\.lock$' | head -1 | sed 's/^prog-\([0-9a-f]*\)-.*/\1/')
+old=$(ls "$(working "$w/pc")" | grep '^prog-' | grep -v '\.lock$' | head -1 | sed 's/^prog-\([0-9a-f]*\)-.*/\1/')
 cat prog2 > "$w/bin/prog"
 [ "$(stat -c %i "$w/bin/prog")" = "$ino" ] || { echo "check-code-cache: in-place rewrite changed the inode" >&2; exit 2; }
 out=$(run "$w/pc" -- "$w/bin/prog" 2> "$w/prog3.log")
 [ "$out" = "value 2" ] && ok "replace: rewritten binary runs its new code" || bad "replace: rewritten binary printed '$out'"
 
 # Give the new binary's identity the old binary's cache files.
-new=$(ls "$w/pc/cache" | grep '^prog-' | grep -v "$old" | grep -v '\.lock$' | head -1 | sed 's/^prog-\([0-9a-f]*\)-.*/\1/')
+new=$(ls "$(working "$w/pc")" | grep '^prog-' | grep -v "$old" | grep -v '\.lock$' | head -1 | sed 's/^prog-\([0-9a-f]*\)-.*/\1/')
 if [ -n "$old" ] && [ -n "$new" ] && [ "$old" != "$new" ]; then
-  for f in "$w/pc/cache"/prog-"$new"-*; do rm -f "$f"; done
-  for f in "$w/pc/cache"/prog-"$old"-*; do cp "$f" "${f/prog-$old-/prog-$new-}"; done
+  for f in "$(working "$w/pc")"/prog-"$new"-*; do rm -f "$f"; done
+  for f in "$(working "$w/pc")"/prog-"$old"-*; do cp "$f" "${f/prog-$old-/prog-$new-}"; done
   # The segments carry the id they were written for: rewrite it in the header
   # too, as a same-identity collision would have it.
-  python3 - "$w/pc/cache" "$old" "$new" << 'EOF'
+  python3 - "$(working "$w/pc")" "$old" "$new" << 'EOF'
 import ctypes, ctypes.util, os, struct, sys
 d, old, new = sys.argv[1], int(sys.argv[2], 16), int(sys.argv[3], 16)
 lib = ctypes.util.find_library("xxhash")
@@ -216,7 +241,7 @@ EOF
     out=$(run "$w/pc" -- "$w/bin/prog" 2> "$w/prog4.log")
     mism=$(counter guest-mismatch "$w/prog4.log")
     [ "$out" = "value 2" ] && [ "$mism" -gt 0 ] && ok "forged: $mism old blocks rejected on their guest bytes" ||
-      { bad "forged: printed '$out', guest-mismatch $mism (old $old new $new)"; cat "$w/prog4.log"; ls "$w/pc/cache"; }
+      { bad "forged: printed '$out', guest-mismatch $mism (old $old new $new)"; cat "$w/prog4.log"; ls "$(working "$w/pc")"; }
   else
     echo "skip forged: libxxhash not found"
   fi
@@ -225,7 +250,7 @@ else
 fi
 
 # Flip one code byte of every block in every cc1 segment.
-python3 - "$w"/cache/cache/cc1-* << 'EOF'
+python3 - "$(working "$w/cache")"/cc1-* << 'EOF'
 import struct, sys
 for p in sys.argv[1:]:
     if p.endswith(".lock"):
@@ -296,6 +321,231 @@ warm=$(cat "$w/smalllib2.hash" 2> /dev/null | wc -l)
 [ "$warm" -lt 10 ] && ok "smalllib: warm run compiled $warm blocks (cold $cold)" || bad "smalllib: warm run compiled $warm blocks (cold $cold)"
 [ "$(counter loaded "$w/smalllib2.log")" -gt 0 ] && ok "smalllib: counters reached the log after the guest closed stderr" ||
   bad "smalllib: no counters in the log after the guest closed stderr"
+
+# ---------------------------------------------------------------------------
+# lockbusy, evict
+#
+# Both need a library the guest dlopens and dlcloses: the dlclose is the save
+# pass (SaveCodeCachesBeforeUnmap) that publishes a segment and sweeps the
+# directory, without waiting for a process to run 60 s or compile 50k blocks.
+cat > "$w/src/libdrop.c" << 'EOF'
+#define F(n) \
+  __attribute__((noinline)) int drop##n(int x) { \
+    for (int i = 0; i < (x & 3) + n + 2; i++) x = x * 31 + i * n; \
+    return x; \
+  }
+F(1) F(2) F(3) F(4) F(5) F(6) F(7) F(8) F(9) F(10) F(11) F(12)
+int dropall(int x) {
+  int (*fns[])(int) = {drop1, drop2, drop3, drop4, drop5, drop6, drop7, drop8, drop9, drop10, drop11, drop12};
+  for (unsigned i = 0; i < sizeof fns / sizeof *fns; i++) x = fns[i](x) ^ (int)i;
+  return x;
+}
+EOF
+cat > "$w/src/dropprog.c" << 'EOF'
+#include <dlfcn.h>
+#include <stdio.h>
+int main(int argc, char **argv) {
+  if (argc < 2) return 2;
+  void *h = dlopen(argv[1], RTLD_NOW);
+  if (!h) { printf("dlopen failed: %s\n", dlerror()); return 2; }
+  int (*f)(int) = (int (*)(int))dlsym(h, "dropall");
+  int r = f ? f(argc) : 0;
+  /* The dlclose unmaps the library: its blocks are saved here or never. */
+  dlclose(h);
+  printf("drop %d\n", r);
+  return 0;
+}
+EOF
+run - -- /usr/bin/gcc -O1 -shared -fPIC -o libdrop.so libdrop.c &&
+  run - -- /usr/bin/gcc -O1 -o dropprog dropprog.c -ldl ||
+  { echo "check-code-cache: building the dlopen programs failed" >&2; exit 2; }
+cp libdrop.so libdrop2.so
+cp libdrop.so libdrop3.so
+dropref=$(run - -- ./dropprog ./libdrop.so)
+
+# wait_for SECONDS GLOB / wait_gone SECONDS GLOB : the forked cache writer
+# publishes and sweeps after the guest has moved on, so both are polled for.
+wait_for() {
+  local i=0
+  while [ "$i" -lt "$(($1 * 4))" ]; do
+    # shellcheck disable=SC2086
+    ls $2 > /dev/null 2>&1 && return 0
+    sleep 0.25
+    i=$((i + 1))
+  done
+  return 1
+}
+wait_gone() {
+  local i=0
+  while [ "$i" -lt "$(($1 * 4))" ]; do
+    # shellcheck disable=SC2086
+    ls $2 > /dev/null 2>&1 || return 0
+    sleep 0.25
+    i=$((i + 1))
+  done
+  return 1
+}
+
+# ---------------------------------------------------------------------------
+# lockbusy
+# A pass that could not take its namespace's flock used to drop the segment
+# AND its records, so those blocks were gone for good: with all eight segment
+# names taken every periodic pass wants the exclusive lock, so two processes
+# saving in the same minute cost one of them everything it had compiled
+# (COLD-ROUND2 1.2(a); the comment claiming a later pass would write them was
+# wrong). The writer is forked now and waits for the lock instead.
+if command -v flock > /dev/null; then
+  lbdir=$(working "$w/lbb")
+  mkdir -p "$w/lba" "$lbdir"
+  run "$w/lba" -- ./dropprog ./libdrop.so > /dev/null 2> "$w/lbprime.log"
+  ns=$(ls "$(working "$w/lba")" 2> /dev/null | grep '^libdrop\.so-' | grep -v '\.lock$' | head -1)
+  if [ -z "$ns" ]; then
+    bad "lockbusy: the prime run wrote no libdrop cache"
+  else
+    # A holder keeps LOCK_EX on the library's lock in the fresh cache for the
+    # whole guest run: the save cannot publish while it runs. -o keeps the lock
+    # out of the sleep child, so killing the holder really releases it.
+    : > "$lbdir/$ns.lock"
+    flock -o "$lbdir/$ns.lock" sleep 600 &
+    holder=$!
+    sleep 0.5
+    out=$(run "$w/lbb" -- ./dropprog ./libdrop.so 2> "$w/lockbusy.log")
+    [ "$out" = "$dropref" ] || bad "lockbusy: guest printed '$out', cache off '$dropref'"
+    parked=no
+    if wait_for 20 "$lbdir/$ns.tmp.*"; then
+      parked=yes
+      ls "$lbdir/$ns" > /dev/null 2>&1 &&
+        bad "lockbusy: a segment was published while the namespace lock was held"
+    fi
+    sleeper=$(pgrep -P "$holder" 2> /dev/null)
+    kill "$holder" 2> /dev/null
+    # shellcheck disable=SC2086
+    [ -n "$sleeper" ] && kill $sleeper 2> /dev/null
+    wait "$holder" 2> /dev/null
+    if [ "$parked" = no ]; then
+      bad "lockbusy: no writer was waiting for the busy namespace lock"
+    elif wait_for 40 "$lbdir/$ns"; then
+      ok "lockbusy: blocks of a pass that lost the namespace lock were written once it freed"
+    else
+      bad "lockbusy: blocks of a pass that lost the namespace lock never reached the cache"
+    fi
+    warm=$(run "$w/lbb" -- ./dropprog ./libdrop.so 2> "$w/lockbusy2.log")
+    [ "$warm" = "$dropref" ] && [ "$(counter loaded "$w/lockbusy2.log")" -gt 0 ] &&
+      ok "lockbusy: the delayed segment loads" || bad "lockbusy: the delayed segment did not load"
+  fi
+else
+  echo "skip lockbusy: host flock(1) not found"
+fi
+
+# ---------------------------------------------------------------------------
+# evict
+# Over the cap, namespaces of another emulator build go first whatever their
+# mtime: nothing started after a promote can ever read them, while a pure LRU
+# evicted apps that are still in use (COLD-ROUND2 1.1).
+mkdir -p "$w/ev"
+run "$w/ev" -- ./dropprog ./libdrop.so > /dev/null 2> "$w/ev1.log"
+if [ ! -d "$w/ev/cache" ]; then
+  bad "evict: the first run wrote no cache"
+else
+  # 20 MiB of another build's cache: a segment whose header this build rejects
+  # (zeros are not the magic), written now, so it is the NEWEST namespace here
+  # and the one a pure LRU would keep.
+  fake="$w/ev/cache/evictfake-0123456789abcdef-fedcba9876543210"
+  dd if=/dev/zero of="$fake" bs=1048576 count=20 status=none
+  : > "$fake.lock"
+  total_kb=$(du -sk "$w/ev/cache" | cut -f1)
+  own_kb=$((total_kb - 20480))
+  cap=$((total_kb / 1024 - 1))
+  if [ "$own_kb" -le 0 ] || [ "$cap" -lt 1 ] || [ "$((own_kb * 10))" -gt "$((cap * 1024 * 9))" ]; then
+    bad "evict: cannot size the cap (own ${own_kb} KiB, cap ${cap} MiB)"
+  else
+    # The sweep runs at most once a minute across all processes.
+    touch -d '5 minutes ago' "$w/ev/cache/.sweep" 2> /dev/null
+    out=$(run "$w/ev" POWERARM_CODECACHEMAXSIZE=$cap -- ./dropprog ./libdrop2.so 2> "$w/ev2.log")
+    [ -n "$out" ] || bad "evict: the second run printed nothing"
+    if wait_gone 30 "$fake"; then
+      ls "$w/ev/cache"/libdrop.so-* > /dev/null 2>&1 &&
+        ok "evict: another build's namespace went before this build's (cap ${cap} MiB)" ||
+        bad "evict: this build's libdrop namespace was evicted too"
+    else
+      bad "evict: another build's namespace survived the cap (own ${own_kb} KiB, cap ${cap} MiB)"
+      ls "$w/ev/cache"
+    fi
+    # The hot tier is RAM, so it is swept the same way against a cap of its own.
+    if [ "$tier" = hot ]; then
+      hotfake="$w/ev/hot/evicthot-0123456789abcdef-fedcba9876543210"
+      dd if=/dev/zero of="$hotfake" bs=1048576 count=20 status=none
+      : > "$hotfake.lock"
+      hot_kb=$(du -sk "$w/ev/hot" | cut -f1)
+      hotcap=$((hot_kb / 1024 - 1))
+      touch -d '5 minutes ago' "$w/ev/hot/.sweep" 2> /dev/null
+      run "$w/ev" POWERARM_CODECACHEHOTMAXSIZE=$hotcap -- ./dropprog ./libdrop3.so > /dev/null 2> "$w/ev3.log"
+      if wait_gone 30 "$hotfake"; then
+        ls "$w/ev/hot"/libdrop.so-* > /dev/null 2>&1 &&
+          ok "evict: the hot tier is swept against its own cap (${hotcap} MiB)" ||
+          bad "evict: the hot tier's sweep took this build's namespace"
+      else
+        bad "evict: the hot tier's cap did not evict another build's namespace (${hotcap} MiB)"
+      fi
+    fi
+  fi
+fi
+
+# ---------------------------------------------------------------------------
+# reseed, torn
+# The hot tier is RAM and may be gone at any time (a reboot, a wipe, its own
+# size sweep); all that may cost is a copy back up from the durable tier. And
+# the durable tier must survive anything the hot one does to itself: it is the
+# copy that outlives the boot.
+if [ "$tier" = hot ]; then
+  mkdir -p "$w/rs"
+  run "$w/rs" -- ./dropprog ./libdrop.so > /dev/null 2> "$w/rs1.log"
+  hotns=$(ls "$w/rs/hot" 2> /dev/null | grep '^libdrop\.so-' | grep -v '\.lock$' | head -1)
+  durns=$(ls "$w/rs/cache" 2> /dev/null | grep '^libdrop\.so-' | grep -v '\.lock$' | head -1)
+  if [ -z "$hotns" ] || [ "$hotns" != "$durns" ]; then
+    bad "reseed: after a cold run the tiers hold '$hotns' and '$durns'"
+  else
+    ok "reseed: what the hot tier published reached the durable tier"
+    cold=$(counter loaded "$w/rs1.log")
+    # A reboot, as far as the cache is concerned.
+    rm -rf "$w/rs/hot"
+    out=$(run "$w/rs" -- ./dropprog ./libdrop.so 2> "$w/rs2.log")
+    loaded=$(counter loaded "$w/rs2.log")
+    nofile=$(counter no-file "$w/rs2.log")
+    [ "$out" = "$dropref" ] && [ "$loaded" -gt 0 ] && [ "$nofile" = 0 ] && [ -f "$w/rs/hot/$hotns" ] &&
+      ok "reseed: a wiped hot tier is seeded back from disk ($loaded blocks loaded, cold run loaded $cold)" ||
+      bad "reseed: after wiping the hot tier: printed '$out', loaded $loaded, no-file $nofile, hot copy $([ -f "$w/rs/hot/$hotns" ] && echo back || echo missing)"
+  fi
+
+  mkdir -p "$w/tn"
+  run "$w/tn" -- ./dropprog ./libdrop.so > /dev/null 2> "$w/tn1.log"
+  tns=$(ls "$w/tn/hot" 2> /dev/null | grep '^libdrop\.so-' | grep -v '\.lock$' | head -1)
+  if [ -z "$tns" ] || [ ! -f "$w/tn/cache/$tns" ]; then
+    bad "torn: no libdrop namespace in both tiers"
+  else
+    before=$(sha256sum < "$w/tn/cache/$tns")
+    # Half a segment: what a writer killed in the middle would leave, if it did
+    # not write through a temp file. It must not reach the durable tier, and the
+    # guest must not care.
+    size=$(stat -c %s "$w/tn/hot/$tns")
+    python3 -c "import sys; f=open(sys.argv[1],'r+b'); f.truncate(int(sys.argv[2]))" "$w/tn/hot/$tns" "$((size / 2))"
+    out=$(run "$w/tn" -- ./dropprog ./libdrop.so 2> "$w/tn2.log")
+    settle=0
+    while [ "$settle" -lt 40 ] && ls "$w/tn/cache"/*.tmp.* > /dev/null 2>&1; do sleep 0.25; settle=$((settle + 1)); done
+    after=$(sha256sum < "$w/tn/cache/$tns")
+    [ "$out" = "$dropref" ] && [ "$before" = "$after" ] &&
+      ok "torn: a half-written hot segment left the durable copy alone, and the guest ran" ||
+      bad "torn: printed '$out' (cache off '$dropref'), durable copy $([ "$before" = "$after" ] && echo intact || echo REPLACED)"
+    # And the durable copy is still the real thing: wipe the hot tier and load it.
+    rm -rf "$w/tn/hot"
+    out=$(run "$w/tn" -- ./dropprog ./libdrop.so 2> "$w/tn3.log")
+    [ "$out" = "$dropref" ] && [ "$(counter loaded "$w/tn3.log")" -gt 0 ] &&
+      ok "torn: the durable copy still loads after the hot one was torn" ||
+      bad "torn: the durable copy does not load after the hot one was torn"
+  fi
+else
+  echo "skip reseed, torn: this build has one cache tier"
+fi
 
 # ---------------------------------------------------------------------------
 # lld

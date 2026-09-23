@@ -17,9 +17,11 @@ POWERARM_ENABLECODECACHINGWIP=0
 `rootfs` writes caches for files under the configured RootFS and its overlay,
 `home` (the default) for those and every file under `$HOME`, and `all` for
 every executable mapping. See [Scope](#scope-which-files-are-cached) for why
-`home` is the default. The cache lives in `$POWERARM_APP_CACHE_LOCATION/cache/`
-(default `$XDG_CACHE_HOME/powerarm/cache/`) and is capped at `CodeCacheMaxSize`
-MiB (default 2048, `POWERARM_CODECACHEMAXSIZE`). `POWERARM_CODECACHESTATS=1`
+`home` is the default. The durable cache lives in
+`$POWERARM_APP_CACHE_LOCATION/cache/` (default `$XDG_CACHE_HOME/powerarm/cache/`)
+and is capped at `CodeCacheMaxSize` MiB (default 8192,
+`POWERARM_CODECACHEMAXSIZE`). The working copy is a hot tier in RAM over it
+(`$XDG_RUNTIME_DIR/powerarm/cache/`); see [Two tiers](#two-tiers-a-hot-copy-in-ram). `POWERARM_CODECACHESTATS=1`
 prints each process's counters to stderr. The SMC modes that the cache cannot
 serve (`SMCSemanticPatch`, `SMCLazyInval`, `SMCCheapTier`, `SMCStoreEmulation`,
 `SMCStoreBackpatch`) turn it off. See [Default-on](#default-on).
@@ -142,7 +144,7 @@ code when their mode is executable or they are ELF files (shared libraries are
 often installed 0644). A segment is written to a temp file and published with
 `link(2)` under a shared `flock`. When
 all eight names are taken, the writer merges them into `<name>` under an
-exclusive `flock` (`LOCK_NB`, so it skips if busy). Readers take no lock: a
+exclusive `flock`. Readers take no lock: a
 mapped segment stays valid if a compaction unlinks it. There is no `fsync`.
 Entry hashes are checked when the reading boot differs from the writer's
 (`/proc/sys/kernel/random/boot_id`), which is when a crash could have torn the
@@ -160,7 +162,9 @@ older than 10 minutes. The sweep:
    emulator build (GIT_HASH plus executable build id) or format, and temp
    files older than an hour;
 2. if the remaining namespaces exceed `CodeCacheMaxSize`, removes whole
-   namespaces in least-recently-used order until they fit in 90% of it.
+   namespaces until they fit in 90% of it: namespaces of another build first,
+   whatever their mtime, then this build's own, each least-recently-used
+   first.
 
 A namespace is removed under an exclusive `LOCK_NB` flock of its `.lock`. A
 busy namespace is skipped, so the sweep never runs during an append or a
@@ -169,6 +173,96 @@ processes keep valid data in their mapped segments. A writer that races the
 lock file's removal can at worst lose its own segment to a concurrent
 compaction. That costs recompiles, never wrong code, because every block is
 checked on install.
+
+Why 8 GiB, and why another build goes first. One desktop app's namespace is
+the size of the code its session reaches, not of its binary: VS Code's is
+726 MB (604,598 unique blocks, 9x host expansion, 43% relocation records),
+the Claude CLI's 200-258 MB, and Firefox's libxul would be of that order
+again. Four of the owner's apps under one build are 1.35 GB, so the old
+2 GiB cap was already being swept every minute with two builds present, and
+Firefox never kept a namespace at all. Rows 1 and 2 answer different
+questions: row 1 removes another build's namespaces only after an hour
+unused, because its processes may still be running (a promote does not stop
+them -- HANDOVER "Traps"), while row 2 runs while a process of that build is
+still writing. Under the cap the two builds' namespaces are worth the same
+per byte; over it they are not, because nothing started after the promote can
+ever read the old build's, so those are evicted first.
+
+Test harnesses use a cache directory of their own
+(`POWERARM_APP_CACHE_LOCATION`): `check-code-cache.sh`,
+`check-code-cache-contend.sh` and `unittests/A64Frontend/run.sh`. Every gate
+run is a new build, so a new ConfigId, and with the default directory the
+suites' namespaces competed with the apps the cache exists for until the
+hour-old sweep took them.
+
+### Two tiers: a hot copy in RAM
+
+The working cache is the hot tier: every segment a process maps, appends to or
+compacts is there, so a warm session reads and writes a tmpfs and the NVMe is
+touched only to seed a namespace and to write one back. The durable tier is the
+copy that survives a reboot.
+
+| | |
+|---|---|
+| Durable | `$POWERARM_APP_CACHE_LOCATION/cache/`, default `$XDG_CACHE_HOME/powerarm/cache/`. Capped by `CodeCacheMaxSize` (8192 MiB). |
+| Hot | `$XDG_RUNTIME_DIR/powerarm/cache/`, or `/tmp/powerarm-<uid>/cache/` with no runtime directory -- and `hot/` beside the `cache/` of a caller that chose its own cache location, so a test harness never shares one. `CodeCacheHotLocation` overrides it. Capped by `CodeCacheHotMaxSize` (8192 MiB), swept the same way and separately, because this one is RAM. |
+
+**Seeding is lazy, per namespace.** The first time a process opens a namespace,
+the segments the durable tier has and the hot tier has not are copied up,
+through a temp file and `link(2)`: two processes racing cost one wasted copy and
+never half a file. Nothing is copied at startup, and a namespace no process
+opens is never copied at all. That copy is the one place the hot tier costs
+something, and it happens once per namespace per boot.
+
+**Write-back is off the guest thread.** After a segment is published or a
+namespace compacted, the forked writer (below) mirrors what changed: one segment
+for an append, the whole namespace after a compaction, which is where the names
+the durable tier must lose are decided. A segment is copied only if it validates
+-- magic, version, header hash, and a file long enough for the extent its header
+declares -- and it lands with `rename(2)`. So a torn or truncated hot copy cannot
+replace a good durable one, and a reader of the durable tier never sees a partial
+file.
+
+**What it costs when it goes wrong.** Losing the hot tier -- a reboot, a wipe,
+its own size sweep -- costs a re-seed and nothing else. The tiers are allowed to
+disagree, the hot one being the newer: a block the durable tier is missing is
+compiled once more in the session after the reboot. Every block either tier holds
+is validated on install exactly as before, so neither tier can make a process run
+wrong code. `POWERARM_CODECACHEHOTTIER=0` leaves one tier, the durable one,
+behaving exactly as it did before this existed.
+
+**The writing is forked off the guest thread.** Collecting the blocks needs the
+process (the code buffer walk under `CodeBufferWriteMutex`, and the guest's own
+bytes); writing them out does not. So a periodic or unmap pass builds its
+segments and then forks a writer, which writes the temp files, takes the
+namespace locks, compacts and sweeps while the guest runs on. Without it that
+work was on whichever guest thread reached the trigger inside `mmap`, `munmap`
+or `mprotect`: ~3 us per block, and once a namespace has all eight segment
+names, a whole-namespace rewrite (726 MB for VS Code's) per pass. The exit save
+is forked already (cold G4). `POWERARM_CODECACHEFORKWRITER=0` puts the writing
+back on the guest thread.
+
+The writer is a fork of a live multi-threaded guest, so it only writes: it takes
+no lock of the emulator's, reads no guest memory and never returns to emulation.
+It comes from `fork(3)` (whose `pthread_atfork` handlers leave the allocator
+consistent, which the raw `clone(2)` of a guest fork does not do), the parent
+forks twice and reaps the intermediate so the writer is init's child rather than
+the guest's -- invisible to the guest's `wait(2)`, and never a zombie -- and the
+writer drops every inherited descriptor: a shell's `$(guest ...)` reads the
+guest's stdout until every writer closes it, so a writer parked on a lock would
+otherwise hang the command substitution. It says nothing (`LogMan`'s handler can
+want a lock another thread held at the fork); what it wrote is in the counters,
+which it reports through a page shared with its parent. An `alarm(2)` bounds its
+life at a minute, and at most two run at once.
+
+Because the writer waits for the namespace lock (up to 20 s) instead of giving
+the segment up the moment `flock` says busy, a pass no longer loses what it
+compiled. It used to: nothing re-kept the records of a dropped segment, so with
+eight segments present -- where every periodic pass wants the exclusive lock --
+two processes of the same app saving in the same minute cost one of them
+everything since its last pass, for good. A pass that still publishes on the
+guest thread (the writer fork refused, or turned off) hands its records back to
+the next pass instead.
 
 **Processes.** A fork child forgets the parent's unsaved compiles. SMC modes
 whose per-block metadata is not stored disable loading: semantic patch, lazy
@@ -198,6 +292,22 @@ now runs only for `POWERARM_SERVERCODECACHE=1`.
   links libraries it only initialises compiles fewer than 10 blocks. The
   program closes its stderr before exiting, and the counters still reach the
   log.
+- **Reseed:** with a hot tier, what a cold run published is in both tiers, and
+  a wiped hot tier (a reboot) is seeded back from the durable one: the guest
+  loads its blocks again, `no-file` is 0, and the hot copy is back.
+- **Torn:** a hot segment truncated to half its length must not reach the
+  durable tier -- the durable copy is byte-identical afterwards -- the guest
+  must still run correctly, and the durable copy must still load once the hot
+  tier is wiped.
+- **Lock busy:** another process holds `LOCK_EX` on a library's namespace lock
+  for the whole guest run. The guest's `dlclose` pass cannot publish, and its
+  blocks must not be lost: the forked writer is parked on the lock (its temp
+  file is there, no segment is), and once the holder lets go the segment
+  appears and a later run loads it. Skipped without host `flock(1)`.
+- **Evict:** 20 MiB of another build's cache (a namespace this build's header
+  check rejects), written last so a pure LRU would keep it, next to this
+  build's namespaces under a cap just below the total. The other build's goes
+  and this build's stays. Then the same against the hot tier's own cap.
 - **lld:** two lld-linked programs, built with the host's `clang` and `ld.lld`
   against the rootfs, compile none of their own blocks warm: one with lld's
   default layout (text 64K-congruent at a file offset whose 4K rounding is not
@@ -256,10 +366,13 @@ warm and 11.9 s with the cache off (measured before the merge).
 The owner asked for three evaluations. Each was measured with the guest on
 CPU 100 and background work allowed on the physical cores 112/116/120/124.
 
-**Asynchronous cache writes: not implemented.** A cold Lua build spends
-1.5 s of 91.5 s writing segments, summed over all 116 processes
-(`save-ms`). A writer cannot outlive `exit_group`, so moving the write off the
-guest thread would need a forked helper per process, costing more than 1.3%.
+**Asynchronous cache writes: not implemented** -- overturned, twice. A cold Lua
+build spends 1.5 s of 91.5 s writing segments, summed over all 116 processes
+(`save-ms`), and the conclusion rested on "a writer cannot outlive
+`exit_group`". It can: cold G4 forks the exit save, and the periodic and unmap
+passes fork theirs (above). The premise was measured on a build's short
+processes, which is not where the cost is; a long-lived app pays the same write
+over and over, plus a compaction.
 
 **Background pre-translation and install: implemented, measured slower,
 removed.** A per-process `SCHED_IDLE` thread was placed outside the guest's
@@ -341,8 +454,9 @@ build's within the hour (the sweep). Measured on the A64Frontend gate, whose
 goldens live in `~/Development/.powerarm-golden`: one plain run of the suite
 writes about 20 MB, 18 MB of it the test binaries' own; the
 `POWERARM_MAXINST=1` mode (one block per instruction) 95 MB; the three gate
-modes together 175 MB, under six config ids. Build trees in `/tmp`, the
-a64diff work directory and check-code-cache.sh's own stay out.
+modes together 175 MB, under six config ids. That is why `run.sh` now makes
+its own cache directory (above). Build trees in `/tmp`, the a64diff work
+directory and check-code-cache.sh's own stay out.
 
 Measured on the G1 tree against its parent (f518d94a3, whose code is the
 current stable, c632e0bca), one cold/warm pair each, CPUs 40-47, private cache
@@ -366,8 +480,8 @@ above adds the segments it builds to save.
 
 What was weighed:
 
-- **Size.** The cap (C16: `CodeCacheMaxSize`, 2 GiB, whole namespaces evicted
-  least recently used) bounds it. One launch of each app writes the sizes
+- **Size.** The cap (C16: `CodeCacheMaxSize`, 8 GiB, whole namespaces evicted
+  another build's first and then least recently used) bounds it. One launch of each app writes the sizes
   above; a long Claude session writes more, in the same append-only segments.
   Each Claude update is a new file, so a new namespace, and the old version's
   ages out of the LRU. Apps used daily stay.
@@ -467,8 +581,8 @@ main-ELF base rather than where ld.so would put them. Cached addresses are
 relative to the base, so a different base can only cause a `reloc-failed`
 reject, and none were seen. Every block is validated on install as usual.
 
-The cost is size. `cc1` in mode `all` takes 1.2 GiB of the 2 GiB default
-`CodeCacheMaxSize`. Pre-translating all of `/usr/lib` therefore needs a larger
+The cost is size. `cc1` in mode `all` takes 1.2 GiB of the 8 GiB default
+`CodeCacheMaxSize` (2 GiB when this was measured). Pre-translating all of `/usr/lib` therefore needs a larger
 cap, or mode `calls` or `entries`. The numbers are in the checklist's Queue
 section.
 
@@ -506,8 +620,7 @@ POWERARM_ROOTFS=<rootfs> POWERARM_APP_CACHE_LOCATION=<dir>/ POWERARM_PORTABLE=1 
 Mode `entries` is the one to use: it keeps 90% of the cold win of mode `all`
 at a tenth of the size, and adding `cc1` on top buys nothing. `-s MAXBYTES`
 skips ELFs over a size, so `-m entries -s 4194304 /usr/bin /usr/lib` is the
-whole-rootfs form of the same policy; it costs 466 MiB, a quarter of the
-default `CodeCacheMaxSize`, and was not measured on the slice because the
+whole-rootfs form of the same policy; it costs 466 MiB, and was not measured on the slice because the
 slice only reaches the eleven binaries above.
 
 This is not the answer to cold runs, only a third of a second of the 3.1 s

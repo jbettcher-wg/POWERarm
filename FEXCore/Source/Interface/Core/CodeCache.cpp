@@ -48,10 +48,13 @@
 #include <limits>
 #include <link.h>
 #include <optional>
+#include <csignal>
 #include <sys/file.h>
 #include <sys/mman.h>
 #include <sys/stat.h>
+#include <sys/syscall.h>
 #include <sys/uio.h>
+#include <sys/wait.h>
 #include <time.h>
 #include <unistd.h>
 
@@ -1086,6 +1089,248 @@ namespace {
   }
 } // namespace
 
+
+// =============================================================================
+// Two tiers: a hot copy in RAM over the durable copy on disk
+//
+// The working cache is the hot tier: every segment a process maps, appends to
+// or compacts lives there, so a warm session reads and writes RAM (a tmpfs)
+// and touches the NVMe only to seed and to write back. The durable tier is the
+// copy that survives a reboot.
+//
+//   seed        lazily, per namespace, the first time a process opens one: the
+//               segments the durable tier has and the hot tier has not are
+//               copied up, through a temp file and link(2), so two processes
+//               racing cost one wasted copy and never half a file. Nothing is
+//               copied at startup, and a namespace no process opens is never
+//               copied at all.
+//   write-back  after a segment is published or a namespace compacted, in the
+//               forked writer -- the guest thread never waits for the disk. A
+//               segment is copied only if it validates (magic, version, header
+//               hash, and a file long enough for the extent the header
+//               declares), and it lands with rename(2). So a torn or truncated
+//               hot copy cannot replace a good durable one, and a reader of the
+//               durable tier never sees a partial file.
+//
+// Losing the hot tier -- a reboot, a wipe, its own size sweep -- costs a
+// re-seed and nothing else. The tiers are allowed to disagree, the hot one
+// being the newer: a block the durable tier is missing is compiled once more in
+// the session after the reboot, and every block either tier holds is validated
+// on install exactly as before.
+//
+// POWERARM_CODECACHEHOTTIER=0 turns it off and leaves one tier, the durable
+// one, exactly as it was.
+// =============================================================================
+namespace {
+  // Copies Size bytes from In to Out, from wherever both offsets stand.
+  bool CopyFileContents(int In, int Out, uint64_t Size) {
+    while (Size) {
+      const ssize_t Done = ::copy_file_range(In, nullptr, Out, nullptr, Size, 0);
+      if (Done > 0) {
+        Size -= static_cast<uint64_t>(Done);
+        continue;
+      }
+      if (Done == 0) {
+        return false;
+      }
+      if (errno == EINTR) {
+        continue;
+      }
+      // A kernel or a filesystem pair that refuses it: finish by hand.
+      break;
+    }
+    fextl::vector<std::byte> Buffer;
+    while (Size) {
+      if (Buffer.empty()) {
+        Buffer.resize(1 << 20);
+      }
+      const ssize_t Got = ::read(In, Buffer.data(), std::min<uint64_t>(Size, Buffer.size()));
+      if (Got <= 0) {
+        if (Got < 0 && errno == EINTR) {
+          continue;
+        }
+        return false;
+      }
+      if (!WriteAll(Out, Buffer.data(), static_cast<size_t>(Got))) {
+        return false;
+      }
+      Size -= static_cast<uint64_t>(Got);
+    }
+    return true;
+  }
+
+  // A segment file that is whole: it starts with a header this build wrote in
+  // this format and the file covers everything that header describes. What this
+  // rejects is a file that was truncated or is still being written -- the state
+  // a crashed or killed writer leaves behind. What is inside is not checked
+  // here; every block is validated when it is installed.
+  bool SegmentLooksComplete(const fextl::string& Path, uint64_t* SizeOut) {
+    const int FD = ::open(Path.c_str(), O_RDONLY | O_CLOEXEC);
+    if (FD == -1) {
+      return false;
+    }
+    SegmentHeader H {};
+    struct stat St {};
+    const bool Ok = ::pread(FD, &H, sizeof(H), 0) == static_cast<ssize_t>(sizeof(H)) && ::fstat(FD, &St) == 0 && S_ISREG(St.st_mode) &&
+                    H.Magic == SegmentMagic && H.Version == SegmentVersion && H.HeaderHash == HashHeader(H) &&
+                    static_cast<uint64_t>(St.st_size) >= H.CodeOffset + H.CodeSize;
+    ::close(FD);
+    if (Ok && SizeOut) {
+      *SizeOut = static_cast<uint64_t>(St.st_size);
+    }
+    return Ok;
+  }
+
+  // The hot cache directory, or empty when there is one tier only. Resolved
+  // once, from the durable directory of the first namespace this process names:
+  //
+  //   POWERARM_CODECACHEHOTLOCATION  where the caller says;
+  //   a chosen cache location        `hot/` beside its `cache/`, so a test
+  //                                  harness with its own cache directory has
+  //                                  its own hot tier too and two runs never
+  //                                  share one;
+  //   otherwise                      $XDG_RUNTIME_DIR/powerarm/cache, falling
+  //                                  back to /tmp/powerarm-<uid>/cache -- both
+  //                                  tmpfs on this machine, and both emptied by
+  //                                  a reboot, which is all the hot tier needs.
+  fextl::string ResolveHotCacheDir(std::string_view DurableDir) {
+    if (!FEXCore::Config::Get_CODECACHEHOTTIER()()) {
+      return {};
+    }
+    fextl::string Dir;
+    bool Shared = false;
+    if (const auto& Configured = FEXCore::Config::Get_CODECACHEHOTLOCATION()(); !Configured.empty()) {
+      Dir = Configured;
+    } else if (::getenv("POWERARM_APP_CACHE_LOCATION") || ::getenv("FEX_APP_CACHE_LOCATION")) {
+      const auto Parent = std::filesystem::path(DurableDir).parent_path().string();
+      Dir = fextl::fmt::format("{}/hot", Parent);
+    } else if (const char* Runtime = ::getenv("XDG_RUNTIME_DIR"); Runtime && Runtime[0] == '/') {
+      Dir = fextl::fmt::format("{}/powerarm/cache", Runtime);
+    } else {
+      Dir = fextl::fmt::format("/tmp/powerarm-{}/cache", static_cast<unsigned>(::getuid()));
+      Shared = true;
+    }
+    while (!Dir.empty() && Dir.back() == '/') {
+      Dir.pop_back();
+    }
+    if (Dir.empty() || Dir == DurableDir) {
+      return {};
+    }
+    std::error_code EC;
+    std::filesystem::create_directories(std::filesystem::path(std::string_view {Dir}), EC);
+    if (Shared) {
+      // A guessable name under a directory anyone can write. A cache file is
+      // only ever as trustworthy as its directory -- every block in it is
+      // checked against the guest's bytes, but the host code beside them is
+      // executed as written -- so this one is used only while it is ours and
+      // nobody else's to write.
+      const auto Parent = fextl::string {std::filesystem::path(std::string_view {Dir}).parent_path().string()};
+      ::chmod(Parent.c_str(), 0700);
+      struct stat St {};
+      if (::lstat(Parent.c_str(), &St) != 0 || !S_ISDIR(St.st_mode) || St.st_uid != ::getuid() || (St.st_mode & (S_IWGRP | S_IWOTH))) {
+        LogMan::Msg::IFmt("Code cache: no hot tier, {} is not ours alone", Parent);
+        return {};
+      }
+    }
+    if (::access(Dir.c_str(), R_OK | W_OK | X_OK) != 0) {
+      LogMan::Msg::IFmt("Code cache: no hot tier, {} is not usable", Dir);
+      return {};
+    }
+    return Dir;
+  }
+
+  // The hot path of a durable base path, or empty with one tier.
+  fextl::string HotBasePath(const fextl::string& DurableBase) {
+    const auto Slash = DurableBase.rfind('/');
+    if (DurableBase.empty() || Slash == fextl::string::npos) {
+      return {};
+    }
+    static const fextl::string Dir = ResolveHotCacheDir(std::string_view {DurableBase}.substr(0, Slash));
+    if (Dir.empty()) {
+      return {};
+    }
+    return fextl::fmt::format("{}/{}", Dir, std::string_view {DurableBase}.substr(Slash + 1));
+  }
+
+  // Copies the durable segments of a namespace the hot tier has not got. Stops
+  // at the first name neither tier has: the reader stops there too.
+  void SeedHotNamespace(const fextl::string& HotBase, const fextl::string& DurableBase) {
+    if (HotBase.empty() || DurableBase.empty()) {
+      return;
+    }
+    for (size_t Index = 0; Index < MaxSegments; ++Index) {
+      const auto Hot = SegmentPath(HotBase, Index);
+      if (::access(Hot.c_str(), F_OK) == 0) {
+        continue;
+      }
+      uint64_t Size = 0;
+      if (!SegmentLooksComplete(SegmentPath(DurableBase, Index), &Size)) {
+        return;
+      }
+      const int In = ::open(SegmentPath(DurableBase, Index).c_str(), O_RDONLY | O_CLOEXEC);
+      if (In == -1) {
+        return;
+      }
+      std::error_code EC;
+      std::filesystem::create_directories(std::filesystem::path(std::string_view {HotBase}).parent_path(), EC);
+      auto Temp = WriteTempSegment(HotBase, [&](int FD) { return CopyFileContents(In, FD, Size); });
+      ::close(In);
+      if (Temp.empty()) {
+        return;
+      }
+      // A sibling that seeded the same name first wins; this copy is dropped.
+      const bool Have = ::link(Temp.c_str(), Hot.c_str()) == 0 || errno == EEXIST;
+      ::unlink(Temp.c_str());
+      if (!Have) {
+        return;
+      }
+    }
+  }
+
+  // Mirrors one hot segment into the durable tier, whole or not at all.
+  bool WriteBackSegment(const fextl::string& HotBase, const fextl::string& DurableBase, size_t Index) {
+    uint64_t Size = 0;
+    if (!SegmentLooksComplete(SegmentPath(HotBase, Index), &Size)) {
+      return false;
+    }
+    const int In = ::open(SegmentPath(HotBase, Index).c_str(), O_RDONLY | O_CLOEXEC);
+    if (In == -1) {
+      return false;
+    }
+    std::error_code EC;
+    std::filesystem::create_directories(std::filesystem::path(std::string_view {DurableBase}).parent_path(), EC);
+    auto Temp = WriteTempSegment(DurableBase, [&](int FD) { return CopyFileContents(In, FD, Size); });
+    ::close(In);
+    if (Temp.empty()) {
+      return false;
+    }
+    // rename(2), not link(2): this replaces whatever the durable tier had under
+    // that name, and it replaces it in one step.
+    if (::rename(Temp.c_str(), SegmentPath(DurableBase, Index).c_str()) != 0) {
+      ::unlink(Temp.c_str());
+      return false;
+    }
+    return true;
+  }
+
+  // Mirrors a whole namespace, which is what a compaction leaves to do: the hot
+  // tier is one segment again and the durable tier must lose the names it no
+  // longer has. The new segment 0 goes first, so a process seeding in between
+  // finds a namespace that is complete, if for a moment redundant.
+  void WriteBackNamespace(const fextl::string& HotBase, const fextl::string& DurableBase) {
+    size_t Present = 0;
+    for (; Present < MaxSegments; ++Present) {
+      if (::access(SegmentPath(HotBase, Present).c_str(), F_OK) != 0) {
+        break;
+      }
+      WriteBackSegment(HotBase, DurableBase, Present);
+    }
+    for (size_t Index = MaxSegments; Index-- > Present;) {
+      ::unlink(SegmentPath(DurableBase, Index).c_str());
+    }
+  }
+} // namespace
+
 struct CodeCache::CacheSegment {
   void* Map {};
   size_t MapSize {};
@@ -1174,7 +1419,12 @@ struct CodeCache::CacheSegment {
 };
 
 struct CodeCache::FileCache {
+  // The working namespace: the hot tier's when there is one, the durable
+  // tier's when there is not.
   fextl::string BasePath;
+  // The durable namespace, empty with one tier. Set even when the hot tier is
+  // in use: it is where this namespace is seeded from and written back to.
+  fextl::string DurableBase;
   // Append-only. Appended under CodeCache::RegistryMutex (unique); read without
   // a lock: a slot is filled before NumSegments counts it.
   std::array<fextl::unique_ptr<CacheSegment>, MaxSegments> Segments;
@@ -1248,6 +1498,20 @@ uint64_t CodeCache::ComputeCodeMapId(std::string_view Filename, int FD) {
   return SanitizeId(XXH3_64bits_digest(&State));
 }
 
+// Counters of the segment writers this process forks, in a page it shares
+// with them. See "Publishing a pass's segments, and the forked writer".
+struct CodeCache::SaveWriterStats {
+  std::atomic<uint64_t> SavedBlocks;
+  std::atomic<uint64_t> SavedSegments;
+  std::atomic<uint64_t> Compactions;
+  // Segments a writer could not publish: the namespace lock stayed busy for
+  // PublishLockWaitSeconds, or the temp file could not be written.
+  std::atomic<uint64_t> LostSegments;
+  // Writers running now. A writer killed outright cannot decrement it, so it is
+  // only believed for as long as a writer can live.
+  std::atomic<int32_t> Active;
+};
+
 bool CodeCache::WantsSave(bool IgnoreInterval) {
   // Two independent triggers so neither a burst of compilation nor a long quiet
   // stretch can leave an unbounded amount of work unsaved.
@@ -1295,6 +1559,14 @@ void CodeCache::ResetAfterFork() {
   // did not survive the fork.
   BlocksSinceSave.store(0, std::memory_order_relaxed);
   RanPeriodicPass.store(false, std::memory_order_relaxed);
+  // The writers this process forked report to a page it shares with them; the
+  // child gets a page of its own, so its stats line describes the child alone
+  // (and it cannot decrement an Active count it never incremented).
+  if (WriterStats) {
+    ::munmap(WriterStats, sizeof(SaveWriterStats));
+    WriterStats = nullptr;
+  }
+  LastWriterForkSeconds = 0;
   {
     std::lock_guard lk {RelocationSinkMutex};
     CompiledBlocks.clear();
@@ -1312,6 +1584,16 @@ void CodeCache::DumpStats() {
   auto L = [](const std::atomic<uint64_t>& A) {
     return A.load(std::memory_order_relaxed);
   };
+  // What this process's forked writers have published so far. They report into
+  // a shared page, so their work is this process's, wherever it ran; a writer
+  // still running when this line is printed is not in it.
+  uint64_t WrittenBlocks = 0, WrittenSegments = 0, WriterCompactions = 0, LostSegments = 0;
+  if (WriterStats) {
+    WrittenBlocks = L(WriterStats->SavedBlocks);
+    WrittenSegments = L(WriterStats->SavedSegments);
+    WriterCompactions = L(WriterStats->Compactions);
+    LostSegments = L(WriterStats->LostSegments);
+  }
   // The private copy of stderr, unless the guest has since put something else
   // on that descriptor number.
   const auto& Out = StatsStream();
@@ -1320,11 +1602,12 @@ void CodeCache::DumpStats() {
   if (Out.FD >= 0 && ::fstat(Out.FD, &St) == 0 && St.st_dev == Out.Dev && St.st_ino == Out.Ino) {
     FD = Out.FD;
   }
-  const auto Line = fextl::fmt::format("POWERarm code cache [{}]: loaded {} not-in-index {} no-file {} bad-entry {} guest-mismatch {} not-exec {} "
-                                       "reloc-failed {} saved {} blocks in {} segments, {} compactions; save-ms {} lookup-ms {}\n",
-                                       ::getpid(), L(Stats.Loaded), L(Stats.NotInIndex), L(Stats.NoFile), L(Stats.BadEntry),
-                                       L(Stats.GuestMismatch), L(Stats.NotExecutable), L(Stats.RelocFailed), L(Stats.SavedBlocks),
-                                       L(Stats.SavedSegments), L(Stats.Compactions), L(Stats.SaveNS) / 1000000, L(Stats.LoadNS) / 1000000);
+  const auto Line = fextl::fmt::format(
+    "POWERarm code cache [{}]: loaded {} not-in-index {} no-file {} bad-entry {} guest-mismatch {} not-exec {} "
+    "reloc-failed {} saved {} blocks in {} segments, {} compactions, {} lost; save-ms {} lookup-ms {}\n",
+    ::getpid(), L(Stats.Loaded), L(Stats.NotInIndex), L(Stats.NoFile), L(Stats.BadEntry), L(Stats.GuestMismatch), L(Stats.NotExecutable),
+    L(Stats.RelocFailed), L(Stats.SavedBlocks) + WrittenBlocks, L(Stats.SavedSegments) + WrittenSegments,
+    L(Stats.Compactions) + WriterCompactions, LostSegments, L(Stats.SaveNS) / 1000000, L(Stats.LoadNS) / 1000000);
   (void)::write(FD, Line.data(), Line.size());
 }
 
@@ -1369,12 +1652,24 @@ CodeCache::FileCache* CodeCache::GetFileCache(const ExecutableFileInfo& FileInfo
   }
   // First sight of this file in this process: resolve its scope and path once.
   // An out-of-scope file is remembered with an empty BasePath.
-  auto BasePath = CTX.SyscallHandler->CodeCacheBasePath(FileInfo);
+  auto DurableBase = CTX.SyscallHandler->CodeCacheBasePath(FileInfo);
+  auto BasePath = HotBasePath(DurableBase);
+  // Seed before the registry lock: it is one copy up from disk, once per
+  // namespace per process, and every other thread's first touch of every other
+  // file waits behind that lock. Two processes seeding the same namespace at
+  // once is handled by the link(2) in there, not by a lock.
+  if (BasePath.empty()) {
+    BasePath = std::move(DurableBase);
+    DurableBase.clear();
+  } else {
+    SeedHotNamespace(BasePath, DurableBase);
+  }
   std::unique_lock lk {RegistryMutex};
   auto& Slot = Registry[FileInfo.FileId];
   if (!Slot) {
     Slot = fextl::make_unique<FileCache>();
     Slot->BasePath = std::move(BasePath);
+    Slot->DurableBase = std::move(DurableBase);
     if (!Slot->BasePath.empty()) {
       Slot->ProbeNewSegments(ComputeCodeCacheConfigId(), FileInfo.FileId);
     }
@@ -1913,8 +2208,10 @@ static bool CompactSegments(const fextl::string& Base, const fextl::string& Extr
 // under `.sweep.lock` with LOCK_NB):
 //   1. namespaces written by another emulator build (or an older format),
 //      and temp files, unused for StaleSeconds are removed;
-//   2. if the rest exceeds CodeCacheMaxSize, whole namespaces are removed in
-//      least-recently-used order until they fit in 90% of it.
+//   2. if the rest exceeds CodeCacheMaxSize, whole namespaces are removed until
+//      they fit in 90% of it: another build's first (they are dead weight the
+//      moment its last process exits, and no process of this build can read
+//      them), then this build's own, each in least-recently-used order.
 // A namespace is removed under an exclusive LOCK_NB flock of its `.lock`, so
 // never while a writer appends or compacts it; a busy one is skipped. Segments
 // are unlinked from the highest index down, then the lock file. A process that
@@ -1965,6 +2262,8 @@ namespace {
     int64_t LastUse = 0;
     uint32_t SegmentMask = 0;
     bool HasLock = false;
+    // Written by the build running this sweep (IsOwnBuild of its first segment).
+    bool OwnBuild = false;
     fextl::vector<fextl::string> TempFiles;
   };
 
@@ -2073,6 +2372,7 @@ namespace {
         const int Lowest = std::countr_zero(Info.SegmentMask);
         Own = IsOwnBuild(SegmentPath(fextl::fmt::format("{}/{}", Dir, Base), Lowest));
       }
+      Info.OwnBuild = Own;
       if (!Own && Stale && RemoveNamespace(Dir, Base, Info)) {
         LogMan::Msg::IFmt("Code cache: removed unused namespace {} of another build", Base);
         continue;
@@ -2089,7 +2389,15 @@ namespace {
 
     if (CapBytes != 0 && Total > CapBytes) {
       const uint64_t Target = CapBytes / 10 * 9;
-      std::ranges::sort(Live, {}, [](const Candidate& C) { return C.Info->LastUse; });
+      // Another build's namespaces first, whatever their mtime, then this
+      // build's in least-recently-used order. A promote gives every guest file
+      // a new ConfigId while the processes started before it keep writing the
+      // old one (HANDOVER "Traps"), so the dead build's namespaces are as
+      // recently written as the live build's and a pure LRU evicted apps that
+      // are in use -- which is a whole cold session for that app -- to keep
+      // caches nothing can ever read again. They cannot be removed outright
+      // (their writers are still running); they are just worth least.
+      std::ranges::sort(Live, {}, [](const Candidate& C) { return std::pair {C.Info->OwnBuild, C.Info->LastUse}; });
       for (const auto& C : Live) {
         if (Total <= Target) {
           break;
@@ -2104,22 +2412,288 @@ namespace {
   }
 } // namespace
 
-bool CodeCache::CompactAllSegments(const fextl::string& Base, uint64_t FileId) {
-  if (Base.empty()) {
+// =============================================================================
+// Publishing a pass's segments, and the forked writer
+//
+// A save pass has two halves. Collecting the blocks needs this process:
+// CollectLiveBlocks walks the code buffer under CodeBufferWriteMutex and reads
+// the guest's own bytes. Publishing them does not: it writes a temp file, takes
+// the namespace flock, links the temp into a free segment name (or, when all
+// MaxSegments names are taken, folds the whole namespace and it into one) and
+// sweeps the directory. That half is file I/O over a finished snapshot, and on
+// a namespace at MaxSegments it rewrites the namespace whole -- 726 MB for VS
+// Code's -- on whichever guest thread happened to reach the save trigger inside
+// an mmap, munmap or mprotect, while it holds SaveIOLock and, inside the walk,
+// CodeBufferWriteMutex. So the pass forks and the child publishes. Cold G4
+// already proved the tool on the exit save (a forked writer outlives its
+// parent); this is the same writer on the periodic and unmap passes, which are
+// the ones a long-lived app pays over and over.
+//
+// The child is a fork of a live multi-threaded guest, so it only ever writes:
+//   * no FEX lock is taken, no guest memory is read, no guest state is touched,
+//     and it never returns into emulation -- it _exit()s;
+//   * it comes from ::fork(), whose pthread_atfork handlers leave the allocator
+//     consistent in the child (jemalloc registers them; the raw clone(2) of
+//     ForkGuest does not run them). The built segments are inherited
+//     copy-on-write, so the fork copies page tables, not data;
+//   * the parent forks twice and reaps the intermediate, so the writer is
+//     init's child and not the guest's: a guest calling wait(2) can neither see
+//     it nor reap it, and no zombie waits for a parent that never waits;
+//   * it takes the namespace lock with a bounded wait instead of dropping the
+//     segment the moment the lock is busy, which is what lost the blocks of
+//     every pass that raced a sibling (COLD-ROUND2 1.2(a)); and an alarm bounds
+//     its whole life, so a lock a crashed sibling still holds costs one
+//     segment, never a stray process.
+//
+// Nothing waits for the writer. What it could not publish is counted, not
+// recovered: keeping the records for a child that is about to write them is how
+// the relocation sink grows without bound in a long-lived process. The pass
+// that publishes on the guest thread does hand its records back (see
+// SaveNewBlocks), because there nothing else will write them.
+// =============================================================================
+namespace {
+  // How long a writer child waits for a busy namespace lock before giving its
+  // segment up, and the hard bound on the child's whole life.
+  constexpr uint64_t PublishLockWaitSeconds = 20;
+  constexpr unsigned WriterLifetimeSeconds = 60;
+  // Writers of this process that may still be running before a pass publishes
+  // its segments itself instead. A lock held longer than one writer's wait is a
+  // sibling compacting a large namespace; queueing more writers behind it only
+  // spends forks.
+  constexpr int32_t MaxConcurrentWriters = 2;
+
+  // flock(LOCK_NB) with a bounded wait. A blocking flock(2) cannot be used even
+  // in a child: a crashed sibling's lock survives until its core dump drains,
+  // and a writer parked on that forever is exactly the stray process a forked
+  // writer must not become.
+  bool LockWithDeadline(int FD, int Operation, uint64_t WaitSeconds) {
+    const uint64_t Deadline = MonotonicSeconds() + WaitSeconds;
+    for (;;) {
+      if (::flock(FD, Operation | LOCK_NB) == 0) {
+        return true;
+      }
+      if ((errno != EWOULDBLOCK && errno != EINTR) || MonotonicSeconds() >= Deadline) {
+        return false;
+      }
+      const struct timespec Pause {.tv_sec = 0, .tv_nsec = 20 * 1000 * 1000};
+      ::nanosleep(&Pause, nullptr);
+    }
+  }
+
+  // What a publish did, so the durable mirror knows what changed.
+  struct PublishResult {
+    bool Written = false;
+    size_t Index = 0;
+    bool Compacted = false;
+  };
+
+  // Links Temp into a free segment name of Base, or folds every segment plus
+  // Temp into one when all MaxSegments names are taken. Temp is unlinked either
+  // way; the blocks are in the namespace only if this returns Written.
+  PublishResult PublishTempSegment(const fextl::string& Base, const fextl::string& Temp, uint64_t ConfigId, uint64_t FileId, uint64_t WaitSeconds) {
+    PublishResult Result;
+    const auto LockPath = Base + ".lock";
+    const int LockFD = ::open(LockPath.c_str(), O_RDWR | O_CREAT | O_CLOEXEC, 0644);
+    if (LockFD != -1) {
+      if (LockWithDeadline(LockFD, LOCK_SH, WaitSeconds)) {
+        for (size_t i = 0; i < MaxSegments && !Result.Written; ++i) {
+          if (::link(Temp.c_str(), SegmentPath(Base, i).c_str()) == 0) {
+            Result.Written = true;
+            Result.Index = i;
+          } else if (errno != EEXIST) {
+            break;
+          }
+        }
+        ::flock(LockFD, LOCK_UN);
+      }
+      if (!Result.Written && LockWithDeadline(LockFD, LOCK_EX, WaitSeconds)) {
+        // Every segment name is taken: fold them, and this segment, into one.
+        Result.Written = CompactSegments(Base, Temp, ConfigId, FileId);
+        Result.Compacted = Result.Written;
+        ::flock(LockFD, LOCK_UN);
+      }
+      ::close(LockFD);
+    }
+    ::unlink(Temp.c_str());
+    return Result;
+  }
+} // namespace
+
+struct CodeCache::SweepPlan {
+  // The working tier's directory and its cap, then the durable tier's. With
+  // one tier only the first pair is set.
+  fextl::string Dir;
+  uint64_t CapBytes {};
+  fextl::string DurableDir;
+  uint64_t DurableCapBytes {};
+};
+
+// One target's blocks, built and waiting for a segment name.
+struct CodeCache::PendingSegment {
+  fextl::string Base;
+  // The durable namespace to mirror this into, empty with one tier.
+  fextl::string DurableBase;
+  fextl::string Filename;
+  uint64_t FileId;
+  SegmentBuilder Builder;
+  // Indices into the pass's KeepRecord, so a segment that could not be written
+  // can hand its records back to a later pass.
+  fextl::vector<uint32_t> Records;
+  bool Written = false;
+};
+
+CodeCache::SaveWriterStats* CodeCache::GetSaveWriterStats() {
+  if (!WriterStats) {
+    // MAP_SHARED: the writers and this process must see one page, not a copy
+    // each, or a writer's counters die with it and the stats line understates
+    // every save this process made.
+    void* Page = ::mmap(nullptr, sizeof(SaveWriterStats), PROT_READ | PROT_WRITE, MAP_SHARED | MAP_ANONYMOUS, -1, 0);
+    if (Page == MAP_FAILED) {
+      return nullptr;
+    }
+    WriterStats = new (Page) SaveWriterStats {};
+  }
+  return WriterStats;
+}
+
+size_t CodeCache::PublishSegments(std::span<PendingSegment> Pending, uint64_t ConfigId, uint64_t WaitSeconds, SaveWriterStats* Shared) {
+  size_t Written = 0;
+  for (auto& P : Pending) {
+    std::error_code EC;
+    std::filesystem::create_directories(std::filesystem::path(std::string_view {P.Base}).parent_path(), EC);
+    auto Temp = WriteTempSegment(P.Base, [&](int FD) { return WriteSegment(FD, P.Builder, ConfigId, P.FileId); });
+    const auto Published = Temp.empty() ? PublishResult {} : PublishTempSegment(P.Base, Temp, ConfigId, P.FileId, WaitSeconds);
+    const uint64_t Compactions = Published.Compacted ? 1 : 0;
+    P.Written = Published.Written;
+    if (P.Written && !P.DurableBase.empty()) {
+      // Mirror what changed, no more: one segment for an append, the whole
+      // namespace after a compaction, which is where the names the durable tier
+      // must lose are decided.
+      if (Published.Compacted) {
+        WriteBackNamespace(P.Base, P.DurableBase);
+      } else {
+        WriteBackSegment(P.Base, P.DurableBase, Published.Index);
+      }
+    }
+    if (Shared) {
+      // A writer says nothing: LogMan's handler can take a lock (stdio's) that
+      // another thread held at the fork, and the counters carry this anyway.
+      Shared->Compactions.fetch_add(Compactions, std::memory_order_relaxed);
+      if (P.Written) {
+        Shared->SavedBlocks.fetch_add(P.Builder.Blocks.size(), std::memory_order_relaxed);
+        Shared->SavedSegments.fetch_add(1, std::memory_order_relaxed);
+      } else {
+        Shared->LostSegments.fetch_add(1, std::memory_order_relaxed);
+      }
+    } else {
+      Stats.Compactions.fetch_add(Compactions, std::memory_order_relaxed);
+      if (P.Written) {
+        Stats.SavedBlocks.fetch_add(P.Builder.Blocks.size(), std::memory_order_relaxed);
+        Stats.SavedSegments.fetch_add(1, std::memory_order_relaxed);
+        LogMan::Msg::IFmt("Code cache: wrote {} blocks for {}", P.Builder.Blocks.size(), P.Filename);
+      } else if (Temp.empty()) {
+        LogMan::Msg::EFmt("Code cache: cannot write a segment for {}", P.Base);
+      }
+    }
+    Written += P.Written ? 1 : 0;
+  }
+  return Written;
+}
+
+void CodeCache::RunSweeps(const SweepPlan& Sweeps) {
+  if (!Sweeps.Dir.empty()) {
+    SweepCacheDirectory(Sweeps.Dir, Sweeps.CapBytes);
+  }
+  if (!Sweeps.DurableDir.empty()) {
+    SweepCacheDirectory(Sweeps.DurableDir, Sweeps.DurableCapBytes);
+  }
+}
+
+bool CodeCache::ForkSegmentWriter(std::span<PendingSegment> Pending, uint64_t ConfigId, const SweepPlan& Sweeps) {
+  auto* Shared = GetSaveWriterStats();
+  if (!Shared) {
     return false;
   }
+  const uint64_t Now = MonotonicSeconds();
+  if (Shared->Active.load(std::memory_order_relaxed) >= MaxConcurrentWriters && Now < LastWriterForkSeconds + WriterLifetimeSeconds) {
+    return false;
+  }
+
+  const pid_t Middle = ::fork();
+  if (Middle < 0) {
+    return false;
+  }
+  if (Middle == 0) {
+    // The intermediate exists only so that the writer is not this guest's child.
+    if (::fork() == 0) {
+      Shared->Active.fetch_add(1, std::memory_order_relaxed);
+      // Every descriptor the guest had open is inherited, and holding one open
+      // makes this process something the world waits for: a shell's $(guest)
+      // reads the guest's stdout until EVERY writer closes it, so a writer
+      // parked on a namespace lock hung the command substitution for its whole
+      // wait. The writer needs none of them -- it opens the files it writes by
+      // name -- so it takes /dev/null for the three standard ones and drops the
+      // rest. A fatal fault in a writer is then a core, not a message.
+      if (const int Null = ::open("/dev/null", O_RDWR); Null != -1) {
+        ::dup2(Null, STDIN_FILENO);
+        ::dup2(Null, STDOUT_FILENO);
+        ::dup2(Null, STDERR_FILENO);
+        if (Null > STDERR_FILENO) {
+          ::close(Null);
+        }
+      }
+#ifdef SYS_close_range
+      ::syscall(SYS_close_range, 3, ~0U, 0);
+#endif
+      // Its own alarm, on a clean handler: whatever happens below -- a lock
+      // nobody releases, a host lock inherited mid-use -- this process is gone
+      // within the minute. Timers do not cross a fork, so this one is its own.
+      ::signal(SIGALRM, SIG_DFL);
+      ::alarm(WriterLifetimeSeconds);
+      const size_t Count = PublishSegments(Pending, ConfigId, PublishLockWaitSeconds, Shared);
+      if (Count != 0) {
+        RunSweeps(Sweeps);
+      }
+      Shared->Active.fetch_sub(1, std::memory_order_relaxed);
+      ::_exit(0);
+    }
+    ::_exit(0);
+  }
+  LastWriterForkSeconds = Now;
+  // The intermediate only forks and exits; reaping it here is what keeps the
+  // writer out of the guest's wait(2) and out of the process table.
+  int Status = 0;
+  while (::waitpid(Middle, &Status, 0) < 0 && errno == EINTR) { }
+  return true;
+}
+
+
+bool CodeCache::CompactAllSegments(const fextl::string& DurableBase, uint64_t FileId) {
+  if (DurableBase.empty()) {
+    return false;
+  }
+  // The caller names the durable namespace; the working one is the hot tier's
+  // when there is one, and the result is mirrored back.
+  const auto Hot = HotBasePath(DurableBase);
+  const auto& Base = Hot.empty() ? DurableBase : Hot;
+  SeedHotNamespace(Hot, DurableBase);
   const auto LockPath = Base + ".lock";
   int LockFD = ::open(LockPath.c_str(), O_RDWR | O_CREAT | O_CLOEXEC, 0644);
   if (LockFD == -1) {
     return false;
   }
   bool Done = false;
+  bool Compacted = false;
   if (::flock(LockFD, LOCK_EX | LOCK_NB) == 0) {
-    Done = ::access(SegmentPath(Base, 1).c_str(), F_OK) != 0 || CompactSegments(Base, {}, ComputeCodeCacheConfigId(), FileId);
+    Compacted = ::access(SegmentPath(Base, 1).c_str(), F_OK) == 0 && CompactSegments(Base, {}, ComputeCodeCacheConfigId(), FileId);
+    Done = Compacted || ::access(SegmentPath(Base, 1).c_str(), F_OK) != 0;
     Stats.Compactions.fetch_add(Done ? 1 : 0, std::memory_order_relaxed);
     ::flock(LockFD, LOCK_UN);
   }
   ::close(LockFD);
+  if (Compacted && !Hot.empty()) {
+    WriteBackNamespace(Hot, DurableBase);
+  }
   return Done;
 }
 
@@ -2181,10 +2755,14 @@ size_t CodeCache::SaveNewBlocks(Core::InternalThreadState&, std::span<const Code
   // cannot defer them.
   const bool LastChance = Kind != CodeCacheSaveKind::Periodic;
 
-  size_t SegmentsWritten = 0;
+  // Built here, published below -- in a forked writer where one is possible.
+  fextl::vector<PendingSegment> Pending;
   for (const auto& Target : Targets) {
     const auto& Section = Target.Section;
-    const auto& Base = Target.BasePath;
+    // The target names the durable namespace; a pass writes the hot one and
+    // mirrors it (see the two-tier block).
+    const auto Hot = HotBasePath(Target.BasePath);
+    const auto& Base = Hot.empty() ? Target.BasePath : Hot;
     const uint64_t FileId = Section.FileInfo.FileId;
     if (Base.empty()) {
       continue;
@@ -2260,60 +2838,75 @@ size_t CodeCache::SaveNewBlocks(Core::InternalThreadState&, std::span<const Code
       continue;
     }
 
-    std::error_code EC;
-    std::filesystem::create_directories(std::filesystem::path(std::string_view {Base}).parent_path(), EC);
-    auto Temp = WriteTempSegment(Base, [&](int FD) { return WriteSegment(FD, Builder, ConfigId, FileId); });
-    if (Temp.empty()) {
-      LogMan::Msg::EFmt("Code cache: cannot write a segment for {}", Base);
-      continue;
+    PendingSegment P;
+    P.Base = Base;
+    P.DurableBase = Hot.empty() ? fextl::string {} : Target.BasePath;
+    P.Filename = Section.FileInfo.Filename;
+    P.FileId = FileId;
+    P.Builder = std::move(Builder);
+    P.Records.reserve(Candidates.size());
+    for (uint64_t Guest : Candidates) {
+      P.Records.push_back(static_cast<uint32_t>(ByGuest[Guest]));
     }
-
-    const auto LockPath = Base + ".lock";
-    int LockFD = ::open(LockPath.c_str(), O_RDWR | O_CREAT | O_CLOEXEC, 0644);
-    bool Written = false;
-    if (LockFD != -1) {
-      // Non-blocking: a sibling (or a crashed sibling whose lock survives until
-      // its core dump drains) can hold the exclusive lock for an unbounded time,
-      // and blocking here would stall this thread indefinitely. It is only a
-      // cache, so on EWOULDBLOCK the segment is simply deferred (unlinked below)
-      // and written by a later pass.
-      if (::flock(LockFD, LOCK_SH | LOCK_NB) == 0) {
-        for (size_t i = 0; i < MaxSegments && !Written; ++i) {
-          if (::link(Temp.c_str(), SegmentPath(Base, i).c_str()) == 0) {
-            Written = true;
-          } else if (errno != EEXIST) {
-            break;
-          }
-        }
-        ::flock(LockFD, LOCK_UN);
-      }
-      if (!Written && ::flock(LockFD, LOCK_EX | LOCK_NB) == 0) {
-        // Every segment name is taken: fold them, and this segment, into one.
-        Written = CompactSegments(Base, Temp, ConfigId, FileId);
-        Stats.Compactions.fetch_add(Written ? 1 : 0, std::memory_order_relaxed);
-        ::flock(LockFD, LOCK_UN);
-      }
-      ::close(LockFD);
-    }
-    ::unlink(Temp.c_str());
-
-    if (Written) {
-      ++SegmentsWritten;
-      Stats.SavedBlocks.fetch_add(Builder.Blocks.size(), std::memory_order_relaxed);
-      Stats.SavedSegments.fetch_add(1, std::memory_order_relaxed);
-      LogMan::Msg::IFmt("Code cache: wrote {} blocks for {}", Builder.Blocks.size(), Section.FileInfo.Filename);
-    }
+    Pending.push_back(std::move(P));
   }
 
   const bool OneShot = (Kind == CodeCacheSaveKind::Final) && !RanPeriodicPass.load(std::memory_order_relaxed);
-  if (SegmentsWritten != 0 && !OneShot) {
-    // Every base path is in the one cache directory.
+  // Every base path is in the one cache directory, and with two tiers both are
+  // swept: the durable one against the disk cap, the hot one against its own,
+  // because that one is RAM.
+  SweepPlan Sweeps;
+  if (!OneShot) {
     for (const auto& Target : Targets) {
-      if (!Target.BasePath.empty()) {
-        const int64_t CapMiB = FEXCore::Config::Get_CODECACHEMAXSIZE();
-        const auto Dir = std::filesystem::path(std::string_view {Target.BasePath}).parent_path();
-        SweepCacheDirectory(fextl::string {Dir.string()}, CapMiB > 0 ? static_cast<uint64_t>(CapMiB) << 20 : 0);
-        break;
+      if (Target.BasePath.empty()) {
+        continue;
+      }
+      const auto MiBToBytes = [](int64_t MiB) {
+        return MiB > 0 ? static_cast<uint64_t>(MiB) << 20 : 0;
+      };
+      const auto DurableDir = fextl::string {std::filesystem::path(std::string_view {Target.BasePath}).parent_path().string()};
+      const auto Hot = HotBasePath(Target.BasePath);
+      if (Hot.empty()) {
+        Sweeps.Dir = DurableDir;
+        Sweeps.CapBytes = MiBToBytes(FEXCore::Config::Get_CODECACHEMAXSIZE());
+      } else {
+        Sweeps.Dir = fextl::string {std::filesystem::path(std::string_view {Hot}).parent_path().string()};
+        Sweeps.CapBytes = MiBToBytes(FEXCore::Config::Get_CODECACHEHOTMAXSIZE());
+        Sweeps.DurableDir = DurableDir;
+        Sweeps.DurableCapBytes = MiBToBytes(FEXCore::Config::Get_CODECACHEMAXSIZE());
+      }
+      break;
+    }
+  }
+
+  size_t SegmentsWritten = 0;
+  if (!Pending.empty()) {
+    // The final pass already runs in a forked writer of its own, with no parent
+    // left to stall (cold G4); every other pass is on a guest thread and hands
+    // the writing to one.
+    const bool Forked = Kind != CodeCacheSaveKind::Final && ForkWriter() && ForkSegmentWriter(Pending, ConfigId, Sweeps);
+    if (Forked) {
+      SegmentsWritten = Pending.size();
+    } else {
+      SegmentsWritten = PublishSegments(Pending, ConfigId, 0, nullptr);
+      if (Kind != CodeCacheSaveKind::Final) {
+        for (const auto& P : Pending) {
+          if (!P.Written) {
+            // The namespace lock was busy (a sibling appending or compacting),
+            // or the segment could not be written. Hand the records back: this
+            // pass published nothing for them and no writer will. Dropping them
+            // here is what lost the blocks of every process that raced a
+            // sibling -- with MaxSegments names taken every periodic pass wants
+            // the exclusive lock, so two processes saving in the same minute
+            // cost one of them its blocks for good.
+            for (uint32_t Index : P.Records) {
+              KeepRecord[Index] = true;
+            }
+          }
+        }
+      }
+      if (SegmentsWritten != 0) {
+        RunSweeps(Sweeps);
       }
     }
   }

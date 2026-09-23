@@ -58,13 +58,69 @@
       },
       "CodeCacheMaxSize": {
         "Type": "int32",
-        "Default": "2048",
+        "Default": "8192",
         "Desc": [
           "Size cap of the code cache directory in MiB; 0 means no cap.",
           "After writing, a process sweeps the directory at most once a minute:",
           "caches written by other POWERarm builds and unused for an hour are",
           "removed, and while the rest exceeds the cap, whole per-file caches are",
-          "removed in least-recently-used order until they fit in 90% of it."
+          "removed until they fit in 90% of it -- caches of another build first,",
+          "then this build's own, each in least-recently-used order.",
+          "One desktop app's cache is hundreds of MiB (VS Code's is over 700),",
+          "and a promote leaves the previous build's caches behind until their",
+          "long-lived processes exit, so a cap that fits only one build's app set",
+          "evicts apps that are still in use and makes them cold again."
+        ]
+      },
+      "CodeCacheHotTier": {
+        "Type": "bool",
+        "Default": "true",
+        "Desc": [
+          "Keep the working code cache in RAM over a durable copy on disk. Every",
+          "segment a process maps, appends to or compacts is in the hot tier, so a",
+          "warm session reads and writes a tmpfs and touches the disk only to seed",
+          "a namespace the first time a process opens it and to write back what it",
+          "published. A write-back copies only a segment that validates and lands",
+          "it with rename(2), so a torn hot copy cannot replace a good durable one;",
+          "losing the hot tier (a reboot, a wipe) costs a re-seed, nothing else.",
+          "Turn it off with POWERARM_CODECACHEHOTTIER=0, which leaves the durable",
+          "cache alone and unchanged."
+        ]
+      },
+      "CodeCacheHotLocation": {
+        "Type": "str",
+        "Default": "",
+        "Desc": [
+          "Where the hot tier lives. Empty picks $XDG_RUNTIME_DIR/powerarm/cache,",
+          "falling back to /tmp/powerarm-<uid>/cache; a caller that chose its own",
+          "cache location (POWERARM_APP_CACHE_LOCATION) gets hot/ beside its",
+          "cache/, so two test runs never share one. It should be a tmpfs: that is",
+          "the point of it, and it is emptied by a reboot, which is all it needs."
+        ]
+      },
+      "CodeCacheHotMaxSize": {
+        "Type": "int32",
+        "Default": "8192",
+        "Desc": [
+          "Size cap of the hot tier in MiB; 0 means no cap. Swept exactly like",
+          "CodeCacheMaxSize, and separately from it, because this one is RAM. A",
+          "namespace evicted here is re-seeded from the durable tier when it is",
+          "next opened."
+        ]
+      },
+      "CodeCacheForkWriter": {
+        "Type": "bool",
+        "Default": "true",
+        "Desc": [
+          "Write the code cache's periodic and unmap segments in a forked child.",
+          "The guest thread that reaches a save trigger (inside mmap, munmap or",
+          "mprotect) collects the blocks and forks; the child writes the segment,",
+          "waits for the namespace lock, compacts when all eight segment names are",
+          "taken and sweeps the directory. Without it that work -- of the order of",
+          "a second once a namespace needs compacting -- runs on the guest thread,",
+          "and a segment whose namespace lock is busy is dropped instead of waited",
+          "for. The exit save has its own writer either way.",
+          "Turn it off with POWERARM_CODECACHEFORKWRITER=0."
         ]
       },
       "EnableCodeCacheValidation": {
