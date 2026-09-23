@@ -341,25 +341,55 @@ void PPC64Dispatcher::EmitDispatcher() {
     int32_t l1_off = static_cast<int32_t>(offsetof(CpuStateFrame, State.L1Pointer));
     int32_t l1mask_off = static_cast<int32_t>(offsetof(CpuStateFrame, State.L1Mask));
 
+    // The index is LookupCache::L1Slot's, in byte form:
+    // ((RIP >> GUEST_PC_SHIFT) & (entries-1)) * sizeof(LookupCacheEntry).
+    // The guest PC is four-byte aligned, so its low two bits are dead and
+    // indexing by them would leave three quarters of the table unreachable;
+    // dropping them before the mask is a net rotate left of
+    // (log2(entry) - GUEST_PC_SHIFT) == 2, not 4.
+    constexpr uint32_t L1EntryLog2 = std::countr_zero(sizeof(FEXCore::LookupCache::LookupCacheEntry));
+    constexpr uint32_t L1Rot = L1EntryLog2 - FEXCore::LookupCache::GUEST_PC_SHIFT;
+
     ld(TMP2, l1_off, STATE);       // TMP2 = L1Pointer
     if (!FEXCore::Config::Get_DYNAMICL1CACHE()) {
       // Static L1 (the port default): the mask is an emit-time constant, so
-      // the whole (RIP << 4) & L1Mask collapses into one rldic — rotate left
-      // by 4 and keep bits [4, log2(entries)+4), which is exactly
-      // (RIP & (entries-1)) * 16 with the low 4 bits clear. Replaces the
+      // the whole index collapses into one rotate-and-mask, replacing the
       // L1Mask load + sldi + and_ (3 insns and a dependent load) on the
-      // hottest dispatcher leg. MB tracks LookupCache::MAX_L1_ENTRIES.
+      // hottest dispatcher leg. Keep exactly the scaled index field,
+      // [L1EntryLog2, log2(entries)+L1EntryLog2-1].
+      //
+      // rlwinm, not rldic: rldic's mask always runs down to bit 63-SH, so at
+      // SH=2 it would keep RIP[1:0] in bits [3:2] of the byte offset. An
+      // unaligned PC does reach here -- the decoder compiles a BUS_ADRALN
+      // block at it -- and would then index a misaligned entry address, whose
+      // GuestCode load straddles two entries and, at the last slot, reads 12
+      // bytes past the end of the L1 mapping, which is the end of the whole
+      // LookupCache reservation (TotalCacheSize in LookupCache.cpp). rlwinm's
+      // mask is bounded on both sides, so the offset is always 16-byte aligned
+      // and always inside the table: an unaligned PC lands on the slot of the
+      // aligned address below it and is rejected by the GuestCode compare
+      // below, exactly as L1Slot's C++ readers reject it.
+      //
+      // ROTL32 duplication (PPC64Immediates.h) is not a hazard: MB <= ME here,
+      // so the mask lies entirely in the low word and the result is
+      // zero-extended.
       static_assert((FEXCore::LookupCache::MAX_L1_ENTRIES & (FEXCore::LookupCache::MAX_L1_ENTRIES - 1)) == 0,
-                    "rldic probe requires a power-of-two L1");
-      constexpr uint32_t L1MB = 64 - (std::countr_zero(FEXCore::LookupCache::MAX_L1_ENTRIES) + 4);
-      rldic(TMP4, TMP1, 4, L1MB);
+                    "L1 probe requires a power-of-two L1");
+      constexpr uint32_t L1Bits = std::countr_zero(FEXCore::LookupCache::MAX_L1_ENTRIES);
+      static_assert(L1Bits + L1EntryLog2 <= 32, "scaled L1 index must fit the low 32 bits rlwinm rotates");
+      // Big-endian bit n is value bit 31-n, so MB is the top of the field.
+      constexpr uint32_t L1MB = 31 - (L1Bits + L1EntryLog2 - 1);
+      constexpr uint32_t L1ME = 31 - L1EntryLog2;
+      rlwinm(TMP4, TMP1, L1Rot, L1MB, L1ME);
     } else {
       ld(TMP3, l1mask_off, STATE);   // TMP3 = L1Mask (pre-scaled by sizeof(LookupCacheEntry)=16)
 
-      // Compute byte offset: (RIP << 4) & L1Mask = (RIP & L1PointerMask) * 16.
-      // L1Mask is pre-scaled (= L1PointerMask << 4), so shifting RIP left before
-      // ANDing gives the correct entry offset. Matches ARM64 dispatcher behavior.
-      sldi(TMP4, TMP1, 4);  // LookupCacheEntry = 16 bytes, log2(16) = 4
+      // Same index with a runtime mask: (RIP << 2) & L1Mask. L1Mask is
+      // pre-scaled (= L1PointerMask << 4), and its zero low nibble is what
+      // clears the two dead PC bits the shorter shift leaves in bits [3:2], so
+      // this is ((RIP >> GUEST_PC_SHIFT) & L1PointerMask) * 16 -- 16-byte
+      // aligned and in range for an unaligned PC too.
+      sldi(TMP4, TMP1, L1Rot);
       and_(TMP4, TMP4, TMP3);
     }
 

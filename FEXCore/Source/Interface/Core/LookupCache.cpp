@@ -111,7 +111,8 @@ LookupCache::LookupCache(FEXCore::Context::ContextImpl* CTX)
   // hook. Neither call changes any address, size or access rule.
   //
   //  * L1: MAX_L1_ENTRIES * 16 == 2 MiB of reservation, indexed by
-  //    (RIP & L1PointerMask). It is densely used from L1Pointer upwards --
+  //    ((RIP >> GUEST_PC_SHIFT) & L1PointerMask). It is densely used from
+  //    L1Pointer upwards --
   //    the mask only ever selects a prefix -- so THP costs at most one huge
   //    page of slack past the live prefix even at MIN_L1_ENTRIES.
   //  * L2 page-pointer array: one pointer per guest page over the whole

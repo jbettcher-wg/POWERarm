@@ -343,13 +343,18 @@ void PPC64JITCore::EmitA64PairedCall(const IR::IROp_ExitFunction* Op, bool Const
     PPC64Emitter::Label MissLeg {};
     const int32_t l1_off = static_cast<int32_t>(offsetof(FEXCore::Core::CpuStateFrame, State.L1Pointer));
     const int32_t l1mask_off = static_cast<int32_t>(offsetof(FEXCore::Core::CpuStateFrame, State.L1Mask));
+    // LookupCache::L1Slot's index; see PPC64Dispatcher::DispatcherLoopTop for
+    // why this is an rlwinm rotating by (log2(entry) - GUEST_PC_SHIFT).
+    constexpr uint32_t L1EntryLog2 = std::countr_zero(sizeof(FEXCore::LookupCache::LookupCacheEntry));
+    constexpr uint32_t L1Rot = L1EntryLog2 - FEXCore::LookupCache::GUEST_PC_SHIFT;
     ld(TMP2, l1_off, STATE);
     if (!FEXCore::Config::Get_DYNAMICL1CACHE()) {
-      constexpr uint32_t L1MB = 64 - (std::countr_zero(FEXCore::LookupCache::MAX_L1_ENTRIES) + 4);
-      rldic(TMP4, TargetReg, 4, L1MB);
+      constexpr uint32_t L1Bits = std::countr_zero(FEXCore::LookupCache::MAX_L1_ENTRIES);
+      static_assert(L1Bits + L1EntryLog2 <= 32, "scaled L1 index must fit the low 32 bits rlwinm rotates");
+      rlwinm(TMP4, TargetReg, L1Rot, 31 - (L1Bits + L1EntryLog2 - 1), 31 - L1EntryLog2);
     } else {
       ld(TMP3, l1mask_off, STATE);
-      sldi(TMP4, TargetReg, 4);
+      sldi(TMP4, TargetReg, L1Rot);
       and_(TMP4, TMP4, TMP3);
     }
     add(TMP2, TMP2, TMP4);
@@ -982,8 +987,9 @@ DEF_OP(ExitFunction) {
 
   // ---------------------------------------------------------------------
   // L1 probe. Mirrors the dispatcher's arithmetic exactly (PPC64Dispatcher.cpp
-  // DispatcherLoopTop): L1Mask is pre-scaled by sizeof(LookupCacheEntry)=16,
-  // so the index is (RIP << 4) & L1Mask.
+  // DispatcherLoopTop): the index is LookupCache::L1Slot's,
+  // ((RIP >> GUEST_PC_SHIFT) & (entries-1)) * sizeof(LookupCacheEntry), and
+  // L1Mask is that mask pre-scaled by sizeof(LookupCacheEntry)=16.
   // ---------------------------------------------------------------------
   const int32_t l1_off = static_cast<int32_t>(
     offsetof(FEXCore::Core::CpuStateFrame, State.L1Pointer));
@@ -999,17 +1005,21 @@ DEF_OP(ExitFunction) {
 
   // LINK-FIRST: an unlinked constant exit does not probe (see LinkFirst above).
   if (!LinkFirst) {
+    constexpr uint32_t L1EntryLog2 = std::countr_zero(sizeof(FEXCore::LookupCache::LookupCacheEntry));
+    constexpr uint32_t L1Rot = L1EntryLog2 - FEXCore::LookupCache::GUEST_PC_SHIFT;
     ld(TMP2, l1_off, STATE);       // TMP2 = L1Pointer
     if (!FEXCore::Config::Get_DYNAMICL1CACHE()) {
-      // Static L1: constant-mask probe, one rldic instead of L1Mask load +
-      // sldi + and_. Same derivation as the dispatcher's DispatcherLoopTop.
+      // Static L1: constant-mask probe, one rlwinm instead of L1Mask load +
+      // sldi + and_. Same derivation as the dispatcher's DispatcherLoopTop,
+      // including why the rotate-and-mask is the word form.
       static_assert((FEXCore::LookupCache::MAX_L1_ENTRIES & (FEXCore::LookupCache::MAX_L1_ENTRIES - 1)) == 0,
-                    "rldic probe requires a power-of-two L1");
-      constexpr uint32_t L1MB = 64 - (std::countr_zero(FEXCore::LookupCache::MAX_L1_ENTRIES) + 4);
-      rldic(TMP4, RIPReg, 4, L1MB);
+                    "L1 probe requires a power-of-two L1");
+      constexpr uint32_t L1Bits = std::countr_zero(FEXCore::LookupCache::MAX_L1_ENTRIES);
+      static_assert(L1Bits + L1EntryLog2 <= 32, "scaled L1 index must fit the low 32 bits rlwinm rotates");
+      rlwinm(TMP4, RIPReg, L1Rot, 31 - (L1Bits + L1EntryLog2 - 1), 31 - L1EntryLog2);
     } else {
       ld(TMP3, l1mask_off, STATE);   // TMP3 = L1Mask (pre-scaled)
-      sldi(TMP4, RIPReg, 4);         // log2(sizeof(LookupCacheEntry)) == 4
+      sldi(TMP4, RIPReg, L1Rot);     // the mask's zero low nibble drops PC[1:0]
       and_(TMP4, TMP4, TMP3);
     }
     add(TMP2, TMP2, TMP4);         // TMP2 = &L1[hash]

@@ -867,11 +867,41 @@ public:
     Shared = &NewMap;
   }
 
+  // The one L1 index, shared by every C++ reader and writer below and mirrored
+  // by the three emitted probes in JIT/PPC64LE.
+  //
+  // The guest is AArch64: every legal block entry point has PC[1:0] == 0
+  // (Decoder.cpp turns any other PC into a BUS_ADRALN block), so indexing by
+  // the raw address leaves three of every four slots permanently unreachable.
+  // The MAX_L1_ENTRIES table then behaves as a quarter-sized one, and of the
+  // 2 MiB this prefaults per thread only 512 KiB can ever hold an entry.
+  // Dropping the two dead bits first makes every slot reachable for exactly
+  // the same resident memory.
+  //
+  // Aliasing: an unaligned PC -- the entry of its own BUS_ADRALN block, which
+  // is compiled and registered like any other -- now shares a slot with the
+  // aligned address below it. It can never be mistaken for that block: every
+  // reader compares the full 64-bit GuestCode key before it uses HostCode, and
+  // the key written is always the exact guest address. A shared slot costs a
+  // conflict miss, never a wrong block.
+  LookupCacheEntry& L1Slot(uint64_t Address) const {
+    return reinterpret_cast<LookupCacheEntry*>(L1Pointer)[(Address >> GUEST_PC_SHIFT) & L1PointerMask];
+  }
+
+  // The same argument one level down: an L2 page holds one entry per possible
+  // block entry point in a guest page, which on AArch64 is one per
+  // instruction, not one per byte. SIZE_PER_PAGE follows, so a page of L2
+  // backing is 16 KiB instead of 64 KiB and the same CODE_SIZE pool backs four
+  // times as many guest pages.
+  static uint64_t L2Offset(uint64_t Address) {
+    return (Address & (FEXCore::Utils::FEX_GUEST_PAGE_SIZE - 1)) >> GUEST_PC_SHIFT;
+  }
+
   uintptr_t FindBlock(FEXCore::Core::InternalThreadState* Thread, uint64_t Address) {
     // Try L1, no lock needed.  Acquire fence pairs with the writer's release
     // in LookupCacheEntry::Publish so that observing the new GuestCode also
     // observes the new HostCode (no torn read of a half-installed entry).
-    auto& L1Entry = reinterpret_cast<LookupCacheEntry*>(L1Pointer)[Address & L1PointerMask];
+    auto& L1Entry = L1Slot(Address);
     if (L1Entry.GuestCode == Address) {
       std::atomic_thread_fence(std::memory_order_acquire);
       return L1Entry.HostCode;
@@ -888,7 +918,7 @@ public:
       if (!DisableL2Cache()) {
         // Try L2
         const auto PageIndex = (Address & (VirtualMemSize - 1)) >> 12;
-        const auto PageOffset = Address & (0x0FFF);
+        const auto PageOffset = L2Offset(Address);
 
         const auto Pointers = reinterpret_cast<uintptr_t*>(PagePointer);
         auto LocalPagePointer = Pointers[PageIndex];
@@ -1058,7 +1088,7 @@ public:
   // Invalidates L1/L2 for a given guest block
   void InvalidateCache(uint64_t Address, const LookupCacheWriteLockToken& lk) {
     // Do L1
-    auto& L1Entry = reinterpret_cast<LookupCacheEntry*>(L1Pointer)[Address & L1PointerMask];
+    auto& L1Entry = L1Slot(Address);
     if (L1Entry.GuestCode == Address) {
       L1Entry.GuestCode = 0;
       // Leave L1Entry.HostCode as is, so that concurrent lookups won't read a null pointer
@@ -1069,7 +1099,7 @@ public:
     if (!DisableL2Cache()) {
       // Do full map
       Address = Address & (VirtualMemSize - 1);
-      uint64_t PageOffset = Address & (0x0FFF);
+      uint64_t PageOffset = L2Offset(Address);
       Address >>= 12;
 
       uintptr_t* Pointers = reinterpret_cast<uintptr_t*>(PagePointer);
@@ -1196,6 +1226,10 @@ public:
   uintptr_t GetL1Pointer() const {
     return L1Pointer;
   }
+  // Pre-scaled by sizeof(LookupCacheEntry) for the DynamicL1Cache probe leg,
+  // which computes (RIP << (4 - GUEST_PC_SHIFT)) & this. The scale leaves the
+  // low four bits of the mask zero, which is what drops the GUEST_PC_SHIFT
+  // dead bits there -- so that leg is L1Slot()'s index too.
   uintptr_t GetScaledL1PointerMask() const {
     return L1PointerMask << FEXCore::ilog2(sizeof(LookupCache::LookupCacheEntry));
   }
@@ -1238,7 +1272,7 @@ private:
 
     // Do L1.  Atomic publish: see LookupCacheEntry::Publish for why ordering
     // matters on weakly-ordered hosts (PPC64LE).
-    auto& L1Entry = reinterpret_cast<LookupCacheEntry*>(L1Pointer)[Address & L1PointerMask];
+    auto& L1Entry = L1Slot(Address);
     L1Entry.Publish(Entry.HostCode, Address);
 
     if (!DisableL2Cache() && !L1Only) {
@@ -1246,7 +1280,7 @@ private:
       auto FullAddress = Address;
       Address = Address & (VirtualMemSize - 1);
 
-      uint64_t PageOffset = Address & (0x0FFF);
+      uint64_t PageOffset = L2Offset(Address);
       Address >>= 12;
 
       uintptr_t* Pointers = reinterpret_cast<uintptr_t*>(PagePointer);
@@ -1321,15 +1355,21 @@ private:
   // Start with 8k entries in L1 to give 128KB of L1 cache to each thread.
   // Max out at 1 million entries to give each thread 16MB of L1 cache maximum.
 public:
-  // Public: the PPC64LE JIT bakes log2(MAX_L1_ENTRIES) into its constant-mask
-  // L1 probe (rldic) when DynamicL1Cache is off — the emitted MB field must
-  // track this constant.
+  // Public: the PPC64LE JIT bakes both of these into its constant-mask L1
+  // probe (one rlwinm) when DynamicL1Cache is off — the emitted mask tracks
+  // MAX_L1_ENTRIES and the rotate tracks GUEST_PC_SHIFT.
   constexpr static size_t MIN_L1_ENTRIES = 8 * 1024;        // Must be a power of 2
   constexpr static size_t MAX_L1_ENTRIES = 128 * 1024;      // Must be a power of 2 (Startup S4: 2 MiB, 32 x 64K pages)
+
+  // Low bits of a guest address that carry no information: AArch64
+  // instructions are four bytes and four-byte aligned, so no block entry point
+  // ever has them set. Every L1 and L2 index drops them first; see L1Slot()
+  // and L2Offset() above.
+  constexpr static size_t GUEST_PC_SHIFT = 2;
 private:
 
   constexpr static size_t CODE_SIZE = 128 * 1024 * 1024;
-  constexpr static size_t SIZE_PER_PAGE = FEXCore::Utils::FEX_GUEST_PAGE_SIZE * sizeof(LookupCacheEntry);
+  constexpr static size_t SIZE_PER_PAGE = (FEXCore::Utils::FEX_GUEST_PAGE_SIZE >> GUEST_PC_SHIFT) * sizeof(LookupCacheEntry);
   constexpr static size_t MAX_L1_SIZE = MAX_L1_ENTRIES * sizeof(LookupCacheEntry);
 
   size_t AllocateOffset {};
