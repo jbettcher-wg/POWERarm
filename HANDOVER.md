@@ -485,3 +485,33 @@ to initialise against 27 s cold (suspect cache install cost, item 24).
     - Resolves backend crashes and teardown SEGV_ACCERR in `agy --hub` / VS Code Antigravity extension and fork deadlocks in child worker processes (`cpptools-srv`).
     - Gate 1: 86/86 pass in default, disableisa30, and MAXINST=1 modes.
 
+
+42. **Crash triage of the real 24h core population** (2026-09-22). Nearly every core in the
+    journal is one of our own gate tests faulting on purpose (`sigill_udf`, `sigill_hlt`,
+    `sigtrap_brk`, `hostfault`, `forkexec`, `threadexit`, `tbi.*` — all dev-build). Filtering to
+    the *stable* install, i.e. what Jordan actually runs, 24h looked like: 43 `ugrep` SEGV (Claude
+    Code's search tool), 15 `slangc` SEGV (xenia-edge), 9 `cpptools-srv` SEGV, 7 `code` /
+    `antigravity-ide` SIGILL, 5 xenia arm64 SIGABRT.
+    - **The ugrep/cpptools family: fixed** (see the merge of `worktree-agent-aaa00dd19c1243975`).
+      `SignalDelegator::UninstallTLSState` freed the host alt stack *before*
+      `sigaltstack(SS_DISABLE)`, so the kernel kept writing signal frames into a range
+      `OSAllocator_64Bit::Munmap` had already re-reserved `PROT_NONE` → `force_sigsegv()`
+      (SI_KERNEL, si_addr 0, unblockable, kills the process). The signaller is a sibling's
+      `exit_group` → `ThreadManager::Stop()` → `tgkill(SIGNAL_FOR_PAUSE)` at threads
+      `DestroyThread` has not delisted yet, so any short-lived thread pool that exits with work in
+      flight hits it. Same race, second exit code: the thunk's dead-thread escape armed
+      `SIG_DFL` process-wide for `SIGNAL_FOR_PAUSE` (RT 63 → terminate → exit 191). Fix is
+      disable-then-free, clear `TLS_ThreadObject` last, and drop a pause signal aimed at a dead
+      thread instead of arming SIG_DFL. Test `threadexit.c` + a 96-run loop in `run.sh`
+      (19–25/96 dead before, 0 after; 600-run ugrep reproducer 16 → 0).
+    - **The VS Code / Antigravity SIGILL: diagnosed, fix in flight.** Core 1841112 faults at
+      dispatcher base + 0x13bc, which is `SignalHandlerReturnAddressRT` — the deliberate
+      `Emit32(0)` sentinel from `PPC64Dispatcher.cpp` (verified: the dispatcher's mmap is the
+      upper of the two merged r-xp pages above libfmt; 0x13b8/0x13bc are the two zero words and
+      0x13c0 is the `CallbackPtr` prologue `mr r7,r4`). LR is the `rt_sigreturn` lambda just past
+      `HandleSignalHandlerReturn(true)`. So `HandleSIGILL`, whose whole job is to recognise that
+      PC, never ran: `SignalHandlerThunk` took one of its two `SIG_DFL` escapes first. The SIGILL
+      is by design; dying on it is not, and both escapes are silent today.
+    - **Still open: the code cache's forked save writer can deadlock inside `fork(2)`**, reparent
+      to init and hang forever (~1 per 2 exits of a threaded guest; found while building the
+      threadexit loop, which works around it with `setsid`). Not fixed.

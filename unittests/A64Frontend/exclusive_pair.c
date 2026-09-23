@@ -5,6 +5,7 @@
 // second-store failure, store without load, memory modification between
 // load and store, CLREX, size mismatch, arbitrary/non-consecutive registers,
 // zero registers (XZR), and NZCV preservation across success and fail legs.
+#include <stdalign.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
