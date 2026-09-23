@@ -54,9 +54,18 @@ int main(void) {
   __builtin___clear_cache((char*)M1, (char*)M1 + 8);
   printf("twice-flushed %d\n", ((intfn)M1)());
 
-  // 2. Write, flush, overwrite with NO flush -- never called in between. The
-  //    flush invalidated the line and nothing has re-fetched it since, so the
-  //    second write is what the first fetch sees.
+  // 2. Write, flush, overwrite with NO flush -- never called in between.
+  //
+  //    The reasoning this case was written on ("the flush invalidated the line
+  //    and nothing has re-fetched it since, so the first fetch sees the second
+  //    write") is not something the architecture promises. The second write is
+  //    never announced, so DDI 0487 B2.2.5 leaves both answers conforming, and
+  //    the two machines disagree in practice: a Cortex-A76 returns the flushed
+  //    value 43 -- the flush itself is enough for it to have the line -- while
+  //    POWERarm returns 44 under every SMC mode, having translated the bytes
+  //    that were there when it first decoded them. Normalised like icpartial's
+  //    unflushed lines: what matters is that neither machine crashes or invents
+  //    a third answer.
   unsigned char* M2 = FreshPage(Page);
   if (!M2) {
     puts("mmap failed");
@@ -65,7 +74,10 @@ int main(void) {
   EmitConst(M2, 43);
   FlushLine(M2);
   EmitConst(M2, 44);
-  printf("flush-then-rewrite %d\n", ((intfn)M2)());
+  {
+    const int Got = ((intfn)M2)();
+    printf("flush-then-rewrite %s\n", (Got == 43 || Got == 44) ? "old-or-new" : "BAD");
+  }
 
   // 3. Write twice with no flush at all into memory nothing has ever executed
   //    from.
