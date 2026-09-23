@@ -1913,8 +1913,10 @@ static bool CompactSegments(const fextl::string& Base, const fextl::string& Extr
 // under `.sweep.lock` with LOCK_NB):
 //   1. namespaces written by another emulator build (or an older format),
 //      and temp files, unused for StaleSeconds are removed;
-//   2. if the rest exceeds CodeCacheMaxSize, whole namespaces are removed in
-//      least-recently-used order until they fit in 90% of it.
+//   2. if the rest exceeds CodeCacheMaxSize, whole namespaces are removed until
+//      they fit in 90% of it: another build's first (they are dead weight the
+//      moment its last process exits, and no process of this build can read
+//      them), then this build's own, each in least-recently-used order.
 // A namespace is removed under an exclusive LOCK_NB flock of its `.lock`, so
 // never while a writer appends or compacts it; a busy one is skipped. Segments
 // are unlinked from the highest index down, then the lock file. A process that
@@ -1965,6 +1967,8 @@ namespace {
     int64_t LastUse = 0;
     uint32_t SegmentMask = 0;
     bool HasLock = false;
+    // Written by the build running this sweep (IsOwnBuild of its first segment).
+    bool OwnBuild = false;
     fextl::vector<fextl::string> TempFiles;
   };
 
@@ -2073,6 +2077,7 @@ namespace {
         const int Lowest = std::countr_zero(Info.SegmentMask);
         Own = IsOwnBuild(SegmentPath(fextl::fmt::format("{}/{}", Dir, Base), Lowest));
       }
+      Info.OwnBuild = Own;
       if (!Own && Stale && RemoveNamespace(Dir, Base, Info)) {
         LogMan::Msg::IFmt("Code cache: removed unused namespace {} of another build", Base);
         continue;
@@ -2089,7 +2094,15 @@ namespace {
 
     if (CapBytes != 0 && Total > CapBytes) {
       const uint64_t Target = CapBytes / 10 * 9;
-      std::ranges::sort(Live, {}, [](const Candidate& C) { return C.Info->LastUse; });
+      // Another build's namespaces first, whatever their mtime, then this
+      // build's in least-recently-used order. A promote gives every guest file
+      // a new ConfigId while the processes started before it keep writing the
+      // old one (HANDOVER "Traps"), so the dead build's namespaces are as
+      // recently written as the live build's and a pure LRU evicted apps that
+      // are in use -- which is a whole cold session for that app -- to keep
+      // caches nothing can ever read again. They cannot be removed outright
+      // (their writers are still running); they are just worth least.
+      std::ranges::sort(Live, {}, [](const Candidate& C) { return std::pair {C.Info->OwnBuild, C.Info->LastUse}; });
       for (const auto& C : Live) {
         if (Total <= Target) {
           break;

@@ -28,6 +28,9 @@
 #              library it dlopens and dlcloses, and DT_NEEDED libraries whose
 #              only code run is their constructors and destructors. It closes
 #              its stderr before exiting, and the counters must still arrive.
+#   evict      over the size cap, a namespace of another emulator build is
+#              evicted before any of this build's, however recently it was
+#              written.
 #   lld        programs linked by lld (the Claude CLI's and Chromium's linker)
 #              compile next to nothing warm: one with lld's default 64K
 #              layout, whose text is 64K-congruent at a file offset that is not
@@ -296,6 +299,106 @@ warm=$(cat "$w/smalllib2.hash" 2> /dev/null | wc -l)
 [ "$warm" -lt 10 ] && ok "smalllib: warm run compiled $warm blocks (cold $cold)" || bad "smalllib: warm run compiled $warm blocks (cold $cold)"
 [ "$(counter loaded "$w/smalllib2.log")" -gt 0 ] && ok "smalllib: counters reached the log after the guest closed stderr" ||
   bad "smalllib: no counters in the log after the guest closed stderr"
+
+# ---------------------------------------------------------------------------
+# lockbusy, evict
+#
+# Both need a library the guest dlopens and dlcloses: the dlclose is the save
+# pass (SaveCodeCachesBeforeUnmap) that publishes a segment and sweeps the
+# directory, without waiting for a process to run 60 s or compile 50k blocks.
+cat > "$w/src/libdrop.c" << 'EOF'
+#define F(n) \
+  __attribute__((noinline)) int drop##n(int x) { \
+    for (int i = 0; i < (x & 3) + n + 2; i++) x = x * 31 + i * n; \
+    return x; \
+  }
+F(1) F(2) F(3) F(4) F(5) F(6) F(7) F(8) F(9) F(10) F(11) F(12)
+int dropall(int x) {
+  int (*fns[])(int) = {drop1, drop2, drop3, drop4, drop5, drop6, drop7, drop8, drop9, drop10, drop11, drop12};
+  for (unsigned i = 0; i < sizeof fns / sizeof *fns; i++) x = fns[i](x) ^ (int)i;
+  return x;
+}
+EOF
+cat > "$w/src/dropprog.c" << 'EOF'
+#include <dlfcn.h>
+#include <stdio.h>
+int main(int argc, char **argv) {
+  if (argc < 2) return 2;
+  void *h = dlopen(argv[1], RTLD_NOW);
+  if (!h) { printf("dlopen failed: %s\n", dlerror()); return 2; }
+  int (*f)(int) = (int (*)(int))dlsym(h, "dropall");
+  int r = f ? f(argc) : 0;
+  /* The dlclose unmaps the library: its blocks are saved here or never. */
+  dlclose(h);
+  printf("drop %d\n", r);
+  return 0;
+}
+EOF
+run - -- /usr/bin/gcc -O1 -shared -fPIC -o libdrop.so libdrop.c &&
+  run - -- /usr/bin/gcc -O1 -o dropprog dropprog.c -ldl ||
+  { echo "check-code-cache: building the dlopen programs failed" >&2; exit 2; }
+cp libdrop.so libdrop2.so
+dropref=$(run - -- ./dropprog ./libdrop.so)
+
+# wait_for SECONDS GLOB / wait_gone SECONDS GLOB : the forked cache writer
+# publishes and sweeps after the guest has moved on, so both are polled for.
+wait_for() {
+  local i=0
+  while [ "$i" -lt "$(($1 * 4))" ]; do
+    # shellcheck disable=SC2086
+    ls $2 > /dev/null 2>&1 && return 0
+    sleep 0.25
+    i=$((i + 1))
+  done
+  return 1
+}
+wait_gone() {
+  local i=0
+  while [ "$i" -lt "$(($1 * 4))" ]; do
+    # shellcheck disable=SC2086
+    ls $2 > /dev/null 2>&1 || return 0
+    sleep 0.25
+    i=$((i + 1))
+  done
+  return 1
+}
+
+# ---------------------------------------------------------------------------
+# evict
+# Over the cap, namespaces of another emulator build go first whatever their
+# mtime: nothing started after a promote can ever read them, while a pure LRU
+# evicted apps that are still in use (COLD-ROUND2 1.1).
+mkdir -p "$w/ev"
+run "$w/ev" -- ./dropprog ./libdrop.so > /dev/null 2> "$w/ev1.log"
+if [ ! -d "$w/ev/cache" ]; then
+  bad "evict: the first run wrote no cache"
+else
+  # 20 MiB of another build's cache: a segment whose header this build rejects
+  # (zeros are not the magic), written now, so it is the NEWEST namespace here
+  # and the one a pure LRU would keep.
+  fake="$w/ev/cache/evictfake-0123456789abcdef-fedcba9876543210"
+  dd if=/dev/zero of="$fake" bs=1048576 count=20 status=none
+  : > "$fake.lock"
+  total_kb=$(du -sk "$w/ev/cache" | cut -f1)
+  own_kb=$((total_kb - 20480))
+  cap=$((total_kb / 1024 - 1))
+  if [ "$own_kb" -le 0 ] || [ "$cap" -lt 1 ] || [ "$((own_kb * 10))" -gt "$((cap * 1024 * 9))" ]; then
+    bad "evict: cannot size the cap (own ${own_kb} KiB, cap ${cap} MiB)"
+  else
+    # The sweep runs at most once a minute across all processes.
+    touch -d '5 minutes ago' "$w/ev/cache/.sweep" 2> /dev/null
+    out=$(run "$w/ev" POWERARM_CODECACHEMAXSIZE=$cap -- ./dropprog ./libdrop2.so 2> "$w/ev2.log")
+    [ -n "$out" ] || bad "evict: the second run printed nothing"
+    if wait_gone 30 "$fake"; then
+      ls "$w/ev/cache"/libdrop.so-* > /dev/null 2>&1 &&
+        ok "evict: another build's namespace went before this build's (cap ${cap} MiB)" ||
+        bad "evict: this build's libdrop namespace was evicted too"
+    else
+      bad "evict: another build's namespace survived the cap (own ${own_kb} KiB, cap ${cap} MiB)"
+      ls "$w/ev/cache"
+    fi
+  fi
+fi
 
 # ---------------------------------------------------------------------------
 # lld

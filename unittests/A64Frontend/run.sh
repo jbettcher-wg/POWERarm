@@ -17,6 +17,19 @@ emu=${1:?usage: run.sh POWERARM_BINARY OUTDIR}
 out=${2:?usage: run.sh POWERARM_BINARY OUTDIR}
 cd "$out" || exit 2
 
+# A cache directory of this run's own. Every test here is a fresh binary of a
+# fresh build, so with the default directory each suite run (three modes, three
+# more per rebuild) wrote hundreds of MiB of namespaces under a new ConfigId
+# into the user's cache, where they competed with the apps that cache is for
+# until the hour-old sweep removed them. Unset POWERARM_APP_CACHE_LOCATION to
+# keep an existing one: a caller that chose a directory keeps it.
+if [ -z "${POWERARM_APP_CACHE_LOCATION:-}" ]; then
+  suitecache=$(mktemp -d "${TMPDIR:-/tmp}/a64frontend-cache.XXXXXX") || exit 2
+  POWERARM_APP_CACHE_LOCATION="$suitecache/"
+  export POWERARM_APP_CACHE_LOCATION
+  trap 'rm -rf "$suitecache"' EXIT INT TERM
+fi
+
 pass=0
 fail=0
 skip=0

@@ -58,13 +58,18 @@
       },
       "CodeCacheMaxSize": {
         "Type": "int32",
-        "Default": "2048",
+        "Default": "8192",
         "Desc": [
           "Size cap of the code cache directory in MiB; 0 means no cap.",
           "After writing, a process sweeps the directory at most once a minute:",
           "caches written by other POWERarm builds and unused for an hour are",
           "removed, and while the rest exceeds the cap, whole per-file caches are",
-          "removed in least-recently-used order until they fit in 90% of it."
+          "removed until they fit in 90% of it -- caches of another build first,",
+          "then this build's own, each in least-recently-used order.",
+          "One desktop app's cache is hundreds of MiB (VS Code's is over 700),",
+          "and a promote leaves the previous build's caches behind until their",
+          "long-lived processes exit, so a cap that fits only one build's app set",
+          "evicts apps that are still in use and makes them cold again."
         ]
       },
       "EnableCodeCacheValidation": {

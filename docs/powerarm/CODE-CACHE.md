@@ -19,7 +19,7 @@ POWERARM_ENABLECODECACHINGWIP=0
 every executable mapping. See [Scope](#scope-which-files-are-cached) for why
 `home` is the default. The cache lives in `$POWERARM_APP_CACHE_LOCATION/cache/`
 (default `$XDG_CACHE_HOME/powerarm/cache/`) and is capped at `CodeCacheMaxSize`
-MiB (default 2048, `POWERARM_CODECACHEMAXSIZE`). `POWERARM_CODECACHESTATS=1`
+MiB (default 8192, `POWERARM_CODECACHEMAXSIZE`). `POWERARM_CODECACHESTATS=1`
 prints each process's counters to stderr. The SMC modes that the cache cannot
 serve (`SMCSemanticPatch`, `SMCLazyInval`, `SMCCheapTier`, `SMCStoreEmulation`,
 `SMCStoreBackpatch`) turn it off. See [Default-on](#default-on).
@@ -160,7 +160,9 @@ older than 10 minutes. The sweep:
    emulator build (GIT_HASH plus executable build id) or format, and temp
    files older than an hour;
 2. if the remaining namespaces exceed `CodeCacheMaxSize`, removes whole
-   namespaces in least-recently-used order until they fit in 90% of it.
+   namespaces until they fit in 90% of it: namespaces of another build first,
+   whatever their mtime, then this build's own, each least-recently-used
+   first.
 
 A namespace is removed under an exclusive `LOCK_NB` flock of its `.lock`. A
 busy namespace is skipped, so the sweep never runs during an append or a
@@ -169,6 +171,27 @@ processes keep valid data in their mapped segments. A writer that races the
 lock file's removal can at worst lose its own segment to a concurrent
 compaction. That costs recompiles, never wrong code, because every block is
 checked on install.
+
+Why 8 GiB, and why another build goes first. One desktop app's namespace is
+the size of the code its session reaches, not of its binary: VS Code's is
+726 MB (604,598 unique blocks, 9x host expansion, 43% relocation records),
+the Claude CLI's 200-258 MB, and Firefox's libxul would be of that order
+again. Four of the owner's apps under one build are 1.35 GB, so the old
+2 GiB cap was already being swept every minute with two builds present, and
+Firefox never kept a namespace at all. Rows 1 and 2 answer different
+questions: row 1 removes another build's namespaces only after an hour
+unused, because its processes may still be running (a promote does not stop
+them -- HANDOVER "Traps"), while row 2 runs while a process of that build is
+still writing. Under the cap the two builds' namespaces are worth the same
+per byte; over it they are not, because nothing started after the promote can
+ever read the old build's, so those are evicted first.
+
+Test harnesses use a cache directory of their own
+(`POWERARM_APP_CACHE_LOCATION`): `check-code-cache.sh`,
+`check-code-cache-contend.sh` and `unittests/A64Frontend/run.sh`. Every gate
+run is a new build, so a new ConfigId, and with the default directory the
+suites' namespaces competed with the apps the cache exists for until the
+hour-old sweep took them.
 
 **Processes.** A fork child forgets the parent's unsaved compiles. SMC modes
 whose per-block metadata is not stored disable loading: semantic patch, lazy
@@ -198,6 +221,10 @@ now runs only for `POWERARM_SERVERCODECACHE=1`.
   links libraries it only initialises compiles fewer than 10 blocks. The
   program closes its stderr before exiting, and the counters still reach the
   log.
+- **Evict:** 20 MiB of another build's cache (a namespace this build's header
+  check rejects), written last so a pure LRU would keep it, next to this
+  build's namespaces under a cap just below the total. The other build's goes
+  and this build's stays.
 - **lld:** two lld-linked programs, built with the host's `clang` and `ld.lld`
   against the rootfs, compile none of their own blocks warm: one with lld's
   default layout (text 64K-congruent at a file offset whose 4K rounding is not
@@ -341,8 +368,9 @@ build's within the hour (the sweep). Measured on the A64Frontend gate, whose
 goldens live in `~/Development/.powerarm-golden`: one plain run of the suite
 writes about 20 MB, 18 MB of it the test binaries' own; the
 `POWERARM_MAXINST=1` mode (one block per instruction) 95 MB; the three gate
-modes together 175 MB, under six config ids. Build trees in `/tmp`, the
-a64diff work directory and check-code-cache.sh's own stay out.
+modes together 175 MB, under six config ids. That is why `run.sh` now makes
+its own cache directory (above). Build trees in `/tmp`, the a64diff work
+directory and check-code-cache.sh's own stay out.
 
 Measured on the G1 tree against its parent (f518d94a3, whose code is the
 current stable, c632e0bca), one cold/warm pair each, CPUs 40-47, private cache
@@ -366,8 +394,8 @@ above adds the segments it builds to save.
 
 What was weighed:
 
-- **Size.** The cap (C16: `CodeCacheMaxSize`, 2 GiB, whole namespaces evicted
-  least recently used) bounds it. One launch of each app writes the sizes
+- **Size.** The cap (C16: `CodeCacheMaxSize`, 8 GiB, whole namespaces evicted
+  another build's first and then least recently used) bounds it. One launch of each app writes the sizes
   above; a long Claude session writes more, in the same append-only segments.
   Each Claude update is a new file, so a new namespace, and the old version's
   ages out of the LRU. Apps used daily stay.
@@ -467,8 +495,8 @@ main-ELF base rather than where ld.so would put them. Cached addresses are
 relative to the base, so a different base can only cause a `reloc-failed`
 reject, and none were seen. Every block is validated on install as usual.
 
-The cost is size. `cc1` in mode `all` takes 1.2 GiB of the 2 GiB default
-`CodeCacheMaxSize`. Pre-translating all of `/usr/lib` therefore needs a larger
+The cost is size. `cc1` in mode `all` takes 1.2 GiB of the 8 GiB default
+`CodeCacheMaxSize` (2 GiB when this was measured). Pre-translating all of `/usr/lib` therefore needs a larger
 cap, or mode `calls` or `entries`. The numbers are in the checklist's Queue
 section.
 
@@ -506,8 +534,7 @@ POWERARM_ROOTFS=<rootfs> POWERARM_APP_CACHE_LOCATION=<dir>/ POWERARM_PORTABLE=1 
 Mode `entries` is the one to use: it keeps 90% of the cold win of mode `all`
 at a tenth of the size, and adding `cc1` on top buys nothing. `-s MAXBYTES`
 skips ELFs over a size, so `-m entries -s 4194304 /usr/bin /usr/lib` is the
-whole-rootfs form of the same policy; it costs 466 MiB, a quarter of the
-default `CodeCacheMaxSize`, and was not measured on the slice because the
+whole-rootfs form of the same policy; it costs 466 MiB, and was not measured on the slice because the
 slice only reaches the eleven binaries above.
 
 This is not the answer to cold runs, only a third of a second of the 3.1 s
