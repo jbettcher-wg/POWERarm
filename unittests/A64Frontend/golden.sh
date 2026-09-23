@@ -56,11 +56,15 @@ gcc -static -O2 -o sigedit "$here/sigedit.c"
 # Threaded: a guest signal handler returning through rt_sigreturn while its
 # thread is torn down.
 gcc -static -O2 -pthread -o sigteardown "$here/sigteardown.c"
+# A fault-shaped siginfo the program queued at itself. Natively it prints two
+# lines and dies of SIGILL (rc 132); an emulator that mistakes si_code > 0 for
+# "the CPU raised this here" swallows it and keeps running. See sigqueued.c.
+gcc -static -O2 -o sigqueued "$here/sigqueued.c"
 # Threads leaving through a raw SYS_exit while main leaves through
 # exit_group. One run proves nothing on its own (it is a race); run.sh loops
 # it. Natively it is silent and exits 0, and so is the golden.
 gcc -static -O2 -pthread -o threadexit "$here/threadexit.c"
-corpus="$corpus callret sigpreempt sigedit sigteardown threadexit"
+corpus="$corpus callret sigpreempt sigedit sigteardown sigqueued threadexit"
 # POWERarm configuration for run.sh (<test>.env): vdso_syscalls counts
 # syscalls with a seccomp filter, and seccomp emulation is opt-in there.
 echo POWERARM_NEEDSSECCOMP=1 > vdso_syscalls.env

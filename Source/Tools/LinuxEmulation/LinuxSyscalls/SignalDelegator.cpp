@@ -153,6 +153,39 @@ namespace {
 
   // A line built in a stack buffer and written with write(2): safe in any
   // signal context, and truncated rather than overrun.
+  // Where the diagnostic lines below go, on top of stderr.
+  //
+  // Everything this file writes by hand -- the fatal host-fault report, the
+  // thunk bails, the alt-stack cookie complaint -- goes to stderr, and for a
+  // desktop app started from a .desktop entry, or for a utility process an
+  // Electron parent spawned, stderr goes nowhere at all. That is how core
+  // 3538584 came to have no POWERarm line anywhere in the journal: not the
+  // absence of the line, the absence of anywhere to put it. POWERARM_SIGLOG
+  // gives them somewhere durable.
+  //
+  //   POWERARM_SIGLOG=<prefix>   ->  <prefix>.<pid>.log
+  //   POWERARM_SIGLOG=<dir>/     ->  <dir>/powerarm-sig.<pid>.log
+  //
+  // Per process rather than per run, so the twenty-odd processes of one
+  // Electron app neither interleave nor truncate each other, and the file
+  // belonging to the one that died is the one named after its pid.
+  //
+  // It survives exec because what is inherited is the environment variable,
+  // not a descriptor: every emulator process opens its own file on first use,
+  // and a guest's children inherit the variable the way they inherit the rest
+  // of their environment. The descriptor is O_CLOEXEC so a guest enumerating
+  // /proc/self/fd never sees it, and it is reopened when getpid() changes so a
+  // forked child writes to its own file instead of appending to its parent's.
+  //
+  // Async-signal-safe: open(2), write(2), close(2) and getpid(2) are; getenv(3)
+  // is not, so the prefix is captured once in the delegator's constructor.
+  // Unset -- the default -- costs one relaxed load per line and nothing else.
+  constexpr size_t MaxDiagPrefix = 192;
+  char DiagLogPrefix[MaxDiagPrefix] {};
+  std::atomic<int> DiagLogFDValue {-1};
+  std::atomic<pid_t> DiagLogFDPid {0};
+  int DiagLogFD();
+
   struct SignalSafeLine {
     char Buf[768];
     size_t Len = 0;
@@ -211,7 +244,77 @@ namespace {
         Off += static_cast<size_t>(W);
       }
     }
+    // stderr, which may be /dev/null or a closed pipe, and the durable log too
+    // when POWERARM_SIGLOG named one. Every unattended line goes through here.
+    void Emit() const {
+      Write(STDERR_FILENO);
+      const int FD = DiagLogFD();
+      if (FD >= 0) {
+        Write(FD);
+      }
+    }
   };
+
+  int DiagLogFD() {
+    if (DiagLogPrefix[0] == '\0') {
+      return -1;
+    }
+    const pid_t Pid = ::getpid();
+    const int Existing = DiagLogFDValue.load(std::memory_order_acquire);
+    if (Existing >= 0 && DiagLogFDPid.load(std::memory_order_relaxed) == Pid) {
+      return Existing;
+    }
+
+    // Worst case: MaxDiagPrefix - 1 prefix bytes, "powerarm-sig" when the
+    // prefix named a directory, '.', a pid, ".log" and the terminator.
+    char Path[MaxDiagPrefix + 48];
+    static_assert(sizeof(Path) >= MaxDiagPrefix - 1 + sizeof("powerarm-sig") - 1 + 1 + 20 + sizeof(".log"));
+    size_t Len = 0;
+    while (DiagLogPrefix[Len] && Len + 1 < MaxDiagPrefix) {
+      Path[Len] = DiagLogPrefix[Len];
+      ++Len;
+    }
+    auto Append = [&Path, &Len](const char* S) {
+      while (*S) {
+        Path[Len++] = *S++;
+      }
+    };
+    if (Len && Path[Len - 1] == '/') {
+      Append("powerarm-sig");
+    }
+    Path[Len++] = '.';
+    char Digits[20];
+    int N = 0;
+    uint64_t V = static_cast<uint64_t>(Pid);
+    do {
+      Digits[N++] = static_cast<char>('0' + V % 10);
+      V /= 10;
+    } while (V);
+    while (N) {
+      Path[Len++] = Digits[--N];
+    }
+    Append(".log");
+    Path[Len] = '\0';
+
+    const int FD = ::open(Path, O_WRONLY | O_CREAT | O_APPEND | O_CLOEXEC, 0600);
+    if (FD < 0) {
+      // A destination that cannot be opened is not going to start working, and
+      // retrying it on every line inside a signal handler is its own hazard.
+      DiagLogPrefix[0] = '\0';
+      return -1;
+    }
+    int Expected = Existing;
+    if (!DiagLogFDValue.compare_exchange_strong(Expected, FD, std::memory_order_acq_rel)) {
+      // Another thread opened one first, and both name the same file: take theirs.
+      ::close(FD);
+      return Expected;
+    }
+    DiagLogFDPid.store(Pid, std::memory_order_release);
+    if (Existing >= 0) {
+      ::close(Existing);
+    }
+    return FD;
+  }
 
   void* FatalReportFrames[48];
   volatile int FatalReportFrameCount = 0;
@@ -250,17 +353,81 @@ namespace {
     return true;
   }
 
-  void RestoreDefaultDisposition(int Signal) {
-    struct sigaction sa {};
-    sa.sa_handler = SIG_DFL;
-    sigemptyset(&sa.sa_mask);
-    sigaction(Signal, &sa, nullptr);
+  // Hand a signal to its default disposition from inside its own handler.
+  //
+  // Every caller wants the same thing: a coredump whose NIP is the instruction
+  // that faulted rather than this handler, which means arming SIG_DFL and
+  // RETURNING instead of re-raising with tgkill. That is sound only while the
+  // kernel is certain to deliver the signal again once we return, and
+  // `si_code > 0` does not make it certain. si_code says the siginfo is
+  // fault-SHAPED, not that the CPU raised it here: rt_tgsigqueueinfo is a
+  // passthrough syscall, do_rt_tgsigqueueinfo permits si_code >= 0 when the
+  // target is the caller's own thread group, and FEX's own QueueSignal sends
+  // that way. A queued signal is CONSUMED by returning -- there is no
+  // instruction left to re-execute -- so the disarm outlives the delivery, and
+  // SIGILL, which FEX needs for every guest rt_sigreturn, every pause return
+  // and every Break op, is SIG_DFL for the rest of the process's life. The next
+  // guest signal handler to return then dies on the dispatcher's own sentinel
+  // word: SIGILL/ILL_ILLOPC at SignalHandlerReturnAddressRT, nothing in
+  // sighold, and no bail line at the moment of death because the thunk was
+  // never entered. That is cores 1841112 and 3538584 exactly, and it is why
+  // 9e04dbc2d, which hardened only the thunk's own bails, did not stop them.
+  //
+  // So make the delivery certain instead of assuming it: queue the original
+  // siginfo back at this thread and let it land on the way out of the handler,
+  // against the frame sigreturn has already restored. The coredump then still
+  // carries the original NIP, and the original si_code and si_addr too, which
+  // a tgkill re-raise would have replaced with SI_TKILL -- the very
+  // destruction of a fault's siginfo FEX complains about breakpad doing.
+  //
+  // The order matters and is the whole of the correctness here:
+  //
+  //  1. Block the signal on this thread first. The kernel would normally have
+  //     done it on entry, but the host thunk carries whatever SA_NODEFER the
+  //     guest asked for (crash reporters ask for it), and with the signal
+  //     unblocked the queued copy is delivered inside the queueing syscall --
+  //     at which point SIG_DFL is already armed and the coredump's NIP is this
+  //     helper instead of the faulting instruction. Blocking costs nothing:
+  //     sigreturn takes the resumed mask from uc_sigmask, not from here.
+  //  2. Arm SIG_DFL.
+  //  3. Queue the original siginfo.
+  //  4. Take the signal out of uc_sigmask, so the frame resumes with it
+  //     deliverable however the guest had its mask. A blocked fatal signal
+  //     would otherwise sit pending while the process ran on -- the same
+  //     failure by a different door.
+  //
+  // If the delivery cannot be guaranteed -- EAGAIN under RLIMIT_SIGPENDING is
+  // the realistic failure -- the previous disposition goes straight back. A
+  // missed report is recoverable; a dead SIGILL is not.
+  void HandToDefaultDisposition(int Signal, const siginfo_t* Info, void* UContext) {
+    sigset_t Just;
+    sigemptyset(&Just);
+    sigaddset(&Just, Signal);
+    ::pthread_sigmask(SIG_BLOCK, &Just, nullptr);
+
+    struct sigaction Default {};
+    Default.sa_handler = SIG_DFL;
+    sigemptyset(&Default.sa_mask);
+    struct sigaction Previous {};
+    if (::sigaction(Signal, &Default, &Previous) != 0) {
+      return;
+    }
+
+    siginfo_t Copy = *Info;
+    if (::syscall(SYSCALL_DEF(rt_tgsigqueueinfo), ::getpid(), FHU::Syscalls::gettid(), Signal, &Copy) != 0) {
+      ::sigaction(Signal, &Previous, nullptr);
+      return;
+    }
+
+    if (UContext) {
+      sigdelset(&static_cast<ucontext_t*>(UContext)->uc_sigmask, Signal);
+    }
   }
 
   // SignalHandlerThunk, first thing, while a report is being written: true if
   // this signal is a fault of the reporting thread itself, now dealt with.
   // Does not return when the fault is in the report's unwinder.
-  bool FaultInFatalReport(int Signal, const siginfo_t* Info) {
+  bool FaultInFatalReport(int Signal, const siginfo_t* Info, void* UContext) {
     const bool SyncFault = (Signal == SIGSEGV || Signal == SIGBUS || Signal == SIGILL || Signal == SIGFPE || Signal == SIGTRAP) && Info->si_code > 0;
     if (!SyncFault || FatalReportTid.load(std::memory_order_acquire) != FHU::Syscalls::gettid()) {
       return false;
@@ -277,8 +444,8 @@ namespace {
     Line.Str(", addr 0x");
     Line.Hex(reinterpret_cast<uint64_t>(Info->si_addr));
     Line.Str(") inside the fatal host-fault report; terminating.\n");
-    Line.Write(STDERR_FILENO);
-    RestoreDefaultDisposition(Signal);
+    Line.Emit();
+    HandToDefaultDisposition(Signal, Info, UContext);
     return true;
   }
 } // namespace
@@ -622,7 +789,7 @@ namespace {
     Line.Str(" action=");
     Line.Str(Action);
     Line.Char('\n');
-    Line.Write(STDERR_FILENO);
+    Line.Emit();
   }
 
   // What becomes of a signal the thunk can neither dispatch nor recover.
@@ -675,7 +842,7 @@ namespace {
 
 static void SignalHandlerThunk(int Signal, siginfo_t* Info, void* UContext) {
   if (FatalReportTid.load(std::memory_order_relaxed) != 0) [[unlikely]] {
-    if (FaultInFatalReport(Signal, Info)) {
+    if (FaultInFatalReport(Signal, Info, UContext)) {
       return;
     }
   }
@@ -693,15 +860,20 @@ static void SignalHandlerThunk(int Signal, siginfo_t* Info, void* UContext) {
   const SentinelKind Sentinel = ClassifySentinel(HostPC);
 
   // What a bail that can neither dispatch nor recover the signal leaves
-  // behind, and the whole of it is in IsSyncFault: a genuine fault goes back
-  // to the default disposition so it re-raises with its original NIP and
-  // siginfo instead of looping in this handler, and everything else --
+  // behind, and the whole of it is in IsSyncFault: a genuine fault goes to the
+  // default disposition so it re-raises with its original NIP and siginfo
+  // instead of looping in this handler, and everything else --
   // SIGNAL_FOR_PAUSE first among them -- is spent on return and dropped with
   // the process-wide disposition untouched.
+  //
+  // IsSyncFault answers "is this siginfo fault-shaped", which is NOT the same
+  // question as "will the kernel raise it again when we return"; see
+  // HandToDefaultDisposition, which closes the gap by queueing the signal back
+  // rather than trusting the interrupted instruction to fault a second time.
   const bool Fault = IsSyncFault(Signal, Info);
-  const auto DeadThreadEscape = [Signal, Fault]() {
+  const auto DeadThreadEscape = [Signal, Fault, Info, UContext]() {
     if (Fault) {
-      RestoreDefaultDisposition(Signal);
+      HandToDefaultDisposition(Signal, Info, UContext);
     }
   };
 
@@ -2006,8 +2178,8 @@ void SignalDelegator::HandleGuestSignal(FEX::HLE::ThreadStateObject* ThreadObjec
         Line.Str(" too, while tid ");
         Line.Dec(Reporter);
         Line.Str(" reports one; terminating.\n");
-        Line.Write(STDERR_FILENO);
-        RestoreDefaultDisposition(Signal);
+        Line.Emit();
+        HandToDefaultDisposition(Signal, &SigInfo, UContext);
         return;
       }
       const bool DeliverAnyway = HostFaultToGuest;
@@ -2036,7 +2208,7 @@ void SignalDelegator::HandleGuestSignal(FEX::HLE::ThreadStateObject* ThreadObjec
         Line.Str(DeliverAnyway ? ". POWERARM_HOSTFAULTTOGUEST is set: delivering it to the guest anyway.\n" :
                                  ". Not delivered to the guest (the host frame and any locks it holds would be abandoned); "
                                  "terminating with the default disposition. POWERARM_HOSTFAULTTOGUEST=1 delivers it instead.\n");
-        Line.Write(STDERR_FILENO);
+        Line.Emit();
       }
       // The backtrace unwinds through whatever state the fault left, and can
       // fault itself. Frames are kept as they are found, so a fault in the
@@ -2044,9 +2216,15 @@ void SignalDelegator::HandleGuestSignal(FEX::HLE::ThreadStateObject* ThreadObjec
       FatalReportFrameCount = 0;
       const bool Unwound = GuardedFatalReportStep([] { _Unwind_Backtrace(CollectFatalReportFrame, nullptr); });
       static const char Hdr[] = "POWERarm: host backtrace (this handler first, the faulting frame follows the kernel sigtramp):\n";
+      const int DiagFD = DiagLogFD();
       ::write(STDERR_FILENO, Hdr, sizeof(Hdr) - 1);
-      const bool Printed =
-        GuardedFatalReportStep([] { ::backtrace_symbols_fd(FatalReportFrames, FatalReportFrameCount, STDERR_FILENO); });
+      if (DiagFD >= 0) {
+        ::write(DiagFD, Hdr, sizeof(Hdr) - 1);
+      }
+      const bool Printed = GuardedFatalReportStep([] { ::backtrace_symbols_fd(FatalReportFrames, FatalReportFrameCount, STDERR_FILENO); });
+      if (DiagFD >= 0) {
+        GuardedFatalReportStep([] { ::backtrace_symbols_fd(FatalReportFrames, FatalReportFrameCount, DiagLogFD()); });
+      }
       if (!Unwound || !Printed) {
         SignalSafeLine Line;
         Line.Str(Unwound ? "\nPOWERarm: printing the host backtrace faulted; abandoned.\n" :
@@ -2055,15 +2233,18 @@ void SignalDelegator::HandleGuestSignal(FEX::HLE::ThreadStateObject* ThreadObjec
           Line.Dec(FatalReportFrameCount);
           Line.Str(" frames; the rest abandoned.\n");
         }
-        Line.Write(STDERR_FILENO);
+        Line.Emit();
       }
       if (FEX::HLE::_SyscallHandler && FEX::HLE::_SyscallHandler->VMATracking.Mutex.WriteHeldBySelfDiag()) {
         FEX::HLE::_SyscallHandler->VMATracking.Mutex.ReportAcquirerDiag();
       }
       if (!DeliverAnyway) {
-        // FatalReportTid stays set: the kernel re-raises the fault as this
-        // returns, and the process ends.
-        RestoreDefaultDisposition(Signal);
+        // FatalReportTid stays set: the queued copy is delivered as this
+        // returns, and the process ends. It has to be a queued copy rather
+        // than a bet on the interrupted instruction faulting again -- this is
+        // the site that can fire on an ordinary live thread, so this is the
+        // site whose losing bet leaves SIGILL disarmed for good.
+        HandToDefaultDisposition(Signal, &SigInfo, UContext);
         return;
       }
       FatalReportTid.store(0, std::memory_order_release);
@@ -2341,14 +2522,18 @@ void SignalDelegator::HandleGuestSignal(FEX::HLE::ThreadStateObject* ThreadObjec
     // FEX_THPLOG: open/read/write only, no allocation, so it is safe here.
     FEXCore::Allocator::THP::Report("signal");
 
-    // Reassign back to DFL and crash
-    signal(Signal, SIG_DFL);
-    if (SigInfo.si_code != SI_KERNEL) {
-      // If the signal wasn't sent by the kernel then we need to reraise it.
-      // This is necessary since returning from this signal handler now might just continue executing.
-      // eg: If sent from tgkill then the signal gets dropped and returns.
-      FHU::Syscalls::tgkill(::getpid(), FHU::Syscalls::gettid(), Signal);
-    }
+    // Reassign back to DFL and crash.
+    //
+    // This used to arm SIG_DFL and then re-raise only when si_code said the
+    // signal had not come from the kernel, returning otherwise in the
+    // expectation that the interrupted instruction would fault again. A queued
+    // siginfo defeats that expectation whatever si_code it carries -- SI_KERNEL
+    // included, since do_rt_tgsigqueueinfo only rejects si_code >= 0 for a
+    // different thread group -- and the disposition then stayed disarmed
+    // process-wide. The re-raise also replaced si_code and si_addr with
+    // SI_TKILL, which is the same destruction of the original siginfo FEX
+    // complains about breakpad doing a few hundred lines above.
+    HandToDefaultDisposition(Signal, &SigInfo, UContext);
   } else {
     Handler.OldAction.handler(Signal);
   }
@@ -2511,6 +2696,20 @@ SignalDelegator::SignalDelegator(FEXCore::Context::Context* _CTX, const std::str
   , ApplicationName {ApplicationName}
   , SupportsAVX {SupportsAVX} {
   HostFaultToGuest = getenv("FEX_HOSTFAULTTOGUEST") != nullptr;
+
+  // POWERARM_SIGLOG=<prefix>: a durable, per-process destination for the fatal
+  // host-fault report and the thunk bails, on top of stderr. Captured here and
+  // not at the point of use because getenv(3) is not async-signal-safe and
+  // every consumer runs in a signal handler; see DiagLogFD. An absolute prefix
+  // is wanted -- a guest that chdir()s would otherwise scatter the files.
+  if (const char* Prefix = getenv("FEX_SIGLOG"); Prefix && Prefix[0] != '\0') {
+    size_t Len = 0;
+    while (Prefix[Len] != '\0' && Len + 1 < MaxDiagPrefix) {
+      DiagLogPrefix[Len] = Prefix[Len];
+      ++Len;
+    }
+    DiagLogPrefix[Len] = '\0';
+  }
   // The unwinder initialises itself on first use (pthread_once, the FDE
   // lookup caches); the fatal-fault report must not be that first use.
   _Unwind_Backtrace([](struct _Unwind_Context*, void*) { return _URC_END_OF_STACK; }, nullptr);
