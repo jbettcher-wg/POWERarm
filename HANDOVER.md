@@ -515,3 +515,36 @@ to initialise against 27 s cold (suspect cache install cost, item 24).
     - **Still open: the code cache's forked save writer can deadlock inside `fork(2)`**, reparent
       to init and hang forever (~1 per 2 exits of a threaded guest; found while building the
       threadexit loop, which works around it with `setsid`). Not fixed.
+
+43. **Guest thread bring-up survives a parent that never returns** (2026-09-22, 85f7c1edb). The
+    residual ~1-in-300 failure of the `threadexit` stress loop was a *bring-up* race, not a
+    teardown one. `SignalDelegator::HandleSignalPause` on `SignalEvent::Stop` (what every
+    `exit_group` sends through `ThreadManager::Stop`) sets SP to `Frame->ReturningStackLocation`
+    and PC to the thread-stop handler, abandoning every host C++ frame the target thread stood in
+    — including `CreateNewThread`, whose stack held the new thread's `ExecutionThreadHandler`.
+    The parent's pivot stack then returns to the dead-stack pool, the next spawn reuses it, and
+    the child reads `Handler->Thread` out of recycled memory at its very first statement
+    (`ThreadHandler+80`, `Thread->ThreadInfo.PID = ::getpid()`). The payload is now heap-allocated
+    and refcounted (parent and child each hold a reference; a hijacked parent leaks ~100 bytes in
+    a process that is already exiting), `ThreadWaiting` is an `InterruptableConditionVariable` so
+    a parent hijacked under a `std::mutex` cannot wedge the child, and the child's start wait is
+    bounded and gives up once the parent's object is `IsZombie`. `DestroyThread` no longer
+    requires the thread to be on `Threads` (an abandoned creation never reached `TrackThread`).
+    1536 stress runs clean where 768 gave 2 failures; gate 89/0 in all three modes.
+    - Still open: the child keys abandonment on the parent's `IsZombie`. A parent hijacked but
+      never torn down would leave the child parked — bounded today only by `exit_group`.
+
+44. **The forked code-cache save writer is a user-visible regression** (2026-09-22). `93eae4d9b`
+    made the periodic and unmap saves `fork()` out of the running guest. In a big threaded guest
+    that is both slow and unsafe: VS Code draws its UI in at a crawl (no better on a reload,
+    because a periodic save forks a multi-GB Electron process and copies its page tables) and the
+    second launch hung outright. The same fork is the one that can deadlock *inside* `fork(2)`,
+    reparent to init and sit in `futex_do_wait` for good (item 42).
+    - Jordan's A/B settles which half is at fault: `POWERARM_CODECACHEFORKWRITER=0` (cache on,
+      no forking) fixed it and was **faster** than `POWERARM_ENABLECODECACHINGWIP=0` (no cache at
+      all), over multiple sessions. The cache is worth having; forking it out of the guest is not.
+    - `CodeCacheForkWriter: "0"` is set in `~/.config/powerarm/Config.json` until a replacement
+      lands (a writer thread, or a helper spawned once before the guest goes multithreaded).
+    - Lesson for agents: a stress loop that does not reap its process group leaves the deadlocked
+      writers behind. One run left ~854 wedged emulator processes on the box for half an hour and
+      polluted Jordan's read of his own machine. `run.sh` reaps via `setsid`; manual loops must too.
