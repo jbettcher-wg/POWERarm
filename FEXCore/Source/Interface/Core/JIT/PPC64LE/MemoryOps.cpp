@@ -2421,21 +2421,32 @@ DEF_OP(ContextClear) {
 // This is slow but correct, and matches the ARM64 fallback path used when
 // SVE is unavailable.
 
-// Helper: branch to Skip when MaskWord's high (sign) bit of the loaded element
-// is zero. Result of load already in TMP1; Sz is element size in bytes. Uses
-// rlwinm./sradi. to set CR0[EQ] = (sign bit clear).
+// Helper: set CR1.EQ = (sign bit of the loaded mask element is clear), so the
+// caller can branch to its Skip label with MaskTestSkipCC. Result of load
+// already in TMP1 (zero-extended by the lbz/lhz/lwz/ld above); sz is the
+// element size in bytes.
+//
+// The test lands in CR1, not CR0, and uses no record form. The record forms
+// (andi., rlwinm., rldicl.) that this used to emit write CR0 — and CR0 is
+// where the backend keeps the guest's packed N/Z (N = CR0.LT, Z = CR0.EQ,
+// ALUOps.cpp DEF_OP(LoadNZCV)). A masked vector load/store is not a
+// flag-setting guest instruction, so guest NZCV is live across it and those
+// record forms clobbered N and Z, exactly like the andi. that used to sit in
+// DEF_OP(LoadFPSR). The earlier note here worried about XER.CA for the
+// 64-bit case and picked rldicl. over sradi. for it; CR0 needed the same
+// care. Same shape as VUShrSWide & co. in VectorOps.cpp, which compare into
+// cr(1) for this reason.
+//
+// rldicl RA,RS,64-b,63 rotates the sign bit (LE bit b = sz*8-1) down to bit 0
+// and masks everything else away; cmpdi then reads it into CR1. Rc=0
+// throughout, and rldicl/cmpdi touch no XER bit either, so the guest's C and
+// V (XER.CA/OV) survive as before.
+static constexpr PPC64Emitter::Cond MaskTestSkipCC = {12, 4 * 1 + 2};  // beq cr1
+
 static void EmitMaskBitTestSkip(PPC64JITCore* j, int sz) {
-  switch (sz) {
-  case 1: j->andi_(TMP1, TMP1, 0x80);                  break;  // mask bit7 of byte
-  case 2: j->rlwinm_(TMP1, TMP1, 0, 16, 16);           break;  // mask bit15 of halfword
-  case 4: j->rlwinm_(TMP1, TMP1, 0, 0, 0);             break;  // mask bit31 of word
-  // sradi_ would set CR0 correctly but ALSO writes XER.CA (the canonical
-  // CFInverted x86 CF storage).  Use rldicl_ instead: rotate-left 1 + mask
-  // bit 0 puts the sign bit (originally bit 63 in BE-numbering = MSB) into
-  // LSB position, then Rc form sets CR0.EQ = (sign bit was 0).  rldicl
-  // does not touch XER, so x86 CF is preserved across VPMASKMOVQ-style ops.
-  case 8: j->rldicl_(TMP1, TMP1, 1, 63);                break;
-  }
+  const uint32_t SignBit = static_cast<uint32_t>(sz) * 8 - 1;
+  j->rldicl(TMP1, TMP1, 64 - SignBit, 63);
+  j->cmpdi(PPC64Emitter::cr(1), TMP1, 0);
 }
 
 DEF_OP(VLoadVectorMasked) {
@@ -2471,7 +2482,7 @@ DEF_OP(VLoadVectorMasked) {
     }
     EmitMaskBitTestSkip(this, ElemSz);
     auto Skip = PPC64Emitter::Label{};
-    bc(CC_EQ, &Skip);
+    bc(MaskTestSkipCC, &Skip);
     // Compute element address index reg.
     GPR Idx = r0;
     if (i != 0) { LoadConstant(TMP2, static_cast<uint64_t>(i * ElemSz)); Idx = TMP2; }
@@ -2521,7 +2532,7 @@ DEF_OP(VStoreVectorMasked) {
     }
     EmitMaskBitTestSkip(this, ElemSz);
     auto Skip = PPC64Emitter::Label{};
-    bc(CC_EQ, &Skip);
+    bc(MaskTestSkipCC, &Skip);
     // Use a displacement form rather than an indexed store: the prior code
     // materialised the byte offset into TMP4 and used st[bhwd]x(rs, Base, TMP4),
     // but `Base` is also TMP4 whenever ComputeAddress returned via TMP3 (the
@@ -2631,7 +2642,7 @@ DEF_OP(VLoadVectorGatherMasked) {
       ERROR_AND_DIE_FMT("VLoadVectorGatherMasked: bad ElemSz {}", ElemSz);
     }
     EmitMaskBitTestSkip(this, ElemSz);
-    bc(CC_EQ, &Skip);
+    bc(MaskTestSkipCC, &Skip);
 
     // --- Load index element (sign-extended). Honour IndexElementOffsetStart
     //     and the low/high vector split. ---
@@ -2737,7 +2748,7 @@ DEF_OP(VLoadVectorGatherMaskedQPS) {
     const int16_t MaskElemOff = static_cast<int16_t>(kMaskOff + i * ElemSz);
     lwz(TMP1, MaskElemOff, r1);
     EmitMaskBitTestSkip(this, ElemSz);
-    bc(CC_EQ, &Skip);
+    bc(MaskTestSkipCC, &Skip);
 
     // 64-bit index: lanes 0,1 from IdxLow, lanes 2,3 from IdxHigh.
     const bool   FromHigh  = (i >= 2);
