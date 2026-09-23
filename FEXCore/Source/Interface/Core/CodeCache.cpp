@@ -1089,6 +1089,248 @@ namespace {
   }
 } // namespace
 
+
+// =============================================================================
+// Two tiers: a hot copy in RAM over the durable copy on disk
+//
+// The working cache is the hot tier: every segment a process maps, appends to
+// or compacts lives there, so a warm session reads and writes RAM (a tmpfs)
+// and touches the NVMe only to seed and to write back. The durable tier is the
+// copy that survives a reboot.
+//
+//   seed        lazily, per namespace, the first time a process opens one: the
+//               segments the durable tier has and the hot tier has not are
+//               copied up, through a temp file and link(2), so two processes
+//               racing cost one wasted copy and never half a file. Nothing is
+//               copied at startup, and a namespace no process opens is never
+//               copied at all.
+//   write-back  after a segment is published or a namespace compacted, in the
+//               forked writer -- the guest thread never waits for the disk. A
+//               segment is copied only if it validates (magic, version, header
+//               hash, and a file long enough for the extent the header
+//               declares), and it lands with rename(2). So a torn or truncated
+//               hot copy cannot replace a good durable one, and a reader of the
+//               durable tier never sees a partial file.
+//
+// Losing the hot tier -- a reboot, a wipe, its own size sweep -- costs a
+// re-seed and nothing else. The tiers are allowed to disagree, the hot one
+// being the newer: a block the durable tier is missing is compiled once more in
+// the session after the reboot, and every block either tier holds is validated
+// on install exactly as before.
+//
+// POWERARM_CODECACHEHOTTIER=0 turns it off and leaves one tier, the durable
+// one, exactly as it was.
+// =============================================================================
+namespace {
+  // Copies Size bytes from In to Out, from wherever both offsets stand.
+  bool CopyFileContents(int In, int Out, uint64_t Size) {
+    while (Size) {
+      const ssize_t Done = ::copy_file_range(In, nullptr, Out, nullptr, Size, 0);
+      if (Done > 0) {
+        Size -= static_cast<uint64_t>(Done);
+        continue;
+      }
+      if (Done == 0) {
+        return false;
+      }
+      if (errno == EINTR) {
+        continue;
+      }
+      // A kernel or a filesystem pair that refuses it: finish by hand.
+      break;
+    }
+    fextl::vector<std::byte> Buffer;
+    while (Size) {
+      if (Buffer.empty()) {
+        Buffer.resize(1 << 20);
+      }
+      const ssize_t Got = ::read(In, Buffer.data(), std::min<uint64_t>(Size, Buffer.size()));
+      if (Got <= 0) {
+        if (Got < 0 && errno == EINTR) {
+          continue;
+        }
+        return false;
+      }
+      if (!WriteAll(Out, Buffer.data(), static_cast<size_t>(Got))) {
+        return false;
+      }
+      Size -= static_cast<uint64_t>(Got);
+    }
+    return true;
+  }
+
+  // A segment file that is whole: it starts with a header this build wrote in
+  // this format and the file covers everything that header describes. What this
+  // rejects is a file that was truncated or is still being written -- the state
+  // a crashed or killed writer leaves behind. What is inside is not checked
+  // here; every block is validated when it is installed.
+  bool SegmentLooksComplete(const fextl::string& Path, uint64_t* SizeOut) {
+    const int FD = ::open(Path.c_str(), O_RDONLY | O_CLOEXEC);
+    if (FD == -1) {
+      return false;
+    }
+    SegmentHeader H {};
+    struct stat St {};
+    const bool Ok = ::pread(FD, &H, sizeof(H), 0) == static_cast<ssize_t>(sizeof(H)) && ::fstat(FD, &St) == 0 && S_ISREG(St.st_mode) &&
+                    H.Magic == SegmentMagic && H.Version == SegmentVersion && H.HeaderHash == HashHeader(H) &&
+                    static_cast<uint64_t>(St.st_size) >= H.CodeOffset + H.CodeSize;
+    ::close(FD);
+    if (Ok && SizeOut) {
+      *SizeOut = static_cast<uint64_t>(St.st_size);
+    }
+    return Ok;
+  }
+
+  // The hot cache directory, or empty when there is one tier only. Resolved
+  // once, from the durable directory of the first namespace this process names:
+  //
+  //   POWERARM_CODECACHEHOTLOCATION  where the caller says;
+  //   a chosen cache location        `hot/` beside its `cache/`, so a test
+  //                                  harness with its own cache directory has
+  //                                  its own hot tier too and two runs never
+  //                                  share one;
+  //   otherwise                      $XDG_RUNTIME_DIR/powerarm/cache, falling
+  //                                  back to /tmp/powerarm-<uid>/cache -- both
+  //                                  tmpfs on this machine, and both emptied by
+  //                                  a reboot, which is all the hot tier needs.
+  fextl::string ResolveHotCacheDir(std::string_view DurableDir) {
+    if (!FEXCore::Config::Get_CODECACHEHOTTIER()()) {
+      return {};
+    }
+    fextl::string Dir;
+    bool Shared = false;
+    if (const auto& Configured = FEXCore::Config::Get_CODECACHEHOTLOCATION()(); !Configured.empty()) {
+      Dir = Configured;
+    } else if (::getenv("POWERARM_APP_CACHE_LOCATION") || ::getenv("FEX_APP_CACHE_LOCATION")) {
+      const auto Parent = std::filesystem::path(DurableDir).parent_path().string();
+      Dir = fextl::fmt::format("{}/hot", Parent);
+    } else if (const char* Runtime = ::getenv("XDG_RUNTIME_DIR"); Runtime && Runtime[0] == '/') {
+      Dir = fextl::fmt::format("{}/powerarm/cache", Runtime);
+    } else {
+      Dir = fextl::fmt::format("/tmp/powerarm-{}/cache", static_cast<unsigned>(::getuid()));
+      Shared = true;
+    }
+    while (!Dir.empty() && Dir.back() == '/') {
+      Dir.pop_back();
+    }
+    if (Dir.empty() || Dir == DurableDir) {
+      return {};
+    }
+    std::error_code EC;
+    std::filesystem::create_directories(std::filesystem::path(std::string_view {Dir}), EC);
+    if (Shared) {
+      // A guessable name under a directory anyone can write. A cache file is
+      // only ever as trustworthy as its directory -- every block in it is
+      // checked against the guest's bytes, but the host code beside them is
+      // executed as written -- so this one is used only while it is ours and
+      // nobody else's to write.
+      const auto Parent = fextl::string {std::filesystem::path(std::string_view {Dir}).parent_path().string()};
+      ::chmod(Parent.c_str(), 0700);
+      struct stat St {};
+      if (::lstat(Parent.c_str(), &St) != 0 || !S_ISDIR(St.st_mode) || St.st_uid != ::getuid() || (St.st_mode & (S_IWGRP | S_IWOTH))) {
+        LogMan::Msg::IFmt("Code cache: no hot tier, {} is not ours alone", Parent);
+        return {};
+      }
+    }
+    if (::access(Dir.c_str(), R_OK | W_OK | X_OK) != 0) {
+      LogMan::Msg::IFmt("Code cache: no hot tier, {} is not usable", Dir);
+      return {};
+    }
+    return Dir;
+  }
+
+  // The hot path of a durable base path, or empty with one tier.
+  fextl::string HotBasePath(const fextl::string& DurableBase) {
+    const auto Slash = DurableBase.rfind('/');
+    if (DurableBase.empty() || Slash == fextl::string::npos) {
+      return {};
+    }
+    static const fextl::string Dir = ResolveHotCacheDir(std::string_view {DurableBase}.substr(0, Slash));
+    if (Dir.empty()) {
+      return {};
+    }
+    return fextl::fmt::format("{}/{}", Dir, std::string_view {DurableBase}.substr(Slash + 1));
+  }
+
+  // Copies the durable segments of a namespace the hot tier has not got. Stops
+  // at the first name neither tier has: the reader stops there too.
+  void SeedHotNamespace(const fextl::string& HotBase, const fextl::string& DurableBase) {
+    if (HotBase.empty() || DurableBase.empty()) {
+      return;
+    }
+    for (size_t Index = 0; Index < MaxSegments; ++Index) {
+      const auto Hot = SegmentPath(HotBase, Index);
+      if (::access(Hot.c_str(), F_OK) == 0) {
+        continue;
+      }
+      uint64_t Size = 0;
+      if (!SegmentLooksComplete(SegmentPath(DurableBase, Index), &Size)) {
+        return;
+      }
+      const int In = ::open(SegmentPath(DurableBase, Index).c_str(), O_RDONLY | O_CLOEXEC);
+      if (In == -1) {
+        return;
+      }
+      std::error_code EC;
+      std::filesystem::create_directories(std::filesystem::path(std::string_view {HotBase}).parent_path(), EC);
+      auto Temp = WriteTempSegment(HotBase, [&](int FD) { return CopyFileContents(In, FD, Size); });
+      ::close(In);
+      if (Temp.empty()) {
+        return;
+      }
+      // A sibling that seeded the same name first wins; this copy is dropped.
+      const bool Have = ::link(Temp.c_str(), Hot.c_str()) == 0 || errno == EEXIST;
+      ::unlink(Temp.c_str());
+      if (!Have) {
+        return;
+      }
+    }
+  }
+
+  // Mirrors one hot segment into the durable tier, whole or not at all.
+  bool WriteBackSegment(const fextl::string& HotBase, const fextl::string& DurableBase, size_t Index) {
+    uint64_t Size = 0;
+    if (!SegmentLooksComplete(SegmentPath(HotBase, Index), &Size)) {
+      return false;
+    }
+    const int In = ::open(SegmentPath(HotBase, Index).c_str(), O_RDONLY | O_CLOEXEC);
+    if (In == -1) {
+      return false;
+    }
+    std::error_code EC;
+    std::filesystem::create_directories(std::filesystem::path(std::string_view {DurableBase}).parent_path(), EC);
+    auto Temp = WriteTempSegment(DurableBase, [&](int FD) { return CopyFileContents(In, FD, Size); });
+    ::close(In);
+    if (Temp.empty()) {
+      return false;
+    }
+    // rename(2), not link(2): this replaces whatever the durable tier had under
+    // that name, and it replaces it in one step.
+    if (::rename(Temp.c_str(), SegmentPath(DurableBase, Index).c_str()) != 0) {
+      ::unlink(Temp.c_str());
+      return false;
+    }
+    return true;
+  }
+
+  // Mirrors a whole namespace, which is what a compaction leaves to do: the hot
+  // tier is one segment again and the durable tier must lose the names it no
+  // longer has. The new segment 0 goes first, so a process seeding in between
+  // finds a namespace that is complete, if for a moment redundant.
+  void WriteBackNamespace(const fextl::string& HotBase, const fextl::string& DurableBase) {
+    size_t Present = 0;
+    for (; Present < MaxSegments; ++Present) {
+      if (::access(SegmentPath(HotBase, Present).c_str(), F_OK) != 0) {
+        break;
+      }
+      WriteBackSegment(HotBase, DurableBase, Present);
+    }
+    for (size_t Index = MaxSegments; Index-- > Present;) {
+      ::unlink(SegmentPath(DurableBase, Index).c_str());
+    }
+  }
+} // namespace
+
 struct CodeCache::CacheSegment {
   void* Map {};
   size_t MapSize {};
@@ -1177,7 +1419,12 @@ struct CodeCache::CacheSegment {
 };
 
 struct CodeCache::FileCache {
+  // The working namespace: the hot tier's when there is one, the durable
+  // tier's when there is not.
   fextl::string BasePath;
+  // The durable namespace, empty with one tier. Set even when the hot tier is
+  // in use: it is where this namespace is seeded from and written back to.
+  fextl::string DurableBase;
   // Append-only. Appended under CodeCache::RegistryMutex (unique); read without
   // a lock: a slot is filled before NumSegments counts it.
   std::array<fextl::unique_ptr<CacheSegment>, MaxSegments> Segments;
@@ -1405,12 +1652,24 @@ CodeCache::FileCache* CodeCache::GetFileCache(const ExecutableFileInfo& FileInfo
   }
   // First sight of this file in this process: resolve its scope and path once.
   // An out-of-scope file is remembered with an empty BasePath.
-  auto BasePath = CTX.SyscallHandler->CodeCacheBasePath(FileInfo);
+  auto DurableBase = CTX.SyscallHandler->CodeCacheBasePath(FileInfo);
+  auto BasePath = HotBasePath(DurableBase);
+  // Seed before the registry lock: it is one copy up from disk, once per
+  // namespace per process, and every other thread's first touch of every other
+  // file waits behind that lock. Two processes seeding the same namespace at
+  // once is handled by the link(2) in there, not by a lock.
+  if (BasePath.empty()) {
+    BasePath = std::move(DurableBase);
+    DurableBase.clear();
+  } else {
+    SeedHotNamespace(BasePath, DurableBase);
+  }
   std::unique_lock lk {RegistryMutex};
   auto& Slot = Registry[FileInfo.FileId];
   if (!Slot) {
     Slot = fextl::make_unique<FileCache>();
     Slot->BasePath = std::move(BasePath);
+    Slot->DurableBase = std::move(DurableBase);
     if (!Slot->BasePath.empty()) {
       Slot->ProbeNewSegments(ComputeCodeCacheConfigId(), FileInfo.FileId);
     }
@@ -2221,43 +2480,59 @@ namespace {
     }
   }
 
+  // What a publish did, so the durable mirror knows what changed.
+  struct PublishResult {
+    bool Written = false;
+    size_t Index = 0;
+    bool Compacted = false;
+  };
+
   // Links Temp into a free segment name of Base, or folds every segment plus
   // Temp into one when all MaxSegments names are taken. Temp is unlinked either
-  // way; the blocks are on disk only if this returns true.
-  bool PublishTempSegment(const fextl::string& Base, const fextl::string& Temp, uint64_t ConfigId, uint64_t FileId, uint64_t WaitSeconds,
-                          uint64_t* Compactions) {
-    bool Written = false;
+  // way; the blocks are in the namespace only if this returns Written.
+  PublishResult PublishTempSegment(const fextl::string& Base, const fextl::string& Temp, uint64_t ConfigId, uint64_t FileId, uint64_t WaitSeconds) {
+    PublishResult Result;
     const auto LockPath = Base + ".lock";
     const int LockFD = ::open(LockPath.c_str(), O_RDWR | O_CREAT | O_CLOEXEC, 0644);
     if (LockFD != -1) {
       if (LockWithDeadline(LockFD, LOCK_SH, WaitSeconds)) {
-        for (size_t i = 0; i < MaxSegments && !Written; ++i) {
+        for (size_t i = 0; i < MaxSegments && !Result.Written; ++i) {
           if (::link(Temp.c_str(), SegmentPath(Base, i).c_str()) == 0) {
-            Written = true;
+            Result.Written = true;
+            Result.Index = i;
           } else if (errno != EEXIST) {
             break;
           }
         }
         ::flock(LockFD, LOCK_UN);
       }
-      if (!Written && LockWithDeadline(LockFD, LOCK_EX, WaitSeconds)) {
+      if (!Result.Written && LockWithDeadline(LockFD, LOCK_EX, WaitSeconds)) {
         // Every segment name is taken: fold them, and this segment, into one.
-        Written = CompactSegments(Base, Temp, ConfigId, FileId);
-        if (Written && Compactions) {
-          ++*Compactions;
-        }
+        Result.Written = CompactSegments(Base, Temp, ConfigId, FileId);
+        Result.Compacted = Result.Written;
         ::flock(LockFD, LOCK_UN);
       }
       ::close(LockFD);
     }
     ::unlink(Temp.c_str());
-    return Written;
+    return Result;
   }
 } // namespace
+
+struct CodeCache::SweepPlan {
+  // The working tier's directory and its cap, then the durable tier's. With
+  // one tier only the first pair is set.
+  fextl::string Dir;
+  uint64_t CapBytes {};
+  fextl::string DurableDir;
+  uint64_t DurableCapBytes {};
+};
 
 // One target's blocks, built and waiting for a segment name.
 struct CodeCache::PendingSegment {
   fextl::string Base;
+  // The durable namespace to mirror this into, empty with one tier.
+  fextl::string DurableBase;
   fextl::string Filename;
   uint64_t FileId;
   SegmentBuilder Builder;
@@ -2287,8 +2562,19 @@ size_t CodeCache::PublishSegments(std::span<PendingSegment> Pending, uint64_t Co
     std::error_code EC;
     std::filesystem::create_directories(std::filesystem::path(std::string_view {P.Base}).parent_path(), EC);
     auto Temp = WriteTempSegment(P.Base, [&](int FD) { return WriteSegment(FD, P.Builder, ConfigId, P.FileId); });
-    uint64_t Compactions = 0;
-    P.Written = !Temp.empty() && PublishTempSegment(P.Base, Temp, ConfigId, P.FileId, WaitSeconds, &Compactions);
+    const auto Published = Temp.empty() ? PublishResult {} : PublishTempSegment(P.Base, Temp, ConfigId, P.FileId, WaitSeconds);
+    const uint64_t Compactions = Published.Compacted ? 1 : 0;
+    P.Written = Published.Written;
+    if (P.Written && !P.DurableBase.empty()) {
+      // Mirror what changed, no more: one segment for an append, the whole
+      // namespace after a compaction, which is where the names the durable tier
+      // must lose are decided.
+      if (Published.Compacted) {
+        WriteBackNamespace(P.Base, P.DurableBase);
+      } else {
+        WriteBackSegment(P.Base, P.DurableBase, Published.Index);
+      }
+    }
     if (Shared) {
       // A writer says nothing: LogMan's handler can take a lock (stdio's) that
       // another thread held at the fork, and the counters carry this anyway.
@@ -2314,7 +2600,16 @@ size_t CodeCache::PublishSegments(std::span<PendingSegment> Pending, uint64_t Co
   return Written;
 }
 
-bool CodeCache::ForkSegmentWriter(std::span<PendingSegment> Pending, uint64_t ConfigId, const fextl::string& SweepDir, uint64_t CapBytes) {
+void CodeCache::RunSweeps(const SweepPlan& Sweeps) {
+  if (!Sweeps.Dir.empty()) {
+    SweepCacheDirectory(Sweeps.Dir, Sweeps.CapBytes);
+  }
+  if (!Sweeps.DurableDir.empty()) {
+    SweepCacheDirectory(Sweeps.DurableDir, Sweeps.DurableCapBytes);
+  }
+}
+
+bool CodeCache::ForkSegmentWriter(std::span<PendingSegment> Pending, uint64_t ConfigId, const SweepPlan& Sweeps) {
   auto* Shared = GetSaveWriterStats();
   if (!Shared) {
     return false;
@@ -2356,8 +2651,8 @@ bool CodeCache::ForkSegmentWriter(std::span<PendingSegment> Pending, uint64_t Co
       ::signal(SIGALRM, SIG_DFL);
       ::alarm(WriterLifetimeSeconds);
       const size_t Count = PublishSegments(Pending, ConfigId, PublishLockWaitSeconds, Shared);
-      if (Count != 0 && !SweepDir.empty()) {
-        SweepCacheDirectory(SweepDir, CapBytes);
+      if (Count != 0) {
+        RunSweeps(Sweeps);
       }
       Shared->Active.fetch_sub(1, std::memory_order_relaxed);
       ::_exit(0);
@@ -2373,22 +2668,32 @@ bool CodeCache::ForkSegmentWriter(std::span<PendingSegment> Pending, uint64_t Co
 }
 
 
-bool CodeCache::CompactAllSegments(const fextl::string& Base, uint64_t FileId) {
-  if (Base.empty()) {
+bool CodeCache::CompactAllSegments(const fextl::string& DurableBase, uint64_t FileId) {
+  if (DurableBase.empty()) {
     return false;
   }
+  // The caller names the durable namespace; the working one is the hot tier's
+  // when there is one, and the result is mirrored back.
+  const auto Hot = HotBasePath(DurableBase);
+  const auto& Base = Hot.empty() ? DurableBase : Hot;
+  SeedHotNamespace(Hot, DurableBase);
   const auto LockPath = Base + ".lock";
   int LockFD = ::open(LockPath.c_str(), O_RDWR | O_CREAT | O_CLOEXEC, 0644);
   if (LockFD == -1) {
     return false;
   }
   bool Done = false;
+  bool Compacted = false;
   if (::flock(LockFD, LOCK_EX | LOCK_NB) == 0) {
-    Done = ::access(SegmentPath(Base, 1).c_str(), F_OK) != 0 || CompactSegments(Base, {}, ComputeCodeCacheConfigId(), FileId);
+    Compacted = ::access(SegmentPath(Base, 1).c_str(), F_OK) == 0 && CompactSegments(Base, {}, ComputeCodeCacheConfigId(), FileId);
+    Done = Compacted || ::access(SegmentPath(Base, 1).c_str(), F_OK) != 0;
     Stats.Compactions.fetch_add(Done ? 1 : 0, std::memory_order_relaxed);
     ::flock(LockFD, LOCK_UN);
   }
   ::close(LockFD);
+  if (Compacted && !Hot.empty()) {
+    WriteBackNamespace(Hot, DurableBase);
+  }
   return Done;
 }
 
@@ -2454,7 +2759,10 @@ size_t CodeCache::SaveNewBlocks(Core::InternalThreadState&, std::span<const Code
   fextl::vector<PendingSegment> Pending;
   for (const auto& Target : Targets) {
     const auto& Section = Target.Section;
-    const auto& Base = Target.BasePath;
+    // The target names the durable namespace; a pass writes the hot one and
+    // mirrors it (see the two-tier block).
+    const auto Hot = HotBasePath(Target.BasePath);
+    const auto& Base = Hot.empty() ? Target.BasePath : Hot;
     const uint64_t FileId = Section.FileInfo.FileId;
     if (Base.empty()) {
       continue;
@@ -2532,6 +2840,7 @@ size_t CodeCache::SaveNewBlocks(Core::InternalThreadState&, std::span<const Code
 
     PendingSegment P;
     P.Base = Base;
+    P.DurableBase = Hot.empty() ? fextl::string {} : Target.BasePath;
     P.Filename = Section.FileInfo.Filename;
     P.FileId = FileId;
     P.Builder = std::move(Builder);
@@ -2543,17 +2852,30 @@ size_t CodeCache::SaveNewBlocks(Core::InternalThreadState&, std::span<const Code
   }
 
   const bool OneShot = (Kind == CodeCacheSaveKind::Final) && !RanPeriodicPass.load(std::memory_order_relaxed);
-  // Every base path is in the one cache directory.
-  fextl::string SweepDir;
-  uint64_t CapBytes = 0;
+  // Every base path is in the one cache directory, and with two tiers both are
+  // swept: the durable one against the disk cap, the hot one against its own,
+  // because that one is RAM.
+  SweepPlan Sweeps;
   if (!OneShot) {
     for (const auto& Target : Targets) {
-      if (!Target.BasePath.empty()) {
-        const int64_t CapMiB = FEXCore::Config::Get_CODECACHEMAXSIZE();
-        CapBytes = CapMiB > 0 ? static_cast<uint64_t>(CapMiB) << 20 : 0;
-        SweepDir = fextl::string {std::filesystem::path(std::string_view {Target.BasePath}).parent_path().string()};
-        break;
+      if (Target.BasePath.empty()) {
+        continue;
       }
+      const auto MiBToBytes = [](int64_t MiB) {
+        return MiB > 0 ? static_cast<uint64_t>(MiB) << 20 : 0;
+      };
+      const auto DurableDir = fextl::string {std::filesystem::path(std::string_view {Target.BasePath}).parent_path().string()};
+      const auto Hot = HotBasePath(Target.BasePath);
+      if (Hot.empty()) {
+        Sweeps.Dir = DurableDir;
+        Sweeps.CapBytes = MiBToBytes(FEXCore::Config::Get_CODECACHEMAXSIZE());
+      } else {
+        Sweeps.Dir = fextl::string {std::filesystem::path(std::string_view {Hot}).parent_path().string()};
+        Sweeps.CapBytes = MiBToBytes(FEXCore::Config::Get_CODECACHEHOTMAXSIZE());
+        Sweeps.DurableDir = DurableDir;
+        Sweeps.DurableCapBytes = MiBToBytes(FEXCore::Config::Get_CODECACHEMAXSIZE());
+      }
+      break;
     }
   }
 
@@ -2562,7 +2884,7 @@ size_t CodeCache::SaveNewBlocks(Core::InternalThreadState&, std::span<const Code
     // The final pass already runs in a forked writer of its own, with no parent
     // left to stall (cold G4); every other pass is on a guest thread and hands
     // the writing to one.
-    const bool Forked = Kind != CodeCacheSaveKind::Final && ForkWriter() && ForkSegmentWriter(Pending, ConfigId, SweepDir, CapBytes);
+    const bool Forked = Kind != CodeCacheSaveKind::Final && ForkWriter() && ForkSegmentWriter(Pending, ConfigId, Sweeps);
     if (Forked) {
       SegmentsWritten = Pending.size();
     } else {
@@ -2583,8 +2905,8 @@ size_t CodeCache::SaveNewBlocks(Core::InternalThreadState&, std::span<const Code
           }
         }
       }
-      if (SegmentsWritten != 0 && !SweepDir.empty()) {
-        SweepCacheDirectory(SweepDir, CapBytes);
+      if (SegmentsWritten != 0) {
+        RunSweeps(Sweeps);
       }
     }
   }

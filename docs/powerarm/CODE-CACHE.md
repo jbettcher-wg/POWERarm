@@ -17,9 +17,11 @@ POWERARM_ENABLECODECACHINGWIP=0
 `rootfs` writes caches for files under the configured RootFS and its overlay,
 `home` (the default) for those and every file under `$HOME`, and `all` for
 every executable mapping. See [Scope](#scope-which-files-are-cached) for why
-`home` is the default. The cache lives in `$POWERARM_APP_CACHE_LOCATION/cache/`
-(default `$XDG_CACHE_HOME/powerarm/cache/`) and is capped at `CodeCacheMaxSize`
-MiB (default 8192, `POWERARM_CODECACHEMAXSIZE`). `POWERARM_CODECACHESTATS=1`
+`home` is the default. The durable cache lives in
+`$POWERARM_APP_CACHE_LOCATION/cache/` (default `$XDG_CACHE_HOME/powerarm/cache/`)
+and is capped at `CodeCacheMaxSize` MiB (default 8192,
+`POWERARM_CODECACHEMAXSIZE`). The working copy is a hot tier in RAM over it
+(`$XDG_RUNTIME_DIR/powerarm/cache/`); see [Two tiers](#two-tiers-a-hot-copy-in-ram). `POWERARM_CODECACHESTATS=1`
 prints each process's counters to stderr. The SMC modes that the cache cannot
 serve (`SMCSemanticPatch`, `SMCLazyInval`, `SMCCheapTier`, `SMCStoreEmulation`,
 `SMCStoreBackpatch`) turn it off. See [Default-on](#default-on).
@@ -193,6 +195,42 @@ run is a new build, so a new ConfigId, and with the default directory the
 suites' namespaces competed with the apps the cache exists for until the
 hour-old sweep took them.
 
+### Two tiers: a hot copy in RAM
+
+The working cache is the hot tier: every segment a process maps, appends to or
+compacts is there, so a warm session reads and writes a tmpfs and the NVMe is
+touched only to seed a namespace and to write one back. The durable tier is the
+copy that survives a reboot.
+
+| | |
+|---|---|
+| Durable | `$POWERARM_APP_CACHE_LOCATION/cache/`, default `$XDG_CACHE_HOME/powerarm/cache/`. Capped by `CodeCacheMaxSize` (8192 MiB). |
+| Hot | `$XDG_RUNTIME_DIR/powerarm/cache/`, or `/tmp/powerarm-<uid>/cache/` with no runtime directory -- and `hot/` beside the `cache/` of a caller that chose its own cache location, so a test harness never shares one. `CodeCacheHotLocation` overrides it. Capped by `CodeCacheHotMaxSize` (8192 MiB), swept the same way and separately, because this one is RAM. |
+
+**Seeding is lazy, per namespace.** The first time a process opens a namespace,
+the segments the durable tier has and the hot tier has not are copied up,
+through a temp file and `link(2)`: two processes racing cost one wasted copy and
+never half a file. Nothing is copied at startup, and a namespace no process
+opens is never copied at all. That copy is the one place the hot tier costs
+something, and it happens once per namespace per boot.
+
+**Write-back is off the guest thread.** After a segment is published or a
+namespace compacted, the forked writer (below) mirrors what changed: one segment
+for an append, the whole namespace after a compaction, which is where the names
+the durable tier must lose are decided. A segment is copied only if it validates
+-- magic, version, header hash, and a file long enough for the extent its header
+declares -- and it lands with `rename(2)`. So a torn or truncated hot copy cannot
+replace a good durable one, and a reader of the durable tier never sees a partial
+file.
+
+**What it costs when it goes wrong.** Losing the hot tier -- a reboot, a wipe,
+its own size sweep -- costs a re-seed and nothing else. The tiers are allowed to
+disagree, the hot one being the newer: a block the durable tier is missing is
+compiled once more in the session after the reboot. Every block either tier holds
+is validated on install exactly as before, so neither tier can make a process run
+wrong code. `POWERARM_CODECACHEHOTTIER=0` leaves one tier, the durable one,
+behaving exactly as it did before this existed.
+
 **The writing is forked off the guest thread.** Collecting the blocks needs the
 process (the code buffer walk under `CodeBufferWriteMutex`, and the guest's own
 bytes); writing them out does not. So a periodic or unmap pass builds its
@@ -254,6 +292,13 @@ now runs only for `POWERARM_SERVERCODECACHE=1`.
   links libraries it only initialises compiles fewer than 10 blocks. The
   program closes its stderr before exiting, and the counters still reach the
   log.
+- **Reseed:** with a hot tier, what a cold run published is in both tiers, and
+  a wiped hot tier (a reboot) is seeded back from the durable one: the guest
+  loads its blocks again, `no-file` is 0, and the hot copy is back.
+- **Torn:** a hot segment truncated to half its length must not reach the
+  durable tier -- the durable copy is byte-identical afterwards -- the guest
+  must still run correctly, and the durable copy must still load once the hot
+  tier is wiped.
 - **Lock busy:** another process holds `LOCK_EX` on a library's namespace lock
   for the whole guest run. The guest's `dlclose` pass cannot publish, and its
   blocks must not be lost: the forked writer is parked on the lock (its temp
@@ -262,7 +307,7 @@ now runs only for `POWERARM_SERVERCODECACHE=1`.
 - **Evict:** 20 MiB of another build's cache (a namespace this build's header
   check rejects), written last so a pure LRU would keep it, next to this
   build's namespaces under a cap just below the total. The other build's goes
-  and this build's stays.
+  and this build's stays. Then the same against the hot tier's own cap.
 - **lld:** two lld-linked programs, built with the host's `clang` and `ld.lld`
   against the rootfs, compile none of their own blocks warm: one with lld's
   default layout (text 64K-congruent at a file offset whose 4K rounding is not

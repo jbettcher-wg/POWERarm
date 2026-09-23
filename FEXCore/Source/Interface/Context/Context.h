@@ -215,9 +215,13 @@ public:
   // a forked writer reports through the page it shares with this process.
   struct PendingSegment;
   struct SaveWriterStats;
+  // Which cache directories a pass sweeps after it published: the working one
+  // and, with two tiers, the durable one behind it.
+  struct SweepPlan;
 
 private:
   FileCache* GetFileCache(const ExecutableFileInfo& FileInfo);
+  void RunSweeps(const SweepPlan& Sweeps);
 
   // Links built segments into their namespaces. WaitSeconds > 0 waits that long
   // for a busy namespace lock (a forked writer, which nothing waits on); 0 gives
@@ -227,7 +231,7 @@ private:
   size_t PublishSegments(std::span<PendingSegment> Pending, uint64_t ConfigId, uint64_t WaitSeconds, SaveWriterStats* Shared);
   // Publishes Pending in a forked child and returns true, or false when the
   // caller must publish them itself. See the block comment in CodeCache.cpp.
-  bool ForkSegmentWriter(std::span<PendingSegment> Pending, uint64_t ConfigId, const fextl::string& SweepDir, uint64_t CapBytes);
+  bool ForkSegmentWriter(std::span<PendingSegment> Pending, uint64_t ConfigId, const SweepPlan& Sweeps);
   // The MAP_SHARED page the forked writers report through, created on first use.
   SaveWriterStats* GetSaveWriterStats();
 
