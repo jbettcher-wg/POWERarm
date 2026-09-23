@@ -548,3 +548,49 @@ to initialise against 27 s cold (suspect cache install cost, item 24).
     - Lesson for agents: a stress loop that does not reap its process group leaves the deadlocked
       writers behind. One run left ~854 wedged emulator processes on the box for half an hour and
       polluted Jordan's read of his own machine. `run.sh` reaps via `setsid`; manual loops must too.
+
+45. **What a fixed-length guest lets us stop paying for: X1, X2, and a flag bug** (2026-09-23).
+    Design in `docs/powerarm/research/cold-translation/LATENCY-ROUND3.md`; suite is now 94 tests.
+    - **X1, `SMCChecks=icache`, now the default** (0fda52107). We advertise `CTR_EL0.DIC=0`, so
+      every JIT in the guest issues `IC IVAU` per 64 bytes it writes and then `DSB; ISB` — and we
+      mapped `IC IVAU` to a nop and rediscovered the same writes by write-protecting pages and
+      taking faults. `IC IVAU` now lowers to a byte-precise invalidation gated by the 64-byte
+      granule bitmap (that granule is the `IminLine` we advertise), `ISB` ends the block,
+      `mprotect` follows the kernel's `PG_dcache_clean` rule so W^X flips cost nothing, and
+      `HandleSegfault` returns early because nothing is write-protected any more. Soundness is
+      written out in `FEXCore/Source/Interface/Core/SMCICache.h`: `CompileBlock` holds
+      `CodeInvalidationMutex` shared from decode to publish and the `IC IVAU` path takes it
+      exclusive, which also closes `SMCSoftInvalidate.h`'s "fresh-compile half" residual.
+      `none`/`mtrack`/`full` stay selectable — `POWERARM_SMCCHECKS=mtrack` is the way back.
+      Two things the design missed and the implementation needed: `BlockEntry::ExtentStart/Length`
+      (a multiblock unit that followed a backward branch has `DecodedMin < RIP`, so
+      `JITCodeTail`'s pair misses the bytes below the entry) and `RecomputePageWord` (leaving
+      granule bits set forever means an emptied JIT arena page answers "not provably clear"
+      forever and every later flush takes the exclusive lock to find nothing).
+      Known divergence, documented: stripping `PROT_EXEC` does not invalidate — that is the W half
+      of a W^X flip and invalidating there is the whole cost we are removing.
+    - **X2, the block caches index by instruction** (bd053167c). `RIP & (N-1)` is an x86ism: with
+      `PC[1:0]` always 0, three of every four L1 slots were unreachable and the 128k-entry, 2 MiB
+      per-thread L1 behaved as 32k. Now `(RIP >> 2) & mask`, four times the cache for the same
+      RSS, at all **three** emit sites (the indirect-call probe in `EmitA64PairedCall` is the one
+      the doc missed). Not the doc's `rldic sh=2`: `rldic`'s mask runs to bit 63-SH, so it keeps
+      `RIP[1:0]` in the offset and an unaligned PC at the last slot reads 12 bytes past the end of
+      the reservation, turning a guest `BUS_ADRALN` into a dispatcher SIGSEGV. `rlwinm` with a
+      mask bounded at both ends instead.
+    - **`MRS Xt, FPSR` was destroying the guest's N and Z** (fbe700fc0, merged 6d91d90bd).
+      `DEF_OP(LoadFPSR)` isolated the saturation bit with `andi.`, which has no non-record form on
+      PowerPC and so wrote CR0 — where this backend keeps packed NZCV. QC clear forced Z=1 (every
+      `b.eq` after an FPSR read taken), QC set forced Z=0. Live since item 36. The promoted build
+      failed 7 of `mrsflags.S`'s 18 checks; a Pi passes all 18. Same mistake found latent in
+      `EmitMaskBitTestSkip` (x86 gather lowerings, unreachable from the A64 frontend) and fixed.
+      The sweep cleared everything else with reasons — ops that bracket CR0 with `mfocrf`/`mtocrf`,
+      ops where CR0 *is* the output, ops already on CR1/CR6/CR7, and `DEF_OP(CAS)`, which the
+      frontend brackets with `_LoadNZCV`/`_StoreNZCV`.
+      **Open, worth doing:** the emitter's `_` suffix means three different things — non-record on
+      C++-keyword collisions (`and_`), record on everything else (`rldicl_`), and the
+      architectural `.` where no non-record form exists (`andi_`) — and the compare helpers default
+      to CR0. Renaming every record form to `_rc` and dropping the CR0 defaults is what stops the
+      next one.
+    - Gates on the merged tree: 94/0 in all three modes, 94/0 again with `SMCCHECKS=mtrack`,
+      check-code-cache 32 ok, check-rootfs-server OK. Headless Firefox renders identically under
+      both SMC modes. Not promoted by me.
