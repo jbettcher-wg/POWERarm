@@ -54,6 +54,7 @@
 #include <sys/mman.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
+#include <sys/statvfs.h>
 #include <sys/syscall.h>
 #include <sys/uio.h>
 #include <sys/wait.h>
@@ -869,6 +870,17 @@ namespace {
   // Another build's namespace, or a leftover temp file, unused this long is
   // removed whatever the cap.
   constexpr int64_t StaleSeconds = 3600;
+  // Free space the cache leaves its filesystem, whatever CodeCacheMaxSize or
+  // CodeCacheHotMaxSize says. The hot tier's filesystem is XDG_RUNTIME_DIR, a
+  // tmpfs the whole session shares and which is sized at a fraction of RAM --
+  // generous-sounding and not generous at all: filling it made keybindings
+  // launch nothing and uwsm_app-daemon fail with ENOSPC, with `df` at 45G used
+  // and `du` at 2.5G. A fraction of the filesystem, so a small one is not held
+  // to a large absolute figure, bounded so a 2 TB one is not held to a silly
+  // one.
+  constexpr uint64_t MinFreeFloorBytes = 128ull << 20;
+  constexpr uint64_t MaxFreeFloorBytes = 2ull << 30;
+  constexpr uint64_t FreeFloorFraction = 16;
 
   struct SegmentHeader {
     std::array<char, 4> Magic;
@@ -1333,6 +1345,80 @@ namespace {
   }
 } // namespace
 
+// =============================================================================
+// Reclaiming the tier
+//
+// A segment is used through a MAP_PRIVATE, PROT_READ mapping of its file, and
+// the blocks it holds are memcpy'd out of that mapping into the code buffer.
+// The mapping outlives the descriptor, and -- this is the whole problem --
+// it outlives the FILE. unlink(2) takes the name away and leaves every page
+// charged to the filesystem until the last mapping of the inode is dropped.
+//
+// Every generation of a namespace is therefore still costing memory after it
+// has been superseded: a compaction folds eight segments into one and unlinks
+// the seven (and renames over the eighth), the size sweep removes a namespace
+// whole, and in both cases a process that mapped those files keeps paying for
+// them until it exits. On the hot tier, whose whole point is that it is RAM,
+// that filled a 45 GiB XDG_RUNTIME_DIR with 2.5 GiB of files: `du` and
+// /proc/*/fd both see nothing, because the names and the descriptors are gone
+// and only the mappings are left (CODE-CACHE-TMPFS-LEAK.md).
+//
+// Neither is a cap enforced against linked bytes any use against it. Eviction
+// unlinks; unlinking is exactly what makes those bytes invisible to the cap.
+// The accounting reached zero at the moment the pages became unreclaimable.
+//
+// So:
+//
+//   1. A process holds a mapping of a segment only while that segment is still
+//      the file the cache directory names. RetireSuperseded stats each mapped
+//      segment's path and drops the ones whose (dev, ino) no longer matches --
+//      or whose name is gone -- and the namespace is then re-probed, so a
+//      compaction turns eight mappings into one instead of adding a ninth.
+//      This runs on every save pass (RevalidateRegistry) and on the
+//      rate-limited probe a lookup miss already does.
+//
+//      That is what makes the linked-bytes cap honest again, and it is the only
+//      thing that can: what a process maps becomes a subset of what the
+//      directory holds, so the two quantities converge instead of diverging.
+//      The residue is the window between another process's unlink and this
+//      process's next revalidation, and it is bounded by that window rather
+//      than by the length of the session.
+//
+//   2. Retiring never releases a page under a reader. What is released is this
+//      process's REFERENCE: a CacheSegment is owned by shared_ptr, munmap runs
+//      in its destructor, and every reader copies the shared_ptrs it is about
+//      to touch out of the FileCache under RegistryMutex (shared) and keeps
+//      them for as long as it reads the mapping -- the index search, the entry
+//      hash, the memcpy into the code buffer and the relocation walk. A retire
+//      takes RegistryMutex exclusively, so it either runs before a reader takes
+//      its snapshot (the reader never sees the segment) or after (the reader's
+//      reference outlives the FileCache's). An install therefore always runs
+//      against a mapping that is alive for its whole duration. Blocks are
+//      copied out of the mapping and relocated in the code buffer, so nothing
+//      executes from it and no cached block outlives it.
+//
+//      Ownership rather than a liveness guess, because of what releasing one
+//      of these actually does. Allocator::munmap is FEX's own allocator, and
+//      it hands the range back to the slab it came from -- madvise(DONTNEED)
+//      and an anonymous PROT_NONE mapping over the top -- so the address is
+//      reused by the next allocation of any kind. A reader holding a stale
+//      pointer into a released segment would not fault on a hole; it would
+//      read somebody else's memory and install a block out of it.
+//
+//   3. Nothing ever truncates a published segment. ftruncate(2) would release
+//      the pages of a file another PROCESS still has mapped -- which is the one
+//      thing this file cannot do safely, because the reader would take SIGBUS
+//      mid-memcpy (or, worse, mid-install) and there is no cross-process way to
+//      know there is no reader. unlink(2) is the only removal, and it can never
+//      invalidate a mapping that already exists.
+//
+//   4. The sweep stops treating its own directory listing as the measure of
+//      what the tier costs. It also asks the filesystem (SweepCacheDirectory),
+//      because the filesystem is the only party that can see the unlinked-but-
+//      mapped inodes of every process at once, and it evicts on whichever of
+//      the two limits binds first. When it unlinks and the filesystem frees
+//      nothing, it says so instead of reporting success.
+// =============================================================================
 struct CodeCache::CacheSegment {
   void* Map {};
   size_t MapSize {};
@@ -1340,6 +1426,10 @@ struct CodeCache::CacheSegment {
   const SegmentBlock* Blocks {};
   const CPU::Relocation* Relocs {};
   const std::byte* Code {};
+  // The file this mapping came from, so RetireSuperseded can tell the segment
+  // the directory names now from the one this process mapped then.
+  dev_t Dev {};
+  ino_t Ino {};
   // Entry hashes need checking (written in another boot, or forced).
   bool CheckHashes = true;
 
@@ -1348,7 +1438,18 @@ struct CodeCache::CacheSegment {
   CacheSegment& operator=(const CacheSegment&) = delete;
   ~CacheSegment() {
     if (Map) {
-      FEXCore::Allocator::munmap(Map, MapSize);
+      // Host pages, not the file's length. A segment file is whatever size the
+      // writer left it and is almost never a multiple of the host page, and
+      // FEX's own allocator -- which is what Allocator::munmap is once the
+      // 64-bit allocator is installed, and which is where this mapping came
+      // from -- rejects an unaligned length outright with EINVAL rather than
+      // rounding it up the way the kernel would. So this failed silently on
+      // every 64K host: nothing a CacheSegment mapped was ever given back,
+      // including the up to nine inputs a compaction opens. Allocator::mmap
+      // rounded the length up on the way in; round it the same way out.
+      // MapSize itself stays the file's length, because every bound the header
+      // is checked against has to be the file and not the padding behind it.
+      FEXCore::Allocator::munmap(Map, FEXCore::HostPage::AlignUp(MapSize));
     }
   }
 
@@ -1376,7 +1477,7 @@ struct CodeCache::CacheSegment {
 
   // MarkUsed: record a use for the size sweep's LRU order by refreshing the
   // file's mtime, at most every UseStampSeconds per file.
-  static fextl::unique_ptr<CacheSegment> Open(const fextl::string& Path, uint64_t ConfigId, uint64_t FileId, bool MarkUsed = false) {
+  static fextl::shared_ptr<CacheSegment> Open(const fextl::string& Path, uint64_t ConfigId, uint64_t FileId, bool MarkUsed = false) {
     int FD = ::open(Path.c_str(), O_RDONLY | O_CLOEXEC);
     if (FD == -1) {
       return nullptr;
@@ -1396,9 +1497,11 @@ struct CodeCache::CacheSegment {
     if (Map == MAP_FAILED || Map == nullptr) {
       return nullptr;
     }
-    auto Seg = fextl::make_unique<CacheSegment>();
+    auto Seg = fextl::make_shared<CacheSegment>();
     Seg->Map = Map;
     Seg->MapSize = Size;
+    Seg->Dev = St.st_dev;
+    Seg->Ino = St.st_ino;
     const auto* H = reinterpret_cast<const SegmentHeader*>(Map);
     // Every count and offset below comes from a file this process does not
     // control; bound each against the mapping before it is used.
@@ -1427,16 +1530,23 @@ struct CodeCache::FileCache {
   // The durable namespace, empty with one tier. Set even when the hot tier is
   // in use: it is where this namespace is seeded from and written back to.
   fextl::string DurableBase;
-  // Append-only. Appended under CodeCache::RegistryMutex (unique); read without
-  // a lock: a slot is filled before NumSegments counts it.
-  std::array<fextl::unique_ptr<CacheSegment>, MaxSegments> Segments;
+  // Grows by ProbeNewSegments and shrinks by RetireSuperseded, both of which
+  // run under CodeCache::RegistryMutex held exclusively. Every read of the
+  // array itself is under that mutex too, shared or exclusive; a reader that
+  // wants to use a segment after releasing it copies the shared_ptr first (see
+  // "Reclaiming the tier"). NumSegments stays atomic only so the advisory
+  // "is this namespace full" and "did it hold anything" tests outside the lock
+  // stay well-defined; it never authorises indexing the array.
+  std::array<fextl::shared_ptr<CacheSegment>, MaxSegments> Segments;
   std::atomic<size_t> NumSegments {0};
 
-  std::span<const fextl::unique_ptr<CacheSegment>> Loaded() const {
+  // Caller holds CodeCache::RegistryMutex (shared is enough).
+  std::span<const fextl::shared_ptr<CacheSegment>> Loaded() const {
     return {Segments.data(), NumSegments.load(std::memory_order_acquire)};
   }
   std::atomic<uint64_t> LastProbeMS {0};
 
+  // Caller holds CodeCache::RegistryMutex.
   bool Contains(uint64_t GuestOffset) const {
     for (const auto& Seg : Loaded()) {
       if (Seg->Find(GuestOffset)) {
@@ -1447,6 +1557,7 @@ struct CodeCache::FileCache {
   }
 
   // Opens segments this process has not seen yet, stopping at the first gap.
+  // Caller holds CodeCache::RegistryMutex exclusively.
   void ProbeNewSegments(uint64_t ConfigId, uint64_t FileId) {
     while (NumSegments.load(std::memory_order_relaxed) < MaxSegments) {
       const size_t Index = NumSegments.load(std::memory_order_relaxed);
@@ -1456,6 +1567,69 @@ struct CodeCache::FileCache {
       }
       Segments[Index] = std::move(Seg);
       NumSegments.store(Index + 1, std::memory_order_release);
+    }
+  }
+
+  // Drops this process's reference to every mapped segment whose name the cache
+  // directory no longer resolves to the file this process mapped: a compaction
+  // replaced segment 0 and unlinked the rest, or the size sweep took the
+  // namespace away. Returns how many slots were given up.
+  //
+  // Segment names are positional and a reader stops at the first gap, so the
+  // list is truncated at the first index that no longer matches rather than
+  // compacted: indices below it are the same files they always were and the
+  // blocks in them are still reachable. The caller re-probes, which re-opens
+  // whatever the directory has under those names now.
+  //
+  // The mapping itself is released by ~CacheSegment when the last shared_ptr
+  // dies, which may be a reader's and not this one. Nothing is unmapped under
+  // a reader, and nothing is truncated: see "Reclaiming the tier".
+  //
+  // Caller holds CodeCache::RegistryMutex exclusively.
+  size_t RetireSuperseded() {
+    const size_t Count = NumSegments.load(std::memory_order_relaxed);
+    if (BasePath.empty() || Count == 0) {
+      return 0;
+    }
+    size_t Keep = 0;
+    for (; Keep < Count; ++Keep) {
+      struct stat St {};
+      if (::stat(SegmentPath(BasePath, Keep).c_str(), &St) != 0 || St.st_dev != Segments[Keep]->Dev || St.st_ino != Segments[Keep]->Ino) {
+        break;
+      }
+    }
+    if (Keep == Count) {
+      return 0;
+    }
+    NumSegments.store(Keep, std::memory_order_release);
+    for (size_t Index = Count; Index-- > Keep;) {
+      Segments[Index].reset();
+    }
+    return Count - Keep;
+  }
+
+  // Retire what the directory no longer has, then open what it has gained.
+  // Caller holds CodeCache::RegistryMutex exclusively.
+  size_t RefreshSegments(uint64_t ConfigId, uint64_t FileId) {
+    const size_t Retired = RetireSuperseded();
+    ProbeNewSegments(ConfigId, FileId);
+    return Retired;
+  }
+
+  // Records a use of this namespace for the size sweep's LRU order, at most
+  // once per UseStampSeconds, exactly as opening segment 0 does. A process that
+  // has every segment of a namespace mapped never re-opens segment 0 and so
+  // never refreshed it: its namespaces aged as if unused while it was reading
+  // them, and the sweep evicted apps that were in use.
+  // Caller holds CodeCache::RegistryMutex.
+  void MarkNamespaceUsed() const {
+    if (BasePath.empty() || NumSegments.load(std::memory_order_relaxed) == 0) {
+      return;
+    }
+    struct stat St {};
+    if (::stat(BasePath.c_str(), &St) == 0 && St.st_mtime + UseStampSeconds < ::time(nullptr)) {
+      // Fails harmlessly on a read-only cache.
+      ::utimensat(AT_FDCWD, BasePath.c_str(), nullptr, 0);
     }
   }
 };
@@ -1705,11 +1879,36 @@ std::optional<CodeCache::LoadedBlock> CodeCache::TryLoadBlock(Core::InternalThre
 
 
   const uint64_t GuestOffset = GuestRIP - Section->FileStartVA;
+  // Pin the namespace's segments for the rest of this call. Everything below
+  // reads the mappings -- the index search, the entry hash, the memcpy into the
+  // code buffer, the relocation walk -- and a concurrent retire may drop the
+  // FileCache's reference at any point in between. These references are what
+  // guarantee the mapping outlives the install; see "Reclaiming the tier".
+  // Eight shared_ptrs on the stack, filled under a shared lock: no allocation,
+  // and the lock is released before any of the work above begins.
+  std::array<fextl::shared_ptr<CacheSegment>, MaxSegments> Pinned;
+  size_t NumPinned = 0;
+  auto Snapshot = [&]() {
+    // The references this replaces are dropped after the lock, not under it:
+    // the last one to go unmaps, and that is not work to do inside a lock every
+    // other thread's lookup waits on.
+    decltype(Pinned) Previous;
+    {
+      std::shared_lock lk {RegistryMutex};
+      const auto Live = File->Loaded();
+      Previous.swap(Pinned);
+      NumPinned = Live.size();
+      std::copy(Live.begin(), Live.end(), Pinned.begin());
+    }
+  };
+  Snapshot();
+
   const CacheSegment* Seg = nullptr;
   const SegmentBlock* Block = nullptr;
   bool Found = false;
   auto Lookup = [&]() {
-    for (const auto& Candidate : File->Loaded()) {
+    for (size_t i = 0; i < NumPinned; ++i) {
+      const auto& Candidate = Pinned[i];
       if (auto* Entry = Candidate->Find(GuestOffset)) {
         Found = true;
         if (Candidate->Validate(*Entry)) {
@@ -1721,17 +1920,27 @@ std::optional<CodeCache::LoadedBlock> CodeCache::TryLoadBlock(Core::InternalThre
     }
   };
   Lookup();
-  if (!Block && !Found && File->NumSegments.load(std::memory_order_relaxed) < MaxSegments) {
+  if (!Block && !Found) {
     // Another process (often a sibling from the same parent, which inherited
-    // this registry) may have written the block since this file was probed.
-    // Looking for a new segment costs one failed open(2); rate-limit it.
+    // this registry) may have written the block since this file was probed --
+    // or have compacted the namespace, in which case what this process has
+    // mapped is a generation that no longer exists and the blocks it is missing
+    // are in the file that replaced it. Both cost a handful of stat(2)s and at
+    // most one failed open(2); rate-limit them together.
     const uint64_t Now = MonotonicMilliseconds();
     if (Now - File->LastProbeMS.load(std::memory_order_relaxed) >= 100) {
-      std::unique_lock lk {RegistryMutex};
-      File->LastProbeMS.store(Now, std::memory_order_relaxed);
-      const size_t Before = File->NumSegments.load(std::memory_order_relaxed);
-      File->ProbeNewSegments(ComputeCodeCacheConfigId(), Section->FileInfo.FileId);
-      if (File->NumSegments.load(std::memory_order_relaxed) != Before) {
+      bool Changed = false;
+      {
+        std::unique_lock lk {RegistryMutex};
+        File->LastProbeMS.store(Now, std::memory_order_relaxed);
+        const size_t Before = File->NumSegments.load(std::memory_order_relaxed);
+        Changed = File->RefreshSegments(ComputeCodeCacheConfigId(), Section->FileInfo.FileId) != 0 ||
+                  File->NumSegments.load(std::memory_order_relaxed) != Before;
+      }
+      if (Changed) {
+        // Re-pin: the snapshot above may name segments this namespace has
+        // retired, and misses what it has just gained.
+        Snapshot();
         Lookup();
       }
     }
@@ -2122,7 +2331,7 @@ bool CodeCache::SaveData(Core::InternalThreadState&, int FD, const ExecutableFil
 }
 
 static bool CompactSegments(const fextl::string& Base, const fextl::string& Extra, uint64_t ConfigId, uint64_t FileId) {
-  fextl::vector<fextl::unique_ptr<CodeCache::CacheSegment>> Inputs;
+  fextl::vector<fextl::shared_ptr<CodeCache::CacheSegment>> Inputs;
   size_t NumNamed = 0;
   for (; NumNamed < MaxSegments; ++NumNamed) {
     auto Seg = CodeCache::CacheSegment::Open(SegmentPath(Base, NumNamed), ConfigId, FileId);
@@ -2226,6 +2435,28 @@ static bool CompactSegments(const fextl::string& Base, const fextl::string& Extr
 // has a segment mapped keeps valid data. A writer that raced the lock file's
 // removal can at worst lose its own segment to a concurrent compaction, which
 // costs recompiles, never wrong code (every block is checked on install).
+//
+// The directory listing is not the whole cost of the tier, and step 2 does not
+// pretend it is. Unlinking a segment some process still has mapped frees the
+// name and not one page (see "Reclaiming the tier"), so a cap enforced against
+// what is linked measures the one quantity eviction is guaranteed to reduce:
+// it reported success while a 45 GiB XDG_RUNTIME_DIR filled to zero bytes free.
+// So the sweep asks the filesystem as well. It is the only party that can see
+// every process's unlinked-but-mapped inodes at once, and it is what the rest
+// of the session -- everything else writing to that tmpfs -- actually runs out
+// of. Two limits, then, and the eviction target is whichever binds first:
+//
+//   * CapBytes against the namespaces this directory links, as before;
+//   * a floor under the filesystem's own free space, which makes the tier give
+//     ground when what it costs exceeds what it is charged for, whoever is
+//     holding the pages down. What is shed is at most the shortfall, once per
+//     sweep interval, so a filesystem someone else filled costs this cache its
+//     contents and nothing more, and a shortfall this cache did cause is made
+//     good as soon as the processes holding those mappings revalidate.
+//
+// A sweep that unlinks its target and frees nothing says so. That is the state
+// worth seeing in a log: it means the pages are mapped somewhere, and evicting
+// more namespaces will not help.
 // =============================================================================
 namespace {
   struct NamespaceName {
@@ -2274,6 +2505,25 @@ namespace {
     bool OwnBuild = false;
     fextl::vector<fextl::string> TempFiles;
   };
+
+  // What the filesystem under a cache directory says about itself. Unlike a
+  // walk of the directory this counts the inodes that have lost their names and
+  // not their pages, in this process and every other -- which is the whole of
+  // what the tier costs the machine.
+  struct TierSpace {
+    uint64_t Total = 0;
+    uint64_t Free = 0;
+    bool Known = false;
+  };
+
+  TierSpace QueryTierSpace(const fextl::string& Dir) {
+    struct statvfs VFS {};
+    if (::statvfs(Dir.c_str(), &VFS) != 0 || VFS.f_frsize == 0) {
+      return {};
+    }
+    const uint64_t Unit = VFS.f_frsize;
+    return {VFS.f_blocks * Unit, VFS.f_bavail * Unit, true};
+  }
 
   // True if the segment file was written by this build in this format.
   bool IsOwnBuild(const fextl::string& Path) {
@@ -2395,8 +2645,30 @@ namespace {
       Live.push_back({&Base, &Info});
     }
 
+    // How many linked bytes this directory may keep. Two limits; the lower of
+    // the two wins, and neither is allowed to hide the other.
+    const uint64_t Linked = Total;
+    std::optional<uint64_t> Target;
     if (CapBytes != 0 && Total > CapBytes) {
-      const uint64_t Target = CapBytes / 10 * 9;
+      Target = CapBytes / 10 * 9;
+    }
+    const TierSpace Space = QueryTierSpace(Dir);
+    if (Space.Known) {
+      const uint64_t Floor = std::min(MaxFreeFloorBytes, std::max(MinFreeFloorBytes, Space.Total / FreeFloorFraction));
+      if (Space.Free < Floor) {
+        // Shed the shortfall, and no more than this directory has to give. If
+        // the pages belong to segments this cache unlinked earlier and some
+        // process still maps, the shortfall closes when that process
+        // revalidates rather than here; if they belong to somebody else, this
+        // cache gives up what it has once and then has nothing left to give.
+        const uint64_t Shed = std::min(Floor - Space.Free, Total);
+        Target = std::min(Target.value_or(Total), Total - Shed);
+        LogMan::Msg::IFmt("Code cache: {} is low on space ({} MiB free of {} MiB); shedding {} MiB of the {} MiB it links", Dir,
+                          Space.Free >> 20, Space.Total >> 20, Shed >> 20, Total >> 20);
+      }
+    }
+
+    if (Target && Total > *Target) {
       // Another build's namespaces first, whatever their mtime, then this
       // build's in least-recently-used order. A promote gives every guest file
       // a new ConfigId while the processes started before it keep writing the
@@ -2407,12 +2679,24 @@ namespace {
       // (their writers are still running); they are just worth least.
       std::ranges::sort(Live, {}, [](const Candidate& C) { return std::pair {C.Info->OwnBuild, C.Info->LastUse}; });
       for (const auto& C : Live) {
-        if (Total <= Target) {
+        if (Total <= *Target) {
           break;
         }
         if (RemoveNamespace(Dir, *C.Base, *C.Info)) {
           Total -= std::min(Total, C.Info->Bytes);
           LogMan::Msg::IFmt("Code cache: evicted {} ({} KiB)", *C.Base, C.Info->Bytes >> 10);
+        }
+      }
+      // What the names were worth, and what the filesystem thought of it. These
+      // disagree exactly when the pages are still mapped somewhere, and that is
+      // the case worth saying out loud: nothing was reclaimed, and evicting
+      // further namespaces would reclaim nothing either.
+      if (Space.Known && Linked > Total) {
+        const TierSpace After = QueryTierSpace(Dir);
+        if (After.Known && After.Free < Space.Free + (Linked - Total) / 2) {
+          LogMan::Msg::IFmt("Code cache: unlinked {} MiB from {} and the filesystem freed {} MiB; the rest is still mapped by "
+                            "running processes and comes back as they revalidate",
+                            (Linked - Total) >> 20, Dir, After.Free > Space.Free ? (After.Free - Space.Free) >> 20 : 0);
         }
       }
     }
@@ -2946,7 +3230,49 @@ bool CodeCache::CompactAllSegments(const fextl::string& DurableBase, uint64_t Fi
   return Done;
 }
 
+// A namespace's segments are mapped for as long as the directory names the
+// files this process mapped, and no longer. Walking the registry costs one
+// stat(2) per mapped segment and one failed open(2) per namespace, so it is
+// rate-limited but not otherwise rationed: a save pass already does file I/O,
+// and the alternative is holding a superseded generation of every namespace
+// this process ever touched for the rest of the session.
+void CodeCache::RevalidateRegistry() {
+  // One stat per mapped segment, so this is cheap; it is bounded anyway because
+  // an unmap pass runs on every munmap of an executable mapping, and a busy
+  // Electron process does a lot of those. The munmap of each retired segment
+  // does run under the registry lock, as the mmap that made it always did; it
+  // is one syscall per segment and only on the pass that first notices, which
+  // for the worst case seen -- 857 mapped generations in one Electron process
+  // -- is well under a millisecond of other threads' lookups.
+  constexpr uint64_t RevalidateIntervalMS = 1000;
+  const uint64_t Now = MonotonicMilliseconds();
+  const uint64_t Last = LastRevalidateMS.load(std::memory_order_relaxed);
+  if (Last != 0 && Now - Last < RevalidateIntervalMS) {
+    return;
+  }
+  LastRevalidateMS.store(Now, std::memory_order_relaxed);
+
+  const uint64_t ConfigId = ComputeCodeCacheConfigId();
+  size_t Retired = 0;
+  std::unique_lock lk {RegistryMutex};
+  for (auto& [FileId, File] : Registry) {
+    if (!File || File->BasePath.empty()) {
+      continue;
+    }
+    Retired += File->RefreshSegments(ConfigId, FileId);
+    // A namespace this process is still reading is a namespace in use, whether
+    // or not it has anything left to learn from it.
+    File->MarkNamespaceUsed();
+  }
+  if (Retired != 0) {
+    LogMan::Msg::DFmt("Code cache: released {} superseded segment mappings", Retired);
+  }
+}
+
 size_t CodeCache::SaveNewBlocks(Core::InternalThreadState&, std::span<const CodeCacheSaveTarget> Targets, CodeCacheSaveKind Kind) {
+  // Before the early returns below: a pass with nothing to save is exactly the
+  // process that would otherwise never let go of a superseded generation.
+  RevalidateRegistry();
   if (!IsGeneratingCache || Targets.empty()) {
     return 0;
   }
@@ -3059,7 +3385,7 @@ size_t CodeCache::SaveNewBlocks(Core::InternalThreadState&, std::span<const Code
     size_t MinBlocks = MinNewBlocksPerSegment;
     {
       std::unique_lock lk {RegistryMutex};
-      File->ProbeNewSegments(ConfigId, FileId);
+      File->RefreshSegments(ConfigId, FileId);
       // The minimum keeps the many short processes of a build from each
       // spending a segment (and, every MaxSegments, a compaction) on a few
       // rare-path blocks. On a file's last chance it is waived where that

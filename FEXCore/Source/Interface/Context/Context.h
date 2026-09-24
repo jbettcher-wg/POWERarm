@@ -223,6 +223,14 @@ private:
   FileCache* GetFileCache(const ExecutableFileInfo& FileInfo);
   void RunSweeps(const SweepPlan& Sweeps);
 
+  // Releases this process's mappings of cache segments the cache directory no
+  // longer holds under those names -- compacted away by any process, or swept
+  // -- and picks up whatever replaced them. Until it runs, an unlinked segment
+  // this process mapped is still charged to the filesystem it came from, which
+  // on the hot tier is RAM (see "Reclaiming the tier" in CodeCache.cpp).
+  // Rate-limited across threads; call it from anywhere, at any rate.
+  void RevalidateRegistry();
+
   // Links built segments into their namespaces, on the calling thread and
   // without waiting for a busy namespace lock -- this is a guest thread, and
   // everything in the process waits on it. Segments a writer has already taken
@@ -273,8 +281,13 @@ private:
   uint64_t SinkGeneration = 0;
 
 
+  // Guards the segment list of every FileCache. A reader takes it shared just
+  // long enough to copy the shared_ptrs it is about to use; retirement takes it
+  // exclusively. See "Reclaiming the tier" in CodeCache.cpp.
   std::shared_mutex RegistryMutex;
   fextl::map<uint64_t, fextl::unique_ptr<FileCache>> Registry;
+  // When RevalidateRegistry last walked the registry (MonotonicMilliseconds).
+  std::atomic<uint64_t> LastRevalidateMS {0};
 
   std::atomic<uint64_t> LastSaveTimeSeconds {0};
 };

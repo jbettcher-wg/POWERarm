@@ -35,6 +35,13 @@
 #   evict      over the size cap, a namespace of another emulator build is
 #              evicted before any of this build's, however recently it was
 #              written.
+#   reclaim    eviction and compaction unlink, and unlinking does not unmap: a
+#              process that has a segment mapped goes on paying for its pages
+#              after the name is gone, which on the hot tier is RAM that neither
+#              `du` nor /proc/*/fd can see. A guest holds a namespace mapped
+#              while it is replaced under it (a compaction) and then removed
+#              under it (an eviction); after each, its next save pass must have
+#              left it holding no mapping of a file that is gone.
 #   reseed     with a hot tier: what a run published is in both tiers, and a
 #              wiped hot tier (a reboot) is seeded back from the durable one,
 #              with nothing recompiled.
@@ -357,8 +364,60 @@ int main(int argc, char **argv) {
   return 0;
 }
 EOF
+# Keeps a library -- and so its cache namespace -- mapped across a save pass,
+# and reports its own pid, which is the emulator's: the guest runs in the
+# emulator's address space, so /proc/<that pid>/maps is where the segment
+# mappings under test are.
+cat > "$w/src/holdprog.c" << 'EOF'
+#include <dlfcn.h>
+#include <stdio.h>
+#include <unistd.h>
+static void stamp(const char *dir, const char *name, int v) {
+  char p[4096];
+  snprintf(p, sizeof p, "%s/%s", dir, name);
+  FILE *f = fopen(p, "w");
+  if (f) { fprintf(f, "%d\n", v); fclose(f); }
+}
+static int await(const char *dir, const char *name) {
+  char p[4096];
+  snprintf(p, sizeof p, "%s/%s", dir, name);
+  for (int i = 0; i < 3000; i++) { if (access(p, F_OK) == 0) return 1; usleep(20000); }
+  return 0;
+}
+/* Opened and closed: the dlclose is a save pass, and a save pass is where this
+   process lets go of what the cache directory no longer has. */
+static int cycle(const char *lib, int x) {
+  void *h = dlopen(lib, RTLD_NOW);
+  if (!h) { return 0; }
+  int (*g)(int) = (int (*)(int))dlsym(h, "dropall");
+  int r = g ? g(x) : 0;
+  dlclose(h);
+  return r;
+}
+int main(int argc, char **argv) {
+  if (argc < 5) return 2; /* holdprog STATEDIR LIBA LIBB LIBC */
+  void *a = dlopen(argv[2], RTLD_NOW);
+  if (!a) { printf("dlopen failed: %s\n", dlerror()); return 2; }
+  int (*f)(int) = (int (*)(int))dlsym(a, "dropall");
+  int r = f ? f(argc) : 0;
+  /* A's blocks are loaded from the cache now, so its segments are mapped, and
+     A stays open throughout: nothing but the revalidation can drop them. */
+  stamp(argv[1], "ready", (int)getpid());
+  if (!await(argv[1], "go")) return 3;
+  r ^= cycle(argv[3], argc);
+  stamp(argv[1], "done", r);
+  if (!await(argv[1], "go2")) return 3;
+  r ^= cycle(argv[4], argc);
+  stamp(argv[1], "done2", r);
+  if (!await(argv[1], "quit")) return 3;
+  dlclose(a);
+  printf("hold %d\n", r);
+  return 0;
+}
+EOF
 run - -- /usr/bin/gcc -O1 -shared -fPIC -o libdrop.so libdrop.c &&
-  run - -- /usr/bin/gcc -O1 -o dropprog dropprog.c -ldl ||
+  run - -- /usr/bin/gcc -O1 -o dropprog dropprog.c -ldl &&
+  run - -- /usr/bin/gcc -O1 -o holdprog holdprog.c -ldl ||
   { echo "check-code-cache: building the dlopen programs failed" >&2; exit 2; }
 cp libdrop.so libdrop2.so
 cp libdrop.so libdrop3.so
@@ -490,6 +549,81 @@ else
         bad "evict: the hot tier's cap did not evict another build's namespace (${hotcap} MiB)"
       fi
     fi
+  fi
+fi
+
+# ---------------------------------------------------------------------------
+# reclaim
+# The size cap is enforced against what the cache directory links, and eviction
+# unlinks -- so the accounting reaches zero at the moment the pages become
+# unreclaimable. An unlinked segment that a process still has mapped stays
+# charged to its filesystem, and on the hot tier that filesystem is RAM: a
+# 45 GiB XDG_RUNTIME_DIR filled to zero bytes free while `du` showed 2.5 GiB and
+# /proc/*/fd showed nothing, because the name and the descriptor were both gone
+# and only the mapping was left.
+#
+# Measured in the mappings rather than in `df`, because that is the quantity
+# that is actually at stake and it is the same number wherever the scratch
+# directory happens to live.
+mapped() { # PID PREFIX -> "<mappings> <of them deleted>"
+  awk -v d="$2" 'index($0, d) { t++; if (index($0, "(deleted)")) x++ } END { print t + 0, x + 0 }' "/proc/$1/maps" 2> /dev/null
+}
+mkdir -p "$w/rc" "$w/rcstate"
+rcdir=$(working "$w/rc")
+run "$w/rc" -- ./dropprog ./libdrop.so > /dev/null 2> "$w/rc0.log"
+if ! wait_for 30 "$rcdir/libdrop.so-*"; then
+  bad "reclaim: the priming run wrote no libdrop cache"
+else
+  rcns=$(ls "$rcdir" | grep '^libdrop\.so-' | grep -v '\.lock$' | head -1)
+  run "$w/rc" -- ./holdprog "$w/rcstate" ./libdrop.so ./libdrop2.so ./libdrop3.so > "$w/rc.out" 2> "$w/rc1.log" &
+  rcjob=$!
+  if ! wait_for 60 "$w/rcstate/ready"; then
+    bad "reclaim: the holding guest never mapped the namespace"
+    kill "$rcjob" 2> /dev/null
+  else
+    rcpid=$(cat "$w/rcstate/ready")
+    read -r before_n before_d <<< "$(mapped "$rcpid" "$rcdir/$rcns")"
+    if [ "$before_n" -lt 1 ] || [ "$before_d" != 0 ]; then
+      bad "reclaim: before the change the guest had $before_n mappings of $rcns, $before_d already deleted"
+    else
+      # What a compaction does: the same blocks under the same name in a
+      # different file, and the old inode left behind with no name and a
+      # mapping. A process that does not notice keeps the dead one for good --
+      # and never sees anything written to the namespace again either.
+      cp -p "$rcdir/$rcns" "$rcdir/$rcns.new" && mv "$rcdir/$rcns.new" "$rcdir/$rcns"
+      read -r mid_n mid_d <<< "$(mapped "$rcpid" "$rcdir/$rcns")"
+      if [ "$mid_d" != "$before_n" ]; then
+        bad "reclaim: after the replacement $mid_d of $mid_n mappings are deleted, expected $before_n"
+      else
+        ok "reclaim: replacing a mapped namespace pins $mid_d superseded segment mappings"
+        # The revalidation is rate-limited; give the interval room to pass.
+        sleep 1.5
+        : > "$w/rcstate/go"
+        if ! wait_for 60 "$w/rcstate/done"; then
+          bad "reclaim: the holding guest never ran its first save pass"
+        else
+          read -r a_n a_d <<< "$(mapped "$rcpid" "$rcdir/$rcns")"
+          [ "$a_d" = 0 ] && [ "$a_n" -ge 1 ] &&
+            ok "reclaim: a save pass dropped the superseded mappings and picked up the file that replaced them" ||
+            bad "reclaim: after the first save pass the guest maps $a_n segments of $rcns, $a_d of them deleted"
+          # And what an eviction does: the name goes and nothing replaces it.
+          rm -f "$rcdir/$rcns" "$rcdir/$rcns".[1-7] "$rcdir/$rcns.lock"
+          sleep 1.5
+          : > "$w/rcstate/go2"
+          if ! wait_for 60 "$w/rcstate/done2"; then
+            bad "reclaim: the holding guest never ran its second save pass"
+          else
+            read -r b_n b_d <<< "$(mapped "$rcpid" "$rcdir/$rcns")"
+            [ "$b_n" = 0 ] &&
+              ok "reclaim: a save pass released every mapping of an evicted namespace" ||
+              bad "reclaim: after the second save pass the guest still maps $b_n segments of $rcns, $b_d deleted"
+          fi
+        fi
+      fi
+    fi
+    : > "$w/rcstate/quit"
+    wait "$rcjob" 2> /dev/null
+    grep -q '^hold ' "$w/rc.out" 2> /dev/null || bad "reclaim: the holding guest did not finish cleanly"
   fi
 fi
 

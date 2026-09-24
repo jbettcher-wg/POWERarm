@@ -69,7 +69,11 @@
           "One desktop app's cache is hundreds of MiB (VS Code's is over 700),",
           "and a promote leaves the previous build's caches behind until their",
           "long-lived processes exit, so a cap that fits only one build's app set",
-          "evicts apps that are still in use and makes them cold again."
+          "evicts apps that are still in use and makes them cold again.",
+          "The sweep also keeps a floor under the free space of the filesystem",
+          "the directory is on, whatever this says: a directory listing counts",
+          "what is linked, and a segment a running process still has mapped is",
+          "charged to the filesystem after its name is gone."
         ]
       },
       "CodeCacheHotTier": {
@@ -105,7 +109,13 @@
           "Size cap of the hot tier in MiB; 0 means no cap. Swept exactly like",
           "CodeCacheMaxSize, and separately from it, because this one is RAM. A",
           "namespace evicted here is re-seeded from the durable tier when it is",
-          "next opened."
+          "next opened. This cap counts what the directory links, so it is only",
+          "the whole cost while every mapped segment is still a linked one --",
+          "which is what the processes reading them keep true, by dropping a",
+          "segment's mapping once the directory no longer names that file. The",
+          "free-space floor under the tier's filesystem is what covers the rest,",
+          "and it matters most here: XDG_RUNTIME_DIR is a tmpfs the whole session",
+          "shares, and filling it takes the desktop down rather than a disk."
         ]
       },
       "CodeCacheForkWriter": {
