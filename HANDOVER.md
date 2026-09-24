@@ -626,3 +626,45 @@ to initialise against 27 s cold (suspect cache install cost, item 24).
       scan rather than stopping it); `Process::ProcessOptions` exposing no handle on the child, so
       a health check cannot be killed; and `MainScreen` regenerating all three files and hashing
       what is on disk on every frame.
+
+47. **The code cache never unmapped anything, and the cap could not see it** (2026-09-23,
+    82976b914; incident write-up in `CODE-CACHE-TMPFS-LEAK.md`, from an agent on a live desktop).
+    `/run/user/1000` (tmpfs, 10% of RAM = 45G) hit zero bytes free, `uwsm_app-daemon` started
+    failing `ENOSPC`, and Hyprland keybindings silently launched nothing, while `df` said 45G used
+    and `du` said 2.5G. The space was in files unlinked while still mmap'd: fd closed, dentry
+    gone, pages charged until the last mapping drops — invisible to `du` and to `/proc/*/fd`.
+    Measured: one VS Code process holding 533 deleted mappings against 56 linked; ~1,500 dead
+    generations across six of them.
+    - **Two stacked bugs.** `~CacheSegment` did call `munmap` — with the segment file's byte
+      length. `Allocator::munmap` is FEX's own once the 64-bit allocator is installed and it
+      *rejects* a non-host-page-aligned length with `EINVAL` rather than rounding up like the
+      kernel, and a segment file is essentially never a multiple of 64K. **So no cache segment
+      mapping had ever been released on this host, on either tier.** On top of that,
+      `FileCache::Segments` was append-only, so nothing ever decided to unmap either.
+    - **The cap could not catch it by construction**: it is enforced against linked bytes and
+      eviction unlinks, so the accounting went to zero at the moment the pages became
+      unreclaimable. Now: retirement makes the mapped set a subset of the linked set so the two
+      converge, plus a floor under the filesystem's free space (`min(2 GiB, max(128 MiB, fs/16))`),
+      since `statvfs` is the only party that can see every process's unlinked-but-mapped inodes at
+      once. A sweep that unlinks and frees nothing logs that instead of reporting success.
+    - `RetireSuperseded()` drops slots whose `(dev, ino)` no longer matches, from
+      `RevalidateRegistry()` on every save pass — placed before the early returns, because a
+      process with nothing to save is exactly the one that would never let go otherwise. Safety is
+      by ownership, not liveness: `TryLoadBlock` copies the `shared_ptr`s under `RegistryMutex`
+      and holds them across the whole install, and a retire takes the mutex exclusively. This is
+      load-bearing — `Allocator::munmap` hands the range back to its slab, so a stale pointer
+      would install blocks out of unrelated memory rather than faulting.
+    - Rejected, with reasons in the code: `ftruncate` before `unlink` (pulls pages from under a
+      reader in another process, which cannot know), and cross-process unmap (not a thing a
+      process can do to another).
+    - **Two more bugs fell out.** A process with all 8 segments mapped never re-opened segment 0,
+      so it never refreshed the mtime the sweep's LRU sorts by: namespaces aged as if unused while
+      being read, and the sweep evicted apps that were in use. The same process also never saw new
+      writes to the namespace, because the probe was gated on `< MaxSegments`.
+    - The numbered `.1`–`.7` chains are rotation working as designed (`PublishTempSegment` links
+      into the first free name and folds all eight when they run out); `.lock` is the namespace
+      flock. Unrelated to `CodeCacheForkWriter`.
+    - Gates: 94/0 in all three modes; check-code-cache 35 ok (was 32; `reclaim` adds three, using
+      a `holdprog` guest that keeps a namespace mapped across save passes and is measured in
+      `/proc/<pid>/maps`). Stopgap `"CodeCacheHotTier": "0"` is in Jordan's config; the ~50G
+      already pinned belongs to processes running the old build and returns when they exit.
