@@ -668,3 +668,46 @@ to initialise against 27 s cold (suspect cache install cost, item 24).
       a `holdprog` guest that keeps a namespace mapped across save passes and is measured in
       `/proc/<pid>/maps`). Stopgap `"CodeCacheHotTier": "0"` is in Jordan's config; the ~50G
       already pinned belongs to processes running the old build and returns when they exit.
+
+48. **Rootfs setup is a first-class operation now, and a wrong rootfs is loud** (2026-09-24,
+    4788c1e6f). Two things were wrong at once: `POWERarmRootFSFetcher` was FEX's fetcher with the
+    names swapped, still reading `https://rootfs.fex-emu.gg/RootFS_links.json` — an index of
+    **x86_64 and i386** images — so the one binary a new user would reach for would install an
+    Ubuntu x86_64 squashfs as an AArch64 guest rootfs; and `FileManagement.cpp:271` answered a
+    rootfs that would not open by setting `RootFSFD = AT_FDCWD`, running the guest against the
+    **host** tree in silence, which makes every downstream symptom look like an emulator bug.
+    - **Entry point: `POWERarmRootFSFetcher`, rewritten in place** — not a `rootfs` subcommand on
+      `POWERarm`, because that binary's `argv[1]` is a guest program path handed over by a shell
+      or by binfmt_misc, so a subcommand there would shadow a guest program of the same name.
+      Commands: `build` (default), `overlay`, `list`, `check`, `default`. It drives
+      `alarm_sysroot.py` and reimplements none of it; `--mirror` is repeatable and in order,
+      signatures on by default. The x86 index, the distro-list UI and the squashfs/erofs
+      mount-or-extract path are gone (and with them the `check-user-strings.sh` allowlist entry
+      that existed only to permit that URL).
+    - **The default matches what we test**: `alarm-vk.manifest`, and `build` produces the shape
+      this machine runs — manifest base, then `overlay-init --with-pacman --package pacman
+      --package archlinuxarm-keyring`, then `pacman-key --init` / `--populate archlinuxarm` /
+      `pacman -Sy` inside the emulator under `unshare -r` with `POWERARM_PORTABLE=1`. A base alone
+      is the toolchain sysroot and cannot run a GUI app, which is why `--manifest m2` builds no
+      overlay by default (its byte-compare gates are keyed to the bare base) and `--overlay`
+      forces one.
+    - **`Source/Common/RootFSCheck.{h,cpp}`** reads `e_machine` from the tree's own `/usr/bin/env`
+      or `/bin/sh`, re-rooting absolute symlink targets *inside* the rootfs the way the guest
+      kernel would (the same detail sleeve needs in `Source/Core/RootFS.cpp`), and handles
+      `EI_DATA` so a big-endian ppc64 tree is named rather than mistaken. `FEXInterpreter` runs it
+      before anything is mapped and exits `-ENOEXEC` on missing, empty, not-a-directory or wrong
+      machine. The `AT_FDCWD` fallback stays for an embedder that skipped the pre-flight but now
+      says so.
+    - **Judgement call worth knowing**: a non-empty tree with no readable probe binary is
+      `UNVERIFIED` — reported by `check`/`list`/`build`, not fatal, and deliberately silent in the
+      interpreter. Warning there broke `rootfs_overlay`, whose synthetic fixture has no `/bin/sh`
+      and which compares captured stderr; nothing degrades to the host tree in that case.
+    - Verified end to end: a full vk build into a scratch dest under an isolated HOME — 140
+      packages, sha256 and signatures against `68B3537F…`, 40,403 entries, every one of 978
+      PT_LOAD ELFs at `p_align 0x10000` — then the overlay, pacman's 30-package bootstrap, and
+      `pacman -S tree` in the guest followed by running it. Bad-rootfs fixtures all reported
+      correctly: x86_64, big-endian ppc64, empty, absent, a regular file, and an absolute symlink
+      whose target is an x86-64 bash *inside* the tree. Gates 94/0 in three modes, cache 35 ok.
+    - Not run: the installed script-discovery path (`ninja install` was never executed), an
+      alternate `--mirror` in anger, a squashfs the server actually mounts, and the
+      `POWERARM_PORTABLE` branch that writes an absolute path instead of a name.
