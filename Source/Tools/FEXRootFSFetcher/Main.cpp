@@ -1,1313 +1,1081 @@
 // SPDX-License-Identifier: MIT
+//
+// POWERarmRootFSFetcher: build and select POWERarm's AArch64 guest rootfs.
+//
+// This tool used to be FEX's fetcher with the names swapped.  It read
+// https://rootfs.fex-emu.gg/RootFS_links.json -- an index of x86_64 and i386 squashfs
+// images -- and would happily install an Ubuntu x86_64 tree as the guest rootfs of an
+// AArch64 emulator.  None of that is here any more.  The supported path builds a pinned
+// Arch Linux ARM aarch64 tree with Scripts/powerarm/rootfs/alarm_sysroot.py, which does
+// the sha256 pins, the OpenPGP signature check against the pinned Arch Linux ARM build
+// key, the rootless extraction and the overlay bootstrap; this tool only drives it, checks
+// the result really is AArch64, and writes the user's Config.json so the emulator finds it.
+//
+// It builds *two* pieces, because that is what a usable guest is here: the pinned base, and
+// the per-user "<base>-overlay" with guest pacman bootstrapped into it.  A base alone is a
+// sysroot -- everything a GUI program needs (libxkbcommon, dbus, the fonts, the application)
+// is installed into the overlay by guest pacman afterwards.
+//
+// Why a separate binary rather than a `rootfs` subcommand on POWERarm: POWERarm's argv[1]
+// is a *guest program path*, handed over by the shell or by binfmt_misc.  A subcommand
+// there would shadow any guest program called "rootfs", in the emulator's own entry path.
+// POWERarmConfig, POWERarmGetConfig and POWERarmBash are already separate tools, so this
+// is the established shape, and the name is the one already installed and documented.
 #include <FEXCore/fextl/fmt.h>
 #include <FEXCore/fextl/string.h>
 #include <FEXCore/fextl/vector.h>
 
 #include "Common/cpp-optparse/OptionParser.h"
-#include "Common/JSONPool.h"
-#include "XXFileHash.h"
-
 #include "Common/Config.h"
+#include "Common/RootFSCheck.h"
 
+#include <algorithm>
 #include <array>
-#include <filesystem>
+#include <cerrno>
+#include <cstdio>
+#include <cstdlib>
+#include <cstring>
+#include <dirent.h>
 #include <fstream>
-#include <functional>
 #include <iostream>
-#include <unistd.h>
 #include <optional>
-#include <span>
 #include <sstream>
-#include <sys/mman.h>
-#include <sys/syscall.h>
+#include <string>
+#include <sys/stat.h>
 #include <sys/wait.h>
 #include <unistd.h>
 
-#include <tiny-json.h>
+namespace {
 
-namespace ArgOptions {
-bool AssumeYes = false;
-enum class CompressedImageOption {
-  OPTION_ASK,
-  OPTION_EXTRACT,
-  OPTION_ASIS,
+// ---------------------------------------------------------------- options
+
+struct Options {
+  fextl::string Manifest {"vk"};
+  fextl::string Dest {};
+  fextl::string Cache {};
+  fextl::string Scripts {};
+  fextl::string Emulator {};
+  fextl::vector<fextl::string> Mirrors {};
+  bool AssumeYes {false};
+  bool Force {false};
+  bool VerifySignatures {true};
+  bool SetDefault {true};
+  bool Align {true};
+  bool DryRun {false};
+  // Tri-state: an unset overlay follows the manifest (on, except for the M2 pin, whose
+  // byte-compare gates are keyed to the bare base).
+  std::optional<bool> Overlay {};
+  bool PacmanInit {true};
 };
 
-CompressedImageOption CompressedUsageOption {CompressedImageOption::OPTION_ASK};
+Options Opts;
 
-enum class ListQueryOption {
-  OPTION_ASK,
-  OPTION_FIRST,
+// The shipped manifests.  "vk" is the default because it is the shape every desktop app on
+// this project is tested against: the toolchain roots plus Mesa/RADV and the X11/Wayland
+// libraries underneath them.  A base alone cannot run a GUI program; what the apps actually
+// need arrives through guest pacman in the per-user overlay, which is why `build` produces
+// base *and* overlay.  "m2" is the toolchain-only pin, and its byte-compare gates are keyed
+// to the bare base, so it does not get an overlay unless asked.
+struct KnownManifest {
+  const char* Alias;
+  const char* File;
+  const char* RootFSName;
+  const char* Summary;
+  bool OverlayByDefault;
 };
 
-ListQueryOption DistroListOption {ListQueryOption::OPTION_ASK};
+constexpr std::array<KnownManifest, 2> KnownManifests {{
+  {"vk", "alarm-vk.manifest", "ArchLinuxARM-vk", "the toolchain roots plus Vulkan/RADV and the desktop libraries -- the default", true},
+  {"m2", "alarm-m2.manifest", "ArchLinuxARM-m2", "the M2 GCC toolchain sysroot (its gates are keyed to the bare base)", false},
+}};
 
-fextl::vector<fextl::string> RemainingArgs;
+// ---------------------------------------------------------------- small helpers
 
-std::string DistroName {};
-std::string DistroVersion {};
-
-enum class UIOverrideOption {
-  Default,
-  TTY,
-  Zenity,
-};
-
-UIOverrideOption UIOption {UIOverrideOption::Default};
-
-void ParseArguments(int argc, char** argv) {
-  optparse::OptionParser Parser = optparse::OptionParser().description("Tool for fetching RootFS images from the rootfs download server").add_help_option(true);
-
-  Parser.add_option("-y", "--assume-yes").action("store_true").help("Assume yes to prompts");
-
-  Parser.add_option("-x", "--extract").action("store_true").help("Extract compressed image");
-
-  Parser.add_option("-a", "--as-is").action("store_true").help("Use compressed image as-is");
-
-  Parser.add_option("--distro-name").help("Which distro name to select");
-
-  Parser.add_option("--distro-version").help("Which distro version to select");
-
-  Parser.add_option("--distro-list-first").action("store_true").help("When presented the distro-list option, automatically select the first distro if there isn't an exact match.");
-
-  Parser.add_option("--force-ui").choices({"default", "tty", "zenity"}).set_default("default").help("Override which UI to use for selection");
-
-  optparse::Values Options = Parser.parse_args(argc, argv);
-
-  if (Options.is_set_by_user("assume_yes")) {
-    AssumeYes = Options.get("assume_yes");
-  }
-
-  if (Options.is_set_by_user("extract")) {
-    CompressedUsageOption = CompressedImageOption::OPTION_EXTRACT;
-  }
-
-  if (Options.is_set_by_user("as_is")) {
-    CompressedUsageOption = CompressedImageOption::OPTION_ASIS;
-  }
-
-  if (Options.is_set_by_user("distro_list_first")) {
-    DistroListOption = ListQueryOption::OPTION_FIRST;
-  }
-
-  if (Options.is_set_by_user("distro_name")) {
-    DistroName = Options["distro_name"];
-  }
-
-  if (Options.is_set_by_user("distro_version")) {
-    DistroVersion = Options["distro_version"];
-  }
-
-  if (Options.is_set_by_user("force_ui")) {
-    const auto& Option = Options["force_ui"];
-    if (Option == "tty") {
-      UIOption = UIOverrideOption::TTY;
-    } else if (Option == "zenity") {
-      UIOption = UIOverrideOption::Zenity;
-    }
-  }
-
-  RemainingArgs = Parser.args();
+bool Exists(const fextl::string& Path) {
+  struct stat Buffer {};
+  return ::stat(Path.c_str(), &Buffer) == 0;
 }
-} // namespace ArgOptions
 
-namespace Exec {
-int32_t ExecAndWaitForResponse(const char* path, char* const* args) {
-  pid_t pid = fork();
-  if (pid == 0) {
-    execvp(path, args);
-    _exit(-1);
-  } else {
-    int32_t Status {};
-    waitpid(pid, &Status, 0);
-    if (WIFEXITED(Status)) {
-      return (int8_t)WEXITSTATUS(Status);
+bool IsDirectory(const fextl::string& Path) {
+  struct stat Buffer {};
+  return ::stat(Path.c_str(), &Buffer) == 0 && S_ISDIR(Buffer.st_mode);
+}
+
+bool DirectoryIsEmpty(const fextl::string& Path) {
+  DIR* Dir = ::opendir(Path.c_str());
+  if (!Dir) {
+    return true;
+  }
+  bool Empty = true;
+  while (const auto* Entry = ::readdir(Dir)) {
+    if (std::strcmp(Entry->d_name, ".") == 0 || std::strcmp(Entry->d_name, "..") == 0) {
+      continue;
+    }
+    Empty = false;
+    break;
+  }
+  ::closedir(Dir);
+  return Empty;
+}
+
+fextl::string ParentOf(const fextl::string& Path) {
+  const auto Slash = Path.find_last_of('/');
+  if (Slash == fextl::string::npos) {
+    return ".";
+  }
+  return Slash == 0 ? fextl::string {"/"} : Path.substr(0, Slash);
+}
+
+fextl::string BaseNameOf(const fextl::string& Path) {
+  auto Trimmed = Path;
+  while (Trimmed.size() > 1 && Trimmed.back() == '/') {
+    Trimmed.pop_back();
+  }
+  const auto Slash = Trimmed.find_last_of('/');
+  return Slash == fextl::string::npos ? Trimmed : Trimmed.substr(Slash + 1);
+}
+
+fextl::string EnvOr(const char* Name, const fextl::string& Fallback) {
+  const char* Value = ::getenv(Name);
+  return (Value && Value[0]) ? fextl::string {Value} : Fallback;
+}
+
+fextl::string HomeDirectory() {
+  return FEX::Config::GetHomeDirectory();
+}
+
+bool MakeDirectories(const fextl::string& Path) {
+  if (Path.empty() || Path == "/") {
+    return true;
+  }
+  if (IsDirectory(Path)) {
+    return true;
+  }
+  if (!MakeDirectories(ParentOf(Path))) {
+    return false;
+  }
+  return ::mkdir(Path.c_str(), 0755) == 0 || errno == EEXIST;
+}
+
+fextl::string HumanBytes(uint64_t Bytes) {
+  if (Bytes >= 1024ULL * 1024 * 1024) {
+    return fextl::fmt::format("{:.1f} GB", static_cast<double>(Bytes) / (1024.0 * 1024 * 1024));
+  }
+  if (Bytes >= 1024ULL * 1024) {
+    return fextl::fmt::format("{:.0f} MB", static_cast<double>(Bytes) / (1024.0 * 1024));
+  }
+  if (Bytes >= 1024) {
+    return fextl::fmt::format("{:.0f} KB", static_cast<double>(Bytes) / 1024.0);
+  }
+  return fextl::fmt::format("{} B", Bytes);
+}
+
+bool AskYesNo(const fextl::string& Question) {
+  if (Opts.AssumeYes) {
+    return true;
+  }
+  if (!::isatty(STDIN_FILENO)) {
+    fextl::fmt::print(stderr, "{} -- stdin is not a terminal; pass -y to proceed.\n", Question);
+    return false;
+  }
+  for (;;) {
+    fextl::fmt::print("{} [y/N] ", Question);
+    std::fflush(stdout);
+    std::string Line;
+    if (!std::getline(std::cin, Line)) {
+      fextl::fmt::print("\n");
+      return false;
+    }
+    if (Line.empty() || Line == "n" || Line == "N" || Line == "no") {
+      return false;
+    }
+    if (Line == "y" || Line == "Y" || Line == "yes") {
+      return true;
     }
   }
+}
 
+// ---------------------------------------------------------------- running the builder
+
+// Runs the child with stdout/stderr inherited, so alarm_sysroot.py's progress and its
+// verification failures land in front of the user unfiltered.  `Env` entries are set in the
+// child only: the guest pacman steps need POWERARM_PORTABLE and POWERARM_ROOTFS, and neither
+// belongs in this process.
+int RunCommand(const fextl::vector<fextl::string>& Args, const fextl::vector<std::pair<fextl::string, fextl::string>>& Env = {}) {
+  fextl::vector<const char*> Argv;
+  Argv.reserve(Args.size() + 1);
+  for (const auto& Arg : Args) {
+    Argv.emplace_back(Arg.c_str());
+  }
+  Argv.emplace_back(nullptr);
+
+  const pid_t Pid = ::fork();
+  if (Pid == -1) {
+    fextl::fmt::print(stderr, "POWERarmRootFSFetcher: fork failed: {}\n", std::strerror(errno));
+    return -1;
+  }
+  if (Pid == 0) {
+    for (const auto& [Name, Value] : Env) {
+      ::setenv(Name.c_str(), Value.c_str(), 1);
+    }
+    ::execvp(Argv[0], const_cast<char* const*>(Argv.data()));
+    fextl::fmt::print(stderr, "POWERarmRootFSFetcher: cannot run {}: {}\n", Argv[0], std::strerror(errno));
+    ::_exit(127);
+  }
+
+  int Status {};
+  while (::waitpid(Pid, &Status, 0) == -1) {
+    if (errno != EINTR) {
+      return -1;
+    }
+  }
+  if (WIFEXITED(Status)) {
+    return WEXITSTATUS(Status);
+  }
+  if (WIFSIGNALED(Status)) {
+    return 128 + WTERMSIG(Status);
+  }
   return -1;
 }
 
-int32_t ExecAndWaitForResponseRedirect(const char* path, char* const* args, int stdoutRedirect = -2, int stderrRedirect = -2) {
-  pid_t pid = fork();
-  if (pid == 0) {
-    if (stdoutRedirect == -1) {
-      close(STDOUT_FILENO);
-    } else if (stdoutRedirect == -2) {
-      // Do nothing
-    } else {
-      if (stdoutRedirect != STDOUT_FILENO) {
-        close(STDOUT_FILENO);
-      }
-      dup2(stdoutRedirect, STDOUT_FILENO);
-    }
-    if (stderrRedirect == -1) {
-      close(STDERR_FILENO);
-    } else if (stderrRedirect == -2) {
-      // Do nothing
-    } else {
-      if (stderrRedirect != STDOUT_FILENO) {
-        close(STDERR_FILENO);
-      }
-      dup2(stderrRedirect, STDERR_FILENO);
-    }
-    execvp(path, args);
-    _exit(-1);
-  } else {
-    int32_t Status {};
-    while (waitpid(pid, &Status, 0) == -1 && errno == EINTR)
-      ;
-    if (WIFEXITED(Status)) {
-      return (int8_t)WEXITSTATUS(Status);
-    }
+fextl::string Quoted(const fextl::string& Arg) {
+  if (Arg.find_first_of(" \t\"'$") == fextl::string::npos) {
+    return Arg;
   }
-
-  return -1;
+  return "'" + Arg + "'";
 }
 
-std::string ExecAndWaitForResponseText(const char* path, char* const* args) {
-  int fd[2];
-  pipe(fd);
-
-  pid_t pid = fork();
-
-  if (pid == 0) {
-    close(fd[0]); // Close read side
-
-    // Redirect stdout to pipe
-    dup2(fd[1], STDOUT_FILENO);
-
-    // Close stderr
-    close(STDERR_FILENO);
-
-    // We can now close the pipe since the duplications take care of the rest
-    close(fd[1]);
-
-    execvp(path, args);
-    _exit(-1);
-  } else {
-    close(fd[1]); // Close write side
-
-    // Nothing larger than this
-    char Buffer[1024] {};
-    std::string Output {};
-
-    // Read the pipe until it closes
-    while (size_t Size = read(fd[0], Buffer, sizeof(Buffer))) {
-      Output += std::string_view(Buffer, Size);
+void PrintCommand(const fextl::vector<fextl::string>& Args, const fextl::vector<std::pair<fextl::string, fextl::string>>& Env = {}) {
+  fextl::string Line;
+  auto Append = [&Line](const fextl::string& Text) {
+    if (!Line.empty()) {
+      Line += " ";
     }
-
-    int32_t Status {};
-    while (waitpid(pid, &Status, 0) == -1 && errno == EINTR)
-      ;
-    if (WIFEXITED(Status)) {
-      // Return what we've read
-      close(fd[0]);
-      return Output;
-    }
+    Line += Text;
+  };
+  for (const auto& [Name, Value] : Env) {
+    Append(Name + "=" + Quoted(Value));
   }
-
-  return {};
-}
-} // namespace Exec
-
-namespace WorkingAppsTester {
-static bool Has_Curl {false};
-static bool Has_Squashfuse {false};
-static bool Has_Unsquashfs {false};
-static bool Has_Zenity {false};
-
-// EroFS specific
-static bool Has_EroFSFuse {false};
-static bool Has_EroFSFsck {false};
-
-void CheckCurl() {
-  // Check if curl exists on the host
-  const std::array<const char*, 3> ExecveArgs = {
-    "curl",
-    "-V",
-    nullptr,
-  };
-
-  int32_t Result = Exec::ExecAndWaitForResponseRedirect(ExecveArgs[0], const_cast<char* const*>(ExecveArgs.data()), -1, -1);
-  Has_Curl = Result != -1;
-}
-
-void CheckSquashfuse() {
-  const std::array<const char*, 3> ExecveArgs = {
-    "squashfuse",
-    "--help",
-    nullptr,
-  };
-
-  int32_t Result = Exec::ExecAndWaitForResponseRedirect(ExecveArgs[0], const_cast<char* const*>(ExecveArgs.data()), -1, -1);
-  Has_Squashfuse = Result != -1;
-}
-
-void CheckUnsquashfs() {
-  const std::array<const char*, 3> ExecveArgs = {
-    "unsquashfs",
-    // since unsquashfs 4.7.1, -help-all is needed to list decompressors.
-    // also works with older versions.
-    "-help-all",
-    nullptr,
-  };
-
-  int fd = ::syscall(SYS_memfd_create, "stdout", 0);
-  int32_t Result = Exec::ExecAndWaitForResponseRedirect(ExecveArgs[0], const_cast<char* const*>(ExecveArgs.data()), fd, fd);
-  Has_Unsquashfs = Result != -1;
-  if (Has_Unsquashfs) {
-    // Seek back to the start
-    lseek(fd, 0, SEEK_SET);
-
-    // Unsquashfs needs to support zstd
-    // Scan its output to find the zstd compressor
-    FILE* fp = fdopen(fd, "r");
-    char* Line {nullptr};
-    size_t Len;
-
-    bool ReadingDecompressors = false;
-    bool SupportsZSTD = false;
-    while (getline(&Line, &Len, fp) != -1) {
-      if (!ReadingDecompressors) {
-        if (strstr(Line, "Decompressors available")) {
-          ReadingDecompressors = true;
-        }
-      } else {
-        if (strstr(Line, "zstd")) {
-          SupportsZSTD = true;
-        }
-      }
-    }
-
-    free(Line);
-    fclose(fp);
-
-    // Disable unsquashfs if it doesn't support ZSTD
-    if (!SupportsZSTD) {
-      Has_Unsquashfs = false;
-    }
+  for (const auto& Arg : Args) {
+    Append(Quoted(Arg));
   }
-  close(fd);
-}
-void CheckZenity() {
-  // Check if zenity exists on the host
-  std::array<const char*, 3> ExecveArgs = {
-    "zenity",
-    "-h",
-    nullptr,
-  };
-
-  int32_t Result = Exec::ExecAndWaitForResponseRedirect(ExecveArgs[0], const_cast<char* const*>(ExecveArgs.data()), -1, -1);
-  Has_Zenity = Result != -1;
+  fextl::fmt::print("+ {}\n", Line);
 }
 
-// EroFS specific tests
-void CheckEroFSFuse() {
-  std::array<const char*, 3> ExecveArgs = {
-    "erofsfuse",
-    "--help",
-    nullptr,
-  };
+// ---------------------------------------------------------------- locating the builder
 
-  int32_t Result = Exec::ExecAndWaitForResponseRedirect(ExecveArgs[0], const_cast<char* const*>(ExecveArgs.data()), -1, -1);
-  Has_EroFSFuse = Result != -1;
+// Where alarm_sysroot.py and the manifests live.  Checked in order:
+//   1. --scripts / POWERARM_ROOTFS_SCRIPTS
+//   2. next to the running binary in a build tree (<bindir>/../../Scripts/powerarm/rootfs)
+//   3. next to the running binary when installed (<bindir>/../share/<dir>/rootfs)
+//   4. the configured install prefix, then the source tree this binary was built from
+fextl::string SelfDirectory() {
+  fextl::string Buffer;
+  Buffer.resize(PATH_MAX);
+  const auto Read = ::readlink("/proc/self/exe", Buffer.data(), Buffer.size());
+  if (Read <= 0) {
+    return {};
+  }
+  Buffer.resize(Read);
+  return ParentOf(Buffer);
 }
 
-void CheckEroFSFsck() {
-  std::array<const char*, 3> ExecveArgs = {
-    "fsck.erofs",
-    "-V",
-    nullptr,
-  };
+std::optional<fextl::string> FindScriptsDirectory() {
+  fextl::vector<fextl::string> Candidates;
 
-  int32_t Result = Exec::ExecAndWaitForResponseRedirect(ExecveArgs[0], const_cast<char* const*>(ExecveArgs.data()), -1, -1);
-  Has_EroFSFsck = Result != -1;
-}
-
-void Init() {
-  CheckCurl();
-  CheckSquashfuse();
-  CheckUnsquashfs();
-  CheckZenity();
-  CheckEroFSFuse();
-  CheckEroFSFsck();
-}
-} // namespace WorkingAppsTester
-
-namespace DistroQuery {
-struct DistroInfo {
-  std::string DistroName;
-  std::string DistroVersion;
-  bool RollingRelease;
-  bool Unknown;
-};
-
-DistroInfo GetDistroInfo() {
-  // Detect these files in order
-  //
-  // /etc/lsb-release
-  // eg:
-  // DISTRIB_ID=Ubuntu
-  // DISTRIB_RELEASE=21.10
-  // DISTRIB_CODENAME=impish
-  // DISTRIB_DESCRIPTION="Ubuntu 21.10"
-  //
-  // /etc/os-release
-  // eg:
-  // PRETTY_NAME="Ubuntu 21.10"
-  // NAME="Ubuntu"
-  // VERSION_ID="21.10"
-  // VERSION="21.10 (Impish Indri)"
-  // VERSION_CODENAME=impish
-  // ID=ubuntu
-  // ID_LIKE=debian
-  // HOME_URL="https://www.ubuntu.com/"
-  // SUPPORT_URL="https://help.ubuntu.com/"
-  // BUG_REPORT_URL="https://bugs.launchpad.net/ubuntu/"
-  // PRIVACY_POLICY_URL="https://www.ubuntu.com/legal/terms-and-policies/privacy-policy"
-  // UBUNTU_CODENAME=impish
-  //
-  // /etc/debian_version
-  // eg:
-  // 11.0
-  //
-  // uname -r
-  // eg:
-  // 5.13.0-22-generic
-  DistroInfo Info {};
-  uint32_t FoundCount {};
-
-  if (std::filesystem::exists("/etc/lsb-release")) {
-    std::fstream File("/etc/lsb-release", std::fstream::in);
-    std::string Line;
-    while (std::getline(File, Line)) {
-      if (File.eof() || FoundCount == 2) {
-        break;
-      }
-
-      std::stringstream ss(Line);
-      std::string Key, Value;
-      std::getline(ss, Key, '=');
-      std::getline(ss, Value, '=');
-
-      if (Key == "DISTRIB_ID") {
-        auto ToLower = [](auto Str) {
-          std::transform(Str.begin(), Str.end(), Str.begin(), [](unsigned char c) { return std::tolower(c); });
-          return Str;
-        };
-        Info.DistroName = ToLower(Value);
-        ++FoundCount;
-      } else if (Key == "DISTRIB_RELEASE") {
-        Info.DistroVersion = std::move(Value);
-        ++FoundCount;
-      }
+  if (!Opts.Scripts.empty()) {
+    // An explicit request is never silently replaced by a fallback.
+    if (Exists(Opts.Scripts + "/alarm_sysroot.py")) {
+      return Opts.Scripts;
     }
-  }
-
-  if (FoundCount == 2) {
-    Info.Unknown = false;
-    if (Info.DistroName == "arch") {
-      Info.RollingRelease = true;
-    }
-    return Info;
-  }
-  FoundCount = 0;
-
-  if (std::filesystem::exists("/etc/os-release")) {
-    std::fstream File("/etc/os-release", std::fstream::in);
-    std::string Line;
-    while (std::getline(File, Line)) {
-      if (File.eof() || FoundCount == 2) {
-        break;
-      }
-
-      std::stringstream ss(Line);
-      std::string Key, Value;
-      std::getline(ss, Key, '=');
-      std::getline(ss, Value, '=');
-
-      if (Key == "ID") {
-        Info.DistroName = std::move(Value);
-        ++FoundCount;
-      } else if (Key == "VERSION_ID") {
-        // Ubuntu provides VERSION_ID
-        // Strip the two quotes from the VERSION_ID
-        Value = Value.substr(1, Value.size() - 2);
-        Info.DistroVersion = std::move(Value);
-        ++FoundCount;
-      } else if (Key == "IMAGE_VERSION") {
-        // Arch provides IMAGE_VERSION
-        Info.DistroVersion = std::move(Value);
-        ++FoundCount;
-      }
-    }
-  }
-
-  if (FoundCount == 2) {
-    Info.Unknown = false;
-    if (Info.DistroName == "arch") {
-      Info.RollingRelease = true;
-    }
-    return Info;
-  }
-  FoundCount = 0;
-
-  if (std::filesystem::exists("/etc/debian_version")) {
-    std::fstream File("/etc/debian_version", std::fstream::in);
-    std::string Line;
-
-    Info.DistroName = "debian";
-    ++FoundCount;
-    while (std::getline(File, Line)) {
-      Info.DistroVersion = Line;
-      ++FoundCount;
-    }
-  }
-
-  if (FoundCount == 2) {
-    Info.Unknown = false;
-    return Info;
-  }
-
-  Info.DistroName = "Unknown";
-  Info.DistroVersion = {};
-  Info.Unknown = true;
-  return Info;
-}
-} // namespace DistroQuery
-
-namespace WebFileFetcher {
-struct FileTargets {
-  // These two are for matching version checks
-  std::string DistroMatch;
-  std::string VersionMatch;
-
-  // This is a human readable name
-  std::string DistroName;
-
-  // This is the URL
-  fextl::string URL;
-
-  // This is the hash of the file
-  std::string Hash;
-
-  // FileType
-  enum class FileType {
-    TYPE_UNKNOWN,
-    TYPE_SQUASHFS,
-    TYPE_EROFS,
-  };
-  FileType Type;
-};
-
-const static std::string DownloadURL = "https://rootfs.fex-emu.gg/RootFS_links.json";
-
-std::string DownloadToString(const std::string& URL) {
-  std::array<const char*, 3> ExecveArgs = {
-    "curl",
-    URL.c_str(),
-    nullptr,
-  };
-
-  return Exec::ExecAndWaitForResponseText(ExecveArgs[0], const_cast<char* const*>(ExecveArgs.data()));
-}
-
-bool DownloadToPath(const fextl::string& URL, const fextl::string& Path) {
-  auto filename = URL.substr(URL.find_last_of('/') + 1);
-  auto PathName = Path + filename;
-
-  std::array<const char*, 5> ExecveArgs = {
-    "curl", URL.c_str(), "-o", PathName.c_str(), nullptr,
-  };
-
-  return Exec::ExecAndWaitForResponse(ExecveArgs[0], const_cast<char* const*>(ExecveArgs.data())) == 0;
-}
-
-bool DownloadToPathWithZenityProgress(const fextl::string& URL, const fextl::string& Path) {
-  auto filename = URL.substr(URL.find_last_of('/') + 1);
-  auto PathName = Path + filename;
-
-  // -# for progress bar
-  // -o for output file
-  // -f for silent fail
-  std::string CurlPipe = fmt::format("curl -C - -#f {} -o {} 2>&1", URL, PathName);
-  const std::string StdBuf = "stdbuf -oL tr '\\r' '\\n'";
-  const std::string SedBuf = "sed -u 's/[^0-9]*\\([0-9]*\\).*/\\1/'";
-  // zenity --auto-close can't be used since `curl -C` for whatever reason prints 100% at the start.
-  // Making zenity vanish immediately
-  const std::string ZenityBuf = "zenity --time-remaining --progress --no-cancel --title 'Downloading'";
-  std::string BigArgs = fmt::format("{} | {} | {} | {}", CurlPipe, StdBuf, SedBuf, ZenityBuf);
-  std::array<const char*, 4> ExecveArgs = {
-    "/bin/sh",
-    "-c",
-    BigArgs.c_str(),
-    nullptr,
-  };
-
-  return Exec::ExecAndWaitForResponse(ExecveArgs[0], const_cast<char* const*>(ExecveArgs.data())) == 0;
-}
-
-std::optional<std::vector<FileTargets>> GetRootFSLinks() {
-  // Decode the filetargets
-  std::string Data = DownloadToString(DownloadURL);
-
-  if (Data.empty()) {
+    fextl::fmt::print(stderr, "POWERarmRootFSFetcher: no alarm_sysroot.py under '{}'.\n", Opts.Scripts);
     return std::nullopt;
   }
 
-  FEX::JSON::JsonAllocator Pool {};
-  const json_t* json = FEX::JSON::CreateJSON(Data, Pool);
+  const auto SelfDir = SelfDirectory();
+  if (!SelfDir.empty()) {
+    Candidates.emplace_back(SelfDir + "/../../Scripts/powerarm/rootfs");
+    Candidates.emplace_back(SelfDir + "/../share/" POWERARM_DIR_NAME "/rootfs");
+    Candidates.emplace_back(SelfDir + "/../Scripts/powerarm/rootfs");
+  }
+  Candidates.emplace_back(GLOBAL_DATA_DIRECTORY "rootfs");
+  Candidates.emplace_back("/usr/share/" POWERARM_DIR_NAME "/rootfs");
+  Candidates.emplace_back(POWERARM_SOURCE_DIR "/Scripts/powerarm/rootfs");
 
-  if (!json) {
-    fmt::print(stderr, "Failed to parse JSON from RootFSLinks file '{}' - invalid JSON format", Data);
-    std::abort();
+  for (const auto& Candidate : Candidates) {
+    if (Exists(Candidate + "/alarm_sysroot.py")) {
+      return Candidate;
+    }
   }
 
-  const json_t* RootList = json_getProperty(json, "v1");
+  fextl::fmt::print(stderr, "POWERarmRootFSFetcher: could not find alarm_sysroot.py. Looked in:\n");
+  for (const auto& Candidate : Candidates) {
+    fextl::fmt::print(stderr, "  {}\n", Candidate);
+  }
+  fextl::fmt::print(stderr, "Point --scripts (or POWERARM_ROOTFS_SCRIPTS) at Scripts/powerarm/rootfs.\n");
+  return std::nullopt;
+}
 
-  if (!RootList) {
-    fprintf(stderr, "Couldn't get root list");
-    return {};
+struct PickedManifest {
+  fextl::string Path;
+  fextl::string DefaultRootFSName;
+  fextl::string Summary;
+  fextl::string Alias {};
+  bool OverlayByDefault {true};
+};
+
+std::optional<PickedManifest> PickManifest(const fextl::string& ScriptsDir) {
+  for (const auto& Known : KnownManifests) {
+    if (Opts.Manifest == Known.Alias) {
+      PickedManifest Picked;
+      Picked.Path = ScriptsDir + "/" + Known.File;
+      Picked.DefaultRootFSName = Known.RootFSName;
+      Picked.Summary = Known.Summary;
+      Picked.OverlayByDefault = Known.OverlayByDefault;
+      Picked.Alias = Known.Alias;
+      if (!Exists(Picked.Path)) {
+        fextl::fmt::print(stderr, "POWERarmRootFSFetcher: manifest '{}' is missing from '{}'.\n", Known.File, ScriptsDir);
+        return std::nullopt;
+      }
+      return Picked;
+    }
   }
 
-  std::vector<FileTargets> Targets;
+  // Anything else is taken as a path to a manifest.
+  if (!Exists(Opts.Manifest)) {
+    fextl::fmt::print(stderr, "POWERarmRootFSFetcher: unknown manifest '{}'. Known names:", Opts.Manifest);
+    for (const auto& Known : KnownManifests) {
+      fextl::fmt::print(stderr, " {}", Known.Alias);
+    }
+    fextl::fmt::print(stderr, "; or pass a path to a manifest file.\n");
+    return std::nullopt;
+  }
 
-  for (const json_t* RootItem = json_getChild(RootList); RootItem != nullptr; RootItem = json_getSibling(RootItem)) {
+  PickedManifest Picked;
+  Picked.Path = Opts.Manifest;
+  // "alarm-foo.manifest" -> "ArchLinuxARM-foo"
+  auto Stem = BaseNameOf(Opts.Manifest);
+  if (Stem.size() > 9 && Stem.compare(Stem.size() - 9, 9, ".manifest") == 0) {
+    Stem.resize(Stem.size() - 9);
+  }
+  if (Stem.compare(0, 6, "alarm-") == 0) {
+    Stem = Stem.substr(6);
+  }
+  Picked.DefaultRootFSName = "ArchLinuxARM-" + Stem;
+  Picked.Summary = "custom manifest";
+  return Picked;
+}
 
-    FileTargets Target {};
-    Target.DistroName = json_getName(RootItem);
+// What the pins add up to, for the confirmation prompt.  Parsing failures are not fatal:
+// alarm_sysroot.py is the authority on the manifest, this is only a preview.
+struct ManifestSummary {
+  size_t Packages {0};
+  uint64_t Download {0};
+  uint64_t Installed {0};
+  fextl::string Mirror {};
+  fextl::string Arch {};
+};
 
-    for (const json_t* DataItem = json_getChild(RootItem); DataItem != nullptr; DataItem = json_getSibling(DataItem)) {
-      auto DataName = std::string_view {json_getName(DataItem)};
-
-      if (DataName == "DistroMatch") {
-        Target.DistroMatch = json_getValue(DataItem);
-      } else if (DataName == "DistroVersion") {
-        Target.VersionMatch = json_getValue(DataItem);
-      } else if (DataName == "URL") {
-        Target.URL = json_getValue(DataItem);
-      } else if (DataName == "Hash") {
-        Target.Hash = json_getValue(DataItem);
-      } else if (DataName == "Type") {
-        auto DataValue = std::string_view {json_getValue(DataItem)};
-        if (DataValue == "squashfs") {
-          Target.Type = FileTargets::FileType::TYPE_SQUASHFS;
-        } else if (DataValue == "erofs") {
-          Target.Type = FileTargets::FileType::TYPE_EROFS;
-        } else {
-          Target.Type = FileTargets::FileType::TYPE_UNKNOWN;
+ManifestSummary SummariseManifest(const fextl::string& Path) {
+  ManifestSummary Summary;
+  std::ifstream File(Path.c_str());
+  std::string Line;
+  while (std::getline(File, Line)) {
+    std::istringstream Stream(Line);
+    std::string Key;
+    if (!(Stream >> Key) || Key.empty() || Key[0] == '#') {
+      continue;
+    }
+    if (Key == "mirror") {
+      std::string Value;
+      Stream >> Value;
+      Summary.Mirror = Value.c_str();
+    } else if (Key == "arch") {
+      std::string Value;
+      Stream >> Value;
+      Summary.Arch = Value.c_str();
+    } else if (Key == "pkg" || Key == "keyring") {
+      std::string Name, Version, Repo, FileName, Sha;
+      uint64_t CSize {}, ISize {};
+      if (Stream >> Name >> Version >> Repo >> FileName >> Sha >> CSize >> ISize) {
+        if (Key == "pkg") {
+          ++Summary.Packages;
         }
-      }
-    }
-    bool SupportsSquashFS = WorkingAppsTester::Has_Squashfuse || WorkingAppsTester::Has_Unsquashfs;
-    bool SupportsEroFS = WorkingAppsTester::Has_EroFSFuse;
-    if ((Target.Type == FileTargets::FileType::TYPE_SQUASHFS && SupportsSquashFS) ||
-        (Target.Type == FileTargets::FileType::TYPE_EROFS && SupportsEroFS)) {
-      // If we don't understand the type, then we can't use this.
-      // Additionally if the type is erofs but the user doesn't have erofsfuse, then we can't use this
-      Targets.emplace_back(Target);
-    }
-  }
-
-  return Targets;
-}
-} // namespace WebFileFetcher
-
-namespace Zenity {
-bool ExecWithQuestion(const fextl::string& Question) {
-  fextl::string TextArg = "--text=" + Question;
-  const char* Args[] = {
-    "zenity",
-    "--question",
-    TextArg.c_str(),
-    nullptr,
-  };
-
-  int32_t Result = Exec::ExecAndWaitForResponse(Args[0], const_cast<char* const*>(Args));
-  // 0 on Yes, 1 on No
-  return Result == 0;
-}
-
-void ExecWithInfo(const fextl::string& Text) {
-  fextl::string TextArg = "--text=" + Text;
-  const char* Args[] = {
-    "zenity",
-    "--info",
-    TextArg.c_str(),
-    nullptr,
-  };
-
-  Exec::ExecAndWaitForResponse(Args[0], const_cast<char* const*>(Args));
-}
-
-bool AskForConfirmation(const fextl::string& Question) {
-  return ArgOptions::AssumeYes || ExecWithQuestion(Question);
-}
-
-int32_t AskForConfirmationList(const fextl::string& Text, const std::span<const fextl::string> Arguments) {
-  fextl::string TextArg = "--text=" + Text;
-
-  std::vector<const char*> ExecveArgs = {
-    "zenity", "--list", TextArg.c_str(), "--hide-header", "--column=Index", "--column=Text", "--hide-column=1",
-  };
-
-  std::vector<fextl::string> NumberArgs;
-  for (size_t i = 0; i < Arguments.size(); ++i) {
-    NumberArgs.emplace_back(std::to_string(i));
-  }
-
-  for (size_t i = 0; i < Arguments.size(); ++i) {
-    const auto& Arg = Arguments[i];
-    ExecveArgs.emplace_back(NumberArgs[i].c_str());
-    ExecveArgs.emplace_back(Arg.c_str());
-  }
-  ExecveArgs.emplace_back(nullptr);
-
-  auto Result = Exec::ExecAndWaitForResponseText(ExecveArgs[0], const_cast<char* const*>(ExecveArgs.data()));
-  if (Result.empty()) {
-    return -1;
-  }
-  return std::stoi(Result);
-}
-
-int32_t AskForComplexConfirmationList(const std::string& Text, const std::span<const std::string> Arguments) {
-  std::string TextArg = "--text=" + Text;
-
-  std::vector<const char*> ExecveArgs = {
-    "zenity",
-    "--list",
-    TextArg.c_str(),
-  };
-
-  for (auto& Arg : Arguments) {
-    ExecveArgs.emplace_back(Arg.c_str());
-  }
-  ExecveArgs.emplace_back(nullptr);
-
-  auto Result = Exec::ExecAndWaitForResponseText(ExecveArgs[0], const_cast<char* const*>(ExecveArgs.data()));
-  if (Result.empty()) {
-    return -1;
-  }
-  return std::stoi(Result);
-}
-
-int32_t AskForDistroSelection(DistroQuery::DistroInfo& Info, const std::span<const WebFileFetcher::FileTargets> Targets) {
-  // Search for an exact match
-  int32_t DistroIndex = -1;
-  if (!Info.Unknown) {
-    for (size_t i = 0; i < Targets.size(); ++i) {
-      const auto& Target = Targets[i];
-
-      bool ExactMatch = Target.DistroMatch == Info.DistroName && (Info.RollingRelease || Target.VersionMatch == Info.DistroVersion);
-      if (ExactMatch) {
-        fextl::string Question = fextl::fmt::format("Found exact match for distro '{}'. Do you want to select this image?", Target.DistroName);
-        if (ExecWithQuestion(Question)) {
-          DistroIndex = i;
-          break;
-        }
+        Summary.Download += CSize;
+        Summary.Installed += ISize;
       }
     }
   }
-
-  if (DistroIndex != -1) {
-    return DistroIndex;
-  }
-
-  if (ArgOptions::DistroListOption == ArgOptions::ListQueryOption::OPTION_FIRST) {
-    // Return the first option if not an exact match.
-    return 0;
-  }
-
-  std::vector<std::string> Args;
-
-  Args.emplace_back("--column=Index");
-  Args.emplace_back("--column=Distro");
-  Args.emplace_back("--hide-column=1");
-  for (size_t i = 0; i < Targets.size(); ++i) {
-    const auto& Target = Targets[i];
-    Args.emplace_back(std::to_string(i));
-    Args.emplace_back(Target.DistroName);
-  }
-
-  std::string Text = "RootFS list selection";
-  return AskForComplexConfirmationList(Text, Args);
+  return Summary;
 }
 
-bool ValidateCheckExists(const WebFileFetcher::FileTargets& Target) {
-  fextl::string RootFS = FEXCore::Config::GetDataDirectory() + "RootFS/";
-  auto filename = Target.URL.substr(Target.URL.find_last_of('/') + 1);
-  auto PathName = RootFS + filename;
-  uint64_t ExpectedHash = std::stoul(Target.Hash, nullptr, 16);
+// ---------------------------------------------------------------- config writing
 
-  std::error_code ec;
-  if (std::filesystem::exists(PathName, ec)) {
-    const std::array<const fextl::string, 2> Args {
-      "Overwrite",
-      "Validate",
-    };
-    fextl::string Text = filename + " already exists. What do you want to do?";
-    int Result = AskForConfirmationList(Text, Args);
-    if (Result == -1) {
-      return false;
-    }
+// The layering, as FEXCore::Config::LoadOrder has it, is
+//   LAYER_GLOBAL_MAIN < LAYER_MAIN < ... < LAYER_ENVIRONMENT
+// so the global file (GetConfigFileLocation(true)) is the *lowest* layer and the user's
+// own file (GetConfigFileLocation(false)) overrides it.  This only ever writes the user's
+// file, and says so when a global layer is also setting RootFS.
+fextl::string GlobalRootFSSetting() {
+  auto Global = FEX::Config::CreateGlobalMainLayer();
+  Global->Load();
+  auto Value = Global->Get(FEXCore::Config::ConfigOption::CONFIG_ROOTFS);
+  if (Value && *Value) {
+    return **Value;
+  }
+  return {};
+}
 
-    auto Res = XXFileHash::HashFile(PathName);
-    if (Result == 0) {
-      if (Res == ExpectedHash) {
-        fextl::string Text = fextl::fmt::format("{} matches expected hash. Skipping download", filename);
-        ExecWithInfo(Text);
-        return false;
-      }
-    } else if (Result == 1) {
-      if (Res != ExpectedHash) {
-        return AskForConfirmation("RootFS doesn't match hash!\nDo you want to redownload?");
-      } else {
-        fextl::string Text = fextl::fmt::format("{} matches expected hash", filename);
-        ExecWithInfo(Text);
-        return false;
-      }
-    }
+bool SetUserDefaultRootFS(const fextl::string& Value) {
+  const fextl::string Filename = FEXCore::Config::GetConfigFileLocation(false);
+  const auto Directory = ParentOf(Filename);
+  if (!MakeDirectories(Directory)) {
+    fextl::fmt::print(stderr, "POWERarmRootFSFetcher: cannot create config directory '{}': {}\n", Directory, std::strerror(errno));
+    return false;
   }
 
+  auto Layer = FEX::Config::CreateMainLayer(&Filename);
+  // Load() first so every other key in the user's file survives the write.
+  Layer->Load();
+  Layer->Set(FEXCore::Config::ConfigOption::CONFIG_ROOTFS, Value);
+  FEX::Config::SaveLayerToJSON(Filename, Layer.get());
+
+  // SaveLayerToJSON is silent when the file cannot be opened, so confirm the write.
+  std::ifstream Check(Filename.c_str());
+  if (!Check.is_open()) {
+    fextl::fmt::print(stderr, "POWERarmRootFSFetcher: failed to write '{}'.\n", Filename);
+    return false;
+  }
+  fextl::fmt::print("RootFS \"{}\" written to {}\n", Value, Filename);
+
+  const auto Global = GlobalRootFSSetting();
+  if (!Global.empty() && Global != Value) {
+    fextl::fmt::print("note: the global config ({}) sets RootFS \"{}\"; the user file above is the higher layer and wins.\n",
+                      FEXCore::Config::GetConfigFileLocation(true), Global);
+  }
+  if (::getenv(POWERARM_ENV_PREFIX "ROOTFS")) {
+    fextl::fmt::print("note: " POWERARM_ENV_PREFIX "ROOTFS is set in this environment and overrides both config files.\n");
+  }
   return true;
 }
 
-bool ValidateDownloadSelection(const WebFileFetcher::FileTargets& Target) {
-  fextl::string Text = fextl::fmt::format("Selected Rootfs: {}\n", Target.DistroName);
-  Text += fmt::format("\tURL: {}\n", Target.URL);
-  Text += fmt::format("Are you sure that you want to download this image");
-
-  if (AskForConfirmation(Text)) {
-    fextl::string RootFS = FEXCore::Config::GetDataDirectory() + "RootFS/";
-    std::error_code ec {};
-    if (!std::filesystem::exists(RootFS, ec)) {
-      // Doesn't exist, create the the folder as a user convenience
-      if (!std::filesystem::create_directories(RootFS, ec)) {
-        // Well I guess we failed
-        Text = fmt::format("Couldn't create {} path for storing RootFS", RootFS);
-        ExecWithInfo(Text);
-        return false;
-      }
-    }
-
-    if (!WebFileFetcher::DownloadToPathWithZenityProgress(Target.URL, RootFS)) {
-      return false;
-    }
-
-    return true;
+// A name resolves under <datadir>/RootFS/, which is nicer to read and survives the tree
+// being moved with the data directory -- but POWERARM_PORTABLE redirects the data
+// directory, so a name cannot be resolved there.  Prefer the name only when the tree
+// really is the named one, and only when portable mode is not in play.
+fextl::string ConfigValueFor(const fextl::string& Dest, const fextl::string& Name) {
+  const bool Portable = ::getenv(POWERARM_ENV_PREFIX "PORTABLE") != nullptr;
+  const fextl::string NamedPath = FEXCore::Config::GetDataDirectory(false) + "RootFS/" + Name;
+  if (!Portable && Dest == NamedPath) {
+    return Name;
   }
-  return false;
+  return Dest;
 }
-} // namespace Zenity
 
-namespace TTY {
-bool AskForConfirmation(const fextl::string& Question) {
-  if (ArgOptions::AssumeYes) {
+// ---------------------------------------------------------------- reporting a tree
+
+const char* VerdictWord(FEX::RootFSCheck::Verdict V) {
+  switch (V) {
+  case FEX::RootFSCheck::Verdict::OK: return "ok";
+  case FEX::RootFSCheck::Verdict::UNVERIFIED: return "unverified";
+  case FEX::RootFSCheck::Verdict::MISSING: return "missing";
+  case FEX::RootFSCheck::Verdict::EMPTY: return "empty";
+  case FEX::RootFSCheck::Verdict::WRONG_MACHINE: return "wrong-architecture";
+  case FEX::RootFSCheck::Verdict::NOT_A_DIRECTORY: return "not-a-directory";
+  }
+  return "?";
+}
+
+// ---------------------------------------------------------------- the overlay
+
+// Guest pacman runs *inside* the emulator, so the tool needs the emulator binary.  It sits
+// next to this one in both a build tree and an install.
+std::optional<fextl::string> FindEmulator() {
+  if (!Opts.Emulator.empty()) {
+    if (Exists(Opts.Emulator)) {
+      return Opts.Emulator;
+    }
+    fextl::fmt::print(stderr, "POWERarmRootFSFetcher: no emulator at '{}'.\n", Opts.Emulator);
+    return std::nullopt;
+  }
+  const auto SelfDir = SelfDirectory();
+  if (!SelfDir.empty() && Exists(SelfDir + "/" POWERARM_EXE_PREFIX)) {
+    return SelfDir + "/" POWERARM_EXE_PREFIX;
+  }
+  // Last resort: let execvp find it on PATH.
+  return fextl::string {POWERARM_EXE_PREFIX};
+}
+
+// The per-user writable layer.  The emulator picks up "<rootfs>-overlay" on its own whenever
+// that directory exists (DESIGN 6.2a.1), so nothing else has to be configured -- but a base
+// with no overlay is a sysroot, not a usable desktop guest: everything a GUI app needs
+// (libxkbcommon, dbus, the fonts, the app itself) arrives through guest pacman, and guest
+// pacman needs the local package database and the keyring that overlay-init writes.
+//
+// The pacman dance is the README's recipe: pacman and pacman-key insist on uid 0, so they run
+// as root of a user namespace (no privilege), and POWERARM_PORTABLE=1 is required there or
+// the emulator looks for its server socket under the namespace's uid 0 and fails.
+bool BuildOverlay(const fextl::string& ScriptsDir, const fextl::string& ManifestPath, const fextl::string& Base, const fextl::string& Cache) {
+  const fextl::string Overlay = Base + "-overlay";
+
+  if (Exists(Overlay) && !DirectoryIsEmpty(Overlay)) {
+    fextl::fmt::print("\noverlay {} already exists and is not empty; leaving it alone.\n", Overlay);
     return true;
   }
+  if (!MakeDirectories(Overlay)) {
+    fextl::fmt::print(stderr, "POWERarmRootFSFetcher: cannot create '{}': {}\n", Overlay, std::strerror(errno));
+    return false;
+  }
 
-  auto ToLowerInPlace = [](auto& Str) {
-    std::transform(Str.begin(), Str.end(), Str.begin(), [](unsigned char c) { return std::tolower(c); });
+  fextl::vector<fextl::string> Args {
+    "python3", ScriptsDir + "/alarm_sysroot.py", "overlay-init", "--dest", Overlay, "--base", Base, "--manifest", ManifestPath,
+    "--cache", Cache, "--with-pacman", "--package", "pacman", "--package", "archlinuxarm-keyring",
   };
+  for (const auto& Mirror : Opts.Mirrors) {
+    Args.emplace_back("--mirror");
+    Args.emplace_back(Mirror);
+  }
+  if (!Opts.VerifySignatures) {
+    Args.emplace_back("--no-verify-signatures");
+  }
 
-  std::cout << Question << std::endl;
-  std::cout << "Response {y,yes,1} or {n,no,0}" << std::endl;
-  std::string Response;
-  std::cin >> Response;
-
-  ToLowerInPlace(Response);
-  if (Response == "y" || Response == "yes" || Response == "1") {
-    return true;
-  } else if (Response == "n" || Response == "no" || Response == "0") {
+  fextl::fmt::print("\n--- per-user overlay: {}\n", Overlay);
+  PrintCommand(Args);
+  const int Result = RunCommand(Args);
+  if (Result != 0) {
+    fextl::fmt::print(stderr, "\nPOWERarmRootFSFetcher: overlay-init failed (exit {}). The base is fine; the overlay is not.\n", Result);
     return false;
-  } else {
-    std::cout << "Unknown response. Assuming no" << std::endl;
-    return false;
   }
-}
-
-void ExecWithInfo(const fextl::string& Text) {
-  std::cout << Text << std::endl;
-}
-
-int32_t AskForConfirmationList(const fextl::string& Text, std::span<const fextl::string> List) {
-  fmt::print("{}\n", Text);
-  fmt::print("Options:\n");
-  fmt::print("\t0: Cancel\n");
-
-  for (size_t i = 0; i < List.size(); ++i) {
-    fmt::print("\t{}: {}\n", i + 1, List[i]);
-  }
-
-  fmt::print("\t\nResponse {{1-{}}} or 0 to cancel\n", List.size());
-  fextl::string Response;
-  std::cin >> Response;
-
-  int32_t ResponseInt = std::stol(Response.data(), nullptr, 0);
-  if (ResponseInt == 0) {
-    return -1;
-  } else if (ResponseInt >= 1 && (ResponseInt - 1) < List.size()) {
-    return ResponseInt - 1;
-  } else {
-    std::cout << "Unknown response. Assuming cancel" << std::endl;
-    return -1;
-  }
-}
-
-int32_t AskForDistroSelection(DistroQuery::DistroInfo& Info, const std::span<const WebFileFetcher::FileTargets> Targets) {
-  // Search for an exact match
-  int32_t DistroIndex = -1;
-  if (!Info.Unknown) {
-    for (size_t i = 0; i < Targets.size(); ++i) {
-      const auto& Target = Targets[i];
-
-      bool ExactMatch = Target.DistroMatch == Info.DistroName && Target.VersionMatch == Info.DistroVersion;
-      if (ExactMatch) {
-        fextl::string Question = fextl::fmt::format("Found exact match for distro '{}'. Do you want to select this image?", Target.DistroName);
-        if (AskForConfirmation(Question)) {
-          DistroIndex = i;
-          break;
-        }
-      }
-    }
-  }
-
-  if (DistroIndex != -1) {
-    return DistroIndex;
-  }
-
-  if (ArgOptions::DistroListOption == ArgOptions::ListQueryOption::OPTION_FIRST) {
-    // Return the first option if not an exact match.
-    return 0;
-  }
-
-  std::vector<fextl::string> Args;
-  for (size_t i = 0; i < Targets.size(); ++i) {
-    const auto& Target = Targets[i];
-    Args.emplace_back(Target.DistroName);
-  }
-
-  fextl::string Text = "RootFS list selection";
-  return AskForConfirmationList(Text, Args);
-}
-
-bool ValidateCheckExists(const WebFileFetcher::FileTargets& Target) {
-  fextl::string RootFS = FEXCore::Config::GetDataDirectory() + "RootFS/";
-  auto filename = Target.URL.substr(Target.URL.find_last_of('/') + 1);
-  auto PathName = RootFS + filename;
-  uint64_t ExpectedHash = std::stoul(Target.Hash, nullptr, 16);
-
-  std::error_code ec;
-  if (std::filesystem::exists(PathName, ec)) {
-    const std::array<fextl::string, 2> Args {
-      "Overwrite",
-      "Validate",
-    };
-    fextl::string Text = filename + " already exists. What do you want to do?";
-    int Result = AskForConfirmationList(Text, Args);
-    if (Result == -1) {
-      return false;
-    }
-    fmt::print("Validating RootFS hash...\n");
-    auto Res = XXFileHash::HashFile(PathName);
-    if (Result == 0) {
-      if (Res == ExpectedHash) {
-        fmt::print("{} matches expected hash. Skipping downloading\n", filename);
-        return false;
-      }
-    } else if (Result == 1) {
-      if (Res != ExpectedHash) {
-        fmt::print("RootFS doesn't match hash!\n");
-        return AskForConfirmation("Do you want to redownload?");
-      } else {
-        fmt::print("{} matches expected hash\n", filename);
-        return false;
-      }
-    }
-  }
-
   return true;
 }
 
-bool ValidateDownloadSelection(const WebFileFetcher::FileTargets& Target) {
-  fmt::print("Selected Rootfs: {}\n", Target.DistroName);
-  fmt::print("\tURL: {}\n", Target.URL);
-
-  if (AskForConfirmation("Are you sure that you want to download this image")) {
-    fextl::string RootFS = FEXCore::Config::GetDataDirectory() + "RootFS/";
-    std::error_code ec {};
-    if (!std::filesystem::exists(RootFS, ec)) {
-      // Doesn't exist, create the the folder as a user convenience
-      if (!std::filesystem::create_directories(RootFS, ec)) {
-        // Well I guess we failed
-        fmt::print("Couldn't create {} path for storing RootFS\n", RootFS);
-        return false;
-      }
-    }
-    auto DoDownload = [&Target, &RootFS]() -> bool {
-      if (!WebFileFetcher::DownloadToPath(Target.URL, RootFS)) {
-        fmt::print("Couldn't download RootFS\n");
-        return false;
-      }
-
-      return true;
-    };
-
-    while (DoDownload() == false) {
-      if (AskForConfirmation("Curl RootFS download failed. Do you want to retry?")) {
-        // Loop to retry
-      } else {
-        return false;
-      }
-    }
-
-    // Got here then we passed
-    return true;
+// pacman-key --init, --populate and pacman -Sy, in the sealed user namespace.  A failure here
+// is reported and does not undo the rootfs: the base and the overlay are both usable, the
+// guest just cannot install packages yet, and the exact commands are printed to retry by hand.
+bool InitGuestPacman(const fextl::string& Base) {
+  const auto Emulator = FindEmulator();
+  if (!Emulator) {
+    return false;
   }
-  return false;
+
+  const fextl::vector<std::pair<fextl::string, fextl::string>> Env {
+    {POWERARM_ENV_PREFIX "PORTABLE", "1"},
+    {POWERARM_ENV_PREFIX "ROOTFS", Base},
+  };
+
+  const std::array<fextl::vector<fextl::string>, 3> Steps {{
+    {"unshare", "-r", *Emulator, "/usr/bin/pacman-key", "--init"},
+    {"unshare", "-r", *Emulator, "/usr/bin/pacman-key", "--populate", "archlinuxarm"},
+    {"unshare", "-r", *Emulator, "/usr/bin/pacman", "-Sy"},
+  }};
+
+  fextl::fmt::print("\n--- guest pacman\n");
+  for (const auto& Step : Steps) {
+    PrintCommand(Step, Env);
+    const int Result = RunCommand(Step, Env);
+    if (Result != 0) {
+      fextl::fmt::print(stderr, "\nPOWERarmRootFSFetcher: that step exited {}. The rootfs and the overlay are in place; "
+                                "guest pacman is not initialised yet. Re-run the three commands above by hand "
+                                "(they need a user namespace: 'unshare -r' must be permitted).\n",
+                        Result);
+      return false;
+    }
+  }
+  return true;
 }
-} // namespace TTY
 
-namespace {
-std::function<bool(const fextl::string& Question)> _AskForConfirmation;
-std::function<void(const fextl::string& Text)> _ExecWithInfo;
-std::function<int32_t(const fextl::string& Text, const std::span<const fextl::string> List)> _AskForConfirmationList;
-std::function<int32_t(DistroQuery::DistroInfo& Info, const std::span<const WebFileFetcher::FileTargets> Targets)> _AskForDistroSelection;
-std::function<bool(const WebFileFetcher::FileTargets& Target)> _ValidateCheckExists;
-std::function<bool(const WebFileFetcher::FileTargets& Target)> _ValidateDownloadSelection;
+// ---------------------------------------------------------------- subcommands
 
-void CheckTTY() {
-  bool IsTTY {};
-  if (ArgOptions::UIOption == ArgOptions::UIOverrideOption::Default) {
-    IsTTY = isatty(STDOUT_FILENO);
+int CommandBuild(const fextl::string& NameArgument) {
+  const auto ScriptsDir = FindScriptsDirectory();
+  if (!ScriptsDir) {
+    return 1;
+  }
+  const auto Picked = PickManifest(*ScriptsDir);
+  if (!Picked) {
+    return 1;
+  }
+
+  const fextl::string Name = NameArgument.empty() ? Picked->DefaultRootFSName : NameArgument;
+  const bool WantOverlay = Opts.Overlay.value_or(Picked->OverlayByDefault);
+  fextl::string Dest = Opts.Dest;
+  if (Dest.empty()) {
+    Dest = FEXCore::Config::GetDataDirectory(false) + "RootFS/" + Name;
+  }
+
+  fextl::string Cache = Opts.Cache;
+  if (Cache.empty()) {
+    Cache = EnvOr("XDG_CACHE_HOME", HomeDirectory() + "/.cache") + "/powerarm/alarm-pkgs";
+  }
+
+  const auto Summary = SummariseManifest(Picked->Path);
+  if (!Summary.Arch.empty() && Summary.Arch != "aarch64") {
+    fextl::fmt::print(stderr,
+                      "POWERarmRootFSFetcher: manifest '{}' is for arch '{}'. POWERarm runs AArch64 "
+                      "guests; refusing.\n",
+                      Picked->Path, Summary.Arch);
+    return 1;
+  }
+
+  fextl::fmt::print("POWERarm rootfs build\n");
+  fextl::fmt::print("  manifest    {} ({})\n", Picked->Path, Picked->Summary);
+  fextl::fmt::print("  packages    {} pinned, {} to download, {} installed\n", Summary.Packages, HumanBytes(Summary.Download),
+                    HumanBytes(Summary.Installed));
+  fextl::fmt::print("  mirror      {}\n", Opts.Mirrors.empty() ? Summary.Mirror : Opts.Mirrors.front());
+  for (size_t i = 1; i < Opts.Mirrors.size(); ++i) {
+    fextl::fmt::print("              {} (fallback {})\n", Opts.Mirrors[i], i);
+  }
+  fextl::fmt::print("  signatures  {}\n", Opts.VerifySignatures ? "verified against the pinned Arch Linux ARM key" :
+                                                                 "NOT VERIFIED (--no-verify-signatures): sha256 pins only");
+  fextl::fmt::print("  cache       {}\n", Cache);
+  fextl::fmt::print("  destination {}\n", Dest);
+  if (WantOverlay) {
+    fextl::fmt::print("  overlay     {}-overlay, with guest pacman{}\n", Dest,
+                      Opts.PacmanInit ? " (pacman-key --init, --populate, pacman -Sy)" : " (--no-pacman-init: not initialised)");
+  } else if (Picked->Alias == "m2" && !Opts.Overlay.has_value()) {
+    fextl::fmt::print("  overlay     none: the M2 pin's byte-compare gates are keyed to the bare base "
+                      "(pass --overlay to add one anyway)\n");
   } else {
-    IsTTY = ArgOptions::UIOption == ArgOptions::UIOverrideOption::TTY;
+    fextl::fmt::print("  overlay     none (--no-overlay)\n");
   }
 
-  if (!WorkingAppsTester::Has_Zenity) {
-    // Force TTY if zenity isn't installed.
-    if (ArgOptions::UIOption == ArgOptions::UIOverrideOption::Zenity) {
-      fmt::print("Zenity isn't executable. Falling back to TTY mode\n");
-    }
-    IsTTY = true;
+  if (Exists(Dest) && !DirectoryIsEmpty(Dest) && !Opts.Force) {
+    fextl::fmt::print(stderr,
+                      "\nPOWERarmRootFSFetcher: '{}' already exists and is not empty. Pass --force to replace it, "
+                      "or --dest/NAME to build elsewhere.\n",
+                      Dest);
+    fextl::fmt::print(stderr, "Nothing was touched.\n");
+    return 1;
   }
 
-  if (IsTTY) {
-    _AskForConfirmation = TTY::AskForConfirmation;
-    _ExecWithInfo = TTY::ExecWithInfo;
-    _AskForConfirmationList = TTY::AskForConfirmationList;
-    _AskForDistroSelection = TTY::AskForDistroSelection;
-    _ValidateCheckExists = TTY::ValidateCheckExists;
-    _ValidateDownloadSelection = TTY::ValidateDownloadSelection;
+  if (Opts.DryRun) {
+    fextl::fmt::print("\n(--dry-run: stopping here)\n");
+    return 0;
+  }
+
+  if (!AskYesNo("\nBuild it?")) {
+    fextl::fmt::print("Nothing was touched.\n");
+    return 1;
+  }
+
+  if (!MakeDirectories(ParentOf(Dest)) || !MakeDirectories(Cache)) {
+    fextl::fmt::print(stderr, "POWERarmRootFSFetcher: cannot create '{}' or '{}': {}\n", ParentOf(Dest), Cache, std::strerror(errno));
+    return 1;
+  }
+
+  const fextl::string Contents = ParentOf(Cache) + "/" + BaseNameOf(Dest) + ".contents";
+
+  fextl::vector<fextl::string> Args {
+    "python3", *ScriptsDir + "/alarm_sysroot.py", "extract", "--manifest", Picked->Path, "--cache", Cache, "--dest", Dest,
+    "--contents-out", Contents,
+  };
+  for (const auto& Mirror : Opts.Mirrors) {
+    Args.emplace_back("--mirror");
+    Args.emplace_back(Mirror);
+  }
+  if (!Opts.VerifySignatures) {
+    Args.emplace_back("--no-verify-signatures");
+  }
+  if (Opts.Force) {
+    Args.emplace_back("--force");
+  }
+
+  fextl::fmt::print("\n");
+  PrintCommand(Args);
+  const int Result = RunCommand(Args);
+  if (Result != 0) {
+    fextl::fmt::print(stderr, "\nPOWERarmRootFSFetcher: alarm_sysroot.py extract failed (exit {}). RootFS not changed in the config.\n", Result);
+    return Result == -1 ? 1 : Result;
+  }
+
+  // The builder succeeded, but "succeeded" is not the same as "usable by this emulator":
+  // check what actually landed rather than assume it.
+  const auto Verdict = FEX::RootFSCheck::Check(Dest);
+  if (FEX::RootFSCheck::IsFatal(Verdict.Verdict)) {
+    fextl::fmt::print(stderr, "\nPOWERarmRootFSFetcher: the built tree is not usable: {}.\n", Verdict.Reason);
+    fextl::fmt::print(stderr, "RootFS not changed in the config.\n");
+    return 1;
+  }
+  if (Verdict.Verdict == FEX::RootFSCheck::Verdict::UNVERIFIED) {
+    fextl::fmt::print("\nwarning: {}.\n", Verdict.Reason);
   } else {
-    _AskForConfirmation = Zenity::AskForConfirmation;
-    _ExecWithInfo = Zenity::ExecWithInfo;
-    _AskForConfirmationList = Zenity::AskForConfirmationList;
-    _AskForDistroSelection = Zenity::AskForDistroSelection;
-    _ValidateCheckExists = Zenity::ValidateCheckExists;
-    _ValidateDownloadSelection = Zenity::ValidateDownloadSelection;
+    fextl::fmt::print("\nverified AArch64 ({} is AArch64)\n", Verdict.Probe);
   }
-}
+  fextl::fmt::print("contents listing {}\n", Contents);
 
-bool AskForConfirmation(const fextl::string& Question) {
-  return _AskForConfirmation(Question);
-}
-
-void ExecWithInfo(const fextl::string& Text) {
-  _ExecWithInfo(Text);
-}
-
-int32_t AskForConfirmationList(const fextl::string& Text, const std::span<const fextl::string> Arguments) {
-  return _AskForConfirmationList(Text, Arguments);
-}
-
-int32_t AskForDistroSelection(const std::span<const WebFileFetcher::FileTargets> Targets) {
-  auto Info = DistroQuery::GetDistroInfo();
-
-  if (!ArgOptions::DistroName.empty()) {
-    Info.DistroName = ArgOptions::DistroName;
-  }
-  if (!ArgOptions::DistroVersion.empty()) {
-    Info.DistroVersion = ArgOptions::DistroVersion;
-  }
-  // explicit CLI selection must still run exact-match logic.
-  if (!ArgOptions::DistroName.empty() || !ArgOptions::DistroVersion.empty()) {
-    Info.Unknown = false;
+  if (Opts.Align) {
+    fextl::vector<fextl::string> AlignArgs {"python3", *ScriptsDir + "/alarm_sysroot.py", "align", Dest};
+    fextl::fmt::print("\n--- PT_LOAD p_align\n");
+    RunCommand(AlignArgs);
   }
 
-  return _AskForDistroSelection(Info, Targets);
+  // The base is the read-only half.  Neither of the next two stages can damage it, and a
+  // failure in either still leaves a working (if uninstallable-into) guest, so they report
+  // and carry on to the config write rather than throwing the build away.
+  bool OverlayOK = true;
+  bool PacmanOK = true;
+  if (WantOverlay) {
+    OverlayOK = BuildOverlay(*ScriptsDir, Picked->Path, Dest, Cache);
+    if (OverlayOK && Opts.PacmanInit) {
+      PacmanOK = InitGuestPacman(Dest);
+    }
+  }
+
+  if (Opts.SetDefault) {
+    const auto Value = ConfigValueFor(Dest, Name);
+    if (!SetUserDefaultRootFS(Value)) {
+      return 1;
+    }
+  } else {
+    fextl::fmt::print("\n(--no-set-default) Select it with " POWERARM_ENV_PREFIX "ROOTFS={} or "
+                      "'{}RootFSFetcher default {}'.\n",
+                      Name, POWERARM_EXE_PREFIX, Name);
+  }
+
+  fextl::fmt::print("\nDone. Run a guest program with: {} /usr/bin/uname -m\n", POWERARM_EXE_PREFIX);
+  if (WantOverlay && OverlayOK && PacmanOK) {
+    fextl::fmt::print("Install into the guest with: " POWERARM_ENV_PREFIX "PORTABLE=1 " POWERARM_ENV_PREFIX
+                      "ROOTFS={} unshare -r {} /usr/bin/pacman -S <package>\n",
+                      Name, POWERARM_EXE_PREFIX);
+  }
+  return (OverlayOK && PacmanOK) ? 0 : 1;
 }
 
-bool ValidateCheckExists(const WebFileFetcher::FileTargets& Target) {
-  return _ValidateCheckExists(Target);
+// Everything the emulator would search for a named rootfs, in the same order
+// FEXCore::Config::ReloadMetaLayer walks it.
+fextl::vector<fextl::string> RootFSSearchDirectories() {
+  fextl::vector<fextl::string> Dirs;
+  for (bool Global : {false, true}) {
+    Dirs.emplace_back(FEXCore::Config::GetDataDirectory(Global) + "RootFS/");
+    Dirs.emplace_back(FEXCore::Config::GetConfigDirectory(Global) + "RootFS/");
+  }
+  return Dirs;
 }
 
-bool ValidateDownloadSelection(const WebFileFetcher::FileTargets& Target) {
-  return _ValidateDownloadSelection(Target);
+int CommandList() {
+  const auto Configured = FEXCore::Config::Get(FEXCore::Config::CONFIG_ROOTFS);
+  const fextl::string ConfiguredPath = (Configured && *Configured) ? **Configured : fextl::string {};
+
+  fextl::vector<fextl::string> Seen;
+  size_t Count = 0;
+  for (const auto& Dir : RootFSSearchDirectories()) {
+    DIR* Handle = ::opendir(Dir.c_str());
+    if (!Handle) {
+      continue;
+    }
+    fextl::vector<fextl::string> Entries;
+    while (const auto* Entry = ::readdir(Handle)) {
+      if (Entry->d_name[0] == '.') {
+        continue;
+      }
+      Entries.emplace_back(Entry->d_name);
+    }
+    ::closedir(Handle);
+    std::sort(Entries.begin(), Entries.end());
+
+    for (const auto& Entry : Entries) {
+      // "<name>-overlay" is the writable layer of <name>, not a rootfs of its own.
+      if (Entry.size() > 8 && Entry.compare(Entry.size() - 8, 8, "-overlay") == 0) {
+        continue;
+      }
+      const fextl::string Path = Dir + Entry;
+      if (std::find(Seen.begin(), Seen.end(), Path) != Seen.end()) {
+        continue;
+      }
+      Seen.emplace_back(Path);
+
+      const auto Verdict = FEX::RootFSCheck::Check(Path);
+      const bool Active = !ConfiguredPath.empty() && (ConfiguredPath == Path || ConfiguredPath == Entry);
+      const auto* Machine = FEX::RootFSCheck::MachineName(Verdict.Machine);
+      const fextl::string MachineText = Machine     ? fextl::string {Machine} :
+                                        Verdict.Machine ? fextl::fmt::format("e_machine {}", Verdict.Machine) :
+                                                          fextl::string {"-"};
+      fextl::fmt::print("{} {:<24} {:<18} {}{}\n", Active ? "*" : " ", Entry.c_str(), VerdictWord(Verdict.Verdict),
+                        MachineText.c_str(), IsDirectory(Path + "-overlay") ? "  +overlay" : "");
+      if (FEX::RootFSCheck::IsFatal(Verdict.Verdict) || Verdict.Verdict == FEX::RootFSCheck::Verdict::UNVERIFIED) {
+        fextl::fmt::print("    {}\n", Verdict.Reason);
+      }
+      ++Count;
+    }
+  }
+
+  if (Count == 0) {
+    fextl::fmt::print("No rootfs found under:\n");
+    for (const auto& Dir : RootFSSearchDirectories()) {
+      fextl::fmt::print("  {}\n", Dir);
+    }
+    fextl::fmt::print("Build one with '{}RootFSFetcher build'.\n", POWERARM_EXE_PREFIX);
+    return 1;
+  }
+
+  fextl::fmt::print("\n'*' is the one the current configuration resolves to");
+  if (!ConfiguredPath.empty()) {
+    fextl::fmt::print(" ({})", ConfiguredPath);
+  }
+  fextl::fmt::print(".\n");
+  return 0;
 }
+
+// Resolves a name the way the emulator does, so `check` answers for the tree that would
+// actually be used and not for a lookalike.
+fextl::string ResolveNameOrPath(const fextl::string& NameOrPath) {
+  if (NameOrPath.find('/') != fextl::string::npos) {
+    return NameOrPath;
+  }
+  for (const auto& Dir : RootFSSearchDirectories()) {
+    const fextl::string Candidate = Dir + NameOrPath;
+    if (Exists(Candidate)) {
+      return Candidate;
+    }
+  }
+  return NameOrPath;
+}
+
+int CommandCheck(const fextl::string& NameArgument) {
+  fextl::string Target = NameArgument;
+  if (Target.empty()) {
+    const auto Configured = FEXCore::Config::Get(FEXCore::Config::CONFIG_ROOTFS);
+    if (!Configured || !*Configured || (*Configured)->empty()) {
+      fextl::fmt::print(stderr, "POWERarmRootFSFetcher: no RootFS is configured and none was named.\n");
+      fextl::fmt::print(stderr, "Build one with '{}RootFSFetcher build'.\n", POWERARM_EXE_PREFIX);
+      return 1;
+    }
+    Target = **Configured;
+  } else {
+    Target = ResolveNameOrPath(Target);
+  }
+
+  const auto Verdict = FEX::RootFSCheck::Check(Target);
+  fextl::fmt::print("{}\n", Target);
+  fextl::fmt::print("  verdict  {}\n", VerdictWord(Verdict.Verdict));
+  if (Verdict.Machine) {
+    const auto* Machine = FEX::RootFSCheck::MachineName(Verdict.Machine);
+    fextl::fmt::print("  machine  {} (from {})\n", Machine ? Machine : "unknown", Verdict.Probe);
+  }
+  if (IsDirectory(Target + "-overlay")) {
+    fextl::fmt::print("  overlay  {}-overlay\n", Target);
+  }
+  if (!Verdict.Reason.empty()) {
+    fextl::fmt::print("  {}\n", Verdict.Reason);
+  }
+  if (FEX::RootFSCheck::IsFatal(Verdict.Verdict)) {
+    return 1;
+  }
+  return 0;
+}
+
+// Adding the overlay to a base that already exists: the second half of `build`, on its own.
+// Useful when a base was built by build-alarm-sysroot.sh, when the pacman steps were skipped,
+// and when the M2 pin is deliberately given an overlay after its gates have run.
+int CommandOverlay(const fextl::string& NameArgument) {
+  const auto ScriptsDir = FindScriptsDirectory();
+  if (!ScriptsDir) {
+    return 1;
+  }
+
+  fextl::string Base = NameArgument;
+  if (Base.empty()) {
+    const auto Configured = FEXCore::Config::Get(FEXCore::Config::CONFIG_ROOTFS);
+    if (!Configured || !*Configured || (*Configured)->empty()) {
+      fextl::fmt::print(stderr, "POWERarmRootFSFetcher: no RootFS is configured and none was named.\n");
+      return 1;
+    }
+    Base = **Configured;
+  } else {
+    Base = ResolveNameOrPath(Base);
+  }
+
+  const auto Verdict = FEX::RootFSCheck::Check(Base);
+  if (FEX::RootFSCheck::IsFatal(Verdict.Verdict)) {
+    fextl::fmt::print(stderr, "POWERarmRootFSFetcher: {}.\n", Verdict.Reason);
+    return 1;
+  }
+
+  const auto Picked = PickManifest(*ScriptsDir);
+  if (!Picked) {
+    return 1;
+  }
+  fextl::string Cache = Opts.Cache;
+  if (Cache.empty()) {
+    Cache = EnvOr("XDG_CACHE_HOME", HomeDirectory() + "/.cache") + "/powerarm/alarm-pkgs";
+  }
+
+  fextl::fmt::print("base     {}\n", Base);
+  fextl::fmt::print("overlay  {}-overlay\n", Base);
+  fextl::fmt::print("manifest {} (must be the one that built the base)\n", Picked->Path);
+  if (!Opts.DryRun && !AskYesNo("\nAn overlay changes what every guest using this rootfs sees. Create it?")) {
+    fextl::fmt::print("Nothing was touched.\n");
+    return 1;
+  }
+  if (Opts.DryRun) {
+    fextl::fmt::print("\n(--dry-run: stopping here)\n");
+    return 0;
+  }
+
+  if (!BuildOverlay(*ScriptsDir, Picked->Path, Base, Cache)) {
+    return 1;
+  }
+  if (Opts.PacmanInit && !InitGuestPacman(Base)) {
+    return 1;
+  }
+  fextl::fmt::print("\nDone.\n");
+  return 0;
+}
+
+int CommandDefault(const fextl::string& NameArgument) {
+  if (NameArgument.empty()) {
+    fextl::fmt::print(stderr, "POWERarmRootFSFetcher: 'default' needs a rootfs name or path.\n");
+    return 1;
+  }
+
+  const auto Resolved = ResolveNameOrPath(NameArgument);
+  const auto Verdict = FEX::RootFSCheck::Check(Resolved);
+  if (FEX::RootFSCheck::IsFatal(Verdict.Verdict)) {
+    // Refusing here is the whole point: writing an unusable RootFS into the config is
+    // what makes every later failure look like an emulator bug.
+    fextl::fmt::print(stderr, "POWERarmRootFSFetcher: refusing to set an unusable RootFS: {}.\n", Verdict.Reason);
+    if (!Opts.Force) {
+      fextl::fmt::print(stderr, "Pass --force to write it anyway.\n");
+      return 1;
+    }
+    fextl::fmt::print(stderr, "--force given: writing it anyway.\n");
+  } else if (Verdict.Verdict == FEX::RootFSCheck::Verdict::UNVERIFIED) {
+    fextl::fmt::print("warning: {}.\n", Verdict.Reason);
+  }
+
+  // Keep a bare name as a name: it stays valid if the data directory moves.
+  const fextl::string Value = NameArgument.find('/') == fextl::string::npos ? NameArgument : Resolved;
+  return SetUserDefaultRootFS(Value) ? 0 : 1;
+}
+
+// ---------------------------------------------------------------- argument parsing
+
+const char* Usage = R"(POWERarmRootFSFetcher [options] [command]
+
+Builds and selects the AArch64 Arch Linux ARM rootfs POWERarm runs guests against.
+
+Commands:
+  build [NAME]        build a rootfs, its per-user overlay and guest pacman, and select it
+                      (this is the default command)
+  list                list every rootfs POWERarm can find, with its verified architecture
+  check [NAME|PATH]   check one rootfs (default: the configured one); non-zero if unusable
+  default NAME|PATH   point the user's config at an existing rootfs
+  overlay [NAME|PATH] add the per-user overlay and guest pacman to an existing base
+                      (--manifest must name the one that built it)
+
+Manifests (--manifest):
+  vk     the toolchain roots plus Vulkan/RADV and the desktop libraries -- the default,
+         and the shape every app on this project is tested against
+  m2     the M2 GCC toolchain sysroot; no overlay by default, because its byte-compare
+         gates are keyed to the bare base
+  PATH   any alarm_sysroot.py manifest file
+)";
+
+struct Command {
+  fextl::string Name {"build"};
+  fextl::string Argument {};
+};
+
+Command ParseArguments(int argc, char** argv) {
+  optparse::OptionParser Parser =
+    optparse::OptionParser().description("Build and select POWERarm's AArch64 guest rootfs").usage(Usage).add_help_option(true);
+
+  Parser.add_option("--manifest").help("base (default), m2, vk, or a path to a manifest file");
+  Parser.add_option("--dest").help("build into this directory instead of <datadir>/RootFS/<NAME>");
+  Parser.add_option("--cache").help("package cache directory");
+  Parser.add_option("--scripts").help("directory holding alarm_sysroot.py and the manifests");
+  Parser.add_option("--mirror").action("append").help("repo base URL ending in /aarch64 (repeatable; tried in order)");
+  Parser.add_option("--no-verify-signatures").action("store_true").help("trust the sha256 pins alone (signatures are checked by default)");
+  Parser.add_option("--force").action("store_true").help("replace a non-empty destination");
+  Parser.add_option("--no-set-default").action("store_true").help("do not write the user's Config.json");
+  Parser.add_option("--no-align").action("store_true").help("skip the PT_LOAD p_align report");
+  Parser.add_option("--overlay").action("store_true").help("create the per-user overlay even when the manifest defaults against it");
+  Parser.add_option("--no-overlay").action("store_true").help("build the bare base only: no overlay, no guest pacman");
+  Parser.add_option("--no-pacman-init").action("store_true").help("create the overlay but skip pacman-key/pacman -Sy");
+  Parser.add_option("--emulator").help("the POWERarm binary guest pacman runs under (default: next to this tool)");
+  Parser.add_option("--dry-run").action("store_true").help("print what would be built and stop");
+  Parser.add_option("-y", "--assume-yes").action("store_true").help("do not prompt");
+
+  optparse::Values Options = Parser.parse_args(argc, argv);
+
+  if (Options.is_set_by_user("manifest")) {
+    Opts.Manifest = Options["manifest"].c_str();
+  }
+  if (Options.is_set_by_user("dest")) {
+    Opts.Dest = Options["dest"].c_str();
+  }
+  if (Options.is_set_by_user("cache")) {
+    Opts.Cache = Options["cache"].c_str();
+  }
+  if (Options.is_set_by_user("scripts")) {
+    Opts.Scripts = Options["scripts"].c_str();
+  }
+  for (const auto& Mirror : Options.all("mirror")) {
+    Opts.Mirrors.emplace_back(Mirror);
+  }
+  Opts.VerifySignatures = !Options.is_set_by_user("no_verify_signatures");
+  Opts.Force = Options.is_set_by_user("force");
+  Opts.SetDefault = !Options.is_set_by_user("no_set_default");
+  Opts.Align = !Options.is_set_by_user("no_align");
+  Opts.DryRun = Options.is_set_by_user("dry_run");
+  Opts.AssumeYes = Options.is_set_by_user("assume_yes");
+  Opts.PacmanInit = !Options.is_set_by_user("no_pacman_init");
+  if (Options.is_set_by_user("emulator")) {
+    Opts.Emulator = Options["emulator"].c_str();
+  }
+  if (Options.is_set_by_user("no_overlay") && Options.is_set_by_user("overlay")) {
+    fextl::fmt::print(stderr, "POWERarmRootFSFetcher: --overlay and --no-overlay are mutually exclusive.\n");
+    std::exit(2);
+  }
+  if (Options.is_set_by_user("no_overlay")) {
+    Opts.Overlay = false;
+  } else if (Options.is_set_by_user("overlay")) {
+    Opts.Overlay = true;
+  }
+
+  if (Opts.Scripts.empty()) {
+    Opts.Scripts = EnvOr("POWERARM_ROOTFS_SCRIPTS", {});
+  }
+
+  Command Result;
+  const auto Leftover = Parser.args();
+  if (!Leftover.empty()) {
+    Result.Name = Leftover[0];
+    if (Leftover.size() > 1) {
+      Result.Argument = Leftover[1];
+    }
+    if (Leftover.size() > 2) {
+      fextl::fmt::print(stderr, "POWERarmRootFSFetcher: too many arguments.\n");
+      std::exit(2);
+    }
+  }
+  return Result;
+}
+
 } // namespace
-
-namespace ConfigSetter {
-void SetRootFSAsDefault(const fextl::string& RootFS) {
-  fextl::string Filename = FEXCore::Config::GetConfigFileLocation();
-  auto LoadedConfig = FEX::Config::CreateMainLayer(&Filename);
-  LoadedConfig->Load();
-  LoadedConfig->Set(FEXCore::Config::ConfigOption::CONFIG_ROOTFS, RootFS);
-  FEX::Config::SaveLayerToJSON(Filename, LoadedConfig.get());
-}
-} // namespace ConfigSetter
-
-namespace UnSquash {
-bool UnsquashRootFS(const fextl::string& Path, const fextl::string& RootFS, const fextl::string& FolderName) {
-  auto TargetFolder = Path + FolderName;
-
-  std::error_code ec;
-  if (std::filesystem::exists(TargetFolder, ec)) {
-    fextl::string Question = "Target folder \"" + FolderName + "\" already exists. Overwrite?";
-    if (AskForConfirmation(Question)) {
-      if (std::filesystem::remove_all(TargetFolder, ec) == ~0ULL) {
-        ExecWithInfo("Couldn't remove previous directory. Won't extract.");
-        return false;
-      }
-    } else {
-      return false;
-    }
-  }
-
-  const std::array<const char*, 6> ExecveArgs = {
-    "unsquashfs", "-f", "-d", TargetFolder.c_str(), RootFS.c_str(), nullptr,
-  };
-
-  return Exec::ExecAndWaitForResponse(ExecveArgs[0], const_cast<char* const*>(ExecveArgs.data())) == 0;
-}
-
-bool ExtractEroFS(const fextl::string& Path, const fextl::string& RootFS, const fextl::string& FolderName) {
-  auto TargetFolder = Path + FolderName;
-
-  std::error_code ec;
-  if (std::filesystem::exists(TargetFolder, ec)) {
-    fextl::string Question = "Target folder \"" + FolderName + "\" already exists. Overwrite?";
-    if (AskForConfirmation(Question)) {
-      if (std::filesystem::remove_all(TargetFolder, ec) == ~0ULL) {
-        ExecWithInfo("Couldn't remove previous directory. Won't extract.");
-        return false;
-      }
-    } else {
-      return false;
-    }
-  }
-
-  ExecWithInfo("Extracting Erofs. This might take a few minutes.");
-
-  const auto ExtractOption = fmt::format("--extract={}", TargetFolder);
-  const std::array<const char*, 4> ExecveArgs = {
-    "fsck.erofs",
-    ExtractOption.c_str(),
-    RootFS.c_str(),
-    nullptr,
-  };
-
-  return Exec::ExecAndWaitForResponse(ExecveArgs[0], const_cast<char* const*>(ExecveArgs.data())) == 0;
-}
-} // namespace UnSquash
 
 int main(int argc, char** argv, char** const envp) {
   FEX::Config::LoadConfig({}, envp);
-
-  // Reload the meta layer
   FEXCore::Config::ReloadMetaLayer();
 
-  ArgOptions::ParseArguments(argc, argv);
+  const auto Cmd = ParseArguments(argc, argv);
 
-  WorkingAppsTester::Init();
-
-  CheckTTY();
-
-  if (ArgOptions::RemainingArgs.size()) {
-    auto Res = XXFileHash::HashFile(ArgOptions::RemainingArgs[0]);
-    if (Res.has_value()) {
-      fmt::print("{} has hash: {:x}\n", ArgOptions::RemainingArgs[0], Res.value());
-    } else {
-      fmt::print("Couldn't generate hash for {}\n", ArgOptions::RemainingArgs[0]);
-    }
-    return 0;
+  if (Cmd.Name == "build") {
+    return CommandBuild(Cmd.Argument);
+  }
+  if (Cmd.Name == "list") {
+    return CommandList();
+  }
+  if (Cmd.Name == "check") {
+    return CommandCheck(Cmd.Argument);
+  }
+  if (Cmd.Name == "default") {
+    return CommandDefault(Cmd.Argument);
+  }
+  if (Cmd.Name == "overlay") {
+    return CommandOverlay(Cmd.Argument);
   }
 
-  // Check if curl exists on the host
-  if (!WorkingAppsTester::Has_Curl) {
-    ExecWithInfo("curl is required to use this tool. Please install curl before using.");
-    return -1;
-  }
-  if (!WorkingAppsTester::Has_Squashfuse && !WorkingAppsTester::Has_Unsquashfs && !WorkingAppsTester::Has_EroFSFuse) {
-    // We need at least one tool to mount or extract image files
-    ExecWithInfo("squashfuse, unsquashfs, or erofsfuse is required to use this tool. Please install one before using.");
-    return -1;
-  }
-
-  FEX_CONFIG_OPT(LDPath, ROOTFS);
-
-  std::error_code ec;
-  fextl::string Question {};
-  if (LDPath().empty() || std::filesystem::exists(LDPath(), ec) == false) {
-    Question = "RootFS not found. Do you want to try and download one?";
-  } else {
-    Question = "RootFS is already in use. Do you want to check the download list?";
-  }
-
-  if (AskForConfirmation(Question)) {
-    auto TargetReturn = WebFileFetcher::GetRootFSLinks();
-    if (!TargetReturn.has_value()) {
-      ExecWithInfo("Couldn't download rootfs list from the server. Try again in a minute.");
-      return -1;
-    }
-
-    auto Targets = TargetReturn.value();
-
-    if (Targets.empty()) {
-      ExecWithInfo("Couldn't parse rootfs definition URL.");
-      return -1;
-    }
-
-    int32_t DistroIndex = AskForDistroSelection(Targets);
-    if (DistroIndex != -1) {
-      const auto& Target = Targets[DistroIndex];
-      fextl::string RootFS = FEXCore::Config::GetDataDirectory() + "RootFS/";
-      auto filename = Target.URL.substr(Target.URL.find_last_of('/') + 1);
-      auto PathName = RootFS + filename;
-
-      if (!ValidateCheckExists(Target)) {
-        // Keep going
-      } else {
-        auto ValidateDownload = [&Target, &PathName]() -> std::pair<int32_t, bool> {
-          std::error_code ec;
-          if (ValidateDownloadSelection(Target)) {
-            uint64_t ExpectedHash = std::stoul(Target.Hash, nullptr, 16);
-
-            if (std::filesystem::exists(PathName, ec)) {
-              auto Res = XXFileHash::HashFile(PathName);
-              if (Res != ExpectedHash) {
-                fextl::string Text = fextl::fmt::format("Couldn't hash the rootfs or hash didn't match\n");
-                Text += fmt::format("Hash {:x} != Expected Hash {:x}\n", Res.value_or(0), ExpectedHash);
-                ExecWithInfo(Text);
-                return std::make_pair(-1, true);
-              }
-            } else {
-              ExecWithInfo("Correctly downloaded RootFS but doesn't exist?");
-              return std::make_pair(-1, false);
-            }
-          } else {
-            ExecWithInfo("Couldn't download rootfs for some reason.");
-            return std::make_pair(-1, false);
-          }
-
-          return std::make_pair(0, false);
-        };
-
-        std::pair<int32_t, bool> Result {};
-        while ((Result = ValidateDownload()).second == true && Result.first == -1) {
-
-          if (AskForConfirmation("Do you want to try downloading the RootFS again?")) {
-            // Continue the loop
-          } else {
-            // Didn't want to retry, just exit now
-            return Result.first;
-          }
-        }
-
-        // Early exit on other errors
-        if (Result.first == -1 && Result.second == false) {
-          return Result.first;
-        }
-      }
-
-      struct ExtractStrings {
-        const char* ExtractOrAsIs;
-        const char* AsIsSinceMounterNonFunctional;
-        const char* AsIsSinceExtractorNonFunctional;
-        const char* AsIsSinceNothingWorks;
-      };
-
-      ArgOptions::CompressedImageOption UseImageAs {ArgOptions::CompressedUsageOption};
-      bool HasExtractor {};
-      bool HasMounter {};
-      std::function<bool(const fextl::string& Path, const fextl::string& RootFS, const fextl::string& FolderName)> ExtractHelper;
-      ExtractStrings ExtractingStrings;
-      if (Target.Type == WebFileFetcher::FileTargets::FileType::TYPE_SQUASHFS) {
-        HasExtractor = WorkingAppsTester::Has_Unsquashfs;
-        HasMounter = WorkingAppsTester::Has_Squashfuse;
-        ExtractHelper = UnSquash::UnsquashRootFS;
-        ExtractingStrings = {
-          "Do you wish to extract the squashfs file or use it as-is?",
-          "Squashfuse doesn't work. Do you wish to extract the squashfs file?",
-          "Unsquashfs doesn't work. Do you want to use the squashfs file as-is?",
-          "Unsquashfs and squashfuse isn't working. Leaving rootfs as-is",
-        };
-      } else if (Target.Type == WebFileFetcher::FileTargets::FileType::TYPE_EROFS) {
-        HasExtractor = WorkingAppsTester::Has_EroFSFsck;
-        HasMounter = WorkingAppsTester::Has_EroFSFuse;
-        ExtractHelper = UnSquash::ExtractEroFS;
-        ExtractingStrings = {
-          "Do you wish to extract the erofs file or use it as-is?",
-          "erofsfuse doesn't work. Do you wish to extract the erofs file?",
-          "Extracting erofs doesn't work. Do you want to use the erofs file as-is?",
-          "Extracting erofs and erofsfuse isn't working. Leaving rootfs as-is",
-        };
-      }
-
-      int32_t Result {};
-      std::vector<fextl::string> Args = {
-        "Extract",
-        "As-Is",
-      };
-
-      if (UseImageAs == ArgOptions::CompressedImageOption::OPTION_ASK) {
-        if (HasExtractor) {
-          if (HasMounter) {
-            Result = AskForConfirmationList(ExtractingStrings.ExtractOrAsIs, Args);
-            if (Result == 0) {
-              UseImageAs = ArgOptions::CompressedImageOption::OPTION_EXTRACT;
-            } else if (Result == 1) {
-              UseImageAs = ArgOptions::CompressedImageOption::OPTION_ASIS;
-            }
-          } else {
-            Args.pop_back();
-            Result = AskForConfirmationList(ExtractingStrings.AsIsSinceMounterNonFunctional, Args);
-            if (Result == 0) {
-              UseImageAs = ArgOptions::CompressedImageOption::OPTION_EXTRACT;
-            }
-          }
-        } else {
-          if (HasMounter) {
-            Args.erase(Args.begin());
-            Result = AskForConfirmationList(ExtractingStrings.AsIsSinceExtractorNonFunctional, Args);
-            if (Result == 0) {
-              // We removed an argument, Just change "As-Is" from 0 to 1 for later logic to work
-              UseImageAs = ArgOptions::CompressedImageOption::OPTION_ASIS;
-            }
-          } else {
-            Args.erase(Args.begin());
-            ExecWithInfo(ExtractingStrings.AsIsSinceNothingWorks);
-            UseImageAs = ArgOptions::CompressedImageOption::OPTION_ASIS;
-          }
-        }
-      }
-
-      if (UseImageAs == ArgOptions::CompressedImageOption::OPTION_EXTRACT) {
-        auto FolderName = filename.substr(0, filename.find_last_of('.'));
-        if (ExtractHelper(RootFS, PathName, FolderName)) {
-          // Remove the image file suffix since we extracted to that.
-          filename = std::move(FolderName);
-        }
-      }
-
-      if (AskForConfirmation("Do you wish to set this RootFS as default?")) {
-        ConfigSetter::SetRootFSAsDefault(filename);
-        fextl::string Text = fextl::fmt::format("{} set as default RootFS\n", filename);
-        ExecWithInfo(Text);
-      }
-    }
-  }
-
-  return 0;
+  fextl::fmt::print(stderr, "POWERarmRootFSFetcher: unknown command '{}'.\n\n{}", Cmd.Name, Usage);
+  return 2;
 }

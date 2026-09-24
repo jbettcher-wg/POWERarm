@@ -10,6 +10,7 @@ $end_info$
 #include "Common/CPUInfo.h"
 #include "Common/FDUtils.h"
 #include "Common/JSONPool.h"
+#include "Common/RootFSCheck.h"
 
 #include "FEXCore/Config/Config.h"
 #include <sys/syscall.h>
@@ -267,7 +268,17 @@ FileManager::FileManager(FEXCore::Context::Context* ctx)
 
   if (!LDPath().empty()) {
     RootFSFD = FEX::MoveFDOutOfGuestRange(open(LDPath().c_str(), O_DIRECTORY | O_PATH | O_CLOEXEC));
+    const int OpenErrno = errno;
     if (RootFSFD == -1) {
+      // AT_FDCWD means every guest absolute path resolves against the HOST tree from here
+      // on.  That used to happen in silence, and each downstream symptom then looked like
+      // an emulator bug.  POWERarm's own entry point refuses this case up front
+      // (FEXInterpreter.cpp checks the tree before anything is mapped), so reaching here
+      // means an embedder skipped that check -- say so rather than degrade quietly.
+      const auto Verdict = FEX::RootFSCheck::Check(LDPath());
+      LogMan::Msg::EFmt("POWERarm: RootFS '{}' could not be opened: {}", LDPath(),
+                        Verdict.Reason.empty() ? fextl::string {std::strerror(OpenErrno)} : Verdict.Reason);
+      LogMan::Msg::EFmt("POWERarm: guest absolute paths will resolve against the HOST filesystem.");
       RootFSFD = AT_FDCWD;
     } else {
       TrackFEXFD(RootFSFD);

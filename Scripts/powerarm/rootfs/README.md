@@ -1,14 +1,83 @@
 # POWERarm rootfs tools
 
-Scripts that build and run the aarch64 root filesystems POWERarm's M2 milestone uses
-(`docs/powerarm/M2-PLAN.md`, tasks A and B). None of them needs root, and all of them run on
-both the POWER9 host and the Raspberry Pi 5.
+Scripts that build and run the aarch64 root filesystems POWERarm runs guests against. None of
+them needs root, and all of them run on both the POWER9 host and the Raspberry Pi 5.
+
+## The supported path: `POWERarmRootFSFetcher`
+
+```sh
+POWERarmRootFSFetcher build          # base + overlay + guest pacman, then select it
+POWERarmRootFSFetcher list           # what exists, and what architecture each tree really is
+POWERarmRootFSFetcher check          # is the configured rootfs usable? (non-zero if not)
+POWERarmRootFSFetcher default NAME   # point ~/.config/powerarm/Config.json at an existing tree
+```
+
+`build` is the default command. It drives `alarm_sysroot.py` — this directory keeps the pins,
+the signature check, the extraction and the overlay bootstrap; the tool adds the destination,
+the architecture check, the guest pacman steps and the config write. It reimplements none of
+it.
+
+**A usable guest is two pieces, so `build` makes both.**
+
+1. `alarm_sysroot.py extract` lays down the pinned base at
+   `$XDG_DATA_HOME/powerarm/RootFS/<NAME>`.
+2. `alarm_sysroot.py overlay-init --with-pacman --package pacman --package archlinuxarm-keyring`
+   prepares `<NAME>-overlay`, the per-user writable layer the emulator picks up on its own.
+3. `pacman-key --init`, `pacman-key --populate archlinuxarm` and `pacman -Sy` run *inside* the
+   emulator, in a user namespace (`unshare -r`, with `POWERARM_PORTABLE=1`, which is required
+   or the emulator looks for its server socket under the namespace's uid 0 and fails).
+
+The base alone is a sysroot, not a desktop guest: what a GUI program actually needs —
+libxkbcommon, dbus, the fonts, and the application itself — is installed by guest `pacman`
+into the overlay afterwards. That is why the apps on this project point at
+`ArchLinuxARM-vk` and its overlay rather than at a bare base.
+
+**Those `unshare -r` runs can leave a `POWERarmServer` behind**, holding
+`<interpreter dir>/powerarm/Server/Server.lock` (portable mode puts the data directory next
+to the binary). Anything else that runs with `POWERARM_PORTABLE=1` against the *same*
+binary — `Scripts/powerarm/check-code-cache.sh`, for one — then cannot start its own server
+and reports "Couldn't connect to POWERarmServer socket". Check for a stray server against
+that build before blaming the change under test.
+
+- **Default manifest: `alarm-vk.manifest`**, because it is the shape everything here is tested
+  against: the toolchain roots plus `vulkan-tools` and RADV, and the X11/Wayland/Mesa libraries
+  underneath them. `--manifest m2` selects the toolchain-only M2 pin, and any other value is
+  taken as a path to a manifest file.
+- **`--manifest m2` gets no overlay by default.** Creating one changes what every guest using
+  that rootfs sees, and the M2 builds and a64diff bundles are keyed to the bare base.
+  `--overlay` adds one anyway; `--no-overlay` and `--no-pacman-init` go the other way.
+- **Destination** is `$XDG_DATA_HOME/powerarm/RootFS/<NAME>` (`--dest` to change it, `NAME` as
+  the positional argument to rename it). An existing non-empty destination is refused unless
+  `--force` is given, and an overlay that already has content is left alone.
+- **`--mirror URL` is repeatable and tried in order**, and signatures are verified against the
+  pinned Arch Linux ARM build key unless `--no-verify-signatures` is passed. Both go straight
+  through to `alarm_sysroot.py`.
+- **After the extract it re-checks the tree it just made** and refuses to write the config if
+  what landed is not AArch64.
+- **The config write is the user's file**, `~/.config/powerarm/Config.json`, loaded first so
+  every other key survives, and it records the rootfs by **name** (`ArchLinuxARM-vk`), which is
+  how the working setup here names it, so a per-app record moved to another machine resolves
+  the same way. A global `Config.json` is the *lower* config layer, so the user's file wins;
+  the tool says so when a global layer also sets `RootFS`, and when `POWERARM_ROOTFS` is set in
+  the environment (which beats both). `--no-set-default` skips the write.
+
+**A wrong rootfs is loud.** `Source/Common/RootFSCheck.{h,cpp}` reads the `e_machine` of the
+tree's own `/usr/bin/env` or `/bin/sh`, resolving symlinks the way the guest kernel would: an
+absolute link target is re-rooted at the rootfs, not at the host's `/`, so a host binary is
+never mistaken for a guest one. POWERarm itself runs the same check before anything is mapped
+and exits `ENOEXEC` on a missing tree, an empty directory, an unmounted squashfs/erofs image or
+a non-AArch64 userland, instead of falling back to the host filesystem in silence. A non-empty
+tree with no readable probe binary is reported by `check`/`list`/`build` but does not stop a
+run, because nothing degrades to the host tree in that case.
+
+## The pieces
 
 | File | Purpose |
 |---|---|
-| `build-alarm-sysroot.sh` | builds the pinned Arch Linux ARM GCC sysroot |
-| `alarm_sysroot.py` | its engine: `resolve`, `fetch`, `extract`, `hash`, `align`, and `overlay-init` for guest pacman |
-| `alarm-m2.manifest` | the pins: packages, keyring, source tarballs, optional base tarball |
+| `alarm_sysroot.py` | the engine: `resolve`, `fetch`, `extract`, `hash`, `align`, and `overlay-init` for guest pacman |
+| `alarm-vk.manifest` | the default pins: the M2 roots plus Vulkan/RADV and the desktop libraries |
+| `build-alarm-sysroot.sh` | the M2 wrapper: builds the pinned Arch Linux ARM GCC sysroot |
+| `alarm-m2.manifest` | the M2 pins: packages, keyring, source tarballs, optional base tarball |
 | `run-in-sysroot.sh` | runs a command natively inside a rootfs (Pi reference side) |
 | `fetch-m2-projects.sh` | downloads the pinned zlib and Lua tarballs |
 | `oci-extract.sh`, `oci_extract.py` | extracts an OCI/Docker registry image into a rootfs |
@@ -17,7 +86,11 @@ Needs Python 3 (stdlib only), `gpg` and `gpgv` for signature checks, `zstd` if a
 layer is zstd-compressed, `curl` for `fetch-m2-projects.sh`, and `bwrap` (or `unshare` and
 `chroot`) for the runner.
 
-## Building the sysroot
+## Building the M2 sysroot (`build-alarm-sysroot.sh`)
+
+This is the M2 milestone's own wrapper (`docs/powerarm/M2-PLAN.md`, tasks A and B): it defaults
+to `alarm-m2.manifest`, builds nothing but the base and never writes a config.
+`POWERarmRootFSFetcher --manifest m2 build` produces the same tree by the supported path.
 
 ```sh
 Scripts/powerarm/rootfs/build-alarm-sysroot.sh            # same command on the Pi and the POWER9

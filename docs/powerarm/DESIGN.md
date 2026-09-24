@@ -466,6 +466,58 @@ packages install to. The inherited FEX lookup code already resolves these paths
 - **During development,** the image builder writes into `~/.local/share/powerarm/RootFS/`,
   the same place the fetcher does, so nothing moves when packages arrive.
 
+#### 6.2a.0 Setting one up, and refusing a wrong one (implemented 2026-09-24) `[CODE]`
+
+`POWERarmRootFSFetcher` is the supported entry point. It was FEX's fetcher with the names
+swapped until now: it read `https://rootfs.fex-emu.gg/RootFS_links.json`, an index of
+**x86_64 and i386** squashfs images, and would install an Ubuntu x86_64 tree as the guest
+rootfs of an AArch64 emulator. That code is gone. The tool now drives
+`Scripts/powerarm/rootfs/alarm_sysroot.py`, which keeps the pins, the OpenPGP check against
+the pinned Arch Linux ARM build key, the rootless extraction and the overlay bootstrap; the
+tool adds the destination, the architecture check, the guest pacman steps and the config
+write.
+
+- It stays a separate binary rather than a `rootfs` subcommand on `POWERarm`, because
+  `POWERarm`'s `argv[1]` is a *guest program path* handed over by a shell or by
+  `binfmt_misc`; a subcommand there would shadow any guest program called `rootfs`, in the
+  emulator's own entry path. `POWERarmConfig`, `POWERarmGetConfig` and `POWERarmBash` are
+  already separate tools.
+- **`build` produces base + overlay + guest pacman**, because that is the shape a usable
+  guest has here (§6.2a.1): `extract` for the pinned base, then
+  `overlay-init --with-pacman --package pacman --package archlinuxarm-keyring` for
+  `<base>-overlay`, then `pacman-key --init`, `pacman-key --populate archlinuxarm` and
+  `pacman -Sy` run inside the emulator under `unshare -r` with `POWERARM_PORTABLE=1`. A bare
+  base is a sysroot; everything a GUI program needs arrives through guest pacman afterwards.
+- **Default manifest `alarm-vk.manifest`**, the shape every app here is tested against.
+  `--manifest m2` is the toolchain-only pin and gets **no** overlay by default, because its
+  byte-compare gates are keyed to the bare base; `--overlay` overrides.
+- `--mirror` is repeatable and passed through in order; signatures are verified unless
+  `--no-verify-signatures` is given.
+- It writes `RootFS` into the **user's** `Config.json` (`GetConfigFileLocation(false)`) as a
+  **name** (`ArchLinuxARM-vk`), loading the file first so every other key survives.
+  `LoadOrder` puts `LAYER_GLOBAL_MAIN` below `LAYER_MAIN`, so a global config is the lower
+  layer and the user's file wins; the tool says so when a global layer also sets `RootFS`, and
+  when `POWERARM_ROOTFS` is set in the environment (which beats both).
+- `list` and `check` report what the emulator would resolve, and `check` exits non-zero on an
+  unusable tree.
+
+**A wrong rootfs is never silent.** `FileManager`'s constructor set `RootFSFD = AT_FDCWD`
+whenever the configured tree could not be opened, after which every guest absolute path
+resolved against the **host** filesystem with no message, and each downstream symptom looked
+like an emulator bug. `Source/Common/RootFSCheck.{h,cpp}` reads the `e_machine` of the tree's
+own `/usr/bin/env` or `/bin/sh`, following symlinks the way the guest kernel would — an
+absolute link target is re-rooted at the rootfs, not at the host's `/`, so a host binary is
+never mistaken for a guest one (the same reason and the same shape as sleeve's
+`Source/Core/RootFS.cpp`). `FEXInterpreter` runs the check before anything is mapped and
+exits `-ENOEXEC` on a missing tree, an empty directory, a non-directory (an unmounted
+squashfs/erofs image) or a non-AArch64 userland. A non-empty tree with no readable probe
+binary is *not* fatal and is deliberately quiet in that path: the tree opens, guest paths
+resolve inside it, nothing degrades to the whole host filesystem, and a line on stderr for
+every guest process would land in the output of anything that captures it (it broke
+`rootfs_overlay`'s fixture, which is exactly that shape); `check`, `list` and `build` report
+it instead. The `AT_FDCWD` fallback in `FileManagement.cpp` now logs the tree and the words
+"will resolve against the HOST filesystem" for any embedder that skipped the pre-flight.
+
 #### 6.2a.1 The writable layer, as implemented `[CODE]`
 
 `Source/Tools/LinuxEmulation/LinuxSyscalls/RootFSOverlay.{h,cpp}`, called from the top of

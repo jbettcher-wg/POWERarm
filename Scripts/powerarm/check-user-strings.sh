@@ -35,15 +35,13 @@
 #                     hit. One leading punctuation byte is tolerated because
 #                     strings(1) glues a printable byte of adjacent data onto
 #                     the front of a string (seen as "|FEX_R0TRAP").
-#   A3 rootfs URL     https://rootfs.fex-emu.gg/RootFS_links.json, the only
-#                     rootfs index POWERarmRootFSFetcher knows.
-#   A4 rpmalloc       "FEXAllocator", the compiled-in default mapping name in
+#   A3 rpmalloc       "FEXAllocator", the compiled-in default mapping name in
 #                     the External/rpmalloc submodule. AllocatorHooks.cpp
 #                     installs "POWERarmAllocator" when it initialises the
 #                     allocator; the default only survives if rpmalloc
 #                     initialises itself first. Fixing it needs a submodule
 #                     change.
-#   A5 source paths   A whole string that is a source file path
+#   A4 source paths   A whole string that is a source file path
 #                     (.../FEXCore/Source/foo.cpp and the like), which
 #                     __FILE__ puts into assertion-enabled and Debug builds.
 #                     Assertion messages are user-visible, but the path is
@@ -98,12 +96,11 @@ allowed() {
   if printf '%s\n' "$S" | grep -Pq '^[^[:alnum:][:space:]]?FEX_[A-Z0-9_]*$'; then
     return 0
   fi
-  # A3, A4: exact strings.
+  # A3: exact strings.
   case "$S" in
-    "https://rootfs.fex-emu.gg/RootFS_links.json") return 0 ;;
     "FEXAllocator") return 0 ;;
   esac
-  # A5: whole-string source path.
+  # A4: whole-string source path.
   if printf '%s\n' "$S" | grep -Pq '^[^[:space:]]*(^|/)(FEXCore|FEXHeaderUtils|CodeEmitter|Source|External)/[^[:space:]]*\.(c|cc|cpp|h|hpp|inl)$'; then
     return 0
   fi

@@ -626,7 +626,7 @@ catches up):
 
 | File | Responsibility | Reuses |
 |---|---|---|
-| `Main.cpp` | argument parsing (`cpp-optparse`, as `FEXRootFSFetcher/Main.cpp:59-73` does), subcommand dispatch, TUI start | `Common/cpp-optparse/OptionParser.h` |
+| `Main.cpp` | argument parsing (`cpp-optparse`, as `FEXRootFSFetcher/Main.cpp`'s `ParseArguments` does), subcommand dispatch, TUI start | `Common/cpp-optparse/OptionParser.h` |
 | `Core/Paths.{h,cpp}` | config/data/cache dirs, record dir, apps dir, script dir lookup (build tree `<self>/../Data/rootfs/`, then `${DATA_DIRECTORY}/rootfs/`), stable version | `FEX::Config::GetConfigDirectory/GetDataDirectory/GetCacheDirectory` (`Source/Common/Config.cpp:616-710`), `FEX::GetSelfPath` (`PortabilityInfo.h:6-16`) |
 | `Core/ElfInspect.{h,cpp}` | 64-byte probe (magic, class, data, `e_machine==183`, `e_type`), executable-vs-library, `PT_INTERP`, `DT_NEEDED` via `PT_DYNAMIC` + `DT_STRTAB` (`VAToFile`), AppImage/.deb/tar sniffing | `ELFParser::ReadElf`/`VAToFile`/`phdrs` (`ELFParser.h:21-168`); `FEX::FormatCheck::IsSquashFS/IsEroFS` (`Source/Common/FileFormatCheck.h:7-8`) for rootfs images |
 | `Core/Scanner.{h,cpp}` | directory walk with prune list and depth cap, pacman-overlay source, grouping of executables into `AppCandidate`s | - |
@@ -765,7 +765,10 @@ command line visible and copyable:
 - **Host fonts (item 17):** `ln -s /usr/share/fonts ~/.local/share/powerarm/host-fonts` and the
   `60-powerarm-host-fonts.conf` snippet into `<overlay>/etc/fonts/conf.d/`, both shown first.
 
-When `Scripts/powerarm/rootfs/setup-desktop.sh` exists (item 17), sleeve calls it for the whole
+`POWERarmRootFSFetcher build` now runs exactly that sequence (base, overlay, the three pacman
+steps, the config write) and `POWERarmRootFSFetcher overlay <base>` runs the second half on an
+existing base, so sleeve can shell out to one command instead of three (DESIGN §6.2a.0). When
+`Scripts/powerarm/rootfs/setup-desktop.sh` exists (item 17), sleeve calls it for the whole
 sequence instead; until then it runs the steps itself. The scripts are found through `Paths` (build
 tree `Data/rootfs/`, copied there by CMake so `promote-powerarm-stable.sh` carries them, F9; or
 `/usr/share/powerarm/rootfs/` when installed).

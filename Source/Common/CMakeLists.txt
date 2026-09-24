@@ -13,6 +13,7 @@ set(SRCS
 if (NOT MINGW)
   list(APPEND SRCS
     FEXServerClient.cpp
+    RootFSCheck.cpp
     FileFormatCheck.cpp
     Linux/SBRKAllocations.cpp)
 endif()

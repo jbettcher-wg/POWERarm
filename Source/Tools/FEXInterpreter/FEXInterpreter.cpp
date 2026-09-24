@@ -14,6 +14,7 @@ $end_info$
 #include "Common/FDUtils.h"
 #include "Common/HostFeatures.h"
 #include "Common/Linux/SBRKAllocations.h"
+#include "Common/RootFSCheck.h"
 #include "PortabilityInfo.h"
 #include "ELFCodeLoader.h"
 #include "AOT/AOTGenerator.h"
@@ -631,15 +632,30 @@ int main(int argc, char** argv, char** const envp) {
                           LDPath());
       } else {
         fextl::fmt::print(stderr, "POWERarm: named rootfs '{}' could not be found.\n", LDPath());
+        fextl::fmt::print(stderr, "POWERarm: build one with '{}RootFSFetcher build', or list what exists with "
+                                  "'{}RootFSFetcher list'.\n",
+                          POWERARM_EXE_PREFIX, POWERARM_EXE_PREFIX);
       }
       FEX::Logging::FlushHeldErrorsToStderr();
       return -ENOEXEC;
     }
-    if (!FHU::Filesystem::Exists(LDPath())) {
-      fextl::fmt::print(stderr, "POWERarm: configured RootFS '{}' does not exist.\n", LDPath());
+    // Everything past this point runs against LDPath as the guest's '/'.  If the tree is
+    // absent, empty, an unmounted image, or some other architecture's userspace, then
+    // letting the run continue means FileManager falls back to AT_FDCWD and every guest
+    // absolute path silently resolves against the HOST filesystem.  Diagnose it here,
+    // before anything has been mapped, and name the actual problem.
+    const auto RootFSVerdict = FEX::RootFSCheck::Check(LDPath());
+    if (FEX::RootFSCheck::IsFatal(RootFSVerdict.Verdict)) {
+      fextl::fmt::print(stderr, "POWERarm: unusable RootFS: {}.\n", RootFSVerdict.Reason);
+      fextl::fmt::print(stderr, "POWERarm: build an AArch64 rootfs with '{}RootFSFetcher build'.\n", POWERARM_EXE_PREFIX);
       FEX::Logging::FlushHeldErrorsToStderr();
       return -ENOEXEC;
     }
+    // UNVERIFIED -- a non-empty tree with no readable /bin/sh or /usr/bin/env, such as a
+    // library-only tree or a test fixture -- is deliberately quiet here.  The tree opens, so
+    // guest paths resolve inside it and nothing degrades to the whole host filesystem; a line
+    // on stderr for every guest process would land in the output of anything that captures
+    // it.  POWERarmRootFSFetcher's check, list and build report it when asked.
   }
 
   FEX::Logging::Init();
