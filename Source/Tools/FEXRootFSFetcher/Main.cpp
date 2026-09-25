@@ -70,6 +70,11 @@ struct Options {
 
 Options Opts;
 
+// Where the pinned packages are kept. The manifests name exact versions, which the
+// upstream Arch Linux ARM mirrors stop serving as soon as they roll; this snapshot
+// holds the pinned files, their signatures and the repo databases.
+constexpr const char* POWERARM_ROOTFS_SNAPSHOT_MIRROR = "https://omappc64le.download/archrootfs";
+
 // The shipped manifests.  "vk" is the default because it is the shape every desktop app on
 // this project is tested against: the toolchain roots plus Mesa/RADV and the X11/Wayland
 // libraries underneath them.  A base alone cannot run a GUI program; what the apps actually
@@ -984,7 +989,8 @@ Command ParseArguments(int argc, char** argv) {
   Parser.add_option("--dest").help("build into this directory instead of <datadir>/RootFS/<NAME>");
   Parser.add_option("--cache").help("package cache directory");
   Parser.add_option("--scripts").help("directory holding alarm_sysroot.py and the manifests");
-  Parser.add_option("--mirror").action("append").help("repo base URL ending in /aarch64 (repeatable; tried in order)");
+  Parser.add_option("--mirror").action("append").help(
+    "repo base URL (repeatable; tried in order). Default: POWERarm's pinned snapshot, then upstream ALARM");
   Parser.add_option("--no-verify-signatures").action("store_true").help("trust the sha256 pins alone (signatures are checked by default)");
   Parser.add_option("--force").action("store_true").help("replace a non-empty destination");
   Parser.add_option("--no-set-default").action("store_true").help("do not write the user's Config.json");
@@ -1012,6 +1018,17 @@ Command ParseArguments(int argc, char** argv) {
   }
   for (const auto& Mirror : Options.all("mirror")) {
     Opts.Mirrors.emplace_back(Mirror);
+  }
+  if (Opts.Mirrors.empty()) {
+    // The manifests pin exact package versions and the Arch Linux ARM mirrors keep
+    // only the current one, so a pin 404s there the moment anything rolls upstream.
+    // A machine that already has the packages cached never notices; a fresh one
+    // fails on the first rolled package and cannot proceed, which is exactly what
+    // an install is. POWERarm's own snapshot carries the pinned files and their
+    // signatures, so the pins stay fetchable; upstream sits behind it so a bucket
+    // outage still reaches something. --mirror replaces both.
+    Opts.Mirrors.emplace_back(POWERARM_ROOTFS_SNAPSHOT_MIRROR);
+    Opts.Mirrors.emplace_back("http://mirror.archlinuxarm.org/aarch64");
   }
   Opts.VerifySignatures = !Options.is_set_by_user("no_verify_signatures");
   Opts.Force = Options.is_set_by_user("force");
