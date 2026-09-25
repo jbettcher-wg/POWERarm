@@ -92,8 +92,19 @@ fextl::string GetTempFolder() {
 
   for (auto& Var : Vars) {
     auto Path = getenv(Var);
-    if (Path) {
-      // If one of the env variable-driven paths works then use that.
+    if (!Path || Path[0] == '\0') {
+      continue;
+    }
+    // Being SET is not the same as being usable, and the difference is not
+    // theoretical: a process that inherits XDG_RUNTIME_DIR from a root context
+    // -- sudo, a chroot, makepkg under fakeroot -- gets /run/user/0, which is
+    // mode 0700 and owned by root, while this process's own getuid() is
+    // unchanged. The socket then cannot be created or connected to, and with no
+    // check here there was nothing to fall back to: every guest launch died on
+    // "Couldn't connect to POWERarmServer socket /run/user/0/<uid>...".
+    // Require a directory this process can actually search and write.
+    struct stat Stat;
+    if (::stat(Path, &Stat) == 0 && S_ISDIR(Stat.st_mode) && ::access(Path, R_OK | W_OK | X_OK) == 0) {
       return Path;
     }
   }
