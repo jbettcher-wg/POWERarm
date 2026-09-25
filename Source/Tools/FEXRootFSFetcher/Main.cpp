@@ -530,8 +530,17 @@ std::optional<fextl::string> FindEmulator() {
 bool BuildOverlay(const fextl::string& ScriptsDir, const fextl::string& ManifestPath, const fextl::string& Base, const fextl::string& Cache) {
   const fextl::string Overlay = Base + "-overlay";
 
-  if (Exists(Overlay) && !DirectoryIsEmpty(Overlay)) {
+  if (Exists(Overlay) && !DirectoryIsEmpty(Overlay) && !Opts.Force) {
+    // Non-empty is not the same as finished. A run that died partway -- a rolled
+    // pin, a lost mirror -- leaves an overlay holding the package database with
+    // none of pacman's own files behind it, and every later run skipped it for
+    // being non-empty, so the half-built state was permanent and looked like
+    // "the overlay is in place". Say what to do about it.
     fextl::fmt::print("\noverlay {} already exists and is not empty; leaving it alone.\n", Overlay);
+    if (!Exists(Overlay + "/usr/bin/pacman")) {
+      fextl::fmt::print("  ...but it has no /usr/bin/pacman, so it is incomplete: an earlier run stopped partway.\n");
+      fextl::fmt::print("  Pass --force to rebuild the overlay over it.\n");
+    }
     return true;
   }
   if (!MakeDirectories(Overlay)) {
