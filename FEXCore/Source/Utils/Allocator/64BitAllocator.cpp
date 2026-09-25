@@ -493,9 +493,16 @@ int OSAllocator_64Bit::Munmap(void* addr, size_t length) {
     return -EINVAL;
   }
 
-  if (length & ~FEXCore::HostPage::Mask()) {
-    return -EINVAL;
-  }
+  // An unaligned length is NOT an error: munmap(2) rounds it up to a page, and
+  // Mmap above does the same, so rejecting it here made the two disagree -- a
+  // caller could map 20256 bytes and then be unable to free them. It returned
+  // -EINVAL and left every page of that range marked used in UsedPages for the
+  // life of the process, which no kernel metric can show: the address space is
+  // reserved either way, so VmSize, Committed_AS, max_map_count and the cgroup
+  // all look normal while this allocator slowly runs out of slab. A long-lived
+  // guest then fails to allocate -- fork, exec, anything -- on a machine with
+  // hundreds of gigabytes free. The AlignUp below was already here and was
+  // unreachable behind the check it now replaces.
 
   if (Addr + length < Addr) {
     return -EOVERFLOW;
@@ -513,7 +520,9 @@ int OSAllocator_64Bit::Munmap(void* addr, size_t length) {
     uintptr_t RegionBegin = (*it)->SlabInfo->Base;
     uintptr_t RegionEnd = RegionBegin + (*it)->SlabInfo->RegionSize;
 
-    if (RegionBegin <= PtrBegin && RegionEnd > PtrEnd) {
+    // >= on the end: a range that reaches exactly to the end of the region is
+    // inside it. With > it matched nothing and those pages leaked the same way.
+    if (RegionBegin <= PtrBegin && RegionEnd >= PtrEnd) {
       // Live region fully encompasses slab range
 
       uint64_t FreedPages {};
