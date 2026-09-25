@@ -15,6 +15,7 @@ $end_info$
 #include "Common/HostFeatures.h"
 #include "Common/Linux/SBRKAllocations.h"
 #include "Common/RootFSCheck.h"
+#include "git_version.h"
 #include "PortabilityInfo.h"
 #include "ELFCodeLoader.h"
 #include "AOT/AOTGenerator.h"
@@ -513,12 +514,70 @@ static int StealFEXFDFromEnv(const char* Env) {
   return FEXFD;
 }
 
+namespace {
+// What to say to someone who ran the emulator with nothing to run, or asked it
+// what it is.  Both are the same question in practice -- "is this install
+// working" -- so the answer names the build and then the one thing that decides
+// whether any guest will run: the rootfs.
+void PrintUsage(FILE* Out) {
+  fextl::fmt::print(Out, "POWERarm (" GIT_DESCRIBE_STRING ") -- AArch64 guest on a ppc64le host\n\n");
+  fextl::fmt::print(Out, "Usage:\n");
+  fextl::fmt::print(Out, "  " POWERARM_EXE_PREFIX " <guest program> [args...]\n");
+  fextl::fmt::print(Out, "  " POWERARM_EXE_PREFIX " --version | --help\n\n");
+  fextl::fmt::print(Out, "Registered with binfmt_misc, an AArch64 binary can also just be run directly.\n");
+}
+
+// Called with config loaded: RootFS is a config value, and a name is expanded to a
+// path during the load, so a value that is still relative here is one that did not
+// resolve -- which is worth saying, because that is the case that otherwise ends in
+// guest paths resolving against the host filesystem.
+void PrintInstallSummary() {
+  FEX_CONFIG_OPT(LDPath, ROOTFS);
+  PrintUsage(stdout);
+  fextl::fmt::print("\n");
+  if (LDPath().empty()) {
+    fextl::fmt::print("RootFS: none configured -- no guest will run yet.\n");
+    fextl::fmt::print("        Build one with '" POWERARM_EXE_PREFIX "RootFSFetcher build'.\n");
+    return;
+  }
+  if (!FHU::Filesystem::IsAbsolute(LDPath())) {
+    fextl::fmt::print("RootFS: '{}' -- configured, but no rootfs of that name was found.\n", LDPath());
+    fextl::fmt::print("        '" POWERARM_EXE_PREFIX "RootFSFetcher list' shows what exists.\n");
+    return;
+  }
+  const auto Verdict = FEX::RootFSCheck::Check(LDPath());
+  if (Verdict.Verdict == FEX::RootFSCheck::Verdict::OK) {
+    fextl::fmt::print("RootFS: {} ({})\n", LDPath(), FEX::RootFSCheck::MachineName(Verdict.Machine));
+  } else if (Verdict.Verdict == FEX::RootFSCheck::Verdict::UNVERIFIED) {
+    fextl::fmt::print("RootFS: {} (architecture unverified: no readable /bin/sh or /usr/bin/env)\n", LDPath());
+  } else {
+    fextl::fmt::print("RootFS: {}\n", Verdict.Reason);
+    fextl::fmt::print("        Build one with '" POWERARM_EXE_PREFIX "RootFSFetcher build'.\n");
+  }
+}
+} // namespace
+
 int main(int argc, char** argv, char** const envp) {
   // The code cache's segment writer is this binary re-exec'd (CodeCache.cpp).
   // It publishes finished cache files off a socket and wants none of the
   // emulator, so it is dispatched before any of it is set up.
   if (argc >= 2 && std::string_view {argv[1]} == FEXCore::CodeCacheWriterArgument) {
     return FEXCore::CodeCacheWriterMain(argc, argv);
+  }
+
+  // binfmt_misc always hands over an absolute guest program path, so a lone
+  // leading '-' in argv[1] is a person at a shell asking about the emulator
+  // itself rather than a guest to run.
+  if (argc == 2 && argv[1][0] == '-') {
+    const std::string_view Arg {argv[1]};
+    if (Arg == "--version" || Arg == "-v") {
+      fextl::fmt::print("POWERarm (" GIT_DESCRIBE_STRING ")\n");
+      return 0;
+    }
+    if (Arg == "--help" || Arg == "-h") {
+      PrintUsage(stdout);
+      return 0;
+    }
   }
 
   // Host page size is a runtime quantity (64K port). Latch it before anything maps
@@ -547,8 +606,14 @@ int main(int argc, char** argv, char** const envp) {
   auto ParsedArgs = ArgsLoader->GetParsedArgs();
   auto Program = FEX::Config::GetApplicationNames(Args, ExecutedWithFD, FEXFD);
   if (Program.ProgramPath.empty() && FEXFD == -1) {
-    // Early exit if we weren't passed an argument
-    return 0;
+    // Nothing to run.  This is the emulator invoked bare from a shell, which is
+    // almost always someone checking whether the install works -- so answer that
+    // question instead of exiting silently with a success status.  Config has to
+    // be loaded first: the rootfs it reports is a config value.
+    FEX::Config::LoadConfig({}, envp, PortableInfo);
+    FEXCore::Config::ReloadMetaLayer();
+    PrintInstallSummary();
+    return 1;
   }
 
   FEX::Kernel::GCS::CheckForGCS();
