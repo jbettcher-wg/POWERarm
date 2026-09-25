@@ -518,8 +518,15 @@ std::optional<fextl::string> FindEmulator() {
 // pacman needs the local package database and the keyring that overlay-init writes.
 //
 // The pacman dance is the README's recipe: pacman and pacman-key insist on uid 0, so they run
-// as root of a user namespace (no privilege), and POWERARM_PORTABLE=1 is required there or
-// the emulator looks for its server socket under the namespace's uid 0 and fails.
+// as root of a user namespace (no privilege). Inside that namespace the emulator is uid 0 and
+// the session's own /run/user/<uid> belongs to somebody it cannot write, so its server has
+// nowhere to put its lock and mount files.
+//
+// POWERARM_PORTABLE=1 used to paper over that by moving the data directory next to the
+// binary -- which works from a build tree and breaks the moment POWERarm is installed, because
+// then "next to the binary" is /usr/bin/powerarm/ and no normal user can create it. That is a
+// packaged install failing at exactly the step a fresh machine has to run. A writable runtime
+// directory for the duration of the steps solves it in both places and needs no special mode.
 bool BuildOverlay(const fextl::string& ScriptsDir, const fextl::string& ManifestPath, const fextl::string& Base, const fextl::string& Cache) {
   const fextl::string Overlay = Base + "-overlay";
 
@@ -563,8 +570,16 @@ bool InitGuestPacman(const fextl::string& Base) {
     return false;
   }
 
+  // A directory the namespace's uid 0 can write, which the outer /run/user/<uid> is not.
+  char RuntimeTemplate[] = "/tmp/powerarm-pacman-XXXXXX";
+  const char* RuntimeDir = ::mkdtemp(RuntimeTemplate);
+  if (!RuntimeDir) {
+    fextl::fmt::print(stderr, "POWERarmRootFSFetcher: cannot create a temporary runtime directory: {}\n", std::strerror(errno));
+    return false;
+  }
+
   const fextl::vector<std::pair<fextl::string, fextl::string>> Env {
-    {POWERARM_ENV_PREFIX "PORTABLE", "1"},
+    {"XDG_RUNTIME_DIR", RuntimeDir},
     {POWERARM_ENV_PREFIX "ROOTFS", Base},
   };
 
@@ -583,9 +598,13 @@ bool InitGuestPacman(const fextl::string& Base) {
                                 "guest pacman is not initialised yet. Re-run the three commands above by hand "
                                 "(they need a user namespace: 'unshare -r' must be permitted).\n",
                         Result);
+      ::rmdir((fextl::string {RuntimeDir} + "/powerarm").c_str());
+      ::rmdir(RuntimeDir);
       return false;
     }
   }
+  ::rmdir((fextl::string {RuntimeDir} + "/powerarm").c_str());
+  ::rmdir(RuntimeDir);
   return true;
 }
 
@@ -739,7 +758,7 @@ int CommandBuild(const fextl::string& NameArgument) {
 
   fextl::fmt::print("\nDone. Run a guest program with: {} /usr/bin/uname -m\n", POWERARM_EXE_PREFIX);
   if (WantOverlay && OverlayOK && PacmanOK) {
-    fextl::fmt::print("Install into the guest with: " POWERARM_ENV_PREFIX "PORTABLE=1 " POWERARM_ENV_PREFIX
+    fextl::fmt::print("Install into the guest with: XDG_RUNTIME_DIR=$(mktemp -d) " POWERARM_ENV_PREFIX
                       "ROOTFS={} unshare -r {} /usr/bin/pacman -S <package>\n",
                       Name, POWERARM_EXE_PREFIX);
   }
