@@ -711,3 +711,28 @@ to initialise against 27 s cold (suspect cache install cost, item 24).
     - Not run: the installed script-discovery path (`ninja install` was never executed), an
       alternate `--mirror` in anger, a squashfs the server actually mounts, and the
       `POWERARM_PORTABLE` branch that writes an absolute path instead of a name.
+
+49. **First fresh-machine bring-up (POWER8 VM, 2026-09-25)** — the package installed, binfmt
+    registered from `/usr/lib/binfmt.d/` via the `.install` hook, and an AArch64 `claude` ran
+    directly from `~/.local/bin` with no wrapper. Two bugs surfaced that no set-up machine can
+    reach, both now fixed:
+    - **The manifest pins outlived the mirror.** Arch Linux ARM keeps only current versions, so
+      `bash-5.3.15-1` (pinned) 404s once upstream rolls to 5.3.20-1. Every machine here has the
+      packages in `~/.cache/powerarm/alarm-pkgs`, which is why this never showed up until a VM
+      with an empty cache ran `build` and stopped on the first rolled package. The pinned set --
+      140 packages, their signatures and the three repo databases, 867 MiB -- is now at
+      `https://omappc64le.download/archrootfs` laid out as `<repo>/<file>`, and `cc5687216` makes
+      it the default mirror with upstream behind it. Verification is unchanged: ALARM's own
+      signatures against the pinned keyring fingerprint, plus the manifest's sha256.
+    - **A set `XDG_RUNTIME_DIR` is not a usable one** (`ccb870ee0`). `GetTempFolder()` returned
+      the first of `XDG_RUNTIME_DIR`/`TMPDIR`/`TMP`/`TEMP`/`TEMPDIR` that was merely set, under a
+      comment claiming it had checked the path works. A session that inherits root's
+      `/run/user/0` while keeping uid 1000 -- `su`, `sudo`, a chroot, makepkg under fakeroot --
+      therefore got a directory it could not write and no second candidate, and every guest
+      launch died on `Couldn't connect to POWERarmServer socket /run/user/0/1000...`, errno 13,
+      forty times. It also took out the overlay's `pacman-key`/`pacman -Sy` steps (exit 255),
+      which run under the emulator -- user namespaces were never involved, though the message
+      pointed there. Each candidate must now be a directory the process can search, read and
+      write.
+    - Neither is reachable on a machine that is already working: one needs an empty package
+      cache, the other needs a session whose runtime dir belongs to a different uid.
