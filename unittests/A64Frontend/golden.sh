@@ -64,7 +64,13 @@ gcc -static -O2 -o sigqueued "$here/sigqueued.c"
 # exit_group. One run proves nothing on its own (it is a race); run.sh loops
 # it. Natively it is silent and exits 0, and so is the golden.
 gcc -static -O2 -pthread -o threadexit "$here/threadexit.c"
-corpus="$corpus callret sigpreempt sigedit sigteardown sigqueued threadexit"
+# A dead thread must not cost the process anything permanent: create and join
+# threads in a loop and watch the process's own mapped footprint, then fork.
+# Natively there are no emulator mappings to grow, so the golden is the two
+# "ok" lines and rc 0; under POWERarm a leaked per-thread LookupCache makes the
+# first line differ. See threadleak.c.
+gcc -static -O2 -pthread -o threadleak "$here/threadleak.c"
+corpus="$corpus callret sigpreempt sigedit sigteardown sigqueued threadexit threadleak"
 # POWERarm configuration for run.sh (<test>.env): vdso_syscalls counts
 # syscalls with a seccomp filter, and seccomp emulation is opt-in there.
 echo POWERARM_NEEDSSECCOMP=1 > vdso_syscalls.env

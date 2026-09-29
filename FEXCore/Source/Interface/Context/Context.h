@@ -347,6 +347,13 @@ public:
    */
   void DestroyThread(FEXCore::Core::InternalThreadState* Thread) override;
 
+  /**
+   * @brief Releases everything the thread state owns, leaving the object itself allocated
+   *
+   * @param Thread The internal FEX thread state object
+   */
+  void ReleaseDeadThreadResources(FEXCore::Core::InternalThreadState* Thread) override;
+
 #ifndef _WIN32
   void LockBeforeFork(FEXCore::Core::InternalThreadState* Thread) override;
   void UnlockAfterFork(FEXCore::Core::InternalThreadState* Thread, bool Child) override;

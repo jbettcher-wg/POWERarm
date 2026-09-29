@@ -65,6 +65,20 @@ struct NonMovableUniquePtr {
     fextl::default_delete<T> {}(Ptr);
   }
 
+  // Destroy the owned object early and leave the pointer null.
+  //
+  // Used by ContextImpl::ReleaseDeadThreadResources: an InternalThreadState
+  // that a dead thread still owns is deliberately never deleted (see
+  // ThreadManager::HandleThreadDeletion), so the only way to give back what it
+  // owns is to empty the members in place. Idempotent -- a second call sees a
+  // null pointer and does nothing -- which matters because the teardown paths
+  // can reach one thread object twice (the CLONE_VFORK join in
+  // Syscalls.cpp destroys a thread that may already have destroyed itself).
+  void reset() noexcept {
+    fextl::default_delete<T> {}(Ptr);
+    Ptr = nullptr;
+  }
+
   T* operator->() const noexcept {
     return Ptr;
   }

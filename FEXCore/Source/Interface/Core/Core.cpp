@@ -799,7 +799,49 @@ ContextImpl::CreateThread(uint64_t InitialRIP, uint64_t StackPointer, const FEXC
   return Thread;
 }
 
-void ContextImpl::DestroyThread(FEXCore::Core::InternalThreadState* Thread) {
+void ContextImpl::ReleaseDeadThreadResources(FEXCore::Core::InternalThreadState* Thread) {
+  // Everything ~InternalThreadState would have reclaimed, for a thread state
+  // that is never going to be deleted. See the UAF-mitigation comment in
+  // ThreadManager::HandleThreadDeletion for why it is not: a signal delivered
+  // after the alt stack is disabled still reads the ThreadStateObject and the
+  // InternalThreadState, so both objects have to stay allocated -- but nothing
+  // that survives reads through the members emptied here.
+  //
+  // The LookupCache is the one that matters. It is a single reservation of
+  // L2TableSpan + CODE_SIZE + MAX_L1_SIZE (258 MiB at the default 64 GiB
+  // VirtualMemSize), private and writable, and ~LookupCache is the only thing
+  // that ever gives it back. Startup S4 also prefaults its 2 MiB L1 with
+  // MADV_POPULATE_WRITE, so a leaked one is resident, not lazy. A guest that
+  // churns threads -- any Node/Bun/Electron guest does, constantly -- leaked
+  // one per dead thread, and the charge the kernel has to make against each
+  // private writable mapping when it copies the mm is what eventually makes
+  // fork() (and therefore every posix_spawn) fail with ENOMEM on a machine
+  // with hundreds of gigabytes free.
+  //
+  // Null the JIT's mirrors of it first. Nothing should reach them again -- the
+  // thread never executes another block -- but a null base faults on the first
+  // use, which is a great deal easier to read than a dispatcher quietly
+  // indexing a reservation the 64-bit allocator has since handed to somebody
+  // else.
+  Thread->CurrentFrame->State.L1Pointer = 0;
+  Thread->CurrentFrame->State.L1Mask = 0;
+  Thread->CurrentFrame->Pointers.L2Pointer = 0;
+  Thread->LookupCache.reset();
+
+  // The compiler side. All three are ordinary heap owned by this thread alone
+  // and only ever touched from its own compile path; the fork-child cleanup in
+  // ThreadManager::UnlockAfterFork already destroys them this way.
+  Thread->PassManager.reset();
+  Thread->FrontendDecoder.reset();
+  Thread->OpDispatcher.reset();
+  Thread->SymbolBuffer.reset();
+
+  // Dropping the backend drops this thread's shared_ptr references to the
+  // current code buffer and to any rotated-away buffers it had pinned for
+  // signal handlers, so a retired buffer whose last user was this thread is
+  // actually freed rather than held forever by a corpse.
+  Thread->CPUBackend.reset();
+
   // The page may be sitting at PROT_NONE (a deferred signal was armed and never
   // drained). Restore it before the mapping goes away so nothing that is still
   // unwinding takes a fault on a dangling address, then release it.
@@ -809,6 +851,10 @@ void ContextImpl::DestroyThread(FEXCore::Core::InternalThreadState* Thread) {
     Thread->CurrentFrame->InterruptFaultPagePtr = nullptr;
     ::munmap(FaultPage, PageSize);
   }
+}
+
+void ContextImpl::DestroyThread(FEXCore::Core::InternalThreadState* Thread) {
+  ReleaseDeadThreadResources(Thread);
   delete Thread;
 }
 
@@ -1510,7 +1556,7 @@ bool ContextImpl::GuestRangeProvablyHasNoCode(FEXCore::Core::InternalThreadState
   // a CodeBuffer born after that growth starts EMPTY -- a translation only
   // appears in it once some thread compiles into it, which happens-after the
   // growth it had to observe to reach the buffer at all.
-  if (Thread && LiveCodeBufferCount.load(std::memory_order_acquire) == 1) {
+  if (Thread && Thread->LookupCache.get() && LiveCodeBufferCount.load(std::memory_order_acquire) == 1) {
     return Thread->LookupCache->GranulesProvablyClear(Start, Length);
   }
 
@@ -1658,6 +1704,17 @@ void ContextImpl::SoftInvalidateCodeBuffersCodeRange(uint64_t Start, uint64_t Le
 void ContextImpl::InvalidateThreadCachedCodeRange(FEXCore::Core::InternalThreadState* Thread, uint64_t Start, uint64_t Length) {
   LOGMAN_THROW_A_FMT(CodeInvalidationMutex.is_write_owned(), "CodeInvalidationMutex needs to be unique_locked here");
 
+  // A released thread state (ReleaseDeadThreadResources) has neither a decoder
+  // nor a lookup cache, and no caches of its own left to scrub. Every walk that
+  // reaches here iterates ThreadManager::Threads under ThreadCreationMutex, and
+  // DestroyThread erases the thread from that list before releasing it, so this
+  // should be unreachable -- it is here so that being wrong costs a branch
+  // rather than a null dereference inside the exclusive invalidation lock.
+  // NonMovableUniquePtr has no operator bool -- .get() is the null test.
+  if (!Thread->LookupCache.get()) [[unlikely]] {
+    return;
+  }
+
   // Ensures now-modified mappings aren't cached as being in their previous non-executable state.
   // Accessing FrontendDecoder is safe as the thread's code invalidation mutex must be locked here.
   Thread->FrontendDecoder->ResetExecutableRangeCache();
@@ -1684,6 +1741,9 @@ void ContextImpl::ScrubThreadLookupCacheForLazySMC(FEXCore::Core::InternalThread
   // handler must not take, and none of them is reachable without first going
   // through the lookup slow path, which drains.
   //
+  // A released thread state has no lookup cache to scrub (and no way to reach
+  // this: the faulting thread is by definition still running).
+  //
   // The CallRet (shadow-return) stack is left alone even when the PPC64LE
   // FEX_SHADOWRETSTACK feature is enabled. That is sound because this scrub is
   // only part of the FEX_SMCLAZYINVAL soundness machinery, and the shadow
@@ -1694,6 +1754,9 @@ void ContextImpl::ScrubThreadLookupCacheForLazySMC(FEXCore::Core::InternalThread
   // reached via the InterruptFaultPage poke at every block entry, including
   // the return-block entry a shadow RET fast path lands on. So no stale host
   // trampoline outlives the scrub's drain window.
+  if (!Thread->LookupCache.get()) [[unlikely]] {
+    return;
+  }
   Thread->LookupCache->ScrubForLazySMC();
 }
 
@@ -1702,6 +1765,9 @@ void ContextImpl::ArmLazySMCDrainPending(FEXCore::Core::InternalThreadState* Thr
   // called for a thread other than the caller, so it must not touch anything
   // that thread owns exclusively — only the drain-pending flag, which is a
   // std::atomic<bool> written relaxed.
+  if (!Thread->LookupCache.get()) [[unlikely]] {
+    return;
+  }
   Thread->LookupCache->ArmLazySMCDrainPending();
 }
 
@@ -1712,6 +1778,9 @@ void ContextImpl::SettleLazySMCDrainIfPending(FEXCore::Core::InternalThreadState
   // block-entry boundary (the poke is the block's first instruction), so guest
   // state is consistent and the drain's lock acquisition is as legal here as
   // it is on the lookup slow path.
+  if (!Thread->LookupCache.get()) [[unlikely]] {
+    return;
+  }
   if (Thread->LookupCache->TakeLazySMCDrainPending()) {
     if (auto* LazyCount = SyscallHandler->LazySMCDirtyCount; LazyCount && LazyCount->load(std::memory_order_acquire) != 0) {
       SyscallHandler->DrainLazySMCInvalidations(Thread);

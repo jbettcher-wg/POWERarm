@@ -385,6 +385,40 @@ void ThreadManager::HandleThreadDeletion(FEX::HLE::ThreadStateObject* Thread, bo
   // `[rax+0x10]` (vtable slot 2 of a recycled _State chunk).
   Thread->ThreadInfo.IsZombie.store(true, std::memory_order_release);
 
+  // Leaking the two OBJECTS is the mitigation. Leaking everything the
+  // InternalThreadState owns was only ever a side effect of it, and it is a
+  // much larger one than the "~1MB per ~50 cycles" the note above quotes: the
+  // per-thread LookupCache alone is a 258 MiB private writable reservation at
+  // the default VirtualMemSize, with a 2 MiB L1 that Startup S4 prefaults so
+  // it is resident rather than lazy. Measured on a guest that creates and
+  // joins threads in a loop, the emulator's own mapped footprint grew by
+  // 258 MiB per dead thread and never came back down.
+  //
+  // What that costs is not RSS, it is fork(). Every leaked reservation is
+  // private and writable, so the kernel has to charge it again each time it
+  // copies the mm; past a few hundred dead threads the charge exceeds what
+  // the machine will commit and clone() starts returning ENOMEM, which is the
+  // "ENOMEM: not enough memory, posix_spawn" wedge in HANDOVER's trap list --
+  // a long-lived guest that suddenly cannot spawn anything at all while
+  // reading, writing and computing perfectly well, on a box with 300 GiB
+  // free. The spawn itself leaks nothing (posix_spawn is CLONE_VM|CLONE_VFORK
+  // without CLONE_THREAD, so ForkGuest handles it and no guest thread is
+  // created); it is simply the first thing to fail once the thread churn of a
+  // Node/Bun/Electron guest has piled up enough charge.
+  //
+  // So: give back what the thread OWNS, keep the objects. Ordered after the
+  // zombie store on purpose -- a signal that observes IsZombie takes the
+  // thunk's dead-thread escape and never reads through Thread->Thread, so the
+  // release can only be observed by a handler that has already agreed not to
+  // look. (The call-ret munmap above still runs BEFORE the store; that is
+  // pre-existing and unchanged.)
+  //
+  // Still deliberately leaked: the ThreadStateObject and the
+  // InternalThreadState themselves, because SignalHandlerThunk reads the
+  // former out of alt-stack memory and both carry the fields
+  // (ThreadInfo.TID, ThreadInfo.IsZombie) the escape decides on.
+  CTX->ReleaseDeadThreadResources(Thread->Thread);
+
   // Original deallocation (DO NOT re-enable until the signal-delivery
   // race is fixed via refcount or epoch-based reclaim):
   //   CTX->DestroyThread(Thread->Thread);

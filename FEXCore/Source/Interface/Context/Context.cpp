@@ -47,6 +47,13 @@ void FEXCore::Context::ContextImpl::SetThunkHandler(FEXCore::ThunkHandler* Handl
 }
 
 bool FEXCore::Context::ContextImpl::IsAddressInCodeBuffer(FEXCore::Core::InternalThreadState* Thread, uintptr_t Address) const {
+  // A thread that has been through ReleaseDeadThreadResources has no backend.
+  // It also has no host PC that could be in a code buffer, so "no" is both the
+  // safe answer and the right one. NonMovableUniquePtr has no operator bool --
+  // .get() is the null test.
+  if (!Thread->CPUBackend.get()) [[unlikely]] {
+    return false;
+  }
   return Thread->CPUBackend->IsAddressInCodeBuffer(Address);
 }
 
@@ -65,6 +72,11 @@ uint64_t FEXCore::Context::ContextImpl::GetJITCodeBufferGeneration() const {
 }
 
 bool FEXCore::Context::ContextImpl::GuestRangeOverlapsCompiledCode(FEXCore::Core::InternalThreadState* Thread, uint64_t Start, uint64_t Length) {
+  // Released thread state: it holds no compiled code any more, so nothing of
+  // its can overlap. See ReleaseDeadThreadResources.
+  if (!Thread->LookupCache.get()) [[unlikely]] {
+    return false;
+  }
   return Thread->LookupCache->RangeOverlapsCompiledCode(Start, Length);
 }
 

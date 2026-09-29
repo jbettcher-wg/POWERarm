@@ -116,6 +116,22 @@ public:
   CreateThread(uint64_t InitialRIP, uint64_t StackPointer, const FEXCore::Core::CPUState* NewThreadState = nullptr) = 0;
 
   FEX_DEFAULT_VISIBILITY virtual void DestroyThread(FEXCore::Core::InternalThreadState* Thread) = 0;
+
+  /**
+   * @brief Give back everything an InternalThreadState owns outright, without deleting the object.
+   *
+   * For a thread whose InternalThreadState is deliberately leaked so that a
+   * signal delivered after teardown still has valid memory to read (see
+   * ThreadManager::HandleThreadDeletion). The object, and every field a stale
+   * signal handler reads out of it, stays allocated; the mappings and the
+   * compiler-side heap it owns do not.
+   *
+   * The caller guarantees the thread will never execute guest code again and
+   * is no longer reachable from any per-thread walk.
+   *
+   * Idempotent, and a superset of what DestroyThread releases before deleting.
+   */
+  FEX_DEFAULT_VISIBILITY virtual void ReleaseDeadThreadResources(FEXCore::Core::InternalThreadState* Thread) = 0;
 #ifndef _WIN32
   FEX_DEFAULT_VISIBILITY virtual void LockBeforeFork(FEXCore::Core::InternalThreadState* Thread) {}
   FEX_DEFAULT_VISIBILITY virtual void UnlockAfterFork(FEXCore::Core::InternalThreadState* Thread, bool Child) {}
