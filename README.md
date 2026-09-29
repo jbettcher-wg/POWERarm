@@ -116,8 +116,7 @@ panel that shows them in game.
 POWERarm builds on two projects:
 
 - **[FEX-Emu](https://github.com/FEX-Emu/FEX)** provides the JIT core, IR, Linux emulation layer,
-  thunk generator and rootfs tooling. Thanks to Ryan Houdek and all FEX-Emu contributors. The
-  upstream README is kept as [`README.upstream.md`](README.upstream.md).
+  thunk generator and rootfs tooling. Thanks to Ryan Houdek and all FEX-Emu contributors.
 - **[fastppcx86](https://github.com/daedalao/fastppcx86)** provides the PPC64LE JIT backend and code
   emitter, 64K page support, and the self-modifying-code subsystem for POWER.
 
