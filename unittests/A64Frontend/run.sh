@@ -315,6 +315,64 @@ if [ -f hello.golden ]; then
   fi
 fi
 
+# EntryNZCVLiveIn, the per-unit IR-header bit meaning "some path from this
+# compile unit's entry block reads an NZCV bit before writing it". Nothing
+# guest-visible turns on it -- DFCE seeds FLAG_ALL at every unit exit, so the
+# flags arrive whatever the bit says, which is why nzcvlate's own PASS lines
+# cannot see this and this check exists. The JIT reads it to refuse a direct
+# link, and the planned NZCV-exit-deadness work will read it for real.
+#
+# It was computed from the entry block alone, which is wrong for a unit whose
+# reader sits in a LATER block (NZCV-LIVENESS.md 4.2, 17 of cc1's 110,706 units
+# at -O2). nzcvlate has one unit of each kind and prints their entry addresses
+# on its first line; required bits are 1 (late, the case an entry-block-only
+# rule gets wrong), 1 (reads in the entry block) and 0 (entry block writes every
+# bit first). The last two are the controls: without them a check that only
+# demanded a 1 would pass an implementation that always answered 1.
+#
+# The code cache is off for this run: a cached unit is not compiled, so the pass
+# never runs and dumps nothing.
+if [ -f nzcvlate.golden ]; then
+  a_late=$(awk '/^A /{print $2; exit}' nzcvlate.golden)
+  a_early=$(awk '/^A /{print $3; exit}' nzcvlate.golden)
+  a_writer=$(awk '/^A /{print $4; exit}' nzcvlate.golden)
+  POWERARM_ENABLECODECACHINGWIP=0 POWERARM_DUMPIR=stderr POWERARM_PASSMANAGERDUMPIR=afteropt     "$emu" ./nzcvlate > nzcvlate.livein.out 2> nzcvlate.livein.irdump
+  # Last dump of the unit whose OriginalRIP is $1 (a unit can be compiled more
+  # than once); prints "<blockcount> <bit>", or nothing if it never compiled.
+  unit() {
+    awk -v want="#0x$(echo "$1" | sed 's/^0*//'), " '
+      $2 == "IRHeader" && index($0, want) {
+        blocks = $5; sub(/^#/, "", blocks); sub(/,$/, "", blocks)
+        bit = $0; sub(/.*EntryNZCVLiveIn=/, "", bit)
+        found = blocks " " bit
+      }
+      END { print found }' nzcvlate.livein.irdump
+  }
+  late=$(unit "$a_late")
+  early=$(unit "$a_early")
+  writer=$(unit "$a_writer")
+  if [ -z "$late" ] || [ -z "$early" ] || [ -z "$writer" ]; then
+    report FAIL nzcv_entry_livein "no IR dump for one of the three units: late=[$late] early=[$early] writer=[$writer]"
+  elif [ "${late% *}" != 5 ]; then
+    # The whole shape is one unit of five blocks: the entry cbz, its
+    # not-taken leg, the block holding the b.ne, and that b.ne's two legs. With
+    # the unit size capped (POWERARM_MAXINST) the b.ne is a unit of its OWN, so
+    # the late entry reads nothing and 0 is the right answer there -- that mode
+    # cannot test this and says so. Any other reason for the count to move means
+    # the reader has left the unit and the check has lost its teeth, which is a
+    # failure and not a skip.
+    if [ -n "${POWERARM_MAXINST:-}" ]; then
+      report SKIP nzcv_entry_livein "POWERARM_MAXINST=$POWERARM_MAXINST caps the unit at ${late% *} blocks; the later-block reader is a unit of its own"
+    else
+      report FAIL nzcv_entry_livein "nzcv_late compiled to ${late% *} blocks, want 5: the later-block reader is no longer inside this unit, so the check tests nothing"
+    fi
+  elif [ "${late#* }" = 1 ] && [ "${early#* }" = 1 ] && [ "${writer#* }" = 0 ]; then
+    report PASS nzcv_entry_livein "late=1 (${late% *} blocks), early=1, writer=0"
+  else
+    report FAIL nzcv_entry_livein "EntryNZCVLiveIn late=${late#* } want 1, early=${early#* } want 1, writer=${writer#* } want 0; see $out/nzcvlate.livein.irdump"
+  fi
+fi
+
 # The fatal host-fault report survives a fault of its own. hostfault makes
 # POWERarm fault in its own syscall body (POWERARM_HOSTFAULT_INJECT, 173 is
 # getppid) under a return address the unwinder cannot read, once with fault

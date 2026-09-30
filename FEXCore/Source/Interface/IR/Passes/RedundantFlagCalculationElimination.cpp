@@ -101,6 +101,12 @@ struct BlockInfo {
   fextl::vector<uint32_t> Predecessors;
   Ref Node;
   uint8_t Flags;
+  // The NZCV bits that, on some path from the entry block to this block's
+  // first op, nothing has written yet -- the state of EntryNZCVLiveIn's
+  // forward reach (see the end of Run). Lives here rather than in a
+  // function-local vector so the walk allocates nothing per compile, for the
+  // reason BlockMap itself is persistent.
+  uint8_t EntryUndefined;
   bool InWorklist;
 };
 
@@ -128,6 +134,7 @@ struct ControlFlowGraph {
       Info.Predecessors.clear();
       Info.Node = nullptr;
       Info.Flags = FLAG_ALL;
+      Info.EntryUndefined = 0;
       Info.InWorklist = true;
 
       Worklist.push_back(ID);
@@ -853,23 +860,85 @@ void DeadFlagCalculationEliminination::Run(IREmitter* IREmit) {
   // depend on who else reads the compare's flags. It only removes reads, so
   // the liveness it is given stays valid while it runs block by block: a
   // compare it drops wrote every NZCV bit, and nothing read them afterwards.
-  // Compute EntryNZCVLiveIn: whether the compile unit reads flags on entry.
+  // Compute EntryNZCVLiveIn: whether this compile unit reads an NZCV bit that
+  // was already live when the unit was entered.
+  //
+  // This is NOT the backward liveness computed above. That one seeds FLAG_ALL
+  // at every unit exit, so it answers "live" almost everywhere and says
+  // nothing about who reads. This is a forward reach from the entry block: a
+  // bit is live in iff SOME path from entry reads it before writing it.
+  //
+  // It used to inspect the entry block alone, which marks a unit false whenever
+  // the reader sits in a LATER block -- an entry block that ends in cbz (a
+  // CondJump with FromNZCV clear, reading nothing) followed by a b.ne is the
+  // shape, and 17 of cc1's 110,706 units at -O2 are it
+  // (docs/powerarm/research/power-isa/NZCV-LIVENESS.md 4.2). Nothing consumes
+  // the bit for safety today -- exits are seeded FLAG_ALL, so no unit ever
+  // assumes its flags are dead at an exit -- which is the only reason that was
+  // not a miscompile. It becomes one the moment something does consume it, so
+  // the reach is done properly here rather than left as a trap for the
+  // NZCV-exit-deadness work.
+  //
+  // EntryUndefined[B] is the set of NZCV bits not yet written on some path from
+  // entry to B. It only ever grows, so the walk terminates over loops, and it
+  // stops as soon as one live-in bit is found because the consumer is a bool.
+  // The worklist and its InWorklist marks are the backward pass's, reused: that
+  // pass leaves the worklist empty, and Init() resets both for every block on
+  // the next compile, so an early exit with entries still queued is harmless.
   if (CurrentIR.GetHeader()->BlockCount > 0) {
-    auto [Block0Node, _] = *CurrentIR.GetBlocks().begin();
-    auto Block0IROp = CurrentIR.GetOp<IR::IROp_CodeBlock>(Block0Node);
-    if (Block0IROp->HasFlags) {
-      uint32_t EntryLiveIn = 0;
-      uint32_t Defined = 0;
-      for (auto [CodeNode, IROp] : CurrentIR.GetCode(Block0Node)) {
-        struct FlagInfo Info = ClassifyFast(IROp);
-        if (!Info.Trivial()) {
-          EntryLiveIn |= (Info.Read() & ~Defined);
-          Defined |= Info.Write();
+    auto [EntryNode, _] = *CurrentIR.GetBlocks().begin();
+    auto EntryIROp = CurrentIR.GetOp<IR::IROp_CodeBlock>(EntryNode);
+    CFG.Get(EntryIROp->ID)->EntryUndefined = FLAG_NZCV;
+    CFG.AddWorklist(Worklist, EntryIROp->ID);
+
+    uint32_t EntryLiveIn = 0;
+    while (!Worklist.empty() && (EntryLiveIn & FLAG_NZCV) == 0) {
+      auto Info = CFG.Get(Worklist.back());
+      Worklist.pop_back();
+      Info->InWorklist = false;
+
+      uint32_t Undefined = Info->EntryUndefined;
+      auto BlockIROp = CurrentIR.GetOp<IR::IROp_CodeBlock>(Info->Node);
+      if (BlockIROp->HasFlags) {
+        for (auto [CodeNode, IROp] : CurrentIR.GetCode(Info->Node)) {
+          struct FlagInfo OpInfo = ClassifyFast(IROp);
+          if (!OpInfo.Trivial()) {
+            EntryLiveIn |= (OpInfo.Read() & Undefined);
+            Undefined &= ~OpInfo.Write();
+          }
         }
       }
-      if ((EntryLiveIn & FLAG_NZCV) != 0) {
-        CurrentIR.GetHeader()->EntryNZCVLiveIn = true;
+
+      // Every bit written on the way through stops here: a successor reading it
+      // reads this block's value, not the unit's caller's.
+      if (Undefined == 0) {
+        continue;
       }
+
+      auto Propagate = [&](OrderedNodeWrapper Succ) {
+        const uint32_t ID = CurrentIR.GetOp<IR::IROp_CodeBlock>(Succ)->ID;
+        auto SuccInfo = CFG.Get(ID);
+        const uint8_t Merged = SuccInfo->EntryUndefined | Undefined;
+        if (Merged != SuccInfo->EntryUndefined) {
+          SuccInfo->EntryUndefined = Merged;
+          CFG.AddWorklist(Worklist, ID);
+        }
+      };
+
+      auto CodeLast = CurrentIR.at(BlockIROp->Last);
+      --CodeLast;
+      auto [ExitNode, ExitOp] = CodeLast();
+      if (ExitOp->Op == IR::OP_CONDJUMP) {
+        auto Op = ExitOp->CW<IR::IROp_CondJump>();
+        Propagate(Op->TrueBlock);
+        Propagate(Op->FalseBlock);
+      } else if (ExitOp->Op == IR::OP_JUMP) {
+        Propagate(ExitOp->Args[0]);
+      }
+    }
+
+    if ((EntryLiveIn & FLAG_NZCV) != 0) {
+      CurrentIR.GetHeader()->EntryNZCVLiveIn = true;
     }
   }
 

@@ -348,8 +348,15 @@ void Dump(fextl::stringstream* out, const IRListView* IR) {
 
   ++CurrentIndent;
   AddIndent();
-  *out << fextl::fmt::format("(%0) IRHeader %{}, #{:#x}, #{}, #{}\n", HeaderOp->Blocks.ID(), +HeaderOp->OriginalRIP, +HeaderOp->BlockCount,
-                             +HeaderOp->NumHostInstructions);
+  // EntryNZCVLiveIn is the last field: whether this unit reads an NZCV bit that
+  // was live when it was entered (DeadFlagCalculationElimination computes it by
+  // forward reach from the entry block). It is dumped because nothing else can
+  // see it -- it is a header bit with no guest-visible effect today -- and
+  // unittests/A64Frontend/run.sh's nzcv_entry_livein check reads it from here.
+  // Appended rather than inserted: nzcv_census.py's header regex matches a
+  // prefix of this line.
+  *out << fextl::fmt::format("(%0) IRHeader %{}, #{:#x}, #{}, #{}, EntryNZCVLiveIn={}\n", HeaderOp->Blocks.ID(), +HeaderOp->OriginalRIP,
+                             +HeaderOp->BlockCount, +HeaderOp->NumHostInstructions, HeaderOp->EntryNZCVLiveIn ? 1 : 0);
 
   for (auto [BlockNode, BlockHeader] : IR->GetBlocks()) {
     {
