@@ -230,8 +230,11 @@ bool IRBuilder::HINT(uint32_t) {
 // CRm bits 1:0 are the access types the barrier orders, and map onto what the
 // PPC64 backend emits for each FenceType (MemoryOps.cpp):
 //   0b01 (LD): loads before -> loads and stores after.   lwsync (Acquire)
-//   0b10 (ST): stores before -> stores after.            lwsync
+//   0b10 (ST): stores before -> stores after.            hwsync (Store)
 //   else (SY): everything before -> everything after.    hwsync
+// ST takes the strong fence even though lwsync already orders store->store
+// locally: an AArch64 barrier is cumulative over coherence order and lwsync is
+// not. See DEF_OP(Fence) in JIT/PPC64LE/MemoryOps.cpp for the shape.
 // The domain (CRm bits 3:2 -- OSH/NSH/ISH/SY) is not distinguished: every
 // domain is at least inner-shareable as far as a guest thread on this host can
 // observe, so the widest reading is the correct one.

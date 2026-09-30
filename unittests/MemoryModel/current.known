@@ -24,34 +24,3 @@ IRIW012   plain writers, readers LDAPR; LDR
 SC-IRIW2  release writers, readers LDAR; LDR
 SC-IRIW3  release writers, readers LDAPR; LDR
 SC-IRIW4  release writers, readers LDR; DMB LD; LDR
-# --- The CO-R class: coherence-order cumulativity, three tests ---
-#
-# The R shape with a coherence edge and a strong barrier on the reader:
-#
-#   P0: STR x,1 ; DMB ST ; W y,1        P1: STR y,2 ; DMB SY ; LDR r,x
-#   observed: [y]=2 (P0's write to y lost the coherence race) and r == 0
-#
-# AArch64 forbids it. AArch64 is other-multi-copy-atomic and its barriers are
-# cumulative over coherence order, so if P0's write to y is co-before P1's then
-# P0's earlier write to x has propagated everywhere P0's write to y has. Power is
-# not multi-copy-atomic and lwsync's cumulativity does not extend over `co`, so
-# ppc.cat allows it. Closing it means DMB ST -> hwsync (and the STLR case
-# STLR -> ...; sync), i.e. exactly the cost question the trailing-sync note above
-# describes, on a different edge.
-#
-# Why accepted, and why these three are listed together: **the divergence is in
-# the DMB ST / STLR mapping, not in anything to do with exclusives.** CO-R1 and
-# CO-R2 are hand-built controls with a plain STR as P0's second write and no
-# exclusive instruction anywhere, and they are unsound; R011Lx is the same cycle
-# with P0's second write supplied by an LDXR..STXR pair, and it is unsound for
-# the same reason and no other. The reservation lowering (current.map's four
-# LDXR/STXR rules) is sound on all 574 other tests of the exclusive family; it
-# only made this shape reachable, because diy7's original family never produced
-# a 4-edge cycle with two barrier edges.
-#
-# As with the IRIW rows: no C or C++ program can depend on it. C++ gives
-# coherence-order guarantees only between seq_cst operations, which compile to
-# STLR/LDAR pairs whose leading hwsync already forbids this.
-CO-R1     control, no exclusive: plain writers, DMB ST | DMB SY reader
-CO-R2     control, no exclusive: plain writer + STLR, DMB ST | LDAR reader
-R011Lx    the same cycle with the writer's second store coming from LDXR..STXR

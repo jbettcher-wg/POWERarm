@@ -8,7 +8,11 @@ AArch64 to PPC
 "LDAPR %r,[%a]" -> "lwz %r,0(%a); lwsync"
 "DMB SY" -> "sync"
 "DMB LD" -> "lwsync"
-"DMB ST" -> "lwsync"
+# DMB ST is `sync`, not `lwsync`. lwsync orders store->store on the executing
+# hart, which is all DMB ISHST asks for locally, but AArch64 barriers are also
+# cumulative over coherence order and lwsync's cumulativity is not: see the
+# CO-R shape that check.sh's two hand-built controls pin.
+"DMB ST" -> "sync"
 # LDXR..STXR fused onto the native reservation (TranslateExclusive.cpp,
 # TryFuseExclusiveLoop). One rule per pair rather than one per instruction,
 # because the lowering is one region: the leading fence is hoisted above the

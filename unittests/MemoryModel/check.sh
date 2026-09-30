@@ -77,13 +77,14 @@ for cyc in "RfeLA PodRRAA FreAL RfeLA PodRRAA FreAL" "RfeLA PodRRAP FrePL RfeLA 
   # shellcheck disable=SC2086
   (cd "$work/gen" && diyone7 -arch AArch64 -name "SC-IRIW$n" $cyc >/dev/null 2>&1)
 done
-# Two hand-built controls for the divergence current.known calls CO-R: the R
-# shape with a coherence edge and a strong barrier on the reader. They contain no
-# exclusive at all -- the writer is a plain store -- and they are unsound under
-# current.map, which is what proves that R011Lx's unsoundness belongs to the
-# `DMB ST -> lwsync` and `STLR -> sync; stw` mappings and not to the reservation
+# Two hand-built controls for the CO-R shape: the R cycle with a coherence edge
+# and a strong barrier on the reader. They contain no exclusive at all -- the
+# writer is a plain store -- which is what proved that the unsoundness this pair
+# and R011Lx used to show belonged to `DMB ST` and not to the reservation
 # lowering that made it visible. diy7's own family never produces this cycle
-# (two barrier edges in a 4-edge cycle), which is why it went unnoticed.
+# (two barrier edges in a 4-edge cycle), which is why it went unnoticed until
+# the Lx family reached it. All three are sound now that DMB ST maps to `sync`;
+# they stay here to fail if it goes back to `lwsync`.
 n=0
 for cyc in "DMB.STdWW Coe DMB.SYdWR Fre" "DMB.STdWW Coe PodWRLA FreAP"; do
   n=$((n + 1))

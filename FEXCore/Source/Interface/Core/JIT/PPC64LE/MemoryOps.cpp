@@ -2326,7 +2326,18 @@ DEF_OP(Fence) {
   switch (Op->Fence) {
   case IR::FenceType::Load:             lwsync(); isync(); break;
   case IR::FenceType::LoadStore:        hwsync(); break;
-  case IR::FenceType::Store:            lwsync(); break;
+  // Store: DMB ISHST, the only producer (Barrier() in
+  // TranslateBranchSystem.cpp). `lwsync` gives the LOCAL order this asks for --
+  // stores before the barrier reach memory before stores after it -- but not
+  // the CUMULATIVITY. An AArch64 barrier's ordering is cumulative over
+  // coherence order as well as over reads-from, because AArch64 is
+  // other-multi-copy-atomic; lwsync's is not, and ppc.cat therefore allows the
+  // R shape where P0's post-barrier store loses the coherence race to P1 and
+  // P1's later load still misses P0's pre-barrier store. `sync` is cumulative
+  // over co and forbids it. unittests/MemoryModel/check.sh pins this with two
+  // hand-built controls (CO-R1, CO-R2) that contain no exclusive at all, so a
+  // regression here cannot be mistaken for a reservation-lowering bug.
+  case IR::FenceType::Store:            hwsync(); break;
   // Acquire: prior loads ordered before every later load and store, and no
   // more -- the A64 frontend's LDAR/LDAPR trailing fence and DMB ISHLD. lwsync
   // alone gives exactly that on POWER (it orders load->load and load->store).
