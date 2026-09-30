@@ -367,6 +367,55 @@ bool IRBuilder::CLZ_int(uint32_t Word) {
   return true;
 }
 
+// `rbit Rd,Rn ; clz Rd,Rd` is CTZ, and it is what GCC and clang emit for
+// __builtin_ctz on every AArch64 revision before FEAT_CSSC. Lowered as two
+// independent ops it costs the whole bit-reversal (a SWAR chain, or six vector
+// instructions) plus a cntlz; as one FindTrailingZeroes it is a single cnttzd /
+// cnttzw on ISA 3.0 and four XER-safe instructions without it. glibc's AArch64
+// strlen, strnlen, memchr, strchr, strchrnul, strcpy and strrchr all end in
+// this pair, so every call to one of them pays it once.
+//
+// WHY ELIDING THE RBIT'S REGISTER WRITE IS SOUND. The match requires the CLZ to
+// both read and write the very register the RBIT wrote, so the RBIT's value is
+// dead the instant the CLZ retires, and the two are adjacent in one decoded
+// block. The only way a guest could observe the intermediate is at an exception
+// or signal taken between them, and there is none to be had: neither
+// instruction can fault, asynchronous signals are deferred to a drain point (a
+// unit entry or a branch's backward leg -- see sigpreempt.c), and an in-unit
+// branch target starts a decoded block of its own, so a CLZ that anything
+// jumps to is never this function's Index+1.
+size_t IRBuilder::TryFuseRbitClz(const Decoder::DecodedBlocks& Block, size_t Index) {
+  if (Index + 2 > Block.NumInstructions) {
+    return 0;
+  }
+  const auto& Rbit = Block.DecodedInstructions[Index];
+  const auto& Clz = Block.DecodedInstructions[Index + 1];
+  if (!Rbit.Matcher || !Clz.Matcher || strcmp(Rbit.Matcher->Name, "RBIT_int") != 0 ||
+      strcmp(Clz.Matcher->Name, "CLZ_int") != 0) {
+    return 0;
+  }
+  // Same operand width, or the two do not compose into one CTZ at all.
+  const bool Is64 = Bit(Rbit.Word, 31);
+  if (Bit(Clz.Word, 31) != Is64) {
+    return 0;
+  }
+  // Rd of the RBIT must be both operands of the CLZ. That is what makes the
+  // RBIT's write dead. Rd = 31 is the discarding form and not worth a case.
+  const uint32_t Rd = Bits(Rbit.Word, 4, 0);
+  if (Rd == 31 || Bits(Clz.Word, 9, 5) != Rd || Bits(Clz.Word, 4, 0) != Rd) {
+    return 0;
+  }
+
+  // Core.cpp emitted the marker for the RBIT; the CLZ needs its own so a signal
+  // resuming at either PC still finds an instruction boundary there.
+  _GuestOpcode(Clz.PC - Entry);
+  // LoadGPRSlot's value cache is keyed on CurrentPC, which the caller has not
+  // advanced yet (it advances in TranslateInstruction, which is not running).
+  CurrentPC = Rbit.PC;
+  StoreReg(Rd, Is64, _FindTrailingZeroes(SizeFor(Is64), LoadX(Bits(Rbit.Word, 9, 5))));
+  return 2;
+}
+
 bool IRBuilder::CLS_int(uint32_t Word) {
   // CLS(x) = CLZ(x ^ (x ASR 1)) - 1: bit i of the xor is x[i] ^ x[i+1], and
   // its top bit is always clear.

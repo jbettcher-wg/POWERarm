@@ -534,6 +534,18 @@ public:
   // cntlzd RA, RS (count leading zeros doubleword, XO 58)
   void cntlzd(GPR ra, GPR rs) { EmitX(31, rs.idx, ra.idx, 0, 58, 0); }
 
+  // cnttzw RA, RS / cnttzd RA, RS (ISA 3.0, XO 538 / 570): count TRAILING
+  // zeros, in the low word and in the whole doubleword respectively. Both
+  // return the operand's width for a zero operand -- 32 and 64 -- which is
+  // exactly what `rbit ; clz` computes, and exactly the IR's
+  // FindTrailingZeroes contract. cnttzw ignores bits 0:31 of RS entirely.
+  // POWER9 and later only -- gate on HostFeatures.SupportsISA30.
+  // Verified against llvm-mc -triple=powerpc64le: cnttzw 3,4 = 0x7c830434,
+  // cnttzd 3,4 = 0x7c830474, cnttzd. 3,4 = 0x7c830475.
+  void cnttzw(GPR ra, GPR rs) { EmitX(31, rs.idx, ra.idx, 0, 538, 0); }
+  void cnttzd(GPR ra, GPR rs) { EmitX(31, rs.idx, ra.idx, 0, 570, 0); }
+  void cnttzd_(GPR ra, GPR rs) { EmitX(31, rs.idx, ra.idx, 0, 570, 1); }
+
   // popcntw RA, RS (population count words, XO 378)
   void popcntw(GPR ra, GPR rs) { EmitX(31, rs.idx, ra.idx, 0, 378, 0); }
 
@@ -1685,6 +1697,16 @@ public:
   void vpopcnth(VR vrt, VR vrb) { Emit32((4u<<26)|(vrt.idx<<21)|(0<<16)|(vrb.idx<<11)|1859u); }
   void vpopcntw(VR vrt, VR vrb) { Emit32((4u<<26)|(vrt.idx<<21)|(0<<16)|(vrb.idx<<11)|1923u); }
   void vpopcntd(VR vrt, VR vrb) { Emit32((4u<<26)|(vrt.idx<<21)|(0<<16)|(vrb.idx<<11)|1987u); }
+
+  // vgbbd VRT, VRB (ISA 2.07, VX-form XO 1292) -- "Vector Gather Bits by Bytes
+  // by Doubleword". Each doubleword is treated as an 8x8 bit matrix and
+  // TRANSPOSED: VRT.dw[i].byte[j].bit[k] <- VRB.dw[i].byte[k].bit[j], with
+  // byte 0 the most significant and bit 0 the most significant of its byte.
+  // Composed alternately with a per-doubleword byte reverse it is a full
+  // 64-bit bit reversal (see DEF_OP(Rbit)).
+  // Verified against llvm-mc -triple=powerpc64le: vgbbd 3,4 = 0x1060250c,
+  // vgbbd 31,31 = 0x13e0fd0c.
+  void vgbbd(VR vrt, VR vrb) { Emit32((4u<<26)|(vrt.idx<<21)|(0<<16)|(vrb.idx<<11)|1292u); }
 
   // vbpermq (POWER8+): bit permute quadword
   void vbpermq(VR vrt, VR vra, VR vrb) { EmitVX(vrt.idx, vra.idx, vrb.idx, 1356); }

@@ -1699,6 +1699,20 @@ DEF_OP(FindTrailingZeroes) {
   auto Op  = IROp->C<IR::IROp_FindTrailingZeroes>();
   auto Dst = GetReg(Node);
   auto Src = GetReg(Op->Src);
+  if (CTX->HostFeatures.SupportsISA30) {
+    // cnttzd/cnttzw already answer the contract, zero case included, in one
+    // instruction. For the narrow widths there is no cnttzh/cnttzb, but no mask
+    // is needed either: garbage ABOVE the operand cannot move the lowest set
+    // bit WITHIN it, and setting a sentinel bit at exactly bit Width makes the
+    // all-zero operand return Width instead of finding that garbage.
+    switch (IROp->Size) {
+    case IR::OpSize::i64Bit: cnttzd(Dst, Src); return;
+    case IR::OpSize::i32Bit: cnttzw(Dst, Src); return;
+    case IR::OpSize::i16Bit: oris(TMP1, Src, 1); cnttzd(Dst, TMP1); return;
+    case IR::OpSize::i8Bit:  ori(TMP1, Src, 0x100); cnttzd(Dst, TMP1); return;
+    default: break;
+    }
+  }
   unsigned Width = 64;
   GPR MaskedSrc = Src;
   switch (IROp->Size) {
@@ -1810,6 +1824,38 @@ DEF_OP(Rbit) {
   auto Op  = IROp->C<IR::IROp_Rbit>();
   auto Dst = GetReg(Node);
   auto Src = GetReg(Op->Src);
+  if (CTX->HostFeatures.SupportsISA30) {
+    // Full 64-bit bit reversal in the vector unit: six instructions, no memory,
+    // no store-to-load forward and no stack traffic at all.
+    //
+    // As index maps on (byte a, bit b) within a doubleword, both numbered from
+    // the most significant end, `out at p = in at m(p)`:
+    //   vgbbd  T: (a, b) <- (b, a)      the 8x8 transpose
+    //   xxbrd  R: (a, b) <- (7-a, b)    the byte reverse
+    // and T then R then T then R composes to (a, b) <- (7-a, 7-b), which is
+    // "bit i of the result is bit 63-i of the source" -- the whole reversal.
+    // Checked against a reference bit-reverse over the edge values (0, 1,
+    // 1<<63, all-ones) and 500 random doublewords before this was written.
+    //
+    // mtvsrd writes dw0 and leaves dw1 UNDEFINED per the ISA; every instruction
+    // here is per-doubleword and mfvsrd reads dw0, so dw1 is never read.
+    // vgbbd is ISA 2.07 but xxbrd is 3.0, so the sequence as a whole is gated
+    // on 3.0 and POWER8 keeps the SWAR path below.
+    mtvsrd(VTMP1, Src);
+    vgbbd(VTMP1, VTMP1);
+    xxbrd(VTMP1, VTMP1);
+    vgbbd(VTMP1, VTMP1);
+    xxbrd(VTMP1, VTMP1);
+    mfvsrd(Dst, VTMP1);
+    if (IROp->Size == IR::OpSize::i32Bit) {
+      // A 32-bit RBIT is the TOP half of the 64-bit reversal: bit i of the low
+      // word lands at bit 63-i, so one logical shift right by 32 both selects
+      // those bits and zero-extends the result. Whatever garbage the source's
+      // high word held reversed into the bits this shift discards.
+      srdi(Dst, Dst, 32);
+    }
+    return;
+  }
   // bpermd RA, RS, RB: permutes bits of RS using RS as index bytes
   // To reverse 64 bits: use bpermd with pattern 0x3F3E3D3C3B3A3938...
   // For 64-bit reverse: index bytes are 63,62,61,...,56 in each byte lane
@@ -1848,11 +1894,11 @@ DEF_OP(Rbit) {
     and_(TMP4, TMP1, TMP2);
     sldi(TMP4, TMP4, 4);
     or_(TMP1, TMP3, TMP4);
-    // Byte-reverse the result
-    addi(r1, r1, -16);
-    stdbrx(TMP1, r0, r1);
-    ld(Dst, 0, r1);
-    addi(r1, r1, 16);
+    // Byte-reverse the result through the red zone (r1-8), not by moving r1:
+    // same reason DEF_OP(Rev)'s 64-bit arm does, and one instruction fewer.
+    addi(TMP2, r1, -8);
+    stdbrx(TMP1, TMP2, r0);
+    ld(Dst, -8, r1);
   } else {
     // 32-bit reverse
     mr(TMP1, Src);
@@ -1878,10 +1924,9 @@ DEF_OP(Rbit) {
     // byte-reverses on load — those two operations cancel out, leaving
     // an identity load (no actual byte swap).  Match the 64-bit path
     // which correctly uses stdbrx + ld for the bswap.
-    addi(r1, r1, -16);
-    stwbrx(TMP1, r0, r1); // byte-reverse on store
-    lwz(Dst, 0, r1);      // load native LE -> bswap(TMP1)
-    addi(r1, r1, 16);
+    addi(TMP2, r1, -8);
+    stwbrx(TMP1, TMP2, r0); // byte-reverse on store
+    lwz(Dst, -8, r1);       // load native LE -> bswap(TMP1)
   }
 }
 

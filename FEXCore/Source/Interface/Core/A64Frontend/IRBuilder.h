@@ -65,6 +65,13 @@ public:
   // not be handled at all (the caller abandons the compile).
   bool TranslateInstruction(const Decoder::DecodedInst& Inst);
 
+  // Recognizes `RBIT Rd,Rn ; CLZ Rd,Rd` -- what every compiler emits for
+  // __builtin_ctz on ARMv8.0-8.8 -- and replaces the pair with one
+  // FindTrailingZeroes. Returns 2 on a match, 0 otherwise. Unlike the two
+  // fusions below it consumes a fixed pair and leaves the rest of the block
+  // alone. See TranslateDataProcessing.cpp.
+  size_t TryFuseRbitClz(const Decoder::DecodedBlocks& Block, size_t Index);
+
   // Recognizes the vector-scan idiom (CMEQ -> UMAXP/ADDP -> FMOV -> CBZ/CBNZ)
   // and fuses it into a vector-compare branch (CondJump with VCmpElementSize).
   // Returns number of instructions consumed (4 on match, 0 if not matched).

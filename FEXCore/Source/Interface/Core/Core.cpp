@@ -1066,6 +1066,26 @@ ContextImpl::GenerateIR(FEXCore::Core::InternalThreadState* Thread, uint64_t Gue
           Thread->OpDispatcher->StartContinuationBlock();
         }
 
+        // A two-instruction guest peephole that fuses into one IR op and then
+        // CONTINUES in the same block -- unlike the two fusions below, which
+        // swallow the rest of it. Excluded under full SMC validation for the
+        // same reason they are: that inserts a _ValidateCode CondJump, and so
+        // an IR block boundary, between every pair of guest instructions.
+        if (!FullSMCValidation) {
+          const size_t Fused = Thread->OpDispatcher->TryFuseRbitClz(Block, i);
+          if (Fused > 0) {
+            BlockInstructionsLength += Fused * FEXCore::A64::INSTRUCTION_SIZE;
+            TotalInstructionsLength += Fused * FEXCore::A64::INSTRUCTION_SIZE;
+            TotalInstructions += Fused;
+            if (Thread->OpDispatcher->FinishOp(InstAddress + Fused * FEXCore::A64::INSTRUCTION_SIZE, i + Fused == InstsInBlock)) {
+              break;
+            }
+            // The loop's own ++i accounts for the last fused instruction.
+            i += Fused - 1;
+            continue;
+          }
+        }
+
         if (!FullSMCValidation && Config.VCmpFusion) {
           const size_t Fused = Thread->OpDispatcher->TryFuseVectorScan(Block, i);
           if (Fused > 0) {
