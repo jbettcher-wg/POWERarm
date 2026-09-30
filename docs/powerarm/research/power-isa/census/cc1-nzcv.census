@@ -1,0 +1,525 @@
+# fusion-on: cc1 -O2 lvm.c IR dump (POWERARM_DUMPIR=stderr, cache off), stable cffa7b4de, classified by nzcv_census.py against llvm-objdump -d of the rootfs cc1
+disassembly: 6302725 instructions
+units: 110706; units with NZCV live-in at entry (DFCE rule, exits=ALL): 75683
+units by first flag op in the entry block (EntryNZCVLiveIn as computed today = LIVE): {'sound: reader reachable from entry': 303, 'sound: reader in a later block only': 17, 'UNRESOLVED': 80986, 'DEAD': 29434, 'LIVE': 286}
+kept producers: 128968  by op: {'SubNZCV': 109255, 'AddNZCV': 1945, 'TestNZ': 3657, 'AddWithFlags': 212, 'CondSubNZCV': 5976, 'SubWithFlags': 7148, 'AndWithFlags': 596, 'CondAddNZCV': 179}
+FCmp: {'exit': 8, 'inunit': 7}
+
+## classification of kept producers (why the flags are live)
+  126697   98.2%  (region) cc1
+  102222   79.3%  exit: constant only
+    9409    7.3%  exit: constant and indirect-Return
+    5963    4.6%  in-unit: unfusable reader (CondSubNZCV)
+    5291    4.1%  exit: indirect-Return
+    2525    2.0%  in-unit: only fusable readers visible
+    2271    1.8%  (region) other (libc/ld.so)
+    1650    1.3%  exit: constant and indirect-Call
+     729    0.6%  exit: indirect-Call
+     332    0.3%  in-unit: no visible reader (fused readers; kept by the signal-barrier rule or a partial overwrite)
+     242    0.2%  exit: constant and indirect-None
+     179    0.1%  in-unit: unfusable reader (CondAddNZCV)
+     107    0.1%  exit: indirect-Call+indirect-Return
+      99    0.1%  exit: indirect-None+indirect-Return
+      84    0.1%  exit: indirect-None
+      47    0.0%  exit: constant and other:Break
+      25    0.0%  exit: constant and indirect-Call+indirect-Return
+      20    0.0%  exit: other:Break
+      11    0.0%  exit: indirect-Return+other:Break
+      10    0.0%  exit: constant and indirect-Return+other:Break
+       7    0.0%  exit: constant and indirect-None+indirect-Return
+       5    0.0%  exit: indirect-Call+indirect-None
+       3    0.0%  exit: constant and indirect-Call+indirect-None
+       3    0.0%  in-unit: unfusable reader (Sbb)
+       2    0.0%  exit: indirect-Call+indirect-None+indirect-Return
+       2    0.0%  in-unit: unfusable reader (Adc)
+       1    0.0%  exit: indirect-None+other:Break
+
+## visible in-unit readers (per producer that has one)
+   82544  CondJump
+    8117  NZCVSelect
+    5973  CondSubNZCV
+     179  CondAddNZCV
+       6  Adc
+       5  Sbb
+       3  LoadNZCV
+       1  AdcWithFlags
+       1  SbbWithFlags
+
+## exit kinds reached with live flags (per producer)
+   99532  const-None
+   33533  const-Call
+   14961  indirect-Return
+    2521  indirect-Call
+     443  indirect-None
+      89  other:Break
+
+## policy estimate: constant-exit-only producers, by the peek verdict on their targets
+   11644  exit hint set const-Call
+   19133  exit hint set const-Call+const-None
+   71445  exit hint set const-None
+   59446  follow-bl+abi-ret:   depth<=16
+   65024  follow-bl+abi-ret:   depth<=32
+   46948  follow-bl+abi-ret:   depth<=8
+    5193  follow-bl+abi-ret:   span beyond 16M
+   17383  follow-bl+abi-ret:   span within 16M
+    4761  follow-bl+abi-ret:   span within 1M
+   30757  follow-bl+abi-ret:   span within 4K
+    7468  follow-bl+abi-ret:   span within 64K
+    2030  follow-bl+abi-ret:   unresolved because bl:bl:bl
+       2  follow-bl+abi-ret:   unresolved because bl:bl:bl+bl:bl:blr
+       1  follow-bl+abi-ret:   unresolved because bl:bl:bl+bl:bl:blr+bl:bl:br+no-code
+      43  follow-bl+abi-ret:   unresolved because bl:bl:bl+bl:bl:br
+       2  follow-bl+abi-ret:   unresolved because bl:bl:bl+bl:bl:br+bl:bl:no-code
+       2  follow-bl+abi-ret:   unresolved because bl:bl:bl+bl:bl:br+bl:bl:no-code+bl:no-code
+       2  follow-bl+abi-ret:   unresolved because bl:bl:bl+bl:bl:br+bl:bl:no-code+bl:no-code+no-code
+       1  follow-bl+abi-ret:   unresolved because bl:bl:bl+bl:bl:br+bl:br
+       1  follow-bl+abi-ret:   unresolved because bl:bl:bl+bl:bl:br+bl:br+no-code
+       1  follow-bl+abi-ret:   unresolved because bl:bl:bl+bl:bl:br+blr
+       6  follow-bl+abi-ret:   unresolved because bl:bl:bl+bl:bl:br+no-code
+       9  follow-bl+abi-ret:   unresolved because bl:bl:bl+bl:bl:no-code
+       2  follow-bl+abi-ret:   unresolved because bl:bl:bl+bl:bl:no-code+bl:br+no-code
+       9  follow-bl+abi-ret:   unresolved because bl:bl:bl+bl:bl:no-code+bl:no-code
+       1  follow-bl+abi-ret:   unresolved because bl:bl:bl+bl:bl:no-code+bl:no-code+no-code
+       4  follow-bl+abi-ret:   unresolved because bl:bl:bl+bl:bl:no-code+no-code
+       5  follow-bl+abi-ret:   unresolved because bl:bl:bl+bl:blr
+      78  follow-bl+abi-ret:   unresolved because bl:bl:bl+bl:br
+       8  follow-bl+abi-ret:   unresolved because bl:bl:bl+bl:br+bl:no-code
+       1  follow-bl+abi-ret:   unresolved because bl:bl:bl+bl:br+blr
+       1  follow-bl+abi-ret:   unresolved because bl:bl:bl+bl:br+blr+no-code
+      12  follow-bl+abi-ret:   unresolved because bl:bl:bl+bl:br+br
+       1  follow-bl+abi-ret:   unresolved because bl:bl:bl+bl:br+br+no-code
+       1  follow-bl+abi-ret:   unresolved because bl:bl:bl+bl:br+brk
+       1  follow-bl+abi-ret:   unresolved because bl:bl:bl+bl:br+brk+no-code
+      13  follow-bl+abi-ret:   unresolved because bl:bl:bl+bl:br+no-code
+       2  follow-bl+abi-ret:   unresolved because bl:bl:bl+bl:budget
+       1  follow-bl+abi-ret:   unresolved because bl:bl:bl+bl:budget+budget+no-code
+      82  follow-bl+abi-ret:   unresolved because bl:bl:bl+bl:no-code
+       1  follow-bl+abi-ret:   unresolved because bl:bl:bl+bl:no-code+br+no-code
+       2  follow-bl+abi-ret:   unresolved because bl:bl:bl+bl:no-code+brk
+       1  follow-bl+abi-ret:   unresolved because bl:bl:bl+bl:no-code+brk+no-code
+      20  follow-bl+abi-ret:   unresolved because bl:bl:bl+bl:no-code+no-code
+      14  follow-bl+abi-ret:   unresolved because bl:bl:bl+blr
+       2  follow-bl+abi-ret:   unresolved because bl:bl:bl+blr+no-code
+      29  follow-bl+abi-ret:   unresolved because bl:bl:bl+br
+      14  follow-bl+abi-ret:   unresolved because bl:bl:bl+br+no-code
+      26  follow-bl+abi-ret:   unresolved because bl:bl:bl+brk
+       3  follow-bl+abi-ret:   unresolved because bl:bl:bl+brk+no-code
+      12  follow-bl+abi-ret:   unresolved because bl:bl:bl+budget
+     332  follow-bl+abi-ret:   unresolved because bl:bl:bl+no-code
+      49  follow-bl+abi-ret:   unresolved because bl:bl:blr
+       2  follow-bl+abi-ret:   unresolved because bl:bl:blr+bl:br
+       1  follow-bl+abi-ret:   unresolved because bl:bl:blr+bl:no-code+no-code
+       1  follow-bl+abi-ret:   unresolved because bl:bl:blr+br
+      11  follow-bl+abi-ret:   unresolved because bl:bl:blr+no-code
+     403  follow-bl+abi-ret:   unresolved because bl:bl:br
+       3  follow-bl+abi-ret:   unresolved because bl:bl:br+bl:bl:no-code
+       1  follow-bl+abi-ret:   unresolved because bl:bl:br+bl:bl:no-code+no-code
+       3  follow-bl+abi-ret:   unresolved because bl:bl:br+bl:blr
+       1  follow-bl+abi-ret:   unresolved because bl:bl:br+bl:blr+bl:no-code
+       2  follow-bl+abi-ret:   unresolved because bl:bl:br+bl:blr+blr
+      35  follow-bl+abi-ret:   unresolved because bl:bl:br+bl:br
+       1  follow-bl+abi-ret:   unresolved because bl:bl:br+bl:br+bl:no-code
+       1  follow-bl+abi-ret:   unresolved because bl:bl:br+bl:br+bl:no-code+no-code
+       2  follow-bl+abi-ret:   unresolved because bl:bl:br+bl:br+blr+no-code
+       1  follow-bl+abi-ret:   unresolved because bl:bl:br+bl:br+brk
+       5  follow-bl+abi-ret:   unresolved because bl:bl:br+bl:br+no-code
+       2  follow-bl+abi-ret:   unresolved because bl:bl:br+bl:budget
+      10  follow-bl+abi-ret:   unresolved because bl:bl:br+bl:no-code
+       3  follow-bl+abi-ret:   unresolved because bl:bl:br+bl:no-code+br
+       3  follow-bl+abi-ret:   unresolved because bl:bl:br+bl:no-code+no-code
+       3  follow-bl+abi-ret:   unresolved because bl:bl:br+blr
+      16  follow-bl+abi-ret:   unresolved because bl:bl:br+br
+       2  follow-bl+abi-ret:   unresolved because bl:bl:br+brk
+       2  follow-bl+abi-ret:   unresolved because bl:bl:br+budget
+      83  follow-bl+abi-ret:   unresolved because bl:bl:br+no-code
+       2  follow-bl+abi-ret:   unresolved because bl:bl:brk+blr+no-code
+     413  follow-bl+abi-ret:   unresolved because bl:bl:no-code
+       1  follow-bl+abi-ret:   unresolved because bl:bl:no-code+bl:blr+bl:no-code
+       1  follow-bl+abi-ret:   unresolved because bl:bl:no-code+bl:blr+no-code
+      18  follow-bl+abi-ret:   unresolved because bl:bl:no-code+bl:br
+       1  follow-bl+abi-ret:   unresolved because bl:bl:no-code+bl:br+bl:no-code
+       1  follow-bl+abi-ret:   unresolved because bl:bl:no-code+bl:br+bl:no-code+no-code
+       2  follow-bl+abi-ret:   unresolved because bl:bl:no-code+bl:br+br
+       8  follow-bl+abi-ret:   unresolved because bl:bl:no-code+bl:br+no-code
+      84  follow-bl+abi-ret:   unresolved because bl:bl:no-code+bl:no-code
+       2  follow-bl+abi-ret:   unresolved because bl:bl:no-code+bl:no-code+blr+br+no-code
+       5  follow-bl+abi-ret:   unresolved because bl:bl:no-code+bl:no-code+br
+      14  follow-bl+abi-ret:   unresolved because bl:bl:no-code+bl:no-code+no-code
+       4  follow-bl+abi-ret:   unresolved because bl:bl:no-code+blr
+       1  follow-bl+abi-ret:   unresolved because bl:bl:no-code+blr+no-code
+       6  follow-bl+abi-ret:   unresolved because bl:bl:no-code+br
+       3  follow-bl+abi-ret:   unresolved because bl:bl:no-code+br+no-code
+      11  follow-bl+abi-ret:   unresolved because bl:bl:no-code+brk
+       3  follow-bl+abi-ret:   unresolved because bl:bl:no-code+brk+no-code
+     109  follow-bl+abi-ret:   unresolved because bl:bl:no-code+no-code
+     311  follow-bl+abi-ret:   unresolved because bl:blr
+      16  follow-bl+abi-ret:   unresolved because bl:blr+bl:br
+       1  follow-bl+abi-ret:   unresolved because bl:blr+bl:br+bl:no-code
+       1  follow-bl+abi-ret:   unresolved because bl:blr+bl:br+blr
+       1  follow-bl+abi-ret:   unresolved because bl:blr+bl:br+br
+       5  follow-bl+abi-ret:   unresolved because bl:blr+bl:br+no-code
+       8  follow-bl+abi-ret:   unresolved because bl:blr+bl:no-code
+       2  follow-bl+abi-ret:   unresolved because bl:blr+bl:no-code+br
+      47  follow-bl+abi-ret:   unresolved because bl:blr+blr
+       2  follow-bl+abi-ret:   unresolved because bl:blr+blr+no-code
+       1  follow-bl+abi-ret:   unresolved because bl:blr+br
+       1  follow-bl+abi-ret:   unresolved because bl:blr+br+no-code
+       8  follow-bl+abi-ret:   unresolved because bl:blr+brk
+      56  follow-bl+abi-ret:   unresolved because bl:blr+no-code
+    5180  follow-bl+abi-ret:   unresolved because bl:br
+       2  follow-bl+abi-ret:   unresolved because bl:br+bl:brk
+       1  follow-bl+abi-ret:   unresolved because bl:br+bl:budget+no-code
+     118  follow-bl+abi-ret:   unresolved because bl:br+bl:no-code
+       4  follow-bl+abi-ret:   unresolved because bl:br+bl:no-code+blr
+       7  follow-bl+abi-ret:   unresolved because bl:br+bl:no-code+br
+       1  follow-bl+abi-ret:   unresolved because bl:br+bl:no-code+br+no-code
+       1  follow-bl+abi-ret:   unresolved because bl:br+bl:no-code+brk
+      50  follow-bl+abi-ret:   unresolved because bl:br+bl:no-code+no-code
+      38  follow-bl+abi-ret:   unresolved because bl:br+blr
+       2  follow-bl+abi-ret:   unresolved because bl:br+blr+br
+       3  follow-bl+abi-ret:   unresolved because bl:br+blr+no-code
+     216  follow-bl+abi-ret:   unresolved because bl:br+br
+       2  follow-bl+abi-ret:   unresolved because bl:br+br+brk
+       1  follow-bl+abi-ret:   unresolved because bl:br+br+budget
+      63  follow-bl+abi-ret:   unresolved because bl:br+br+no-code
+      24  follow-bl+abi-ret:   unresolved because bl:br+brk
+       3  follow-bl+abi-ret:   unresolved because bl:br+brk+no-code
+      12  follow-bl+abi-ret:   unresolved because bl:br+budget
+     466  follow-bl+abi-ret:   unresolved because bl:br+no-code
+      33  follow-bl+abi-ret:   unresolved because bl:brk
+       1  follow-bl+abi-ret:   unresolved because bl:brk+bl:no-code
+      10  follow-bl+abi-ret:   unresolved because bl:brk+no-code
+      40  follow-bl+abi-ret:   unresolved because bl:budget
+       3  follow-bl+abi-ret:   unresolved because bl:budget+bl:no-code
+       1  follow-bl+abi-ret:   unresolved because bl:budget+brk
+       8  follow-bl+abi-ret:   unresolved because bl:budget+budget
+       7  follow-bl+abi-ret:   unresolved because bl:budget+no-code
+    3282  follow-bl+abi-ret:   unresolved because bl:no-code
+      38  follow-bl+abi-ret:   unresolved because bl:no-code+blr
+       9  follow-bl+abi-ret:   unresolved because bl:no-code+blr+no-code
+      89  follow-bl+abi-ret:   unresolved because bl:no-code+br
+      24  follow-bl+abi-ret:   unresolved because bl:no-code+br+no-code
+      62  follow-bl+abi-ret:   unresolved because bl:no-code+brk
+      19  follow-bl+abi-ret:   unresolved because bl:no-code+brk+no-code
+       9  follow-bl+abi-ret:   unresolved because bl:no-code+budget
+       4  follow-bl+abi-ret:   unresolved because bl:no-code+budget+no-code
+     924  follow-bl+abi-ret:   unresolved because bl:no-code+no-code
+    3102  follow-bl+abi-ret:   unresolved because blr
+      30  follow-bl+abi-ret:   unresolved because blr+br
+       8  follow-bl+abi-ret:   unresolved because blr+brk
+       2  follow-bl+abi-ret:   unresolved because blr+budget
+     142  follow-bl+abi-ret:   unresolved because blr+no-code
+    1929  follow-bl+abi-ret:   unresolved because br
+       3  follow-bl+abi-ret:   unresolved because br+brk
+       5  follow-bl+abi-ret:   unresolved because br+budget
+     380  follow-bl+abi-ret:   unresolved because br+no-code
+     665  follow-bl+abi-ret:   unresolved because brk
+       1  follow-bl+abi-ret:   unresolved because brk+budget
+     144  follow-bl+abi-ret:   unresolved because brk+no-code
+     244  follow-bl+abi-ret:   unresolved because budget
+      38  follow-bl+abi-ret:   unresolved because budget+no-code
+   14043  follow-bl+abi-ret:   unresolved because no-code
+   36066  follow-bl+abi-ret: UNRESOLVED -> keep
+       8  follow-bl+abi-ret: all targets DEAD, but unfusable in-unit reader
+   65562  follow-bl+abi-ret: all targets DEAD, readers fusable -> droppable
+     586  follow-bl+abi-ret: some target LIVE -> keep
+   51482  follow-bl:   depth<=16
+   56288  follow-bl:   depth<=32
+   41023  follow-bl:   depth<=8
+    4620  follow-bl:   span beyond 16M
+   14917  follow-bl:   span within 16M
+    4182  follow-bl:   span within 1M
+   26215  follow-bl:   span within 4K
+    6809  follow-bl:   span within 64K
+    1844  follow-bl:   unresolved because bl:bl:bl
+       2  follow-bl:   unresolved because bl:bl:bl+bl:bl:blr
+       1  follow-bl:   unresolved because bl:bl:bl+bl:bl:blr+bl:bl:br+no-code+ret
+      42  follow-bl:   unresolved because bl:bl:bl+bl:bl:br
+       2  follow-bl:   unresolved because bl:bl:bl+bl:bl:br+bl:bl:no-code
+       2  follow-bl:   unresolved because bl:bl:bl+bl:bl:br+bl:bl:no-code+bl:no-code
+       2  follow-bl:   unresolved because bl:bl:bl+bl:bl:br+bl:bl:no-code+bl:no-code+no-code
+       1  follow-bl:   unresolved because bl:bl:bl+bl:bl:br+bl:br
+       1  follow-bl:   unresolved because bl:bl:bl+bl:bl:br+bl:br+no-code
+       1  follow-bl:   unresolved because bl:bl:bl+bl:bl:br+blr
+       5  follow-bl:   unresolved because bl:bl:bl+bl:bl:br+no-code
+       1  follow-bl:   unresolved because bl:bl:bl+bl:bl:br+no-code+ret
+       9  follow-bl:   unresolved because bl:bl:bl+bl:bl:no-code
+       2  follow-bl:   unresolved because bl:bl:bl+bl:bl:no-code+bl:br+no-code
+       9  follow-bl:   unresolved because bl:bl:bl+bl:bl:no-code+bl:no-code
+       1  follow-bl:   unresolved because bl:bl:bl+bl:bl:no-code+bl:no-code+no-code
+       4  follow-bl:   unresolved because bl:bl:bl+bl:bl:no-code+no-code
+       3  follow-bl:   unresolved because bl:bl:bl+bl:blr
+      74  follow-bl:   unresolved because bl:bl:bl+bl:br
+       5  follow-bl:   unresolved because bl:bl:bl+bl:br+bl:no-code
+       1  follow-bl:   unresolved because bl:bl:bl+bl:br+blr
+       1  follow-bl:   unresolved because bl:bl:bl+bl:br+blr+no-code
+      11  follow-bl:   unresolved because bl:bl:bl+bl:br+br
+       1  follow-bl:   unresolved because bl:bl:bl+bl:br+br+no-code
+       1  follow-bl:   unresolved because bl:bl:bl+bl:br+brk
+       1  follow-bl:   unresolved because bl:bl:bl+bl:br+brk+no-code
+      12  follow-bl:   unresolved because bl:bl:bl+bl:br+no-code
+       1  follow-bl:   unresolved because bl:bl:bl+bl:br+no-code+ret
+       6  follow-bl:   unresolved because bl:bl:bl+bl:br+ret
+       1  follow-bl:   unresolved because bl:bl:bl+bl:budget
+       1  follow-bl:   unresolved because bl:bl:bl+bl:budget+budget+no-code
+       1  follow-bl:   unresolved because bl:bl:bl+bl:budget+ret
+      74  follow-bl:   unresolved because bl:bl:bl+bl:no-code
+       1  follow-bl:   unresolved because bl:bl:bl+bl:no-code+brk+no-code
+       2  follow-bl:   unresolved because bl:bl:bl+bl:no-code+brk+ret
+      18  follow-bl:   unresolved because bl:bl:bl+bl:no-code+no-code
+       1  follow-bl:   unresolved because bl:bl:bl+bl:no-code+no-code+ret
+       5  follow-bl:   unresolved because bl:bl:bl+bl:no-code+ret
+      14  follow-bl:   unresolved because bl:bl:bl+blr
+       1  follow-bl:   unresolved because bl:bl:bl+blr+no-code
+       1  follow-bl:   unresolved because bl:bl:bl+blr+no-code+ret
+      25  follow-bl:   unresolved because bl:bl:bl+br
+      14  follow-bl:   unresolved because bl:bl:bl+br+no-code
+       1  follow-bl:   unresolved because bl:bl:bl+br+no-code+ret
+       1  follow-bl:   unresolved because bl:bl:bl+br+ret
+      22  follow-bl:   unresolved because bl:bl:bl+brk
+       2  follow-bl:   unresolved because bl:bl:bl+brk+no-code
+       1  follow-bl:   unresolved because bl:bl:bl+brk+no-code+ret
+       4  follow-bl:   unresolved because bl:bl:bl+brk+ret
+      12  follow-bl:   unresolved because bl:bl:bl+budget
+     315  follow-bl:   unresolved because bl:bl:bl+no-code
+       9  follow-bl:   unresolved because bl:bl:bl+no-code+ret
+     155  follow-bl:   unresolved because bl:bl:bl+ret
+      40  follow-bl:   unresolved because bl:bl:blr
+       1  follow-bl:   unresolved because bl:bl:blr+bl:no-code+no-code
+       1  follow-bl:   unresolved because bl:bl:blr+br
+      10  follow-bl:   unresolved because bl:bl:blr+no-code
+       1  follow-bl:   unresolved because bl:bl:blr+no-code+ret
+       9  follow-bl:   unresolved because bl:bl:blr+ret
+     376  follow-bl:   unresolved because bl:bl:br
+       1  follow-bl:   unresolved because bl:bl:br+bl:bl:no-code
+       1  follow-bl:   unresolved because bl:bl:br+bl:bl:no-code+no-code
+       2  follow-bl:   unresolved because bl:bl:br+bl:bl:no-code+ret
+       3  follow-bl:   unresolved because bl:bl:br+bl:blr
+       1  follow-bl:   unresolved because bl:bl:br+bl:blr+bl:no-code
+       2  follow-bl:   unresolved because bl:bl:br+bl:blr+ret
+      31  follow-bl:   unresolved because bl:bl:br+bl:br
+       1  follow-bl:   unresolved because bl:bl:br+bl:br+bl:no-code
+       1  follow-bl:   unresolved because bl:bl:br+bl:br+bl:no-code+no-code
+       2  follow-bl:   unresolved because bl:bl:br+bl:br+blr+no-code
+       5  follow-bl:   unresolved because bl:bl:br+bl:br+no-code
+       2  follow-bl:   unresolved because bl:bl:br+bl:budget
+      10  follow-bl:   unresolved because bl:bl:br+bl:no-code
+       3  follow-bl:   unresolved because bl:bl:br+bl:no-code+br
+       3  follow-bl:   unresolved because bl:bl:br+bl:no-code+no-code
+       3  follow-bl:   unresolved because bl:bl:br+blr
+      16  follow-bl:   unresolved because bl:bl:br+br
+       2  follow-bl:   unresolved because bl:bl:br+brk
+       1  follow-bl:   unresolved because bl:bl:br+brk+ret
+       2  follow-bl:   unresolved because bl:bl:br+budget
+      80  follow-bl:   unresolved because bl:bl:br+no-code
+       2  follow-bl:   unresolved because bl:bl:br+no-code+ret
+      30  follow-bl:   unresolved because bl:bl:br+ret
+       2  follow-bl:   unresolved because bl:bl:brk+blr+no-code
+     396  follow-bl:   unresolved because bl:bl:no-code
+       1  follow-bl:   unresolved because bl:bl:no-code+bl:blr+bl:no-code
+       1  follow-bl:   unresolved because bl:bl:no-code+bl:blr+no-code
+      14  follow-bl:   unresolved because bl:bl:no-code+bl:br
+       1  follow-bl:   unresolved because bl:bl:no-code+bl:br+bl:no-code
+       1  follow-bl:   unresolved because bl:bl:no-code+bl:br+bl:no-code+no-code
+       2  follow-bl:   unresolved because bl:bl:no-code+bl:br+br
+       7  follow-bl:   unresolved because bl:bl:no-code+bl:br+no-code
+       1  follow-bl:   unresolved because bl:bl:no-code+bl:br+no-code+ret
+       4  follow-bl:   unresolved because bl:bl:no-code+bl:br+ret
+      71  follow-bl:   unresolved because bl:bl:no-code+bl:no-code
+       2  follow-bl:   unresolved because bl:bl:no-code+bl:no-code+blr+br+no-code
+       2  follow-bl:   unresolved because bl:bl:no-code+bl:no-code+br
+      14  follow-bl:   unresolved because bl:bl:no-code+bl:no-code+no-code
+       3  follow-bl:   unresolved because bl:bl:no-code+bl:no-code+ret
+       4  follow-bl:   unresolved because bl:bl:no-code+blr
+       1  follow-bl:   unresolved because bl:bl:no-code+blr+no-code
+       4  follow-bl:   unresolved because bl:bl:no-code+br
+       3  follow-bl:   unresolved because bl:bl:no-code+br+no-code
+       3  follow-bl:   unresolved because bl:bl:no-code+br+ret
+       7  follow-bl:   unresolved because bl:bl:no-code+brk
+       3  follow-bl:   unresolved because bl:bl:no-code+brk+no-code
+       4  follow-bl:   unresolved because bl:bl:no-code+brk+ret
+     108  follow-bl:   unresolved because bl:bl:no-code+no-code
+       1  follow-bl:   unresolved because bl:bl:no-code+no-code+ret
+      29  follow-bl:   unresolved because bl:bl:no-code+ret
+     280  follow-bl:   unresolved because bl:blr
+      14  follow-bl:   unresolved because bl:blr+bl:br
+       1  follow-bl:   unresolved because bl:blr+bl:br+bl:no-code
+       1  follow-bl:   unresolved because bl:blr+bl:br+blr
+       1  follow-bl:   unresolved because bl:blr+bl:br+br
+       5  follow-bl:   unresolved because bl:blr+bl:br+no-code
+       2  follow-bl:   unresolved because bl:blr+bl:br+ret
+       8  follow-bl:   unresolved because bl:blr+bl:no-code
+      37  follow-bl:   unresolved because bl:blr+blr
+       1  follow-bl:   unresolved because bl:blr+blr+ret
+       1  follow-bl:   unresolved because bl:blr+br
+       1  follow-bl:   unresolved because bl:blr+br+no-code
+       8  follow-bl:   unresolved because bl:blr+brk
+      41  follow-bl:   unresolved because bl:blr+no-code
+       5  follow-bl:   unresolved because bl:blr+no-code+ret
+      30  follow-bl:   unresolved because bl:blr+ret
+    4398  follow-bl:   unresolved because bl:br
+       2  follow-bl:   unresolved because bl:br+bl:brk
+       1  follow-bl:   unresolved because bl:br+bl:budget+no-code
+     105  follow-bl:   unresolved because bl:br+bl:no-code
+       4  follow-bl:   unresolved because bl:br+bl:no-code+blr
+       7  follow-bl:   unresolved because bl:br+bl:no-code+br
+       1  follow-bl:   unresolved because bl:br+bl:no-code+br+no-code
+       1  follow-bl:   unresolved because bl:br+bl:no-code+brk
+      47  follow-bl:   unresolved because bl:br+bl:no-code+no-code
+       2  follow-bl:   unresolved because bl:br+bl:no-code+no-code+ret
+       6  follow-bl:   unresolved because bl:br+bl:no-code+ret
+      33  follow-bl:   unresolved because bl:br+blr
+       1  follow-bl:   unresolved because bl:br+blr+br
+       1  follow-bl:   unresolved because bl:br+blr+no-code
+       1  follow-bl:   unresolved because bl:br+blr+ret
+     200  follow-bl:   unresolved because bl:br+br
+       1  follow-bl:   unresolved because bl:br+br+budget
+      58  follow-bl:   unresolved because bl:br+br+no-code
+       5  follow-bl:   unresolved because bl:br+br+no-code+ret
+      12  follow-bl:   unresolved because bl:br+br+ret
+      19  follow-bl:   unresolved because bl:br+brk
+       3  follow-bl:   unresolved because bl:br+brk+no-code
+       4  follow-bl:   unresolved because bl:br+brk+ret
+      12  follow-bl:   unresolved because bl:br+budget
+     434  follow-bl:   unresolved because bl:br+no-code
+      28  follow-bl:   unresolved because bl:br+no-code+ret
+     774  follow-bl:   unresolved because bl:br+ret
+      30  follow-bl:   unresolved because bl:brk
+       1  follow-bl:   unresolved because bl:brk+bl:no-code
+      10  follow-bl:   unresolved because bl:brk+no-code
+       3  follow-bl:   unresolved because bl:brk+ret
+      33  follow-bl:   unresolved because bl:budget
+       3  follow-bl:   unresolved because bl:budget+bl:no-code
+       1  follow-bl:   unresolved because bl:budget+brk
+       5  follow-bl:   unresolved because bl:budget+budget
+       3  follow-bl:   unresolved because bl:budget+budget+ret
+       7  follow-bl:   unresolved because bl:budget+no-code
+       5  follow-bl:   unresolved because bl:budget+ret
+    2982  follow-bl:   unresolved because bl:no-code
+      35  follow-bl:   unresolved because bl:no-code+blr
+       4  follow-bl:   unresolved because bl:no-code+blr+no-code
+       1  follow-bl:   unresolved because bl:no-code+blr+no-code+ret
+      79  follow-bl:   unresolved because bl:no-code+br
+      21  follow-bl:   unresolved because bl:no-code+br+no-code
+       1  follow-bl:   unresolved because bl:no-code+br+no-code+ret
+       3  follow-bl:   unresolved because bl:no-code+br+ret
+      57  follow-bl:   unresolved because bl:no-code+brk
+      18  follow-bl:   unresolved because bl:no-code+brk+no-code
+       1  follow-bl:   unresolved because bl:no-code+brk+no-code+ret
+       3  follow-bl:   unresolved because bl:no-code+brk+ret
+       7  follow-bl:   unresolved because bl:no-code+budget
+       4  follow-bl:   unresolved because bl:no-code+budget+no-code
+       2  follow-bl:   unresolved because bl:no-code+budget+ret
+     863  follow-bl:   unresolved because bl:no-code+no-code
+      34  follow-bl:   unresolved because bl:no-code+no-code+ret
+     185  follow-bl:   unresolved because bl:no-code+ret
+    2988  follow-bl:   unresolved because blr
+      28  follow-bl:   unresolved because blr+br
+       6  follow-bl:   unresolved because blr+brk
+       2  follow-bl:   unresolved because blr+budget
+     124  follow-bl:   unresolved because blr+no-code
+       2  follow-bl:   unresolved because blr+no-code+ret
+      66  follow-bl:   unresolved because blr+ret
+    1773  follow-bl:   unresolved because br
+       1  follow-bl:   unresolved because br+brk
+       2  follow-bl:   unresolved because br+brk+ret
+       5  follow-bl:   unresolved because br+budget
+     367  follow-bl:   unresolved because br+no-code
+      11  follow-bl:   unresolved because br+no-code+ret
+     156  follow-bl:   unresolved because br+ret
+     619  follow-bl:   unresolved because brk
+       1  follow-bl:   unresolved because brk+budget
+     128  follow-bl:   unresolved because brk+no-code
+      15  follow-bl:   unresolved because brk+no-code+ret
+      51  follow-bl:   unresolved because brk+ret
+     227  follow-bl:   unresolved because budget
+      36  follow-bl:   unresolved because budget+no-code
+       2  follow-bl:   unresolved because budget+no-code+ret
+      17  follow-bl:   unresolved because budget+ret
+   13269  follow-bl:   unresolved because no-code
+     855  follow-bl:   unresolved because no-code+ret
+    9079  follow-bl:   unresolved because ret
+   44885  follow-bl: UNRESOLVED -> keep
+       8  follow-bl: all targets DEAD, but unfusable in-unit reader
+   56743  follow-bl: all targets DEAD, readers fusable -> droppable
+     586  follow-bl: some target LIVE -> keep
+   34809  simple:   depth<=16
+   37248  simple:   depth<=32
+   29195  simple:   depth<=8
+     839  simple:   span beyond 16M
+    4496  simple:   span within 16M
+    1771  simple:   span within 1M
+   25378  simple:   span within 4K
+    5025  simple:   span within 64K
+   31188  simple:   unresolved because bl
+     425  simple:   unresolved because bl+blr
+       3  simple:   unresolved because bl+blr+br
+       2  simple:   unresolved because bl+blr+br+no-code
+       2  simple:   unresolved because bl+blr+brk
+      17  simple:   unresolved because bl+blr+no-code
+       2  simple:   unresolved because bl+blr+no-code+ret
+       2  simple:   unresolved because bl+blr+ret
+     648  simple:   unresolved because bl+br
+       1  simple:   unresolved because bl+br+budget
+     122  simple:   unresolved because bl+br+no-code
+       7  simple:   unresolved because bl+br+no-code+ret
+      27  simple:   unresolved because bl+br+ret
+     200  simple:   unresolved because bl+brk
+      49  simple:   unresolved because bl+brk+no-code
+       4  simple:   unresolved because bl+brk+no-code+ret
+      22  simple:   unresolved because bl+brk+ret
+      58  simple:   unresolved because bl+budget
+       5  simple:   unresolved because bl+budget+no-code
+       1  simple:   unresolved because bl+budget+no-code+ret
+       5  simple:   unresolved because bl+budget+ret
+    3756  simple:   unresolved because bl+no-code
+     158  simple:   unresolved because bl+no-code+ret
+    2628  simple:   unresolved because bl+ret
+    2614  simple:   unresolved because blr
+      26  simple:   unresolved because blr+br
+       3  simple:   unresolved because blr+brk
+     107  simple:   unresolved because blr+no-code
+       2  simple:   unresolved because blr+no-code+ret
+      58  simple:   unresolved because blr+ret
+    1474  simple:   unresolved because br
+       1  simple:   unresolved because br+brk
+       2  simple:   unresolved because br+brk+ret
+       5  simple:   unresolved because br+budget
+     335  simple:   unresolved because br+no-code
+      10  simple:   unresolved because br+no-code+ret
+     145  simple:   unresolved because br+ret
+     543  simple:   unresolved because brk
+      81  simple:   unresolved because brk+no-code
+       8  simple:   unresolved because brk+no-code+ret
+      38  simple:   unresolved because brk+ret
+     125  simple:   unresolved because budget
+      27  simple:   unresolved because budget+no-code
+       2  simple:   unresolved because budget+no-code+ret
+      12  simple:   unresolved because budget+ret
+   10899  simple:   unresolved because no-code
+     668  simple:   unresolved because no-code+ret
+    7601  simple:   unresolved because ret
+   64118  simple: UNRESOLVED -> keep
+       8  simple: all targets DEAD, but unfusable in-unit reader
+   37509  simple: all targets DEAD, readers fusable -> droppable
+     587  simple: some target LIVE -> keep
+
+## distinct constant-exit targets reached with live flags, by peek verdict
+   43361  UNRESOLVED
+   35570  DEAD
+     460  LIVE
+
+## cross-check: peek verdict vs the compiled target unit (DFCE live-in with exits=ALL; linear = first flag op in the entry block)
+   40609  ('consistent',)
+   23789  ('UNRESOLVED', 'target-not-compiled')
+   19128  ('UNRESOLVED', 'unit-LIVE', 'linear-UNRESOLVED')
+   14809  ('DEAD', 'target-not-compiled')
+   14578  ('DEAD', 'unit-DEAD', 'linear-DEAD')
+    3632  ('DEAD', 'unit-LIVE', 'linear-UNRESOLVED')
+    2551  ('DEAD', 'unit-DEAD', 'linear-UNRESOLVED')
+     271  ('LIVE', 'unit-LIVE', 'linear-LIVE')
+     239  ('UNRESOLVED', 'unit-DEAD', 'linear-DEAD')
+     203  ('UNRESOLVED', 'unit-DEAD', 'linear-UNRESOLVED')
+     184  ('LIVE', 'target-not-compiled')
+       5  ('LIVE', 'unit-LIVE', 'linear-UNRESOLVED')
+       2  ('UNRESOLVED', 'unit-LIVE', 'linear-LIVE')

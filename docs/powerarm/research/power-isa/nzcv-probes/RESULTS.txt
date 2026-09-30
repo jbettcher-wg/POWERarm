@@ -1,0 +1,132 @@
+# NZCV probe outputs, 2026-09-29. Pi 5: Cortex-A76, kernel 6.18.39+rpt-rpi-2712, Debian gcc 14.2.0, glibc 2.41, built gcc -static -O2.
+# POWERarm: ~/.local/opt/powerarm-stable/Bin/POWERarm at cffa7b4de on the POWER9 (64K pages), same static binaries.
+# 'fusion off' = POWERARM_DISABLECMPBRANCHFUSION=1 POWERARM_ENABLECODECACHINGWIP=0. Timer-sampled counts vary run to run; one run each.
+
+==================== nzcv_probe 100000000
+---- Pi 5 (native)
+async: loop_dropped(n) = 0, samples = 723 (sentinel N-C-, hardware at +0 is --C-)
+  pc=+0   nzcv=2 --C- count=260
+  pc=+8   nzcv=6 -ZC- count=241
+  pc=+16  nzcv=0 ---- count=222
+edit: loop_edit(n) = 99285233 (nonzero: the handler's Z=0 was honoured), samples = 3, edit at pc=+0 saw nzcv=6
+  pc=+0   nzcv=6 -ZC- count=3
+sync: loop_sync(2000, NULL) = 7 (expect 7), faults = 1994
+  pc=+4   nzcv=2 --C- count=1993
+  pc=+4   nzcv=6 -ZC- count=1
+bounds: svc 0xB -> B, 0x5 -> 5
+bounds: bl/ret 0xB -> B, 0x5 -> 5
+bounds: raise(SIGUSR1) 0xB -> 6 (usr1 handled 1)
+bounds: kill(self,SIGUSR1) 0xD -> 0 (usr1 handled 2)
+bounds: swapcontext 0xF -> coroutine saw 6, wrote 0 -> back in main 6
+bounds: siglongjmp with 0x9 written before the jump -> 2
+bounds: nanosleep 0x3 -> 6
+entry: bl->cset eq (3,3)=1 (3,4)=0
+entry: cmp;bl leaf;cset eq (3,3)=1 (3,4)=0
+entry: bl cmp;ret;cset lo (3,4)=1 (4,3)=0
+entry: far b.cond (1,2)=1 (-1,2)=100 (5,2)=100
+entry: far cset hi (1,2)=0 (3,2)=1 (2,2)=0
+entry: far ccmp (5,1)=1 (6,1)=0 (2,2)=1
+entry: far adc (1,2)=3 (2,1)=4 (2,2)=5
+---- POWERarm, fusion on (default)
+async: loop_dropped(n) = 0, samples = 655 (sentinel N-C-, hardware at +0 is --C-)
+  pc=+0   nzcv=0 ---- count=655
+edit: loop_edit(n) = 99336504 (nonzero: the handler's Z=0 was honoured), samples = 3, edit at pc=+0 saw nzcv=6
+  pc=+0   nzcv=6 -ZC- count=3
+sync: loop_sync(2000, NULL) = 7 (expect 7), faults = 1994
+  pc=+4   nzcv=2 --C- count=1993
+  pc=+4   nzcv=6 -ZC- count=1
+bounds: svc 0xB -> B, 0x5 -> 5
+bounds: bl/ret 0xB -> B, 0x5 -> 5
+bounds: raise(SIGUSR1) 0xB -> 6 (usr1 handled 1)
+bounds: kill(self,SIGUSR1) 0xD -> 0 (usr1 handled 2)
+bounds: swapcontext 0xF -> coroutine saw 6, wrote 0 -> back in main 6
+bounds: siglongjmp with 0x9 written before the jump -> 2
+bounds: nanosleep 0x3 -> 6
+entry: bl->cset eq (3,3)=1 (3,4)=0
+entry: cmp;bl leaf;cset eq (3,3)=1 (3,4)=0
+entry: bl cmp;ret;cset lo (3,4)=1 (4,3)=0
+entry: far b.cond (1,2)=1 (-1,2)=100 (5,2)=100
+entry: far cset hi (1,2)=0 (3,2)=1 (2,2)=0
+entry: far ccmp (5,1)=1 (6,1)=0 (2,2)=1
+entry: far adc (1,2)=3 (2,1)=4 (2,2)=5
+---- POWERarm, fusion off
+async: loop_dropped(n) = 0, samples = 584 (sentinel N-C-, hardware at +0 is --C-)
+  pc=+0   nzcv=2 --C- count=583
+  pc=outside nzcv=6 count=1
+edit: loop_edit(n) = 99365089 (nonzero: the handler's Z=0 was honoured), samples = 3, edit at pc=+0 saw nzcv=6
+  pc=+0   nzcv=6 -ZC- count=3
+sync: loop_sync(2000, NULL) = 7 (expect 7), faults = 1994
+  pc=+4   nzcv=2 --C- count=1993
+  pc=+4   nzcv=6 -ZC- count=1
+bounds: svc 0xB -> B, 0x5 -> 5
+bounds: bl/ret 0xB -> B, 0x5 -> 5
+bounds: raise(SIGUSR1) 0xB -> 6 (usr1 handled 1)
+bounds: kill(self,SIGUSR1) 0xD -> 0 (usr1 handled 2)
+bounds: swapcontext 0xF -> coroutine saw 6, wrote 0 -> back in main 6
+bounds: siglongjmp with 0x9 written before the jump -> 2
+bounds: nanosleep 0x3 -> 6
+entry: bl->cset eq (3,3)=1 (3,4)=0
+entry: cmp;bl leaf;cset eq (3,3)=1 (3,4)=0
+entry: bl cmp;ret;cset lo (3,4)=1 (4,3)=0
+entry: far b.cond (1,2)=1 (-1,2)=100 (5,2)=100
+entry: far cset hi (1,2)=0 (3,2)=1 (2,2)=0
+entry: far ccmp (5,1)=1 (6,1)=0 (2,2)=1
+entry: far adc (1,2)=3 (2,1)=4 (2,2)=5
+
+==================== nzcv_probe2 
+---- Pi 5 (native)
+signal: msr 0xB ; svc kill(self,USR1) ; mrs -> B (handled 1)
+signal: msr 0x5 ; svc kill(self,USR1) ; mrs -> 5 (handled 2)
+entry via syscall: 0xB -> B, 0x5 -> 5
+sentinel A, loop, mrs -> 6 (hardware: 6 = -ZC- from the last SUBS)
+dropped_fault sentinel A: result=0 faults=1000 fault pc=+8
+  nzcv=6 -ZC- count=1000
+dropped_fault sentinel 5: result=0 faults=1000 fault pc=+8
+  nzcv=6 -ZC- count=1000
+kept_fault: result=0 faults=1000 fault pc=+4
+  nzcv=6 -ZC- count=1000
+---- POWERarm, fusion on (default)
+signal: msr 0xB ; svc kill(self,USR1) ; mrs -> B (handled 1)
+signal: msr 0x5 ; svc kill(self,USR1) ; mrs -> 5 (handled 2)
+entry via syscall: 0xB -> B, 0x5 -> 5
+sentinel A, loop, mrs -> 6 (hardware: 6 = -ZC- from the last SUBS)
+dropped_fault sentinel A: result=0 faults=1000 fault pc=+8
+  nzcv=6 -ZC- count=1000
+dropped_fault sentinel 5: result=0 faults=1000 fault pc=+8
+  nzcv=6 -ZC- count=1000
+kept_fault: result=0 faults=1000 fault pc=+4
+  nzcv=6 -ZC- count=1000
+---- POWERarm, fusion off
+signal: msr 0xB ; svc kill(self,USR1) ; mrs -> B (handled 1)
+signal: msr 0x5 ; svc kill(self,USR1) ; mrs -> 5 (handled 2)
+entry via syscall: 0xB -> B, 0x5 -> 5
+sentinel A, loop, mrs -> 6 (hardware: 6 = -ZC- from the last SUBS)
+dropped_fault sentinel A: result=0 faults=1000 fault pc=+8
+  nzcv=6 -ZC- count=1000
+dropped_fault sentinel 5: result=0 faults=1000 fault pc=+8
+  nzcv=6 -ZC- count=1000
+kept_fault: result=0 faults=1000 fault pc=+4
+  nzcv=6 -ZC- count=1000
+
+==================== nzcv_probe3 
+---- Pi 5 (native)
+inunit_fault sentinel A: result=0 faults=1000
+  nzcv=6 -ZC- count=1000
+inunit_fault sentinel 5: result=0 faults=1000
+  nzcv=6 -ZC- count=1000
+inunit_fault sentinel 0: result=0 faults=1000
+  nzcv=6 -ZC- count=1000
+---- POWERarm, fusion on (default)
+inunit_fault sentinel A: result=0 faults=1000
+  nzcv=A N-C- count=1000
+inunit_fault sentinel 5: result=0 faults=1000
+  nzcv=5 -Z-V count=1000
+inunit_fault sentinel 0: result=0 faults=1000
+  nzcv=0 ---- count=1000
+---- POWERarm, fusion off
+inunit_fault sentinel A: result=0 faults=1000
+  nzcv=6 -ZC- count=1000
+inunit_fault sentinel 5: result=0 faults=1000
+  nzcv=6 -ZC- count=1000
+inunit_fault sentinel 0: result=0 faults=1000
+  nzcv=6 -ZC- count=1000
