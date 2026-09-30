@@ -98,6 +98,45 @@ namespace {
   // -------------------------------------------------------------------------
   std::atomic<uint64_t> Contradictions {};
 
+  // kHullBound is in the header so Apply can use it without the decoder; it has
+  // to agree with the two `Length >` guards in CodeCache.cpp, which are the
+  // reason it is what it is. Assert it here, where the decoder is included.
+  static_assert(kHullBound == FEXCore::A64::DEFAULT_MAX_INSTRUCTIONS * 4,
+                "the hull bound is the code cache's guest-length limit; above it a peeked unit stops being cacheable");
+
+  std::atomic<uint64_t> StatExitsSeen {};
+  std::atomic<uint64_t> StatDead {};
+  std::atomic<uint64_t> StatRefusedScan {};
+  std::atomic<uint64_t> StatRefusedHull {};
+  std::atomic<uint64_t> StatRefusedBelowEntry {};
+
+  bool StatsEnabled() {
+    static const bool Enabled = getenv("POWERARM_NZCVEXITDEADSTATS") != nullptr;
+    return Enabled;
+  }
+
+  // One running-total line per compiled unit, to stderr, and the last one is
+  // therefore the final state: NoteUnitCompiled runs after Apply for the same
+  // unit, so nothing can increment after the last line is written.
+  //
+  // Not atexit, and not a destructor. A guest's exit_group is forwarded and the
+  // emulator's process ends without running either reliably -- which is why the
+  // census next door pairs its atexit with a rewrite every 512 compiles, and
+  // why the JIT's op-size profile rewrites on every maximum. A diagnostic that
+  // only prints on a clean exit is a diagnostic that says nothing about the
+  // browser sessions this option exists to be proved against. The volume is the
+  // price of that, and the variable is off by default.
+  void ReportStats() {
+    if (!StatsEnabled()) {
+      return;
+    }
+    const auto S = GetStats();
+    // Straight to stderr for the same reason the tripwire message is: the runs
+    // that matter have FEX_SILENTLOG=1 and no message handler installed.
+    fextl::fmt::print(stderr, "NZCV_EXITDEAD exits_seen={} dead={} refused_scan={} refused_hull={} refused_below_entry={} contradictions={}\n",
+                      S.ExitsSeen, S.Dead, S.RefusedScan, S.RefusedHull, S.RefusedBelowEntry, S.Contradictions);
+  }
+
   // The words at a contradicting target, and how the peek classified each. A
   // tripwire that only says "here" costs an hour per firing; one that prints
   // the eight words and their classes is read once. Best effort: a word that
@@ -122,8 +161,30 @@ uint64_t ContradictionCount() {
   return Contradictions.load(std::memory_order_relaxed);
 }
 
+Stats GetStats() {
+  return Stats {
+    .ExitsSeen = StatExitsSeen.load(std::memory_order_relaxed),
+    .Dead = StatDead.load(std::memory_order_relaxed),
+    .RefusedScan = StatRefusedScan.load(std::memory_order_relaxed),
+    .RefusedHull = StatRefusedHull.load(std::memory_order_relaxed),
+    .RefusedBelowEntry = StatRefusedBelowEntry.load(std::memory_order_relaxed),
+    .Contradictions = Contradictions.load(std::memory_order_relaxed),
+  };
+}
+
 void NoteUnitCompiled(FEXCore::Core::InternalThreadState* Thread, uint64_t Entry, bool EntryNZCVLiveIn, Mode M) {
-  if (M == Mode::Off || !EntryNZCVLiveIn) {
+  if (M == Mode::Off) {
+    return;
+  }
+  // Last thing this unit does, so the line carries this unit's verdicts and the
+  // contradiction below if it fires.
+  struct ReportOnReturn {
+    ~ReportOnReturn() {
+      ReportStats();
+    }
+  } Report;
+
+  if (!EntryNZCVLiveIn) {
     return;
   }
 
@@ -171,6 +232,12 @@ void Apply(FEXCore::Core::InternalThreadState* Thread, FEXCore::IR::IREmitter* I
   if (M == Mode::Off) {
     return;
   }
+  // Bisection lever for the below-entry refusal below, in the style of
+  // FEX_NOSINKEXITRIP: resolved once per process, and the ONLY thing it is for
+  // is reproducing the unsound acceptance the refusal replaced (it is what
+  // makes run.sh's nzcv_exit_dead_window check fail on demand). Setting it
+  // re-opens a code-cache hole -- see the header.
+  static const bool NoWindowCheck = getenv("POWERARM_NZCVEXITDEADNOWINDOW") != nullptr;
 
   auto* Dec = Thread->FrontendDecoder.get();
   auto CurrentIR = IREmit->ViewIR();
@@ -244,6 +311,8 @@ void Apply(FEXCore::Core::InternalThreadState* Thread, FEXCore::IR::IREmitter* I
       continue;
     }
 
+    StatExitsSeen.fetch_add(1, std::memory_order_relaxed);
+
     Census::Witness W;
     // FollowBL = false: the simple scan. Stage 3 is the callee walk and is
     // deliberately not enabled -- ScanWitnessed already implements it and
@@ -252,6 +321,21 @@ void Apply(FEXCore::Core::InternalThreadState* Thread, FEXCore::IR::IREmitter* I
     // callees, which is its whole design cost (§7.5).
     const Census::ScanVerdict V = Census::ScanWitnessed(Target, false, &ReadWord, &RC, &W);
     if (V != Census::SCAN_DEAD || W.Empty()) {
+      StatRefusedScan.fetch_add(1, std::memory_order_relaxed);
+      continue;
+    }
+
+    // A witness BELOW the unit's entry cannot be validated by the code cache,
+    // because the cache hashes [Entry, Entry + GuestSize) and not
+    // [DecodedMin, DecodedMax) -- see the header. A DEAD verdict resting on such
+    // a witness survives in the cache after the guest has rewritten the witness,
+    // which is precisely the stale assumption §7.5 set out to make impossible.
+    // Refuse it. The unit's own bytes below the entry are not a new problem
+    // (they are already outside the hashed window for any unit that followed a
+    // backward branch) but they are not something a verdict may DEPEND on, so
+    // the test is against the entry and not against DecodedMinAddress.
+    if (W.Low < Entry && !NoWindowCheck) {
+      StatRefusedBelowEntry.fetch_add(1, std::memory_order_relaxed);
       continue;
     }
 
@@ -263,10 +347,12 @@ void Apply(FEXCore::Core::InternalThreadState* Thread, FEXCore::IR::IREmitter* I
     Census::Witness Candidate = Hull;
     Candidate.Merge(W);
     if (Candidate.Empty() || (Candidate.High - Candidate.Low) > kHullBound) {
+      StatRefusedHull.fetch_add(1, std::memory_order_relaxed);
       continue;
     }
 
     Hull = Candidate;
+    StatDead.fetch_add(1, std::memory_order_relaxed);
     Op->NZCVDeadAtTarget = true;
     AnyDead = true;
     // No record of the verdict is kept against the target. §7.7's tripwire

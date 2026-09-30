@@ -461,6 +461,48 @@ else
   report FAIL nzcv_exit_dead_tripwire "tripwire fired in: ${ed_trip% }; see $out/<test>.stderr"
 fi
 
+# 5. No accepted verdict may rest on a witness BELOW its unit's entry.
+#
+#    The code cache validates a loaded block by hashing
+#    [JITCodeTail::RIP, RIP + GuestSize) -- anchored at the unit's ENTRY, while
+#    the witness hull is [DecodedMin, DecodedMax) and DecodedMin can be lower.
+#    A verdict resting on a witness below the entry therefore loads out of the
+#    cache after the guest has rewritten that witness, DEAD verdict intact and
+#    wrong, with the pages below the entry not even armed for SMC. That is the
+#    stale assumption 7.5 was written to make impossible, and no amount of
+#    extent widening fixes it, because the window is not the extent.
+#
+#    The stats line is the only aggregate this option has (the contradiction
+#    counter had no caller at all before), so both halves are asserted here:
+#    refused_below_entry may be any number, accepted-below-entry must be zero,
+#    and the way to prove the check has teeth is POWERARM_NZCVEXITDEADNOWINDOW=1,
+#    which re-opens the hole and must make this same run report a nonzero count.
+#    cmpbranch is used because check 2 above already establishes that it reaches
+#    the policy at all.
+if [ -f cmpbranch.golden ]; then
+  POWERARM_NZCVEXITDEAD=on POWERARM_NZCVEXITDEADSTATS=1 POWERARM_ENABLECODECACHINGWIP=0 \
+    "$emu" ./cmpbranch > /dev/null 2> nzcv_window.err
+  POWERARM_NZCVEXITDEAD=on POWERARM_NZCVEXITDEADSTATS=1 POWERARM_NZCVEXITDEADNOWINDOW=1 POWERARM_ENABLECODECACHINGWIP=0 \
+    "$emu" ./cmpbranch > /dev/null 2> nzcv_window_nocheck.err
+  wl=$(grep '^NZCV_EXITDEAD ' nzcv_window.err | tail -1)
+  wl_no=$(grep '^NZCV_EXITDEAD ' nzcv_window_nocheck.err | tail -1)
+  w_dead=$(echo "$wl" | sed -n 's/.* dead=\([0-9]*\).*/\1/p')
+  w_below=$(echo "$wl" | sed -n 's/.*refused_below_entry=\([0-9]*\).*/\1/p')
+  w_below_no=$(echo "$wl_no" | sed -n 's/.*refused_below_entry=\([0-9]*\).*/\1/p')
+  w_dead_no=$(echo "$wl_no" | sed -n 's/.* dead=\([0-9]*\).*/\1/p')
+  if [ -z "$w_dead" ] || [ -z "$w_below" ] || [ -z "$w_below_no" ]; then
+    report FAIL nzcv_exit_dead_window "no NZCV_EXITDEAD stats line: [$wl] [$wl_no]; see $out/nzcv_window.err"
+  elif [ "$w_dead" -le 0 ]; then
+    report FAIL nzcv_exit_dead_window "no verdict was taken at all (dead=$w_dead), so this check tests nothing; see $out/nzcv_window.err"
+  elif [ "$w_below_no" != 0 ]; then
+    report FAIL nzcv_exit_dead_window "the lever does not disable the check: refused_below_entry=$w_below_no with POWERARM_NZCVEXITDEADNOWINDOW=1"
+  elif [ "$w_below" -gt 0 ] && [ "$w_dead_no" -le "$w_dead" ]; then
+    report FAIL nzcv_exit_dead_window "the check refused $w_below verdicts but disabling it did not accept more (dead=$w_dead vs $w_dead_no): it has no teeth"
+  else
+    report PASS nzcv_exit_dead_window "dead=$w_dead, refused_below_entry=$w_below; lever off: dead=$w_dead_no"
+  fi
+fi
+
 # The fatal host-fault report survives a fault of its own. hostfault makes
 # POWERarm fault in its own syscall body (POWERARM_HOSTFAULT_INJECT, 173 is
 # getppid) under a return address the unwinder cannot read, once with fault

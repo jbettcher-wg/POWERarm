@@ -394,6 +394,44 @@ The peek reads bytes outside the unit's extent. Two consumers must see that:
   `SegmentBlock`; the tail already travels with the code. The config id gets the switch and the
   scan parameters, like `POWERARM_MAXLEADERS` (`CodeCache.cpp:704-706`).
 
+**Correction, 2026-09-30 (what shipped, and the two places this section was wrong).** The
+implementation did not take the `NZCVDeadExits` route: `RELOC_GUEST_RIP_MOVE` is also what every
+guest CALL's return address is recorded as, so the relocation records are not in one-to-one
+correspondence with constant exits and an index-based bitmask cannot be matched to them
+(`NZCVPeek.cpp`). It widened the recorded guest extent instead, so the cache's existing guest
+hash covers the witnesses and a block whose witnesses moved fails it. Two things that argument
+missed:
+
+1. **The hashed window is anchored at the unit's ENTRY, not at `DecodedMinAddress`.** The cache
+   stores `{Tail->RIP = Entry, Tail->GuestSize = DecodedMax - DecodedMin}` and validates by
+   hashing `[RIP, RIP + GuestSize)` (`CodeCache.cpp`, both the store-side check and the load-side
+   `XXH3_64bits`), and it arms SMC over that same window. A unit that followed a backward branch
+   already has `DecodedMin < Entry` — `LookupCache.h`'s `BlockEntry::ExtentStart` note says so in
+   as many words — and a **witness below the entry is therefore outside the window entirely**:
+   the guest can rewrite it and the cached block still loads, DEAD verdict intact and wrong, with
+   the pages below the entry never armed. Widening the extent does not fix this, because the
+   window is not the extent. Measured on a bare `ls` (2,975 constant exits examined, 1,093
+   verdicts accepted): **391 of the 1,093, 36%, rested on a witness below their unit's entry.**
+   Not a corner case. The fix is to refuse those verdicts, which makes
+   `[Entry, Entry + GuestSize)` a superset of the witnesses again.
+2. **64 KiB is above the cache's own limit, so the bound un-cached the unit it widened.**
+   `CodeCache.cpp` refuses both to store and to load any block whose `GuestSize` exceeds
+   `A64::DEFAULT_MAX_INSTRUCTIONS * 4` = 4 KiB. Every DEAD verdict whose hull exceeded that
+   bought one dropped compare and paid for it with the whole unit's cached translation — on
+   workloads where that is the dominant cost. Chrome 154 headless on this machine compiles
+   **850,782** units on a cold cache against **85,618–121,087** warm, an 8–10x first-run compile
+   load over a 1.3 GB cache, so a unit's cache entry is worth far more than the ~13 points of
+   DEAD population that dropping the bound from 64 KiB to 4 KiB costs (§5.2: 81% within 64 KiB,
+   68% within 4 KiB). `kHullBound` is now the cache's limit, asserted against it.
+
+Those numbers also settle what §13.5's fifth bullet left open — "the SMC exposure, not the
+liveness, is the open question for V8/JSC-generated code" — in the direction of the exposure, and
+they carry a warning that has nothing to do with soundness: **the option is hashed into the code
+cache config id, so changing it at all (off→on, off→canary, and back) hands every subsequent
+guest a completely cold cache.** On Chrome that is the 8–10x above. A canary experiment on a
+browser therefore looks like the browser breaking on the first launch and recovering when the
+setting is reverted, whether or not a single flag was ever read at a dead exit.
+
 ### 7.6 Signal frames under the policy
 
 At a drain point following a dropped producer, `pstate` carries the last kept producer's value
@@ -437,6 +475,35 @@ entry reads NZCV, peeked or not, rather than only where some unit happened to ha
 gives up is an address that is peeked but never translated -- an address the guest never executes,
 where no assumption can be observed -- and units served whole from the code cache, which are never
 translated.
+
+**What no tripwire of this shape can catch, 2026-09-30.** It is worth writing down what the
+detector is blind to, because it is the thing that was reached for when a real application
+misbehaved under `canary` and it could not have said anything either way.
+
+- **Walk bugs, not just table bugs.** The check asks "does a scan *from this entry* agree with the
+  frontend *about this entry*". Suppose the scan from `T` wrongly reaches DEAD because it followed
+  a displacement wrongly, enumerated paths wrongly, or merged its seen-set wrongly, and the real
+  reader is at `Y`, several units downstream. The scan run at `Y` finds that reader in its first
+  word and answers LIVE; the scan run at `T` is never re-examined. No contradiction is ever
+  reported, at `T` or at `Y`. A record keyed by address and content hash -- the obvious repair of
+  the shape §7.7 rejected -- does not help either: the record at `T` is checked against
+  `EntryNZCVLiveIn(T)`, which is false, because the reader is not in `T`'s unit. Catching this
+  needs a per-unit "does every path fully write NZCV before leaving" bit and a deferred obligation
+  set, i.e. the scan re-derived from the frontend across the unit graph -- as much machinery again
+  as the policy.
+- **Stale verdicts.** The check is immediate by design and therefore says nothing about a verdict
+  taken earlier whose witnesses have since changed. That is the entire SMC-and-cache half of §7.5,
+  which is where the correction above found a real, measured (36% of accepted verdicts) hole, and
+  where §13.5's fifth bullet already said the open question for V8/JSC lives.
+- **Cost.** It cannot see the option's own cache-invalidation cost, which is what a browser
+  actually notices (§7.5's correction).
+
+The practical consequence is that `canary` is not merely "the proof"; it is the *only* proof, and
+an entry-liveness tripwire is not a safety net for this policy. The check worth having on the
+other side is an invariant on the SMC/cache window itself -- that every witness a verdict rests on
+lies inside the window the cache validates -- which is what `NZCVPeek.cpp` now enforces and what
+`unittests/A64Frontend/run.sh`'s `nzcv_exit_dead_window` asserts, with
+`POWERARM_NZCVEXITDEADNOWINDOW=1` as the lever that proves the assertion has teeth.
 
 ## 8. What it is worth
 

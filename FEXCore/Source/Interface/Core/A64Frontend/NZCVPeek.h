@@ -39,11 +39,22 @@
 // verdict is only as good as those bytes, so every page they touch joins the
 // unit's CodePages and the decoded extent widens to the hull. That is what
 // makes a guest write to a witness cost a recompile rather than a stale
-// assumption, on all three SMC models, and it is also what makes the code cache
-// sound with no format change: the cache hashes [entry, entry + GuestSize) and
-// GuestSize is now the hull, so a cached block whose witnesses moved fails its
-// guest hash and is recompiled. See §7.5 and the note in NZCVPeek.cpp about how
-// that differs from the document's NZCVDeadExits bitmask.
+// assumption, on all three SMC models. See §7.5 and the note in NZCVPeek.cpp
+// about how that differs from the document's NZCVDeadExits bitmask.
+//
+// THE CODE CACHE NEEDS ONE CONDITION MORE THAN §7.5 THOUGHT. The cache stores
+// {Tail->RIP = the unit's ENTRY, Tail->GuestSize = DecodedMax - DecodedMin} and
+// validates a loaded block by hashing [RIP, RIP + GuestSize) -- a window
+// anchored at the ENTRY, not at DecodedMin. A unit that followed a backward
+// branch already has DecodedMin < Entry (LookupCache.h's BlockEntry::ExtentStart
+// note says exactly this), and a witness BELOW the entry then falls outside the
+// hashed window: the guest could rewrite it and the cached block would still
+// load, DEAD verdict intact and wrong, with the pages below the entry not even
+// registered for SMC (CodeCache.cpp's load path arms
+// [GuestRIP, GuestRIP + Length)). Widening the extent is what §7.5 relied on
+// and it is not enough by itself. So a verdict is refused unless every witness
+// lies at or above the unit's entry, which is what makes
+// [Entry, Entry + GuestSize) a superset of the witnesses again.
 // ===========================================================================
 
 #include <cstdint>
@@ -68,16 +79,30 @@ enum class Mode : uint8_t {
 
 // §7.5: the hull of unit and witnesses must stay inside this, or the DEAD
 // verdict is refused for that exit. On cc1 the branch-target scans are within
-// 4 KiB for 68% of simple DEAD verdicts and within 64 KiB for 81%, so the bound
-// costs about a fifth of the scan's value and keeps a single extent.
-inline constexpr uint64_t kHullBound = 64 * 1024;
+// 4 KiB for 68% of simple DEAD verdicts and within 64 KiB for 81%.
+//
+// The number is not a free choice, which is why it is no longer §7.5's 64 KiB.
+// The hull becomes the unit's recorded guest length, and CodeCache refuses both
+// to store and to load any block whose GuestSize exceeds
+// A64::DEFAULT_MAX_INSTRUCTIONS * 4 -- the `Length >` guards on both sides of
+// CodeCache.cpp. A 64 KiB bound therefore made every DEAD verdict with a
+// witness more than 4 KiB from its unit silently cost that unit its cached
+// translation: the policy bought one dropped compare and paid a whole
+// recompile for it, on workloads whose startup the cache dominates. §5.2's own
+// numbers put that at a fifth of the verdicts at most, so matching the cache's
+// limit costs little and keeps the unit cacheable. Kept as a literal rather
+// than the constant so this header does not pull in the decoder; the .cpp
+// static_asserts the two agree.
+inline constexpr uint64_t kHullBound = 4 * 1024;
 
-// §7.2's per-path budget. The census uses the Python script's 48/96 so its rows
-// stay comparable with census/cc1-nzcv.census; the policy uses the document's
-// own recommendation, which §5.2 measured as capturing 91-93% of the value.
-// Scan parameters are part of the emitted code, so they are hashed into the
-// code cache config id along with the mode.
-inline constexpr uint32_t kPolicyMaxInsnsPerPath = 16;
+// §7.2's per-path budget is not a policy constant. The policy calls
+// Census::ScanWitnessed, which uses the census's own kMaxInsnsPerPath /
+// kMaxVisitedWords (48/96) so its rows stay comparable with
+// census/cc1-nzcv.census. §5.2's 16 is a TIGHTER bound than the one actually in
+// force, so the implementation is looser than the document rather than tighter,
+// and the constant that used to sit here claiming the opposite
+// (kPolicyMaxInsnsPerPath) was read by nothing. Scan parameters are part of the
+// emitted code and are hashed into the code cache config id with the mode.
 
 // Runs the peek over every ExitFunction of the freshly built unit, sets
 // IROp_ExitFunction::NZCVDeadAtTarget where it proves deadness, and records the
@@ -92,8 +117,30 @@ void Apply(FEXCore::Core::InternalThreadState* Thread, FEXCore::IR::IREmitter* I
 // under Strict.
 void NoteUnitCompiled(FEXCore::Core::InternalThreadState* Thread, uint64_t Entry, bool EntryNZCVLiveIn, Mode M);
 
-// Printed with the link outcomes.
+// §7.7's running total, reported through GetStats below.
 uint64_t ContradictionCount();
+
+// Stage 2's own accounting. A running-total line to stderr per compiled unit
+// when POWERARM_NZCVEXITDEADSTATS=1 -- per unit rather than at exit because a
+// guest's exit_group is forwarded and neither atexit nor a destructor runs
+// reliably, which is why the census next door rewrites every 512 compiles.
+// unittests/A64Frontend/run.sh's nzcv_exit_dead_window check reads the last
+// line; nothing else reads it, and with the variable unset nothing is printed.
+//
+// It exists because `canary` is the mode a suite run is supposed to prove
+// something in, and until now the only aggregate -- the contradiction count --
+// had no caller at all (this header claimed it was "printed with the link
+// outcomes"; it was not), so a canary run that fired the tripwire fifty times
+// and one that never fired it looked identical to the suite.
+struct Stats {
+  uint64_t ExitsSeen {};         // constant-destination ExitFunctions examined
+  uint64_t Dead {};              // verdicts taken: NZCVDeadAtTarget set
+  uint64_t RefusedScan {};       // the scan did not return DEAD, or read nothing
+  uint64_t RefusedHull {};       // DEAD, but the hull would exceed kHullBound
+  uint64_t RefusedBelowEntry {}; // DEAD, but a witness sat below the unit entry
+  uint64_t Contradictions {};    // §7.7 tripwire firings
+};
+Stats GetStats();
 
 // §9 stage 1: the table proven against the frontend. Enumerates every a64.inc
 // entry with a handler, synthesises words for it, translates each alone through
