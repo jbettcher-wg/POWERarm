@@ -544,6 +544,46 @@ zero on cc1.
 observable: exits, signal frames, `fmov x, v0.d[1]`, vector readers); low for the load fusion.
 Gates: `fpmath.c`, `fpbugs.S`, `simd_*`, `sigedit`/`sigpreempt`. **Size.** Two to three days.
 
+**Not done, and both halves are smaller than they look.** Attempted 2026-09-30 alongside items
+6 and 13 and dropped rather than shipped with a doubt.
+
+*The load fusion cannot fire at all.* `SplatCandidateLoads` (`JIT.cpp:5615-5634`) triggers on
+`OP_VF{,N}ML{A,S}SCALARINSERT`, and nothing in this fork creates a `VF*ScalarInsert` node: the
+only writers are the backend readers and `ScalarSplatChain`, which annotates nodes an x86
+`OpcodeDispatcher` would have produced, and there is no x86 frontend here. Widening its
+consumer set therefore widens nothing. The deeper reason is the IR shape, not the trigger
+list: `LoadStoreV` (`TranslateSIMDLoadStore.cpp:40-50`) lowers every `ldr d` as
+`StoreV(Rt, _LoadMem(...))`, so the load's one and only use is the write of guest Rt. There is
+no "single-use load feeding an arithmetic op" in A64 IR -- every guest load lands in a guest
+register first. Turning `ldr d` into one `lxvdsx` is not a consumer-set question; it is the
+question of whether guest Rt may carry a dirty upper half, i.e. it reduces to the other half
+of this item.
+
+*And that half collides with a rule this JIT already states.* `Elide32MaskSet`
+(`JITClass.h:380-405`) is the GPR equivalent, and it elides a tail mask only when the def has
+exactly one use AND that use is the immediately next op, with the reason spelled out: "a
+synchronous fault in a LATER guest instruction can never observe this def as architectural
+state, because the def is dead before any later instruction begins." In `fmul d0 ; fadd d0 ;
+fsub d0` the value with the dirty upper half IS guest V0 at two instruction boundaries. V0-V15
+are static host registers written to the context at every exit, drain point and signal frame,
+and a guest handler entered between the `fmul` and the `fadd` reads V0 out of that frame. So
+the FPR form of the same rule elides nothing where this item wants it: `StoreVSized`
+(`IRBuilder.h:387`) puts the `VMov(64)` immediately before the `StoreRegister`, so the VMov's
+single use is always the architectural write, never a scalar consumer.
+
+Getting the saving needs per-PC metadata naming which V registers may hold a dirty upper half
+at each guest instruction boundary, read by the signal-frame builder and by every context
+spill. That is a different piece of work from the one costed here, and it is what makes this
+item medium risk rather than low. The 13.0 -> 10.0 -> 6.4 cycle measurement behind it is not in
+doubt; the obstacle is guest state reconstruction, not the ISA.
+
+*What is left that is sound* is the producer side, not the consumer side: a `VMov(64)` whose
+source already has a zero upper half is dead outright, with no observability question. After
+F4 that is one `xxpermdi` per site, and the sites are the ops that end in `PlaceElement0` or
+`PlaceSingleFromDoubleword0` and are then stored with `StoreVSized` -- `A64FToF` (every guest
+FCVT) and the scalar `A64FloatFromGPR`. It is the `HighZeroElideSet` shape, not the
+`Elide32MaskSet` one, and it is a separate item from this.
+
 ### 3.11 ADDP and UZP2 without pool-constant `vperm`
 
 **Today.** `DEF_OP(VAddP)` (`VectorOps.cpp:1831-1890`) loads two permute controls from the pool
