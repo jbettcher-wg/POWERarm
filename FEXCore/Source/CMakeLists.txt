@@ -26,6 +26,7 @@ set(SRCS
   Interface/Core/A64Frontend/DecodeTable.cpp
   Interface/Core/A64Frontend/Decoder.cpp
   Interface/Core/A64Frontend/IRBuilder.cpp
+  Interface/Core/A64Frontend/NZCVPeek.cpp
   Interface/Core/A64Frontend/TranslateBranchSystem.cpp
   Interface/Core/A64Frontend/TranslateCrypto.cpp
   Interface/Core/A64Frontend/TranslateDataProcessing.cpp

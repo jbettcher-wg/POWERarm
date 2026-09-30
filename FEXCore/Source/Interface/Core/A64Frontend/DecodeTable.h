@@ -34,6 +34,11 @@ struct InstMatcher final {
 // Returns the first matcher for Word, or nullptr if no table entry matches.
 const InstMatcher* DecodeInstruction(uint32_t Word);
 
+// Visits every table entry in decode priority order. Used by the NZCV peek's
+// table check (NZCVPeek.cpp, POWERARM_NZCVTABLECHECK); nothing on a normal path
+// calls it.
+void ForEachTableEntry(void* Opaque, void (*Visit)(void*, const InstMatcher&));
+
 struct DecodeTableStats final {
   size_t Entries;        ///< Active INST entries in a64.inc.
   size_t HandledEntries; ///< Entries with a registered translator.

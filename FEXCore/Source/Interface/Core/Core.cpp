@@ -21,6 +21,7 @@ $end_info$
 #include "Interface/Core/CPUBackend.h"
 #include "Interface/Core/A64Frontend/Decoder.h"
 #include "Interface/Core/A64Frontend/IRBuilder.h"
+#include "Interface/Core/A64Frontend/NZCVPeek.h"
 #ifdef ARCHITECTURE_ppc64le
 #include "Interface/Core/JIT/PPC64LE/JITClass.h"
 #include "Interface/Core/JIT/PPC64LE/PPC64Dispatcher.h"
@@ -961,9 +962,31 @@ bool ContextImpl::CheckIfBlockIsCacheable(FEXCore::Core::InternalThreadState& Th
   return Thread.FrontendDecoder->CheckIfCacheable(Thread, GuestRIP, MaxInst);
 }
 
+// POWERARM_NZCVTABLECHECK=1: run NZCV-LIVENESS.md 9 stage 1's exhaustive table
+// check once and print its verdict. A presence-and-value check resolved once
+// per process, the convention for diagnostic-only toggles that must not cost a
+// config lookup on a hot path.
+static bool NZCVTableCheckRequested() {
+  static const bool Requested = []() {
+    const char* Env = getenv("POWERARM_NZCVTABLECHECK");
+    return Env && Env[0] == '1';
+  }();
+  return Requested;
+}
+
 ContextImpl::GenerateIRResult
 ContextImpl::GenerateIR(FEXCore::Core::InternalThreadState* Thread, uint64_t GuestRIP, bool ExtendedDebugInfo, uint64_t MaxInst) {
   FEXCORE_PROFILE_SCOPED("GenerateIR");
+
+  // NZCV-LIVENESS.md 9 stage 1's gate: the guest-word table the exit-deadness
+  // peek will use, proven against the frontend over every a64.inc entry with a
+  // handler. It needs a live IRBuilder to translate through, which is why it
+  // runs from here (once per process) rather than from a standalone host test
+  // -- the frontend cannot be instantiated without a Context.
+  if (NZCVTableCheckRequested()) [[unlikely]] {
+    static std::once_flag TableCheckOnce;
+    std::call_once(TableCheckOnce, [Thread]() { A64::NZCVPeek::RunTableCheck(Thread); });
+  }
 
   Thread->OpDispatcher->ResetWorkingList();
 

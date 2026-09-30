@@ -2,6 +2,9 @@
 #pragma once
 
 #include <FEXCore/fextl/memory.h>
+#include <FEXCore/fextl/vector.h>
+
+#include <cstdint>
 
 namespace FEXCore {
 struct HostFeatures;
@@ -12,6 +15,7 @@ class IntrusivePooledAllocator;
 }
 
 namespace FEXCore::IR {
+class IRListView;
 class Pass;
 class RegisterAllocationPass;
 struct IROp_Header;
@@ -29,6 +33,20 @@ bool IROpReadsNZCV(IROp_Header* IROp);
 // does. Derived from the same table for the same reason as the predicates above.
 unsigned IROpNZCVRead(IROp_Header* IROp);
 unsigned IROpNZCVWrite(IROp_Header* IROp);
+
+// The NZCV PRESERVE BRACKET, marked per SSA node: 1 on the LoadNZCV that saves
+// the guest's flags, 2 on the StoreNZCV that puts them back, 0 everywhere else.
+// Out is grown and zeroed as needed, so a caller that keeps it across compiles
+// stops allocating.
+//
+// The A64 frontend wraps every guest op whose lowering clobbers the host state
+// the guest's NZCV lives in -- the LDXR/STXR/CAS/LD<op> family, whose
+// lwarx/stwcx./CAS lowering records into CR0 -- in exactly that pair. In this
+// pass's model the pair reads all four bits and writes all four; at the guest
+// level it does neither. Anything answering a question about GUEST NZCV
+// liveness must cancel it, or every unit that starts with a lock claims a
+// live-in it does not have.
+void MarkNZCVPreserveBrackets(IRListView& CurrentIR, fextl::vector<uint8_t>& Out);
 
 fextl::unique_ptr<FEXCore::IR::Pass> CreateDeadFlagCalculationEliminination();
 fextl::unique_ptr<FEXCore::IR::Pass> CreateScalarSplatChain();

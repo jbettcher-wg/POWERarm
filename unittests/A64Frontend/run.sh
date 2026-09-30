@@ -373,6 +373,27 @@ if [ -f nzcvlate.golden ]; then
   fi
 fi
 
+# NZCV-LIVENESS.md 9 stage 1's gate: the guest-word table the exit-deadness peek
+# will use, against the frontend. POWERARM_NZCVTABLECHECK=1 synthesises words
+# for every a64.inc entry with a handler, translates each one alone, classifies
+# the IR with DeadFlagCalculationElimination's own table and requires the peek
+# to agree wherever a disagreement would be unsound -- a word the scan walks
+# through at which the frontend reads NZCV, or a word the table calls a full
+# writer that the frontend does not fully write. Conservative disagreements are
+# counted, not fatal.
+if [ -f hello.golden ]; then
+  POWERARM_NZCVTABLECHECK=1 "$emu" ./hello > /dev/null 2> nzcv_tablecheck.err
+  tc=$(grep '^NZCV_TABLECHECK checked=' nzcv_tablecheck.err | tail -1)
+  tc_checked=$(echo "$tc" | sed -n 's/.*checked=\([0-9]*\).*/\1/p')
+  tc_unsound=$(echo "$tc" | sed -n 's/.*unsound=\([0-9]*\).*/\1/p')
+  tc_entries=$(echo "$tc" | sed -n 's/.*handled_entries=\([0-9]*\).*/\1/p')
+  if [ -n "$tc_checked" ] && [ "$tc_checked" -gt 0 ] && [ "$tc_unsound" = 0 ]; then
+    report PASS nzcv_table_check "$tc_checked words over $tc_entries handled a64.inc entries, 0 unsound"
+  else
+    report FAIL nzcv_table_check "[$tc]; see $out/nzcv_tablecheck.err"
+  fi
+fi
+
 # The fatal host-fault report survives a fault of its own. hostfault makes
 # POWERarm fault in its own syscall body (POWERARM_HOSTFAULT_INJECT, 173 is
 # getppid) under a return address the unwinder cannot read, once with fault

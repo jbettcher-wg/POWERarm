@@ -147,4 +147,14 @@ DecodeTableStats GetDecodeTableStats() {
   return {T.Matchers.size(), T.HandledEntries};
 }
 
+void ForEachTableEntry(void* Opaque, void (*Visit)(void*, const InstMatcher&)) {
+  // Priority order, i.e. the order DecodeInstruction resolves them in. Exists
+  // for the NZCV peek's table check (NZCVPeek.cpp), which has to synthesise
+  // words for every entry with a handler and compare the peek's classification
+  // with what the frontend actually translates the word into.
+  for (const auto& M : GetTable().Matchers) {
+    Visit(Opaque, M);
+  }
+}
+
 } // namespace FEXCore::A64

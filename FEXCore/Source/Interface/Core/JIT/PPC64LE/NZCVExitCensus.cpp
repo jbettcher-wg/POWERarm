@@ -86,21 +86,22 @@ const char* ExitKindName(ExitKindBucket K) {
 // ===========================================================================
 namespace {
 
-  enum WordKind : uint8_t {
-    WK_NEUTRAL = 0,
-    WK_READER,  // reads NZCV: the scan ends LIVE
-    WK_WRITER,  // writes all four bits: this path ends DEAD
-    WK_PARTIAL, // writes some bits: UNRESOLVED
-    WK_B,       // follow the target
-    WK_TWOWAY,  // CBZ/CBNZ/TBZ/TBNZ: follow both legs
-    WK_BL,      // stage 3 follows one level; otherwise UNRESOLVED
-    WK_SVC,     // the kernel preserves NZCV across a syscall: continue
-    WK_RET,     // a return with the flags still live
-    WK_TERM,    // BR/BLR/BRK/HLT/UDF/ERET and the pointer-auth variants
-  };
+  // Local aliases for the public WordClass names (NZCVExitCensus.h). The walk
+  // below was written against these and reads better with them; they are the
+  // same values, not a second table.
+  constexpr WordClass WK_NEUTRAL = WC_NEUTRAL;
+  constexpr WordClass WK_READER = WC_READER;
+  constexpr WordClass WK_WRITER = WC_WRITER;
+  constexpr WordClass WK_PARTIAL = WC_PARTIAL;
+  constexpr WordClass WK_B = WC_BRANCH;
+  constexpr WordClass WK_TWOWAY = WC_TWOWAY;
+  constexpr WordClass WK_BL = WC_CALL;
+  constexpr WordClass WK_SVC = WC_SVC;
+  constexpr WordClass WK_RET = WC_RET;
+  constexpr WordClass WK_TERM = WC_TERM;
 
   struct Word {
-    WordKind Kind;
+    WordClass Kind;
     int64_t Offset; // branch displacement in bytes, for WK_B/WK_TWOWAY/WK_BL
   };
 
@@ -109,7 +110,7 @@ namespace {
     return static_cast<int64_t>(static_cast<int32_t>((Value ^ Sign) - Sign));
   }
 
-  Word ClassifyWord(uint32_t I) {
+  Word ClassifyWordImpl(uint32_t I) {
     // ---- Branches, exception generation and system registers first: their
     // group bits overlap nothing below. ----
 
@@ -213,10 +214,22 @@ namespace {
     }
 
     // ---- Scalar floating point ----
-    // The 0x1E/0x1F group with bit21 set splits on bits[11:10]: 00 is compare
-    // (when bits[15:10]==001000) or a one-source/conversion form, 01 is FCCMP,
-    // 11 is FCSEL, 10 is a two-source arithmetic op.
-    if (((I >> 24) & 0x1F) == 0b11110 && ((I >> 21) & 1)) {
+    // The scalar FP data-processing group with bit21 set splits on bits[11:10]:
+    // 00 is compare (when bits[15:10]==001000) or a one-source/conversion form,
+    // 01 is FCCMP, 11 is FCSEL, 10 is a two-source arithmetic op.
+    //
+    // bits[31:30] MUST be tested, not just bits[28:24]. The group is
+    // M(31)=0 0(30) S(29) 11110(28:24); matching bits[28:24] alone also admits
+    // 0x5E/0x7E, which is "Advanced SIMD scalar three same" -- FMULX, FCMEQ,
+    // FRECPS, FRSQRTS and the rest -- whose bits[11:10] of 01 and 11 were being
+    // read as FCCMP and FCSEL and ending scans LIVE at instructions that touch
+    // no flag at all. Found by §9 stage 1's table check (POWERARM_NZCVTABLECHECK),
+    // which translates every a64.inc entry and compares: 177 of 4,846 synthesised
+    // words classified reader against a frontend translation that reads nothing.
+    // Conservative, never unsound -- a scan that stops early only keeps a
+    // producer it could have dropped -- so the census rows in §5.2/§13 stand,
+    // slightly understating DEAD.
+    if ((I >> 30) == 0 && ((I >> 24) & 0x1F) == 0b11110 && ((I >> 21) & 1)) {
       switch ((I >> 10) & 3) {
       case 0b00:
         if (((I >> 10) & 0x3F) == 0b001000) {
@@ -230,6 +243,12 @@ namespace {
     }
 
     return {WK_NEUTRAL, 0};
+  }
+
+  Word ClassifyWord(uint32_t I) {
+    int64_t Disp = 0;
+    const WordClass C = ClassifyGuestWord(I, &Disp);
+    return {C, Disp};
   }
 
   // A direct-mapped memo of scan verdicts, per JIT thread. The same constant
@@ -248,6 +267,30 @@ namespace {
   thread_local fextl::vector<MemoEntry> Memo;
 
 } // namespace
+
+WordClass ClassifyGuestWord(uint32_t Insn, int64_t* Displacement) {
+  const Word W = ClassifyWordImpl(Insn);
+  if (Displacement) {
+    *Displacement = W.Offset;
+  }
+  return W.Kind;
+}
+
+const char* WordClassName(WordClass C) {
+  switch (C) {
+  case WC_NEUTRAL: return "neutral";
+  case WC_READER: return "reader";
+  case WC_WRITER: return "writer";
+  case WC_PARTIAL: return "partial";
+  case WC_BRANCH: return "branch";
+  case WC_TWOWAY: return "twoway";
+  case WC_CALL: return "call";
+  case WC_SVC: return "svc";
+  case WC_RET: return "ret";
+  case WC_TERM: return "term";
+  default: return "?";
+  }
+}
 
 ScanVerdict Scan(uint64_t Target, bool FollowBL, ReadWordFn Read, void* Opaque) {
   // Depth-first over paths, each path bounded at kMaxInsnsPerPath and the whole

@@ -156,6 +156,31 @@ using ReadWordFn = bool (*)(void* Opaque, uint64_t Address, uint32_t* Out);
 ScanVerdict Scan(uint64_t Target, bool FollowBL, ReadWordFn Read, void* Opaque);
 
 // ---------------------------------------------------------------------------
+// The per-word half of §7.2's table, exposed so that the policy and the
+// table-vs-frontend self-check (POWERARM_NZCVTABLECHECK, NZCVPeek.cpp) classify
+// with the same code the census and the scan classify with. One table, three
+// readers -- a second copy is exactly the failure mode §9 stage 1 exists to
+// prevent.
+// ---------------------------------------------------------------------------
+enum WordClass : uint8_t {
+  WC_NEUTRAL = 0, // touches no NZCV bit and does not transfer control
+  WC_READER,      // reads NZCV (a reader that also writes is a reader first)
+  WC_WRITER,      // writes all four bits
+  WC_PARTIAL,     // writes some of them
+  WC_BRANCH,      // B: the scan follows the target
+  WC_TWOWAY,      // CBZ/CBNZ/TBZ/TBNZ: the scan follows both legs
+  WC_CALL,        // BL
+  WC_SVC,         // the kernel preserves NZCV; the scan continues
+  WC_RET,         // RET and its pointer-auth forms
+  WC_TERM,        // BR/BLR/BRK/HLT/UDF/ERET and anything else that ends a path
+};
+
+// Classification and, for the control-transfer classes, the branch displacement
+// in bytes (0 otherwise).
+WordClass ClassifyGuestWord(uint32_t Insn, int64_t* Displacement = nullptr);
+const char* WordClassName(WordClass C);
+
+// ---------------------------------------------------------------------------
 // Compile-time analysis. Walks the unit's IR the way nzcv_census.py's
 // forward_reach does, scans the constant exit targets it reaches, accumulates
 // the static tables, and fills Out with the slots each ExitFunction node's

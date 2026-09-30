@@ -19,6 +19,7 @@ $end_info$
 #include <FEXCore/fextl/deque.h>
 #include <FEXCore/fextl/vector.h>
 
+#include <algorithm>
 #include <cstdlib>
 
 // Flag bit flags
@@ -186,11 +187,66 @@ private:
   fextl::deque<uint32_t> Worklist;
   CompareFusion Fusion;
 
+  // Per-SSA-node marks for the NZCV PRESERVE BRACKET: 1 on the LoadNZCV that
+  // saves the guest's flags, 2 on the StoreNZCV that puts them back. The A64
+  // frontend wraps every guest op whose lowering clobbers the host state the
+  // guest's NZCV lives in -- the LDXR/STXR/CAS/LD<op> family, whose
+  // lwarx/stwcx./CAS lowering records into CR0 -- in exactly that pair
+  // (TranslateExclusive.cpp). In this pass's model the pair READS all four
+  // bits and WRITES all four; at the guest level it does neither. So anything
+  // that answers a question about GUEST NZCV liveness has to cancel it, and
+  // EntryNZCVLiveIn is such a question. Reused across compiles like BlockMap.
+  fextl::vector<uint8_t> NZCVBracket;
+  void MarkNZCVBrackets(IRListView& CurrentIR);
+
   bool EliminateDeadCode(IREmitter* IREmit, Ref CodeNode, IROp_Header* IROp);
   void FoldBranch(IREmitter* IREmit, IRListView& CurrentIR, IROp_CondJump* Op, Ref CodeNode);
   CondClass X86ToArmFloatCond(CondClass X86);
   bool ProcessBlock(IREmitter* IREmit, IRListView& CurrentIR, Ref Block, ControlFlowGraph& CFG);
 };
+
+// See the NZCVBracket declaration for what a preserve bracket is and why it
+// has to be cancelled. A StoreNZCV whose operand is a LoadNZCV with no other
+// consumer is a restore, and that LoadNZCV is its save: the only way the packed
+// value reaches a StoreNZCV DIRECTLY is the bracket. `MRS Xt, NZCV` feeds its
+// LoadNZCV into a register store and FCCMP feeds its LoadNZCV through a Select,
+// so neither is cancelled -- both are real guest reads.
+//
+// Exported because the NZCV exit-deadness peek's table check
+// (A64Frontend/NZCVPeek.cpp) has to ask the same question of the same IR, and
+// two implementations of "is this a real guest flag read" is exactly the kind
+// of split that makes a flag bug silent.
+void MarkNZCVPreserveBrackets(IRListView& CurrentIR, fextl::vector<uint8_t>& Out) {
+  const uint32_t SSACount = CurrentIR.GetSSACount();
+  if (Out.size() < SSACount) {
+    Out.resize(SSACount);
+  }
+  std::fill(Out.begin(), Out.begin() + SSACount, 0);
+
+  for (auto [BlockNode, BlockHeader] : CurrentIR.GetBlocks()) {
+    for (auto [CodeNode, IROp] : CurrentIR.GetCode(BlockNode)) {
+      if (IROp->Op != OP_STORENZCV) {
+        continue;
+      }
+      const auto Src = IROp->Args[0];
+      if (Src.IsImmediate() || !Src.ID().IsValid() || Src.ID().Value >= SSACount) {
+        continue;
+      }
+      if (CurrentIR.GetOp<IROp_Header>(Src)->Op != OP_LOADNZCV || CurrentIR.GetNode(Src)->GetUses() != 1) {
+        continue;
+      }
+      Out[Src.ID().Value] = 1;
+      const uint32_t StoreID = CurrentIR.GetID(CodeNode).Value;
+      if (StoreID < SSACount) {
+        Out[StoreID] = 2;
+      }
+    }
+  }
+}
+
+void DeadFlagCalculationEliminination::MarkNZCVBrackets(IRListView& CurrentIR) {
+  MarkNZCVPreserveBrackets(CurrentIR, NZCVBracket);
+}
 
 unsigned DeadFlagCalculationEliminination::FlagsForCondClassType(CondClass Cond) {
   switch (Cond) {
@@ -894,6 +950,7 @@ void DeadFlagCalculationEliminination::Run(IREmitter* IREmit) {
   // pass leaves the worklist empty, and Init() resets both for every block on
   // the next compile, so an early exit with entries still queued is harmless.
   if (CurrentIR.GetHeader()->BlockCount > 0) {
+    MarkNZCVBrackets(CurrentIR);
     auto [EntryNode, _] = *CurrentIR.GetBlocks().begin();
     auto EntryIROp = CurrentIR.GetOp<IR::IROp_CodeBlock>(EntryNode);
     CFG.Get(EntryIROp->ID)->EntryUndefined = FLAG_NZCV;
@@ -909,6 +966,15 @@ void DeadFlagCalculationEliminination::Run(IREmitter* IREmit) {
       auto BlockIROp = CurrentIR.GetOp<IR::IROp_CodeBlock>(Info->Node);
       if (BlockIROp->HasFlags) {
         for (auto [CodeNode, IROp] : CurrentIR.GetCode(Info->Node)) {
+          // Both halves of an NZCV preserve bracket are invisible to the
+          // guest, so neither may count as a read (which would make every unit
+          // that starts with a lock claim a live-in it does not have) nor as a
+          // write (which would stop the reach and hide a genuine reader after
+          // it). See MarkNZCVBrackets.
+          const uint32_t ID = CurrentIR.GetID(CodeNode).Value;
+          if (ID < NZCVBracket.size() && NZCVBracket[ID] != 0) {
+            continue;
+          }
           struct FlagInfo OpInfo = ClassifyFast(IROp);
           if (!OpInfo.Trivial()) {
             EntryLiveIn |= (OpInfo.Read() & Undefined);
