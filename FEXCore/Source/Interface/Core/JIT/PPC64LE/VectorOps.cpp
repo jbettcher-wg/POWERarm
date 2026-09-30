@@ -2140,9 +2140,18 @@ DEF_OP(VUnZip2) {
   }
   // Pre-shift each input so odd-indexed elements move to even positions, then
   // pack as for VUnZip.
-  vspltisw(VTMP1, 0);
-  vsldoi  (VTMP2, VTMP1, VU, SH);
-  vsldoi  (VTMP1, VTMP1, VL, SH);
+  //
+  // The shift is against the operand itself, not against a zero register: the
+  // two forms differ only in the leading 16-SH bytes of each result (0 vs the
+  // bytes that wrapped round), and the pack below never reads those. vpkuhum
+  // takes BE bytes 1,3,..,15 of each operand, vpkuwum BE bytes 2,3,6,7,..  and
+  // vpkudum BE bytes 4..7 and 12..15 -- in every case the first 16-SH bytes
+  // (1 for SH=15, 2 for SH=14, 4 for SH=12) are discarded. Dropping the
+  // `vspltisw VTMP1, 0` that fed them is one instruction off every UZP2, and
+  // off every ADDP/UMAXP/UMINP/SMAXP/SMINP, which the A64 frontend lowers as
+  // VUnZip + VUnZip2 + the arithmetic (it never emits VAddP).
+  vsldoi(VTMP2, VU, VU, SH);
+  vsldoi(VTMP1, VL, VL, SH);
   switch (ElemSz) {
   case IR::OpSize::i8Bit:  vpkuhum(Dst, VTMP2, VTMP1); break;
   case IR::OpSize::i16Bit: vpkuwum(Dst, VTMP2, VTMP1); break;

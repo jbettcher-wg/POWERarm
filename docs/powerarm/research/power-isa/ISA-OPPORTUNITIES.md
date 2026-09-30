@@ -559,6 +559,22 @@ vsrd t2,VU,c ; vpkudum o,t2,t1 ; vadduwm` (6 on 3.0; `vspltisw -16` for the 16-b
 **Delta.** 9 -> 6, 4 -> 3. Static: `addp` is 0.03% of the Claude CLI (JSC's SIMD paths), less
 elsewhere. **Size.** Hours.
 
+**Landed**, with the ADDP half of the analysis corrected: the A64 frontend never emits
+`_VAddP`. `SIMDPairwise` (`TranslateSIMD.cpp:367-376`) lowers ADDP/UMAXP/UMINP/SMAXP/SMINP as
+`_VUnZip` + `_VUnZip2` + the arithmetic, so the pool-constant `vperm` pair above is
+`DEF_OP(VAddP)`'s 128-bit path, which only an x86 frontend would reach and which this fork
+does not have. ADDP was 6 host instructions, not 9, and the only lever on it is the one UZP2
+gives back.
+
+That lever is not the pack sequence, which was already the right one, but the zero it shifted
+against: `vsldoi` against the operand itself instead of against a `vspltisw 0` is the same
+result in every byte the pack keeps (it differs only in the leading 16-SH bytes, which are
+1, 2 or 4 for the byte, halfword and word forms and are discarded by `vpkuhum`, `vpkuwum` and
+`vpkudum` respectively). So `VUnZip2` at 128 bits is 3 instead of 4 at every element size
+except i64, which was already 1. Guest: UZP2 Q=1 4 -> 3 and Q=0 5 -> 4; ADDP/UMAXP/UMINP/
+SMAXP/SMINP Q=1 6 -> 5 and Q=0 8 -> 7. Gate `simd_unzip2`. The 16-bit trick this section
+proposed (`vspltisw -16` feeding `vsrw`) is not needed and would have cost the same 4.
+
 ### 3.12 The three-way compare idiom -> `setb`
 
 `cmp w0, w1 ; cset w2, gt ; csinv w2, w2, wzr, ge` is two fused selects, ~8-9 host
