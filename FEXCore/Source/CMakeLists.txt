@@ -49,6 +49,7 @@ list(APPEND SRCS
   Interface/Core/JIT/PPC64LE/AtomicOps.cpp
   Interface/Core/JIT/PPC64LE/BranchOps.cpp
   Interface/Core/JIT/PPC64LE/MemoryOps.cpp
+  Interface/Core/JIT/PPC64LE/NZCVExitCensus.cpp
   Interface/Core/JIT/PPC64LE/VectorOps.cpp
   Interface/Core/JIT/PPC64LE/PPC64Dispatcher.cpp)
 

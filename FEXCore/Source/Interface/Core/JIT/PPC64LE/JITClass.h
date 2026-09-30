@@ -6,6 +6,7 @@
 #include "Interface/Core/ArchHelpers/PPC64Emitter.h"
 #include <FEXCore/Utils/ArchHelpers/PPC64.h>
 #include "Interface/Core/CPUBackend.h"
+#include "Interface/Core/JIT/PPC64LE/NZCVExitCensus.h"
 #include "Interface/Core/JIT/Relocations.h"
 #include "Interface/IR/IR.h"
 #include "Interface/IR/IntrusiveIRList.h"
@@ -17,6 +18,7 @@
 #include <FEXCore/Utils/LogManager.h>
 #include <FEXCore/fextl/list.h>
 #include <FEXCore/fextl/map.h>
+#include <FEXCore/fextl/unordered_map.h>
 #include <FEXCore/fextl/memory.h>
 #include <FEXCore/fextl/string.h>
 #include <FEXCore/fextl/vector.h>
@@ -773,6 +775,44 @@ private:
   // incl. the deferred-signal poke and the stdu). Only populated when
   // ShadowRetStackEnabled; empty (and untouched) otherwise.
   fextl::vector<PPC64Emitter::Label> CallReturnEntryLabels;
+
+  // ---------------------------------------------------------------------
+  // NZCV exit-site census (POWERARM_NZCVEXITCENSUS, default off). Stage 0 of
+  // docs/powerarm/research/power-isa/NZCV-LIVENESS.md: it weights that
+  // document's per-translated-site census by execution.
+  //
+  // OFF-PATH CLAIM, which is the one that matters: this bool is false unless
+  // the option is set, CompileCode then never runs the analysis and
+  // NZCVCensusSlots stays empty, and DEF_OP(ExitFunction)'s single
+  // `if (NZCVExitCensusEnabled)` guard emits nothing. No codegen *decision*
+  // consults the census in either state -- it does not seed flags dead, does
+  // not change a link, does not touch DFCE. On it only appends instructions.
+  // ---------------------------------------------------------------------
+  bool NZCVExitCensusEnabled {};
+  // Per-thread traversal counters; also parked in
+  // CpuStateFrame::PPC64_NZCVExitCounters, which is what the emitted bump
+  // loads. Null when the census is off.
+  uint64_t* NZCVCensusCounters {};
+  // Filled by CompileCode's census pre-pass: ExitFunction node id -> the slots
+  // that site's lowering bumps. Cleared per compile unit.
+  fextl::unordered_map<uint32_t, FEXCore::CPU::NZCVExitCensus::ExitSiteSlots> NZCVCensusSlots;
+  // One-entry executable-range cache for the census's guest word reads, the
+  // same shape Decoder::CheckRangeExecutable keeps, so a scan that walks a
+  // basic block costs one QueryGuestExecutableRange rather than one per word.
+  uint64_t CensusExecBase {};
+  uint64_t CensusExecEnd {};
+  bool CensusReadWord(uint64_t Address, uint32_t* Out);
+  static bool CensusReadWordTrampoline(void* Opaque, uint64_t Address, uint32_t* Out) {
+    return static_cast<PPC64JITCore*>(Opaque)->CensusReadWord(Address, Out);
+  }
+  static void CensusSlotSink(void* Opaque, uint32_t ExitNodeID, const FEXCore::CPU::NZCVExitCensus::ExitSiteSlots& Slots) {
+    static_cast<PPC64JITCore*>(Opaque)->NZCVCensusSlots[ExitNodeID] = Slots;
+  }
+  // Emit the traversal bump for one exit site. Three instructions per slot on
+  // TMP1/TMP2, touching neither r0 nor any CR field nor XER -- so it cannot
+  // disturb the guest NZCV it is measuring, and cannot invalidate the
+  // r0-dirty tracking DEF_OP(ExitFunction) snapshots.
+  void EmitNZCVCensusBump(uint32_t ExitNodeID);
 
   // Resolved once at construction: code caching OR SMCSemanticPatch on, i.e.
   // something consumes the relocations this backend records for guest-RIP

@@ -514,6 +514,21 @@
           "Grep the dump for IROP_OVER_BUDGET and BLOCK_BUDGET."
         ]
       },
+      "NZCVExitCensus": {
+        "Type": "bool",
+        "Default": "false",
+        "Desc": [
+          "PPC64LE only, diagnostic: weight the NZCV liveness census by execution.",
+          "Classifies every surviving NZCV producer the way",
+          "docs/powerarm/research/power-isa/NZCV-LIVENESS.md SS5.1 does, runs that",
+          "document's SS7.2 guest-code peek on the constant exit targets it reaches,",
+          "and has the JIT bump a per-thread counter at every traversal of the exit",
+          "sites so classified. Periodically rewrites",
+          "$TMPDIR/powerarm-nzcv-exits-<pid>.txt ($TMPDIR defaults to /tmp), joinable with",
+          "docs/powerarm/research/power-isa/census/cc1-nzcv.census.",
+          "Changes no codegen decision; when off, not one emitted byte differs."
+        ]
+      },
       "InjectLibSegFault": {
         "Type": "bool",
         "Default": "false",

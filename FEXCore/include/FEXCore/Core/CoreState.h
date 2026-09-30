@@ -297,6 +297,24 @@ struct JITPointers {
 
   // Copy of process-wide named vector constants data.
   alignas(16) uint64_t NamedVectorConstants[FEXCore::IR::NamedVectorConstant::NAMED_VECTOR_CONST_POOL_MAX][2];
+
+  // POWERARM_NZCVEXITCENSUS only, and null unless it is on: this thread's NZCV
+  // exit-site traversal counters (JIT/PPC64LE/NZCVExitCensus.h). The bump the
+  // JIT emits is `ld TMP1, off(STATE); ld TMP2, slot*8(TMP1); addi TMP2,TMP2,1;
+  // std TMP2, slot*8(TMP1)`, so the array is reached through a frame slot
+  // rather than as an absolute address: a block saved to the code cache in one
+  // process and loaded in another must bump the LOADING process's array, and
+  // the slot index is a pure function of the guest bytes plus the config id, so
+  // it is the same index either way. Per thread, so the bump needs no atomic --
+  // an atomic increment here would be an lwarx/stwcx. loop, and stwcx. records
+  // into CR0, which is where half the guest's NZCV lives.
+  //
+  // LAST MEMBER ON PURPOSE. Everything the JIT addresses through STATE is a
+  // d-form displacement baked into an instruction word, so a field inserted
+  // anywhere earlier would shift those immediates and change emitted bytes for
+  // every build -- including runs with the census off, which must be
+  // byte-identical to a build without it.
+  uint64_t* PPC64_NZCVExitCounters {};
 };
 
 // Each guest JIT frame has one of these.

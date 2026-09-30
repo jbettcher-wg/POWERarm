@@ -680,6 +680,60 @@ bool PPC64JITCore::IsInlineEntrypointOffset(const IR::OrderedNodeWrapper& WNode,
   return false;
 }
 
+// NZCV exit-site census: read one guest instruction word, but only where the
+// syscall layer says the address is executable guest code. Same rule and same
+// one-entry range cache as Decoder::CheckRangeExecutable, which is what makes
+// the read unable to fault; a target outside any executable range is the
+// census's "no-code" UNRESOLVED, exactly as nzcv_census.py reports for the
+// glibc addresses its disassembly did not cover.
+bool PPC64JITCore::CensusReadWord(uint64_t Address, uint32_t* Out) {
+  if (Address & 3) {
+    return false;
+  }
+  if (Address < CensusExecBase || Address + 4 > CensusExecEnd) {
+    if (!CTX->SyscallHandler) {
+      return false;
+    }
+    const auto Range = CTX->SyscallHandler->QueryGuestExecutableRange(ThreadState, Address);
+    if (!Range.Size) {
+      return false;
+    }
+    CensusExecBase = Range.Base;
+    CensusExecEnd = Range.Base + Range.Size;
+    if (Address < CensusExecBase || Address + 4 > CensusExecEnd) {
+      return false;
+    }
+  }
+  memcpy(Out, reinterpret_cast<const void*>(Address), sizeof(*Out));
+  return true;
+}
+
+// NZCV exit-site census: the traversal bump for one exit site.
+//
+// One d-form load of this thread's counter array, then three instructions per
+// counter. It uses TMP1/TMP2 -- backend scratch, dead at the top of
+// DEF_OP(ExitFunction) by that handler's own documented register discipline --
+// and `ld`/`addi`/`std`, none of which touches r0, any CR field or XER. That is
+// what lets it sit in front of an exit whose whole purpose is to carry CR0/XER
+// into the target: the instrumentation cannot perturb the flags it is
+// measuring, and it cannot move the r0-dirty state the handler snapshots.
+void PPC64JITCore::EmitNZCVCensusBump(uint32_t ExitNodeID) {
+  auto It = NZCVCensusSlots.find(ExitNodeID);
+  if (It == NZCVCensusSlots.end() || !It->second.Count) {
+    return;
+  }
+  static_assert(offsetof(FEXCore::Core::CpuStateFrame, Pointers.PPC64_NZCVExitCounters) <= INT16_MAX, "census counter pointer must be "
+                                                                                                      "d-form reachable from STATE");
+  const auto& Slots = It->second;
+  ld(TMP1, static_cast<int16_t>(offsetof(FEXCore::Core::CpuStateFrame, Pointers.PPC64_NZCVExitCounters)), STATE);
+  for (uint8_t i = 0; i < Slots.Count; ++i) {
+    const int16_t Off = static_cast<int16_t>(Slots.Slots[i] * 8);
+    ld(TMP2, Off, TMP1);
+    addi(TMP2, TMP2, 1);
+    std(TMP2, Off, TMP1);
+  }
+}
+
 bool PPC64JITCore::IsSplatFormValue(const IR::OrderedNodeWrapper& WNode, IR::OpSize ElementSize) const {
   if (WNode.IsInvalid() || WNode.IsImmediate()) {
     return false;
@@ -2340,6 +2394,20 @@ PPC64JITCore::PPC64JITCore(FEXCore::Context::ContextImpl* ctx,
   // — position-independent, code-cache-safe. See CoreState.h and JITClass.h.
   ThreadState->CurrentFrame->PPC64_HelperTable = GetPPC64HelperTable();
 
+  // NZCV exit-site census (POWERARM_NZCVEXITCENSUS, default off). Resolved
+  // once here so the emission loop only ever sees a local boolean, and the
+  // per-thread counter array is parked in the frame because that is what the
+  // emitted bump loads -- see CoreState.h::PPC64_NZCVExitCounters for why it
+  // is a frame slot and not an absolute address.
+  NZCVExitCensusEnabled = CTX->Config.NZCVExitCensus();
+  if (NZCVExitCensusEnabled) {
+    NZCVCensusCounters = FEXCore::CPU::NZCVExitCensus::AllocateThreadCounters();
+    ThreadState->CurrentFrame->Pointers.PPC64_NZCVExitCounters = NZCVCensusCounters;
+    static std::once_flag AnnounceCensus;
+    std::call_once(AnnounceCensus,
+                   []() { LogMan::Msg::IFmt("PPC64 JIT: NZCV exit-site census ON; dump at $TMPDIR/powerarm-nzcv-exits-<pid>.txt"); });
+  }
+
   // Wire up syscall handler — virtual dispatch via vtable entry extraction.
   {
     FEXCore::Utils::MemberFunctionToPointerCast PMF(&FEXCore::HLE::SyscallHandler::HandleSyscall);
@@ -2385,6 +2453,11 @@ PPC64JITCore::PPC64JITCore(FEXCore::Context::ContextImpl* ctx,
 }
 
 PPC64JITCore::~PPC64JITCore() {
+  if (NZCVExitCensusEnabled) {
+    // The periodic rewrite covers a SIGKILL; this covers a clean thread exit
+    // that happens to be the last one.
+    FEXCore::CPU::NZCVExitCensus::Dump();
+  }
   if (StagingBuffer) {
     FEXCore::Allocator::VirtualFree(StagingBuffer, StagingMapped);
     StagingBuffer = nullptr;
@@ -5085,6 +5158,16 @@ CPUBackend::CompiledCode PPC64JITCore::CompileCode(
   SpillSlots     = IRView->SpillSlots();
   SpillFrameSize = SpillSlots ? (kSpillSlotPrefix + SpillSlots * MaxSpillSlotSize) : 0;
 
+  // NZCV exit-site census pre-pass (off by default). Classifies this unit's
+  // surviving NZCV producers, peeks at the constant exit targets their flags
+  // reach, and records which counters each ExitFunction site's lowering should
+  // bump. Pure analysis: it reads the IR and guest code and writes only the
+  // census's own tables.
+  if (NZCVExitCensusEnabled) {
+    NZCVCensusSlots.clear();
+    FEXCore::CPU::NZCVExitCensus::Analyse(IRView, Entry, &PPC64JITCore::CensusReadWordTrampoline, this, &PPC64JITCore::CensusSlotSink, this);
+  }
+
   // ------------------------------------------------------------------
   // Staging capacity guard
   // ------------------------------------------------------------------
@@ -5117,9 +5200,13 @@ CPUBackend::CompiledCode PPC64JITCore::CompileCode(
   // kMaxHostBytesPerIROp / kMaxRIPEntryBytesPerIROp now live at namespace scope
   // (just above the op-size profiler) so the profiler can print the budget it
   // is checking. Values are unchanged.
+  //
+  // The census adds up to 1 + 3*(1 + kMaxClassSlotsPerExit) instructions to an
+  // ExitFunction, so its own allowance is added to the per-op claim when it is
+  // on rather than eating the existing margin.
+  const size_t CensusBytesPerIROp = NZCVExitCensusEnabled ? 64 : 0;
   const size_t BlockHeadroom = std::max<size_t>(
-    1u << 20,
-    IRView->GetSSACount() * (kMaxHostBytesPerIROp + kMaxRIPEntryBytesPerIROp) + sizeof(CPUBackend::JITCodeTail));
+    1u << 20, IRView->GetSSACount() * (kMaxHostBytesPerIROp + kMaxRIPEntryBytesPerIROp + CensusBytesPerIROp) + sizeof(CPUBackend::JITCodeTail));
 
   // Emit into this thread's staging buffer. BlockBufferOffset is 0 for the
   // whole emission window: relocations record block-relative offsets and

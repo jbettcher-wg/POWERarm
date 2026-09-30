@@ -714,6 +714,15 @@ uint64_t ComputeCodeCacheConfigId() {
     // though cached blocks are always stored unlinked.
     HASH_OPT(BLOCKLINKING);
 
+    // The NZCV exit-site census appends a counter bump to every ExitFunction
+    // (JIT/PPC64LE/NZCVExitCensus.h). It changes no codegen decision, so cached
+    // blocks stay correct either way -- but a census run that loaded blocks
+    // compiled without the bump would silently under-count exactly the sites it
+    // is measuring, and a run with the census off would go on paying for bumps
+    // it does not read. Hashing it keeps the two populations in separate
+    // namespaces, so neither can happen by accident.
+    HASH_OPT(NZCVEXITCENSUS);
+
     // Detected host capabilities are hashed above, next to the build identity.
 #undef HASH_OPT
 #undef HASH_STR_OPT

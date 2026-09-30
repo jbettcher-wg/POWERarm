@@ -501,6 +501,14 @@ bool IROpReadsNZCV(IROp_Header* IROp) {
   return (ClassifyFast(IROp).Read() & FLAG_NZCV) != 0;
 }
 
+unsigned IROpNZCVRead(IROp_Header* IROp) {
+  return ClassifyFast(IROp).Read() & FLAG_NZCV;
+}
+
+unsigned IROpNZCVWrite(IROp_Header* IROp) {
+  return ClassifyFast(IROp).Write() & FLAG_NZCV;
+}
+
 // General purpose dead code elimination. Returns whether flag handling should
 // be skipped (because it was removed or could not possibly affect flags).
 bool DeadFlagCalculationEliminination::EliminateDeadCode(IREmitter* IREmit, Ref CodeNode, IROp_Header* IROp) {
