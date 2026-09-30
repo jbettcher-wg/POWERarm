@@ -1901,12 +1901,28 @@ uint64_t PPC64JITCore::ExitFunctionLinkWithRecord(FEXCore::Core::CpuStateFrame* 
     };
     const bool CallerReachable = !ShadowCall || Indirect || CallInPlace || PPC64BranchDisplacementInRange(LinkedEntryDelta);
 
-    const JITCodeHeader* TargetHeader = CodeBuffer->FindBlockHeader(HostCode);
-    const bool TargetReadsFlags = TargetHeader &&
-      reinterpret_cast<const CPUBackend::JITCodeTail*>(
-        reinterpret_cast<const uint8_t*>(TargetHeader) + TargetHeader->OffsetToBlockTail)->EntryNZCVLiveIn;
-
-    if (!TargetReadsFlags && PPC64BranchDisplacementInRange(DirectDelta) && CallerReachable) {
+    // A target that reads NZCV live-in (JITCodeTail::EntryNZCVLiveIn) used to be
+    // refused a direct link and given the thunk instead. That protected nothing,
+    // and it is gone. The two arms below patch the SAME words at the SAME sites
+    // and differ only in where the branch goes; the thunk's extra leg is
+    // `bcl 20,31,$+4; mflr TMP1; ld TMP2,HostCode(TMP1); mtctr TMP2; bctr`
+    // (CompileCode's thunk layout), and none of those five instructions writes
+    // CR0 or XER -- bcl writes LR, mflr and ld write a GPR, mtctr writes CTR.
+    // Both arms then enter the same `HostCode`, past the target's
+    // FillStaticRegs. So a direct link delivers exactly the CR0/XER the thunk
+    // link does while touching strictly LESS machine state: the thunk also
+    // clobbers TMP1, TMP2 and LR, which is why no target can be satisfied by the
+    // thunk and broken by the direct branch. Checked on nzcvlate, whose two
+    // flag-reading units are reached by paired-call exits: the refusal was the
+    // only reason those sites took the thunk, and with it gone they link direct
+    // and still read the caller's Z correctly -- including nzcv_early, whose
+    // FIRST guest instruction is the `b.ne` that reads it.
+    //
+    // (NZCV-LIVENESS.md 11 finding 2: 286 of cc1's 110,706 units paid a thunk
+    // link for this. EntryNZCVLiveIn is still computed and still written to the
+    // tail -- see CompileCode -- because the NZCV-exit-deadness work needs it;
+    // it just has no reader here any more.)
+    if (PPC64BranchDisplacementInRange(DirectDelta) && CallerReachable) {
       // Registration BEFORE patch, under the same locks: once the patched word
       // is observable, the delinker that undoes it is already findable by
       // Erase. The reverse order would leave a patched branch with no
