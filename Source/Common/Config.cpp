@@ -13,7 +13,9 @@
 #include <FEXCore/Utils/WildcardMatcher.h>
 #include <FEXHeaderUtils/Filesystem.h>
 #include <FEXHeaderUtils/SymlinkChecks.h>
+#include <cstdio>
 #include <cstring>
+#include <unistd.h>
 #include <fmt/format.h>
 #include <functional>
 #ifndef _WIN32
@@ -40,7 +42,22 @@ namespace JSON {
     const json_t* json = FEX::JSON::CreateJSON(Data, Pool);
 
     if (!json) {
-      ERROR_AND_DIE_FMT("Failed to parse JSON from file '{}' - invalid JSON format", Config);
+      // A config file that does not parse used to reach ERROR_AND_DIE_FMT, which
+      // routes to FEXCore::Assert::ForcedAssert: SIGTRAP and a core dump, named
+      // after whatever guest happened to be starting. With binfmt_misc
+      // registered that is EVERY aarch64 launch on the machine dying that way,
+      // with nothing anywhere saying which file is wrong -- one stray character
+      // in this file and the only evidence is `core.cat`.
+      //
+      // Deliberately not "warn and carry on with defaults": a file that does not
+      // parse is a file whose RootFS line is not being applied either, and
+      // silently running a guest against the wrong rootfs is the OTHER failure
+      // this same file has already produced (a trailing comma, which parsed as
+      // nothing and dropped RootFS without a word).
+      fextl::fmt::print(stderr, "POWERarm: config file '{}' is not valid JSON, so none of it is being applied.\n", Config);
+      fextl::fmt::print(stderr, "          Fix the file or move it aside; POWERarm will not start until it parses.\n");
+      fflush(stderr);
+      _exit(1);
     }
 
     const json_t* ConfigList = json_getProperty(json, "Config");
