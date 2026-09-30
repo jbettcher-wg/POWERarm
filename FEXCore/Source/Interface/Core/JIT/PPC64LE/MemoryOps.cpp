@@ -611,7 +611,12 @@ struct MemOffsetOperand {
 // Scratch contract: writes TMP3 only, and only when the offset needs extension,
 // scaling, or a wide-constant materialization. Matches ComputeAddress's old
 // contract so callers' TMP assumptions are unchanged.
-static MemAddrForm MakeAddrForm(PPC64EmitterBase& E, GPR Base, const MemOffsetOperand& Off) {
+//
+// ISA30 selects extswsli for a scaled SXTW offset; everything else here is base
+// ISA. The A64 frontend's register-offset loads and stores (`ldr w0, [x1, w2,
+// sxtw #2]` and friends) are what feed the UXTW/SXTW arms -- before them only
+// x86 reached this function, and x86 only ever asks for SXTX.
+static MemAddrForm MakeAddrForm(PPC64EmitterBase& E, GPR Base, const MemOffsetOperand& Off, bool ISA30) {
   MemAddrForm A {Base, Base, 0, false};
   if (!Off.Valid) {
     return A;
@@ -630,15 +635,34 @@ static MemAddrForm MakeAddrForm(PPC64EmitterBase& E, GPR Base, const MemOffsetOp
     return A;
   }
   GPR OffReg = Off.Reg;
+  const uint32_t Shift = Off.Scale > 1 ? static_cast<uint32_t>(__builtin_ctz(Off.Scale)) : 0;
   if (Off.Type == IR::MemOffsetType::UXTW) {
-    E.rldicl(TMP3, OffReg, 0, 32);
-    OffReg = TMP3;
-  } else if (Off.Type == IR::MemOffsetType::SXTW) {
-    E.extsw(TMP3, OffReg);
-    OffReg = TMP3;
+    // rldic RA,RS,SH,MB is ROTL64(RS,SH) & MASK(MB, 63-SH). Taking MB = 32-SH
+    // keeps exactly the rotated low word, i.e. RA = (uint32_t)RS << SH -- the
+    // zero-extend AND the scale in one base-ISA instruction. SH <= 3 here, so
+    // MB is always in range. At SH = 0 it degenerates to the rldicl this
+    // replaces.
+    E.rldic(TMP3, OffReg, Shift, 32 - Shift);
+    A.Index = TMP3;
+    A.HasIndex = true;
+    return A;
   }
-  if (Off.Scale > 1) {
-    E.sldi(TMP3, OffReg, __builtin_ctz(Off.Scale));
+  if (Off.Type == IR::MemOffsetType::SXTW) {
+    if (Shift == 0) {
+      E.extsw(TMP3, OffReg);
+    } else if (ISA30) {
+      E.extswsli(TMP3, OffReg, Shift);
+    } else {
+      E.extsw(TMP3, OffReg);
+      E.sldi(TMP3, TMP3, Shift);
+    }
+    A.Index = TMP3;
+    A.HasIndex = true;
+    return A;
+  }
+  // SXTX / UXTX: the index is the whole 64-bit register, scaled if asked.
+  if (Shift) {
+    E.sldi(TMP3, OffReg, Shift);
     OffReg = TMP3;
   }
   A.Index = OffReg;
@@ -937,7 +961,7 @@ GPR PPC64JITCore::ComputeAddress(GPR Base, IR::OrderedNodeWrapper Offset,
   const bool OffConst = OffValid && IsInlineConstant(Offset, &OffC);
   const MemOffsetOperand Off {OffValid, OffConst, OffC, (OffValid && !OffConst) ? GetReg(Offset) : r0,
                               OffsetType, OffsetScale};
-  return MaterializeAddr(*this, MakeAddrForm(*this, Base, Off));
+  return MaterializeAddr(*this, MakeAddrForm(*this, Base, Off, CTX->HostFeatures.SupportsISA30));
 }
 
 DEF_OP(LoadMem) {
@@ -962,7 +986,7 @@ DEF_OP(LoadMem) {
   const bool OffConst = OffValid && IsInlineConstant(Op->Offset, &OffC);
   const MemOffsetOperand Off {OffValid, OffConst, OffC, (OffValid && !OffConst) ? GetReg(Op->Offset) : r0,
                               Op->OffsetType, Op->OffsetScale};
-  const MemAddrForm EAF = MakeAddrForm(*this, Addr, Off);
+  const MemAddrForm EAF = MakeAddrForm(*this, Addr, Off, CTX->HostFeatures.SupportsISA30);
 
   if (Op->Class == IR::RegClass::FPR) {
     // Load-and-splat fusion: CompileCode's pre-pass marked this node iff it
@@ -1062,7 +1086,7 @@ DEF_OP(StoreMem) {
   const bool OffConst = OffValid && IsInlineConstant(Op->Offset, &OffC);
   const MemOffsetOperand Off {OffValid, OffConst, OffC, (OffValid && !OffConst) ? GetReg(Op->Offset) : r0,
                               Op->OffsetType, Op->OffsetScale};
-  const MemAddrForm EAF = MakeAddrForm(*this, Addr, Off);
+  const MemAddrForm EAF = MakeAddrForm(*this, Addr, Off, CTX->HostFeatures.SupportsISA30);
 
   // Dispatch on the explicit RegisterClass field — IsFPR(Op->Value) reads the
   // *node's* class which can disagree with the store's class (e.g. an FPR-class
@@ -1185,7 +1209,7 @@ DEF_OP(LoadMemTSO) {
   const bool OffConst = OffValid && IsInlineConstant(Op->Offset, &OffC);
   const MemOffsetOperand Off {OffValid, OffConst, OffC, (OffValid && !OffConst) ? GetReg(Op->Offset) : r0,
                               Op->OffsetType, Op->OffsetScale};
-  const MemAddrForm EAF = MakeAddrForm(*this, Addr, Off);
+  const MemAddrForm EAF = MakeAddrForm(*this, Addr, Off, CTX->HostFeatures.SupportsISA30);
 
   // Acquire barrier: `lwsync` AFTER the load.
   //
@@ -1298,7 +1322,7 @@ DEF_OP(StoreMemTSO) {
   const bool OffConst = OffValid && IsInlineConstant(Op->Offset, &OffC);
   const MemOffsetOperand Off {OffValid, OffConst, OffC, (OffValid && !OffConst) ? GetReg(Op->Offset) : r0,
                               Op->OffsetType, Op->OffsetScale};
-  const MemAddrForm EAF = MakeAddrForm(*this, Addr, Off);
+  const MemAddrForm EAF = MakeAddrForm(*this, Addr, Off, CTX->HostFeatures.SupportsISA30);
 
   // ---------------------------------------------------------------------
   // Leading-barrier elision (FEX_TSOPAIRELIDE=0 kill switch; prepass in

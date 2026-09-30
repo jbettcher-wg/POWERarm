@@ -519,6 +519,20 @@ public:
   // extsw RA, RS (extend word sign, XO 986)
   void extsw(GPR ra, GPR rs) { EmitX(31, rs.idx, ra.idx, 0, 986, 0); }
 
+  // extswsli RA, RS, SH (ISA 3.0, XS-form: opcode 31, XO 445 at bits 21:26,
+  // SH split as SH(0:4) at bits 11:15 and SH(5) at bit 1) -- sign-extend the
+  // low word of RS to 64 bits and shift it left by SH, in one instruction.
+  // That is AArch64's `sxtw #n` extend-and-scale, which is how an int array
+  // index reaches an address. POWER9 and later only -- gate on
+  // HostFeatures.SupportsISA30.
+  // Verified against llvm-mc -triple=powerpc64le: extswsli 3,4,2 = 0x7c8316f4,
+  // extswsli 3,4,31 = 0x7c83fef4, extswsli 5,6,0 = 0x7cc506f4,
+  // extswsli 3,4,32 = 0x7c8306f6 (the SH(5) bit), extswsli 3,4,63 = 0x7c83fef6.
+  void extswsli(GPR ra, GPR rs, uint32_t sh) {
+    assert(sh < 64 && "extswsli SH is 6 bits");
+    Emit32((31u << 26) | (rs.idx << 21) | (ra.idx << 16) | ((sh & 31u) << 11) | (445u << 2) | ((sh >> 5) << 1));
+  }
+
   // Record forms of the sign-extends (Rc=1). ISA: "extsb.", "extsh.", "extsw.".
   // CR0 is set exactly as by a `cmpdi RA, 0` on the 64-bit sign-extended
   // result — LT/GT/EQ from the signed comparison of the full doubleword

@@ -424,9 +424,11 @@ private:
   // One load or store of Size bytes at Address, with the A64 opc decode already done.
   // Offset, when given, is an InlineConstant byte offset added to Address by
   // the memory op itself (a D-form displacement on the host).
-  void LoadStoreSingle(bool IsLoad, OpSize Size, bool SignExtend, bool Is64Dest, uint32_t Rt, Ref Address, Ref Offset = nullptr);
+  void LoadStoreSingle(bool IsLoad, OpSize Size, bool SignExtend, bool Is64Dest, uint32_t Rt, Ref Address, Ref Offset = nullptr,
+                       IR::MemOffsetType OffsetType = IR::MemOffsetType::SXTX, uint8_t OffsetScale = 1);
   // One SIMD&FP register load or store of Size bytes at Address.
-  void LoadStoreV(bool IsLoad, OpSize Size, uint32_t Rt, Ref Address);
+  void LoadStoreV(bool IsLoad, OpSize Size, uint32_t Rt, Ref Address, Ref Offset = nullptr,
+                  IR::MemOffsetType OffsetType = IR::MemOffsetType::SXTX, uint8_t OffsetScale = 1);
 
   // Advanced SIMD shared bodies (TranslateSIMD.cpp).
   enum class ThreeSameOp { Add, Sub, CmEq, CmGt, CmGe, CmHs, CmHi, CmTst, UMax, UMin, SMax, SMin };

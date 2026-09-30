@@ -26,13 +26,26 @@ namespace {
     }
     return static_cast<int>(Size);
   }
+  // See ExtendOffsetType in TranslateLoadStore.cpp -- the same four `option`
+  // values, kept local because the two files share no header.
+  IR::MemOffsetType FPSIMDExtendOffsetType(uint32_t Option) {
+    switch (Option) {
+    case 0b010: return IR::MemOffsetType::UXTW;
+    case 0b110: return IR::MemOffsetType::SXTW;
+    default: return IR::MemOffsetType::SXTX;
+    }
+  }
 } // namespace
 
-void IRBuilder::LoadStoreV(bool IsLoad, OpSize Size, uint32_t Rt, Ref Address) {
+void IRBuilder::LoadStoreV(bool IsLoad, OpSize Size, uint32_t Rt, Ref Address, Ref Offset, IR::MemOffsetType OffsetType,
+                           uint8_t OffsetScale) {
+  if (!Offset) {
+    Offset = Invalid();
+  }
   if (IsLoad) {
-    StoreV(Rt, _LoadMem(RegClass::FPR, Size, Address, Invalid(), OpSize::i8Bit, MemOffsetType::SXTX, 1));
+    StoreV(Rt, _LoadMem(RegClass::FPR, Size, Address, Offset, OpSize::i8Bit, OffsetType, OffsetScale));
   } else {
-    _StoreMem(RegClass::FPR, Size, LoadV(Rt), Address, Invalid(), OpSize::i8Bit, MemOffsetType::SXTX, 1);
+    _StoreMem(RegClass::FPR, Size, LoadV(Rt), Address, Offset, OpSize::i8Bit, OffsetType, OffsetScale);
   }
 }
 
@@ -105,9 +118,19 @@ bool IRBuilder::STR_LDR_reg_fpsimd(uint32_t Word) {
   if (Scale < 0 || (Option & 0b010) == 0) {
     return false;
   }
+  // Same as the GPR form (TranslateLoadStore.cpp LoadStoreRegOffset): the
+  // extend and the scale ride on the memory op. The vector load/store helpers
+  // want a single address register, so this one does not save the add -- it
+  // saves the separate extend-then-shift pair.
+  const uint32_t Rm = Bits(Word, 20, 16);
   Ref Base = LoadXSP(Bits(Word, 9, 5));
-  Ref Offset = ExtendReg(LoadX(Bits(Word, 20, 16)), Option, Bit(Word, 12) ? Scale : 0);
-  LoadStoreV(Bit(Word, 22), IR::SizeToOpSize(1U << Scale), Bits(Word, 4, 0), _Add(OpSize::i64Bit, Base, Offset));
+  const auto Size = IR::SizeToOpSize(1U << Scale);
+  if (Rm == 31) {
+    LoadStoreV(Bit(Word, 22), Size, Bits(Word, 4, 0), Base);
+    return true;
+  }
+  LoadStoreV(Bit(Word, 22), Size, Bits(Word, 4, 0), Base, LoadX(Rm), FPSIMDExtendOffsetType(Option),
+             Bit(Word, 12) ? static_cast<uint8_t>(1U << Scale) : 1);
   return true;
 }
 

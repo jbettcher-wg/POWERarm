@@ -36,18 +36,31 @@ namespace {
     }
     return {MemOp::Load, true, (Opc & 1) == 0};
   }
+
+  // The register-offset forms' `option` field, restricted to the four values
+  // the encoding allows there (bit 1 set): 010 UXTW, 011 LSL/UXTX, 110 SXTW,
+  // 111 SXTX. UXTX and SXTX both mean "the whole 64-bit register", which is
+  // MemOffsetType::SXTX -- no extension at all.
+  IR::MemOffsetType ExtendOffsetType(uint32_t Option) {
+    switch (Option) {
+    case 0b010: return IR::MemOffsetType::UXTW;
+    case 0b110: return IR::MemOffsetType::SXTW;
+    default: return IR::MemOffsetType::SXTX;
+    }
+  }
 } // namespace
 
-void IRBuilder::LoadStoreSingle(bool IsLoad, OpSize Size, bool SignExtend, bool Is64Dest, uint32_t Rt, Ref Address, Ref Offset) {
+void IRBuilder::LoadStoreSingle(bool IsLoad, OpSize Size, bool SignExtend, bool Is64Dest, uint32_t Rt, Ref Address, Ref Offset,
+                                IR::MemOffsetType OffsetType, uint8_t OffsetScale) {
   if (!Offset) {
     Offset = Invalid();
   }
   if (!IsLoad) {
-    _StoreMem(RegClass::GPR, Size, LoadX(Rt), Address, Offset, OpSize::i8Bit, MemOffsetType::SXTX, 1);
+    _StoreMem(RegClass::GPR, Size, LoadX(Rt), Address, Offset, OpSize::i8Bit, OffsetType, OffsetScale);
     return;
   }
 
-  Ref Value = _LoadMem(RegClass::GPR, Size, Address, Offset, OpSize::i8Bit, MemOffsetType::SXTX, 1);
+  Ref Value = _LoadMem(RegClass::GPR, Size, Address, Offset, OpSize::i8Bit, OffsetType, OffsetScale);
   if (SignExtend && Size != OpSize::i64Bit) {
     Value = _Sbfe(OpSize::i64Bit, IR::OpSizeAsBits(Size), 0, Value);
   }
@@ -185,10 +198,22 @@ bool IRBuilder::LoadStoreRegOffset(uint32_t Word) {
     return true;
   }
 
+  // The extend, the scale and the add all belong to the memory instruction:
+  // POWER's X-form takes base + index directly, and MakeAddrForm folds the
+  // UXTW/SXTW extend and the scale into one instruction (rldic, or extswsli on
+  // ISA 3.0). Handing the backend a pre-computed address instead cost an
+  // explicit add and wasted the X-form's index operand on r0.
+  const uint32_t Rm = Bits(Word, 20, 16);
   Ref Base = LoadXSP(Bits(Word, 9, 5));
-  Ref Offset = ExtendReg(LoadX(Bits(Word, 20, 16)), Option, Scaled ? Size : 0);
-  Ref Address = _Add(OpSize::i64Bit, Base, Offset);
-  LoadStoreSingle(Decode.Op == MemOp::Load, IR::SizeToOpSize(1U << Size), Decode.SignExtend, Decode.Is64Dest, Bits(Word, 4, 0), Address);
+  const auto MemSize = IR::SizeToOpSize(1U << Size);
+  const bool IsLoad = Decode.Op == MemOp::Load;
+  if (Rm == 31) {
+    // Every extend of XZR is zero, so this is the bare base address.
+    LoadStoreSingle(IsLoad, MemSize, Decode.SignExtend, Decode.Is64Dest, Bits(Word, 4, 0), Base);
+    return true;
+  }
+  LoadStoreSingle(IsLoad, MemSize, Decode.SignExtend, Decode.Is64Dest, Bits(Word, 4, 0), Base, LoadX(Rm),
+                  ExtendOffsetType(Option), Scaled ? static_cast<uint8_t>(1U << Size) : 1);
   return true;
 }
 
