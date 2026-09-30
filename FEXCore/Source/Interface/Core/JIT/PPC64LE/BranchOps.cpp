@@ -387,6 +387,14 @@ void PPC64JITCore::EmitA64PairedCall(const IR::IROp_ExitFunction* Op, bool Const
 
 DEF_OP(ExitFunction) {
   auto Op = IROp->C<IR::IROp_ExitFunction>();
+  // NZCV exit-site census (POWERARM_NZCVEXITCENSUS, default off). First thing
+  // in the handler, so it runs on every arrival at this site whatever shape the
+  // exit takes -- linked `b`, thunk, L1 probe, link-first, paired call. With
+  // the option off this is one already-loaded boolean test and not one emitted
+  // byte changes. See JITClass.h::NZCVExitCensusEnabled.
+  if (NZCVExitCensusEnabled) {
+    EmitNZCVCensusBump(IR->GetID(Node).Value);
+  }
   // Snapshot the unit's r0-dirty state BEFORE this handler emits anything:
   // the shadow-RET fast path below emits its own `li r0,0`, which would
   // otherwise make the hoist and hit leg below think the unit was dirty.
