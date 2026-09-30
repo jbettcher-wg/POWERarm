@@ -380,21 +380,22 @@ fi
 # NZCV exit-deadness (POWERARM_NZCVEXITDEAD; NZCV-LIVENESS.md 7, 9 stage 2).
 # ---------------------------------------------------------------------------
 
-# 1. The golden itself. exitdead is self-checking AND differential, which means
-#    a golden taken from hardware that was failing would compare equal to a
-#    POWERarm run that was failing the same way, and the suite would report
-#    PASS. One such golden has shipped here before. So require the golden to be
-#    all PASS, independently of the comparison.
-if [ -f exitdead.golden ]; then
-  ed_pass=$(grep -c '^PASS' exitdead.golden)
-  ed_fail=$(grep -c '^FAIL' exitdead.golden)
-  ed_other=$(grep -vc '^PASS' exitdead.golden)
-  if [ "$ed_fail" = 0 ] && [ "$ed_pass" -gt 0 ] && [ "$ed_other" = 0 ] && [ "$(cat exitdead.rc)" = 0 ]; then
-    report PASS exitdead_golden "$ed_pass hardware checks, none failing"
+# 1. The goldens themselves. exitdead and exitdeadsmc are self-checking AND
+#    differential, which means a golden taken from hardware that was failing
+#    would compare equal to a POWERarm run that was failing the same way, and
+#    the suite would report PASS. One such golden has shipped here before. So
+#    require each golden to be all PASS, independently of the comparison.
+for ed_t in exitdead exitdeadsmc; do
+  [ -f "$ed_t.golden" ] || continue
+  ed_pass=$(grep -c '^PASS' "$ed_t.golden")
+  ed_fail=$(grep -c '^FAIL' "$ed_t.golden")
+  ed_other=$(grep -vc '^PASS' "$ed_t.golden")
+  if [ "$ed_fail" = 0 ] && [ "$ed_pass" -gt 0 ] && [ "$ed_other" = 0 ] && [ "$(cat "$ed_t.rc")" = 0 ]; then
+    report PASS "${ed_t}_golden" "$ed_pass hardware checks, none failing"
   else
-    report FAIL exitdead_golden "the golden is not all-PASS: pass=$ed_pass fail=$ed_fail other=$ed_other rc=$(cat exitdead.rc); see $out/exitdead.golden"
+    report FAIL "${ed_t}_golden" "the golden is not all-PASS: pass=$ed_pass fail=$ed_fail other=$ed_other rc=$(cat "$ed_t.rc"); see $out/$ed_t.golden"
   fi
-fi
+done
 
 # 2. The policy actually fires. With POWERARM_NZCVEXITDEAD=on the guest-code
 #    peek must prove deadness at some constant exit of some unit of a program
@@ -439,6 +440,25 @@ if [ -f hello.golden ]; then
   else
     report FAIL nzcv_table_check "[$tc]; see $out/nzcv_tablecheck.err"
   fi
+fi
+
+# 4. The tripwire must be silent, on every test in the suite. Each test's stderr
+#    is kept beside its stdout, and a contradiction line there means the peek's
+#    scan and the frontend's translation disagreed about one fixed sequence of
+#    guest words -- a table or walk bug, which is what 7.7 exists to catch.
+#    stdout comparison alone cannot see this: under `on` a tripwire firing
+#    changes nothing a test prints, and under `strict` it kills the run, which
+#    the comparison reports as an exit-status difference and not as what it is.
+#
+#    exitdeadsmc is the test that used to print here: it rewrites the guest code
+#    the verdict was taken from, the way a JIT does, and the detector that kept
+#    a process-lifetime record keyed by address reported every such rewrite as a
+#    contradiction. See its header and NZCV-LIVENESS.md 7.7.
+ed_trip=$(grep -l 'NZCV exit-deadness contradiction' ./*.stderr 2> /dev/null | sed 's|^\./||; s|\.stderr$||' | tr '\n' ' ')
+if [ -z "$ed_trip" ]; then
+  report PASS nzcv_exit_dead_tripwire "no contradiction reported by any test"
+else
+  report FAIL nzcv_exit_dead_tripwire "tripwire fired in: ${ed_trip% }; see $out/<test>.stderr"
 fi
 
 # The fatal host-fault report survives a fault of its own. hostfault makes

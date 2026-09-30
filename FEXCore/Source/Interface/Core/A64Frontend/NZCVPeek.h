@@ -84,10 +84,12 @@ inline constexpr uint32_t kPolicyMaxInsnsPerPath = 16;
 // witness hull on the thread's decoder. No-op when M == Off.
 void Apply(FEXCore::Core::InternalThreadState* Thread, FEXCore::IR::IREmitter* IREmit, uint64_t Entry, Mode M);
 
-// §7.7, the tripwire, moved from the linker to the compiler -- see the long
-// comment at the definition. Called once per compiled unit with the verdict the
-// frontend's own translation reached about that unit's entry. Counts
-// contradictions always; aborts under Strict.
+// §7.7, the tripwire -- see the long comment at the definition. Called once per
+// compiled unit with the verdict the frontend's own translation reached about
+// that unit's entry; where that verdict is "NZCV is live in", it runs the
+// peek's scan on the same address immediately, so the two answers are about the
+// same guest words at the same instant. Counts contradictions always; aborts
+// under Strict.
 void NoteUnitCompiled(FEXCore::Core::InternalThreadState* Thread, uint64_t Entry, bool EntryNZCVLiveIn, Mode M);
 
 // Printed with the link outcomes.

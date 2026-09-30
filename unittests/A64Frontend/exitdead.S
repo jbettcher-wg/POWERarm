@@ -24,6 +24,19 @@
 //     exactly what the writer computes, whatever the incoming flags were.
 //     Under `canary` those incoming flags are wrong on purpose, so a target
 //     that reads them before writing shows up here.
+//   * a CONDITIONAL BRANCH between the target and the first writer. Both legs
+//     are still live there, so both must be walked: each shape puts the reader
+//     on one leg and a writer on the other, and checks both settings of the
+//     branch, so neither "only the fall-through" nor "only the taken leg" can
+//     pass. One case has both legs writing, which the scan MAY call dead and
+//     must, or a scan made conservative by refusing every twoway would pass
+//     the rest and lose the whole value of following them.
+//   * the reader in the target's very FIRST WORD, through every exit kind --
+//     the shape §7.7 reported from Firefox. Each of these targets carries a
+//     full writer BEHIND its reader on every path, which is what gives it
+//     teeth: a target that reaches a `br` with no writer in front of it ends
+//     the scan UNRESOLVED whatever the table says about its words, so a table
+//     that stopped recognising CSEL would still be conservative there.
 //   * the reader at DEPTH, behind 8 / 16 / 17 / 33 neutral instructions, and
 //     behind more than the scan's per-path budget (the budget case must come
 //     out conservative, i.e. the flags still arrive).
@@ -266,6 +279,164 @@
         GO_BL   t_far_wr, 0x9
         CHECK   far-wr-cmp, 0x6
 
+
+        // ==================================================================
+        // 7. A CONDITIONAL BRANCH between the target and the first writer.
+        //
+        // The scan reaches a CBZ/CBNZ/TBZ/TBNZ before it has seen a writer, so
+        // both legs are still live and both have to be walked. A walk that
+        // follows only one leg finds that leg's writer, calls the target dead,
+        // and the flags the exit set never arrive on the other leg. X22
+        // selects the leg, and both settings of it are checked for every
+        // shape, so neither "only the fall-through" nor "only the taken leg"
+        // can pass.
+        // ==================================================================
+        mov     x22, #0
+        GO_B    t_tw_cbz_taken, 0x9
+        CHECK   tw-cbz-taken-reader, 0x9
+        mov     x22, #1
+        GO_B    t_tw_cbz_taken, 0x9
+        CHECK   tw-cbz-taken-writer, 0x6
+        mov     x22, #1
+        GO_B    t_tw_cbz_fall, 0x9
+        CHECK   tw-cbz-fall-reader, 0x9
+        mov     x22, #0
+        GO_B    t_tw_cbz_fall, 0x9
+        CHECK   tw-cbz-fall-writer, 0x6
+        mov     x22, #0
+        GO_B    t_tw_tbz_taken, 0x9
+        CHECK   tw-tbz-taken-reader, 0x9
+        mov     x22, #1
+        GO_B    t_tw_tbz_taken, 0x9
+        CHECK   tw-tbz-taken-writer, 0x6
+        mov     x22, #1
+        GO_B    t_tw_tbnz_taken, 0x9
+        CHECK   tw-tbnz-taken-reader, 0x9
+        mov     x22, #0
+        GO_B    t_tw_tbnz_taken, 0x9
+        CHECK   tw-tbnz-taken-writer, 0x6
+        mov     x22, #1
+        GO_B    t_tw_cbnz_taken, 0x9
+        CHECK   tw-cbnz-taken-reader, 0x9
+        mov     x22, #0
+        GO_B    t_tw_cbnz_taken, 0x9
+        CHECK   tw-cbnz-taken-writer, 0x6
+        // The taken leg branches BACKWARD, to a reader in front of the target.
+        mov     x22, #0
+        GO_B    t_tw_back, 0x9
+        CHECK   tw-back-reader, 0x9
+        mov     x22, #1
+        GO_B    t_tw_back, 0x9
+        CHECK   tw-back-writer, 0x6
+        // The legs converge: the writer is on one of them only, so the reader
+        // at the join sees the incoming flags on the other.
+        mov     x22, #0
+        GO_B    t_tw_join, 0x9
+        CHECK   tw-join-reader, 0x9
+        mov     x22, #1
+        GO_B    t_tw_join, 0x9
+        CHECK   tw-join-writer, 0x6
+        // Both legs write. This one the scan MAY call dead, and must: without
+        // it a scan made conservative by refusing every twoway would pass
+        // every case above and lose the whole value of following them.
+        mov     x22, #0
+        GO_B    t_tw_both_wr, 0x9
+        CHECK   tw-both-writers-taken, 0x8
+        mov     x22, #1
+        GO_B    t_tw_both_wr, 0x9
+        CHECK   tw-both-writers-fall, 0x6
+        // The same twoway target through the other exit shapes.
+        mov     x22, #0
+        GO_BL   t_tw_cbz_taken, 0x9
+        CHECK   tw-cbz-bl, 0x9
+        mov     x22, #0
+        GO_BCOND mi, t_tw_cbz_taken, 0x9
+        CHECK   tw-cbz-bcond, 0x9
+
+        // ==================================================================
+        // 8. A target whose FIRST WORD is the reader, through every exit kind.
+        //
+        // The contradicting targets the tripwire reported had a CSEL or a CSET
+        // at index 0 -- a reader in the very first word. Section 1 reaches its
+        // reader-first target (t_mrs) through every exit shape but reaches the
+        // CSEL family only through B, and always behind two MOVs. These are
+        // the reader in word 0. X3/X4 are the CSEL inputs.
+        // ==================================================================
+        .macro RD0 setup, tgt, v
+        mov     x3, #11
+        mov     x4, #22
+        \setup  \tgt, \v
+        .endm
+
+        RD0     GO_B, t_csel0, 0x6
+        CHECK   csel0-b-zc, 11
+        RD0     GO_B, t_csel0, 0x9
+        CHECK   csel0-b-nv, 22
+        RD0     GO_BL, t_csel0, 0x6
+        CHECK   csel0-bl-zc, 11
+        RD0     GO_BL, t_csel0, 0x9
+        CHECK   csel0-bl-nv, 22
+        RD0     GO_CBZ, t_csel0, 0x6
+        CHECK   csel0-cbz-zc, 11
+        RD0     GO_CBZ, t_csel0, 0x9
+        CHECK   csel0-cbz-nv, 22
+        RD0     GO_TBZ, t_csel0, 0x6
+        CHECK   csel0-tbz-zc, 11
+        RD0     GO_TBZ, t_csel0, 0x9
+        CHECK   csel0-tbz-nv, 22
+        mov     x3, #11
+        mov     x4, #22
+        GO_BCOND eq, t_csel0, 0x6
+        CHECK   csel0-bcond-zc, 11
+        mov     x3, #11
+        mov     x4, #22
+        GO_BCOND mi, t_csel0, 0x9
+        CHECK   csel0-bcond-nv, 22
+
+        RD0     GO_B, t_cset0, 0x6
+        CHECK   cset0-b-zc, 1
+        RD0     GO_B, t_cset0, 0x9
+        CHECK   cset0-b-nv, 0
+        RD0     GO_BL, t_cset0, 0x6
+        CHECK   cset0-bl-zc, 1
+        RD0     GO_CBZ, t_cset0, 0x6
+        CHECK   cset0-cbz-zc, 1
+        RD0     GO_TBZ, t_cset0, 0x9
+        CHECK   cset0-tbz-nv, 0
+
+        RD0     GO_B, t_bcond0, 0x6
+        CHECK   bcond0-b-zc, 1
+        RD0     GO_B, t_bcond0, 0x9
+        CHECK   bcond0-b-nv, 0
+        RD0     GO_BL, t_bcond0, 0x9
+        CHECK   bcond0-bl-nv, 0
+        RD0     GO_CBZ, t_bcond0, 0x6
+        CHECK   bcond0-cbz-zc, 1
+        RD0     GO_TBZ, t_bcond0, 0x6
+        CHECK   bcond0-tbz-zc, 1
+
+        RD0     GO_B, t_ccmp0, 0x6
+        CHECK   ccmp0-b-zc, 0x2
+        RD0     GO_B, t_ccmp0, 0x9
+        CHECK   ccmp0-b-nv, 0x0
+        RD0     GO_BL, t_ccmp0, 0x6
+        CHECK   ccmp0-bl-zc, 0x2
+        RD0     GO_CBZ, t_ccmp0, 0x9
+        CHECK   ccmp0-cbz-nv, 0x0
+        RD0     GO_TBZ, t_ccmp0, 0x6
+        CHECK   ccmp0-tbz-zc, 0x2
+
+        RD0     GO_B, t_adc0, 0x6
+        CHECK   adc0-b-zc, 1
+        RD0     GO_B, t_adc0, 0x9
+        CHECK   adc0-b-nv, 0
+        RD0     GO_BL, t_adc0, 0x6
+        CHECK   adc0-bl-zc, 1
+        RD0     GO_CBZ, t_adc0, 0x6
+        CHECK   adc0-cbz-zc, 1
+        RD0     GO_TBZ, t_adc0, 0x9
+        CHECK   adc0-tbz-nv, 0
+
         test_exit
 
 // ======================================================================
@@ -439,6 +610,127 @@ t_viasvc:
         mov     x8, #172
         svc     #0
         RD_NZCV
+        br      x21
+
+
+        // ---- A conditional branch between the target and the first writer.
+        // Each of these is a twoway in the first word of the target, with a
+        // reader on one leg and a writer on the other, so a scan that walks
+        // one leg only is wrong on the other.
+t_tw_cbz_taken:
+        cbz     x22, 1f
+        mov     x3, #1
+        cmp     x3, x3
+        RD_NZCV
+        br      x21
+1:      RD_NZCV
+        br      x21
+
+t_tw_cbz_fall:
+        cbz     x22, 1f
+        RD_NZCV
+        br      x21
+1:      mov     x3, #1
+        cmp     x3, x3
+        RD_NZCV
+        br      x21
+
+t_tw_tbz_taken:
+        tbz     x22, #0, 1f
+        mov     x3, #1
+        cmp     x3, x3
+        RD_NZCV
+        br      x21
+1:      RD_NZCV
+        br      x21
+
+t_tw_tbnz_taken:
+        tbnz    x22, #0, 1f
+        mov     x3, #1
+        cmp     x3, x3
+        RD_NZCV
+        br      x21
+1:      RD_NZCV
+        br      x21
+
+t_tw_cbnz_taken:
+        cbnz    x22, 1f
+        mov     x3, #1
+        cmp     x3, x3
+        RD_NZCV
+        br      x21
+1:      RD_NZCV
+        br      x21
+
+        // Both legs write; the answer is the writer the guest reaches.
+t_tw_both_wr:
+        cbz     x22, 1f
+        mov     x3, #1
+        cmp     x3, x3
+        RD_NZCV
+        br      x21
+1:      mov     x3, #0
+        subs    x4, x3, #1
+        RD_NZCV
+        br      x21
+
+        // The reader is BEHIND the target: the taken leg branches backward.
+t_tw_back_reader:
+        RD_NZCV
+        br      x21
+t_tw_back:
+        cbz     x22, t_tw_back_reader
+        mov     x3, #1
+        cmp     x3, x3
+        RD_NZCV
+        br      x21
+
+        // The legs converge on one reader, with the writer on one leg only.
+t_tw_join:
+        cbz     x22, 1f
+        mov     x3, #1
+        cmp     x3, x3
+1:      RD_NZCV
+        br      x21
+
+        // ---- The reader in the FIRST word of the target.
+        //
+        // Each carries a FULL NZCV WRITER behind its reader, on every path, and
+        // that is what gives these cases teeth. A target that reaches a `br`
+        // with no writer in front of it ends the scan UNRESOLVED whatever the
+        // table says about its words, so a table that stopped recognising CSEL
+        // would still produce a conservative verdict there and the check would
+        // pass while being wrong. With the writer behind it, a missed reader
+        // walks straight on to the writer and the verdict comes out DEAD --
+        // which loses the flags, flips these lines, and trips 7.7.
+t_csel0:
+        csel    x0, x3, x4, eq
+        cmp     x5, x5
+        br      x21
+
+t_cset0:
+        cset    x0, eq
+        cmp     x5, x5
+        br      x21
+
+t_bcond0:
+        b.eq    1f
+        mov     x0, #0
+        cmp     x5, x5
+        br      x21
+1:      mov     x0, #1
+        cmp     x5, x5
+        br      x21
+
+t_ccmp0:
+        ccmp    x3, #1, #0x0, eq
+        RD_NZCV
+        cmp     x5, x5
+        br      x21
+
+t_adc0:
+        adc     x0, xzr, xzr
+        cmp     x5, x5
         br      x21
 
 // ======================================================================

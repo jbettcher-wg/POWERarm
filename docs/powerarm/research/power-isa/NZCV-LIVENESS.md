@@ -410,12 +410,33 @@ test (§9) pin the round-trip case.
 
 ### 7.7 The tripwire
 
-The linker gate stays, made sound (§4.2) and given a meaning: a direct or thunk link from a unit
-with `ExitsAssumeNZCVDead` into a target with `EntryNZCVLiveIn` is a contradiction between the
-scan and the frontend's own translation of the target. It is counted always
-(`LinkOutcomeNZCVContradiction`, printed with the link outcomes), and aborts under
-`POWERARM_NZCVEXITDEAD=strict`. It catches only targets that read within their own unit, so it
-is a detector for table bugs, not a proof; the canary below is the proof.
+The question is whether the scan's word table and walk can disagree with the frontend's own
+translation about one sequence of guest instructions. **The check is therefore local and
+immediate, and holds no state at all:** when the frontend finishes a unit whose `EntryNZCVLiveIn`
+is set, the scan is run on that unit's entry right there, before control returns to the guest, on
+the bytes the decoder has just read. `SCAN_DEAD` from that scan is the contradiction. It is
+counted always and aborts under `POWERARM_NZCVEXITDEAD=strict`. It catches only entries that read
+within their own unit, so it is a detector for table bugs, not a proof; the canary below is the
+proof.
+
+Two earlier shapes of this check were wrong for the same reason, and the reason is worth stating
+because it applies to any cross-unit assumption recorded by guest address. The first put the gate
+on the link (a link from a unit with `ExitsAssumeNZCVDead` into a target with `EntryNZCVLiveIn`);
+the second moved it to compile time but kept the link version's structure -- a process-lifetime,
+address-keyed record of every DEAD verdict, checked against every compiled unit's entry. **A guest
+address does not name a fixed sequence of instructions.** A JIT frees the code at an address and
+emits different code there; so do `dlclose`/`dlopen`, plugin loaders and trampoline patchers. The
+record outlives all of it, so what it eventually reports is a verdict about instructions that no
+longer exist set against a translation of the instructions that replaced them: two correct
+observations of two different programs. On Octane 2.0 under Firefox that is not a corner case, it
+is the *only* thing the record reported, while every architectural check kept passing --
+`unittests/A64Frontend/exitdeadsmc.S` is that failure reduced to twelve lines of guest code.
+
+The immediate check is also a wider net than the record was: it fires at every compiled unit whose
+entry reads NZCV, peeked or not, rather than only where some unit happened to have peeked. What it
+gives up is an address that is peeked but never translated -- an address the guest never executes,
+where no assumption can be observed -- and units served whole from the code cache, which are never
+translated.
 
 ## 8. What it is worth
 

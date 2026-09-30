@@ -22,7 +22,6 @@
 
 #include <atomic>
 #include <cstring>
-#include <mutex>
 
 namespace FEXCore::A64::NZCVPeek {
 
@@ -55,39 +54,48 @@ namespace {
   }
 
   // -------------------------------------------------------------------------
-  // §7.7's tripwire, moved from the linker to the compiler.
+  // §7.7's tripwire: the scan and the frontend, asked about THE SAME BYTES AT
+  // THE SAME MOMENT.
   //
-  // The document put it on the direct/thunk link: a link from a unit with
-  // ExitsAssumeNZCVDead into a target with EntryNZCVLiveIn is a contradiction
-  // between the scan and the frontend's own translation of the target. What
-  // survived contact with the code is the *meaning*, not the site. A link
-  // record is reached by the FIRST traversal only, a linked exit never reaches
-  // it again, call exits under SMCLAZYLINK and every exit under NOLINKFIRST
-  // bypass it, and a shadow-RET arrival never sees it at all -- the same list
-  // of holes §6 gives for putting the policy itself at link time. And a link
-  // only happens when the successor has been compiled AND linking is on, so the
-  // detector would be dark in exactly the configurations (MAXINST=1, linking
-  // interlocked off) where the suite exercises the policy hardest.
+  // The question the tripwire exists to ask is whether the peek's guest-word
+  // table and walk can disagree with the frontend's own translation about one
+  // sequence of guest instructions. The document put the check on the
+  // direct/thunk link -- a link from a unit with ExitsAssumeNZCVDead into a
+  // target with EntryNZCVLiveIn -- and the first implementation here moved it
+  // to compile time but kept the link version's SHAPE: a process-lifetime,
+  // address-keyed record, with the peek's verdict written into it at one
+  // moment and the frontend's verdict compared against it at another.
   //
-  // Compile time has none of those holes. Every DEAD verdict is recorded
-  // against its target here, every compiled unit's entry is checked against the
-  // record, and the two meet whatever the linker does -- including when the
-  // target is never linked, or is reached only through the dispatcher, or is
-  // compiled BEFORE the unit that assumes it. The record is bounded and
-  // direct-mapped: a collision loses a detection, never invents one.
+  // That shape cannot answer the question, because a guest address does not
+  // name a fixed sequence of instructions. A JIT frees the code at an address
+  // and emits different code there; so do dlclose/dlopen, plugin loaders and
+  // trampoline patchers. The record survives all of it, so the pair
+  // it eventually reports is a verdict about instructions that no longer
+  // exist set against a translation of the instructions that replaced them --
+  // two correct observations of two different programs. On Octane 2.0 in
+  // Firefox that is not a corner case: it is what the detector reports, every
+  // time, while every architectural check still passes. (It is also why the
+  // printed words never matched the verdict: whichever side fired last is the
+  // side the words belong to.)
   //
-  // It catches only targets that read NZCV within their own compile unit, so it
-  // is a detector for table bugs, not a proof. The canary is the proof.
+  // So the check is local and immediate instead. The frontend has just
+  // translated a unit and says NZCV is live in at its entry; run the peek's
+  // own scan on that entry NOW, before returning to the guest, while the
+  // bytes the frontend decoded are still the bytes in memory. There is no
+  // record, no key, no collision and no time in which the guest can rewrite
+  // anything. A DEAD verdict from that scan is a disagreement about one fixed
+  // sequence of words, and that is exactly a table-or-walk bug.
+  //
+  // It is also a strictly wider net than the record was. The record could only
+  // fire at an address some unit had already peeked; this fires at EVERY
+  // compiled unit whose entry reads NZCV, peeked or not. What it gives up is
+  // the address that is peeked but never compiled as a unit entry -- which is
+  // the address the guest never executes, where no assumption can be observed
+  // -- and units served from the code cache, which are not translated at all.
+  //
+  // It catches only entries that read NZCV within their own compile unit, so
+  // it is a detector for table bugs, not a proof. The canary is the proof.
   // -------------------------------------------------------------------------
-  constexpr uint32_t kTripwireSlots = 1u << 14;
-
-  struct TripwireEntry {
-    uint64_t Address {};
-    uint8_t Flags {}; // bit0: some unit assumed NZCV dead here. bit1: this unit reads NZCV from entry.
-  };
-
-  std::mutex TripwireMutex;
-  TripwireEntry TripwireTable[kTripwireSlots] {};
   std::atomic<uint64_t> Contradictions {};
 
   // The words at a contradicting target, and how the peek classified each. A
@@ -108,36 +116,6 @@ namespace {
     return Out;
   }
 
-  void TripwireNote(FEXCore::A64::Decoder* Dec, uint64_t Address, uint8_t Bit, Mode M, const char* What) {
-    bool Contradiction = false;
-    {
-      std::lock_guard Guard {TripwireMutex};
-      auto& E = TripwireTable[(Address >> 2) & (kTripwireSlots - 1)];
-      if (E.Address != Address) {
-        E.Address = Address;
-        E.Flags = 0;
-      }
-      E.Flags |= Bit;
-      Contradiction = (E.Flags & 3) == 3;
-    }
-    if (!Contradiction) {
-      return;
-    }
-    Contradictions.fetch_add(1, std::memory_order_relaxed);
-    // Straight to stderr, not through LogMan: FEX_SILENTLOG defaults to 1 and
-    // FEXInterpreter uninstalls the message handler on that path, so a tripwire
-    // that logged would be invisible in exactly the runs that matter. Same
-    // reason the LockOnlyTSO warning in Core.cpp writes here.
-    fextl::fmt::print(stderr,
-                      "POWERarm: NZCV exit-deadness contradiction at {:#x} ({}): the guest-code peek called this "
-                      "target dead, and the frontend translates it into a unit that reads NZCV from entry. "
-                      "Words at the target:{}. See NZCV-LIVENESS.md 7.7.\n",
-                      Address, What, Dec ? DescribeTarget(Dec, Address) : fextl::string {" <no decoder>"});
-    if (M == Mode::Strict) {
-      ERROR_AND_DIE_FMT("POWERARM_NZCVEXITDEAD=strict: NZCV exit-deadness contradiction at {:#x}", Address);
-    }
-  }
-
 } // namespace
 
 uint64_t ContradictionCount() {
@@ -148,7 +126,40 @@ void NoteUnitCompiled(FEXCore::Core::InternalThreadState* Thread, uint64_t Entry
   if (M == Mode::Off || !EntryNZCVLiveIn) {
     return;
   }
-  TripwireNote(Thread->FrontendDecoder.get(), Entry, 2, M, "unit compiled");
+
+  // The frontend's forward reach found a path from this unit's entry that
+  // reads an NZCV bit nothing on that path had written -- a real guest path,
+  // over guest instructions the decoder read out of memory a moment ago. Put
+  // the peek's scan on the same address. If the table is sound the scan meets
+  // that same reader (or gives up before it and says UNRESOLVED); the one
+  // answer it cannot give is DEAD, which claims every path writes all four
+  // bits first.
+  auto* Dec = Thread->FrontendDecoder.get();
+  if (!Dec) {
+    return;
+  }
+  ReadContext RC {Dec};
+  if (Census::Scan(Entry, false, &ReadWord, &RC) != Census::SCAN_DEAD) {
+    return;
+  }
+
+  Contradictions.fetch_add(1, std::memory_order_relaxed);
+  // Straight to stderr, not through LogMan: FEX_SILENTLOG defaults to 1 and
+  // FEXInterpreter uninstalls the message handler on that path, so a tripwire
+  // that logged would be invisible in exactly the runs that matter. Same
+  // reason the LockOnlyTSO warning in Core.cpp writes here.
+  //
+  // The words are read here, one instruction after the scan read them, so
+  // unlike the record this replaces they are the words the verdict was taken
+  // from.
+  fextl::fmt::print(stderr,
+                    "POWERarm: NZCV exit-deadness contradiction at {:#x}: the guest-code peek's scan of these "
+                    "words calls NZCV dead here, and the frontend's own translation of the same words reads "
+                    "NZCV from entry. Words at the entry:{}. See NZCV-LIVENESS.md 7.7.\n",
+                    Entry, DescribeTarget(Dec, Entry));
+  if (M == Mode::Strict) {
+    ERROR_AND_DIE_FMT("POWERARM_NZCVEXITDEAD=strict: NZCV exit-deadness contradiction at {:#x}", Entry);
+  }
 }
 
 // ===========================================================================
@@ -258,7 +269,12 @@ void Apply(FEXCore::Core::InternalThreadState* Thread, FEXCore::IR::IREmitter* I
     Hull = Candidate;
     Op->NZCVDeadAtTarget = true;
     AnyDead = true;
-    TripwireNote(Dec, Target, 1, M, "peek said dead");
+    // No record of the verdict is kept against the target. §7.7's tripwire
+    // checks this same scan against the frontend at every unit entry the
+    // frontend reads NZCV at, on the bytes that are there at that instant --
+    // see NoteUnitCompiled. A note filed here would have to survive until the
+    // target is translated, and the guest is free to replace the instructions
+    // at that address in the meantime.
   }
 
   if (!AnyDead) {
