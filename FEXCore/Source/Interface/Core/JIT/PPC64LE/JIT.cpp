@@ -3494,6 +3494,10 @@ static void RecordBlockAndMaybeDump(uint64_t Entry, uint64_t SSACount, uint64_t 
 //  * Mul/UMul at Size <= i32: mullw reads low words; mulli's low-32 product
 //    depends only on the low 32 of RA (multiplication mod 2^32). The
 //    handler's own tail mask re-canonicalizes the polluted high half.
+//  * MulAdd at Size <= i32: modular in all three operands (maddld is defined
+//    mod 2^64; the POWER8 arm is mullw + add), so the low word of the result
+//    depends only on the low word of each source. Its own tail mask
+//    re-canonicalizes, as Mul's does.
 //  * StoreMem, GPR class, Size <= i32: EmitStoreGPR emits stw/sth/stb for
 //    the value. Only the Value operand qualifies — Addr/Offset feed address
 //    arithmetic that reads all 64 bits.
@@ -4037,6 +4041,7 @@ void PPC64JITCore::ComputeHighZeroElision() {
       case IR::OP_NOT:
       case IR::OP_MUL:
       case IR::OP_UMUL:
+      case IR::OP_MULADD:
       case IR::OP_ORLSHL:
       case IR::OP_ORLSHR:
       case IR::OP_ORNROR:
@@ -4153,6 +4158,18 @@ void PPC64JITCore::ComputeHighZeroElision() {
       case IR::OP_UMUL: {
         if (IROp->Size <= IR::OpSize::i32Bit) {
           Elide = IsDef(IROp->Args[0]) || IsDef(IROp->Args[1]);
+        }
+        break;
+      }
+      case IR::OP_MULADD: {
+        // Same argument as Mul, extended to the addend: at i32 the handler's
+        // result is (S1*S2 + Ad) mod 2^32 followed by its own tail mask, and
+        // each of those three low words depends only on the low word of its
+        // operand. True of both arms -- maddld is modular by definition, and
+        // the POWER8 mullw/add pair reads low words for the product and wraps
+        // for the sum.
+        if (IROp->Size <= IR::OpSize::i32Bit) {
+          Elide = IsDef(IROp->Args[0]) || IsDef(IROp->Args[1]) || IsDef(IROp->Args[2]);
         }
         break;
       }

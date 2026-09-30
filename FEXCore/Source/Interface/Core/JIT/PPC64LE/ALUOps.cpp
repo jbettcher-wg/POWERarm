@@ -541,14 +541,44 @@ DEF_OP(UMull) {
 }
 
 DEF_OP(SMull) {
+  // mullw RT,RA,RB is defined as the full 64-bit SIGNED product of the low
+  // words of RA and RB (ISA 3.0B 3.3.9.1 "Multiply Low Word": prod(0:63) <-
+  // (RA)(32:63) x (RB)(32:63)), which is exactly SMULL's 32x32->64. Bits 0:31
+  // of either source cannot reach the result, so the two extsw this replaces
+  // were pure overhead. Base ISA -- no gate.
   auto Op  = IROp->C<IR::IROp_SMull>();
+  mullw(GetReg(Node), GetReg(Op->Src1), GetReg(Op->Src2));
+}
+
+DEF_OP(MulAdd) {
+  // Src1 * Src2 + Addend, modulo the operand width (AArch64 MADD, and the
+  // product half of SMADDL once SMull has folded the sign-extends away).
+  //
+  // ISA 3.0's maddld is the whole op in one instruction. It reads RA, RB and RC
+  // before writing RT, so Dst may be any of them -- which matters, because
+  // `madd x0, x1, x2, x0` (an accumulator) is the common shape.
+  //
+  // Without ISA 3.0 the product MUST land in a scratch register first: Dst can
+  // alias Addend, and a mulld straight into Dst would destroy the addend before
+  // the add read it. That is the pair the frontend used to emit as Mul + Add,
+  // so the POWER8 path costs exactly what it did before.
+  auto Op  = IROp->C<IR::IROp_MulAdd>();
   auto Dst = GetReg(Node);
   auto S1  = GetReg(Op->Src1);
   auto S2  = GetReg(Op->Src2);
-  // Sign-extend sources from 32 to 64 bit
-  extsw(TMP1, S1);
-  extsw(TMP2, S2);
-  mulld(Dst, TMP1, TMP2);
+  auto Ad  = GetReg(Op->Addend);
+  if (CTX->HostFeatures.SupportsISA30) {
+    maddld(Dst, S1, S2, Ad);
+  } else if (IROp->Size <= IR::OpSize::i32Bit) {
+    mullw(TMP1, S1, S2);
+    add(Dst, TMP1, Ad);
+  } else {
+    mulld(TMP1, S1, S2);
+    add(Dst, TMP1, Ad);
+  }
+  // Both arms leave bits 0:31 holding the wide result's own high half, so a
+  // 32-bit destination still needs its canonicalizing tail mask.
+  if (IROp->Size == IR::OpSize::i32Bit) Mask32Tail(Dst, Node);
 }
 
 DEF_OP(MulH) {

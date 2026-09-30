@@ -287,6 +287,18 @@ public:
   void mulld(GPR rt, GPR ra, GPR rb)  { EmitXO(31, rt.idx, ra.idx, rb.idx, 0, 233, 0); }
   void mulld_(GPR rt, GPR ra, GPR rb) { EmitXO(31, rt.idx, ra.idx, rb.idx, 0, 233, 1); }
 
+  // maddld RT, RA, RB, RC (ISA 3.0, VA-form: opcode 4, XO 51 in bits 26:31):
+  //   RT <- (RA * RB + RC) mod 2^64
+  // Modular throughout, so one instruction covers both the signed and the
+  // unsigned multiply-add, and RT may name a register that is also a source
+  // (all three operands are read before RT is written).
+  // POWER9 and later only -- gate on HostFeatures.SupportsISA30.
+  // Verified against llvm-mc -triple=powerpc64le: maddld 3,4,5,6 = 0x106429b3,
+  // maddld 31,0,0,0 = 0x13e00033.
+  void maddld(GPR rt, GPR ra, GPR rb, GPR rc) {
+    Emit32((4u << 26) | (rt.idx << 21) | (ra.idx << 16) | (rb.idx << 11) | (rc.idx << 6) | 51u);
+  }
+
   // mulhd RT, RA, RB (multiply high doubleword signed, XO 73)
   void mulhd(GPR rt, GPR ra, GPR rb)  { EmitXO(31, rt.idx, ra.idx, rb.idx, 0, 73, 0); }
 

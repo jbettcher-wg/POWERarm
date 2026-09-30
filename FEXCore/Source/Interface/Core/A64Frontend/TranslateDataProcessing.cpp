@@ -618,8 +618,17 @@ bool IRBuilder::CondSelect(uint32_t Word) {
 bool IRBuilder::MADD(uint32_t Word) {
   const bool Is64 = Bit(Word, 31);
   const auto Size = SizeFor(Is64);
-  Ref Product = _Mul(Size, LoadX(Bits(Word, 9, 5)), LoadX(Bits(Word, 20, 16)));
-  StoreReg(Bits(Word, 4, 0), Is64, _Add(Size, LoadX(Bits(Word, 14, 10)), Product));
+  Ref Src1 = LoadX(Bits(Word, 9, 5));
+  Ref Src2 = LoadX(Bits(Word, 20, 16));
+  const uint32_t Ra = Bits(Word, 14, 10);
+  // MUL is MADD with Ra = XZR and is the commoner of the two in every
+  // reference binary, so keep it a plain multiply rather than a multiply-add
+  // against a zero the backend would then have to fold back out.
+  if (Ra == 31) {
+    StoreReg(Bits(Word, 4, 0), Is64, _Mul(Size, Src1, Src2));
+    return true;
+  }
+  StoreReg(Bits(Word, 4, 0), Is64, _MulAdd(Size, Src1, Src2, LoadX(Ra)));
   return true;
 }
 
@@ -634,15 +643,25 @@ bool IRBuilder::MSUB(uint32_t Word) {
 bool IRBuilder::MultiplyAddSubLong(uint32_t Word, bool IsSigned, bool IsSub) {
   Ref Src1 = LoadX(Bits(Word, 9, 5));
   Ref Src2 = LoadX(Bits(Word, 20, 16));
+  Ref Product {};
   if (IsSigned) {
-    Src1 = _Sbfe(OpSize::i64Bit, 32, 0, Src1);
-    Src2 = _Sbfe(OpSize::i64Bit, 32, 0, Src2);
+    // mullw IS the signed 32x32->64 multiply, so hand the backend SMull and let
+    // DEF_OP(SMull) drop both sign-extensions. The unsigned direction has no
+    // such instruction, and its Bfe pair is worth keeping as separate ops: the
+    // high-zero elision passes can remove a Bfe(#32,#0) whose source is already
+    // known zero-extended, which an opaque UMull could not.
+    Product = _SMull(Src1, Src2);
   } else {
-    Src1 = _Bfe(OpSize::i64Bit, 32, 0, Src1);
-    Src2 = _Bfe(OpSize::i64Bit, 32, 0, Src2);
+    Product = _Mul(OpSize::i64Bit, _Bfe(OpSize::i64Bit, 32, 0, Src1), _Bfe(OpSize::i64Bit, 32, 0, Src2));
   }
-  Ref Product = _Mul(OpSize::i64Bit, Src1, Src2);
-  Ref Addend = LoadX(Bits(Word, 14, 10));
+  const uint32_t Ra = Bits(Word, 14, 10);
+  // SMULL/UMULL are these instructions with Ra = XZR: no addend, so no add.
+  // (SMNEGL/UMNEGL keep the Sub against the zero, which lowers to a neg.)
+  if (Ra == 31 && !IsSub) {
+    StoreX(Bits(Word, 4, 0), Product);
+    return true;
+  }
+  Ref Addend = LoadX(Ra);
   StoreX(Bits(Word, 4, 0), IsSub ? _Sub(OpSize::i64Bit, Addend, Product) : _Add(OpSize::i64Bit, Addend, Product));
   return true;
 }

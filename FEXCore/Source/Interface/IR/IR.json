@@ -1468,6 +1468,20 @@
           "Size == FEXCore::IR::OpSize::i32Bit || Size == FEXCore::IR::OpSize::i64Bit"
         ]
       },
+      "GPR = MulAdd OpSize:#Size, GPR:$Src1, GPR:$Src2, GPR:$Addend": {
+        "Desc": ["Src1 * Src2 + Addend, truncated to Size -- AArch64 MADD.",
+                 "Modular throughout, so it is signedness-agnostic: the low Size*8 bits of",
+                 "the product and of the sum are the same whether the operands are read as",
+                 "signed or unsigned.",
+                 "It is one op rather than a Mul plus an Add because ISA 3.0 has maddld,",
+                 "which is the whole thing in one instruction; without ISA 3.0 the lowering",
+                 "is the same mul + add pair the frontend used to emit."
+                ],
+        "DestSize": "Size",
+        "EmitValidation": [
+          "Size == FEXCore::IR::OpSize::i32Bit || Size == FEXCore::IR::OpSize::i64Bit"
+        ]
+      },
       "GPR = UMull GPR:$Src1, GPR:$Src2": {
         "Desc": ["Integer unsigned multiplication long",
                  "Multiplies two 32-bit numbers, returning a 64-bit destination register."
