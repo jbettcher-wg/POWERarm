@@ -1,0 +1,282 @@
+# libxul, executed exit-site weight (POWERARM_NZCVEXITCENSUS=1, code cache on, fresh cache dir)
+# Emulator: this tree's build of ad49fb534 + the exit-site census. Guest:
+#   Firefox 156 (RootFS/ArchLinuxARM-vk-overlay/usr/lib/firefox/firefox) --headless --screenshot
+#   of a local page with DOM, string, array, JSON and canvas work. POWERARM_PORTABLE=1 with an
+#   absolute POWERARM_ROOTFS, so the content processes ran on this build and not the promoted stable.
+# Nine processes; the rows below are their sum. Joined by nzcv-probes/nzcv_exit_weight.py;
+# the raw per-process dumps follow the table.
+#
+# processes: 9  units: 521966  exit sites: 1108043  kept producers: 389082  site-slot overflow: 0
+# executed exit traversals: 556880760
+# 
+# ## exit kinds: every instrumented ExitFunction bumps exactly one, so these sum to the total
+# kind                        sites     traversals   share   per site
+# const-None                 486507      241313455  43.3%        496
+# indirect-Return            109264      147643449  26.5%       1351
+# const-Call                 294709      102065689  18.3%        346
+# indirect-Call              203192       45556804   8.2%        224
+# indirect-None               14371       20301363   3.6%       1413
+# const-Return                    0              0   0.0%
+# other                           0              0   0.0%
+# 
+# ## kept producers by census class and peek verdict, static share vs executed share
+# class                                    verdict                    producers  stat%    sites     traversals  exec%  per site
+# exit: constant only                      unresolved                    130280  33.5%   224487      101567532  18.2%       452
+# exit: constant only                      droppable-simple               81950  21.1%   109584       80167491  14.4%       732
+# exit: constant and indirect-Return       n/a                            21934   5.6%    44780       38195745   6.9%       853
+# exit: other                              n/a                            32528   8.4%    62336       37887891   6.8%       608
+# exit: indirect-Return                    n/a                            16799   4.3%    14690       28917716   5.2%      1969
+# exit: constant only                      droppable-follow-bl            21917   5.6%    34613       16098109   2.9%       465
+# exit: constant and indirect-Call         n/a                            29443   7.6%    70113       15487372   2.8%       221
+# exit: constant and other                 n/a                             2655   0.7%     6274        9905469   1.8%      1579
+# exit: indirect-Call                      n/a                            21560   5.5%    24748        8706102   1.6%       352
+# exit: constant only                      live                            3432   0.9%     5021        5312466   1.0%      1058
+# exit: constant only                      dead-but-unfusable-reader        343   0.1%      574          40551   0.0%        71
+# in-unit: unfusable reader (CondSubNZCV)  n/a                             8681   2.2%        0              0   0.0%         0
+# in-unit: unfusable reader (other)        n/a                             1206   0.3%        0              0   0.0%         0
+# in-unit: only fusable readers visible    n/a                            14394   3.7%        0              0   0.0%         0
+# in-unit: no visible reader               n/a                             1960   0.5%        0              0   0.0%         0
+# 
+# ## the answer: compares the scan marks dead, static share vs executed share
+# simple scan (SS5.2 row 1):
+#   droppable producers 81950 =  34.4% of constant-exit-only,  21.1% of all kept
+#   their exit sites    109584
+#   their traversals    80167491 =  39.5% of constant-exit-only traversals,  23.4% of flag-carrying exit traversals,  14.4% of all exit traversals
+# follow-bl scan (SS5.2 row 2):
+#   droppable producers 103867 =  43.7% of constant-exit-only,  26.7% of all kept
+#   their exit sites    144197
+#   their traversals    96265600 =  47.4% of constant-exit-only traversals,  28.1% of flag-carrying exit traversals,  17.3% of all exit traversals
+# 
+# constant-exit-only: producers 237922 ( 61.1% of kept), traversals 203186149 ( 36.5% of all)
+# producers whose flags reach any exit: 362841 ( 93.3%), traversals 342286444 ( 61.5%)
+
+# POWERarm NZCV exit-site census (stage 0 of docs/powerarm/research/power-isa/NZCV-LIVENESS.md)
+NZCV_META pid=1037960 units=271978 exit_sites=596452 producers=215415 site_slot_overflow=0
+NZCV_META scan_max_insns_per_path=48 scan_max_visited_words=96 max_class_slots_per_exit=4
+NZCV_TOTAL exit_traversals=288996291
+NZCV_EXITKIND kind=const-None sites=269729 traversals=121375353
+NZCV_EXITKIND kind=const-Call sites=158542 traversals=53757645
+NZCV_EXITKIND kind=const-Return sites=0 traversals=0
+NZCV_EXITKIND kind=indirect-None sites=6609 traversals=12180889
+NZCV_EXITKIND kind=indirect-Call sites=102781 traversals=23957121
+NZCV_EXITKIND kind=indirect-Return sites=58791 traversals=77725283
+NZCV_EXITKIND kind=other sites=0 traversals=0
+NZCV_ROW class="exit: constant only" verdict=droppable-simple producers=45347 sites=60539 traversals=45393830
+NZCV_ROW class="exit: constant only" verdict=droppable-follow-bl producers=12402 sites=19430 traversals=9865828
+NZCV_ROW class="exit: constant only" verdict=dead-but-unfusable-reader producers=219 sites=356 traversals=32171
+NZCV_ROW class="exit: constant only" verdict=live producers=1982 sites=2855 traversals=1155064
+NZCV_ROW class="exit: constant only" verdict=unresolved producers=74003 sites=128076 traversals=46750749
+NZCV_ROW class="exit: constant and indirect-Return" verdict=n/a producers=12257 sites=25058 traversals=20003150
+NZCV_ROW class="exit: constant and indirect-Call" verdict=n/a producers=15132 sites=36942 traversals=7730004
+NZCV_ROW class="exit: constant and other" verdict=n/a producers=1323 sites=3199 traversals=4943064
+NZCV_ROW class="exit: indirect-Return" verdict=n/a producers=9114 sites=7905 traversals=14823024
+NZCV_ROW class="exit: indirect-Call" verdict=n/a producers=11005 sites=12488 traversals=4485777
+NZCV_ROW class="exit: other" verdict=n/a producers=17119 sites=33088 traversals=20726557
+NZCV_ROW class="in-unit: unfusable reader (CondSubNZCV)" verdict=n/a producers=4910 sites=0 traversals=0
+NZCV_ROW class="in-unit: unfusable reader (other)" verdict=n/a producers=1001 sites=0 traversals=0
+NZCV_ROW class="in-unit: only fusable readers visible" verdict=n/a producers=8447 sites=0 traversals=0
+NZCV_ROW class="in-unit: no visible reader" verdict=n/a producers=1154 sites=0 traversals=0
+# POWERarm NZCV exit-site census (stage 0 of docs/powerarm/research/power-isa/NZCV-LIVENESS.md)
+NZCV_META pid=1037971 units=26624 exit_sites=46757 producers=13644 site_slot_overflow=0
+NZCV_META scan_max_insns_per_path=48 scan_max_visited_words=96 max_class_slots_per_exit=4
+NZCV_TOTAL exit_traversals=10763508
+NZCV_EXITKIND kind=const-None sites=18175 traversals=8289871
+NZCV_EXITKIND kind=const-Call sites=3780 traversals=662623
+NZCV_EXITKIND kind=const-Return sites=0 traversals=0
+NZCV_EXITKIND kind=indirect-None sites=1726 traversals=233970
+NZCV_EXITKIND kind=indirect-Call sites=18241 traversals=457178
+NZCV_EXITKIND kind=indirect-Return sites=4835 traversals=1119866
+NZCV_EXITKIND kind=other sites=0 traversals=0
+NZCV_ROW class="exit: constant only" verdict=droppable-simple producers=2769 sites=3820 traversals=2360378
+NZCV_ROW class="exit: constant only" verdict=droppable-follow-bl producers=277 sites=414 traversals=72245
+NZCV_ROW class="exit: constant only" verdict=dead-but-unfusable-reader producers=2 sites=2 traversals=0
+NZCV_ROW class="exit: constant only" verdict=live producers=84 sites=148 traversals=739283
+NZCV_ROW class="exit: constant only" verdict=unresolved producers=2710 sites=4708 traversals=3518234
+NZCV_ROW class="exit: constant and indirect-Return" verdict=n/a producers=845 sites=1773 traversals=346279
+NZCV_ROW class="exit: constant and indirect-Call" verdict=n/a producers=3027 sites=6274 traversals=65459
+NZCV_ROW class="exit: constant and other" verdict=n/a producers=266 sites=558 traversals=93257
+NZCV_ROW class="exit: indirect-Return" verdict=n/a producers=867 sites=895 traversals=220964
+NZCV_ROW class="exit: indirect-Call" verdict=n/a producers=1114 sites=1364 traversals=80572
+NZCV_ROW class="exit: other" verdict=n/a producers=754 sites=1485 traversals=258775
+NZCV_ROW class="in-unit: unfusable reader (CondSubNZCV)" verdict=n/a producers=539 sites=0 traversals=0
+NZCV_ROW class="in-unit: unfusable reader (other)" verdict=n/a producers=20 sites=0 traversals=0
+NZCV_ROW class="in-unit: only fusable readers visible" verdict=n/a producers=306 sites=0 traversals=0
+NZCV_ROW class="in-unit: no visible reader" verdict=n/a producers=64 sites=0 traversals=0
+# POWERarm NZCV exit-site census (stage 0 of docs/powerarm/research/power-isa/NZCV-LIVENESS.md)
+NZCV_META pid=1038026 units=660 exit_sites=1364 producers=360 site_slot_overflow=0
+NZCV_META scan_max_insns_per_path=48 scan_max_visited_words=96 max_class_slots_per_exit=4
+NZCV_TOTAL exit_traversals=6828644
+NZCV_EXITKIND kind=const-None sites=507 traversals=5689940
+NZCV_EXITKIND kind=const-Call sites=185 traversals=365164
+NZCV_EXITKIND kind=const-Return sites=0 traversals=0
+NZCV_EXITKIND kind=indirect-None sites=69 traversals=51504
+NZCV_EXITKIND kind=indirect-Call sites=458 traversals=178434
+NZCV_EXITKIND kind=indirect-Return sites=145 traversals=543602
+NZCV_EXITKIND kind=other sites=0 traversals=0
+NZCV_ROW class="exit: constant only" verdict=droppable-simple producers=26 sites=30 traversals=1418077
+NZCV_ROW class="exit: constant only" verdict=droppable-follow-bl producers=0 sites=0 traversals=29704
+NZCV_ROW class="exit: constant only" verdict=live producers=3 sites=5 traversals=457208
+NZCV_ROW class="exit: constant only" verdict=unresolved producers=70 sites=117 traversals=2819453
+NZCV_ROW class="exit: constant and indirect-Return" verdict=n/a producers=33 sites=68 traversals=210978
+NZCV_ROW class="exit: constant and indirect-Call" verdict=n/a producers=66 sites=162 traversals=41600
+NZCV_ROW class="exit: constant and other" verdict=n/a producers=13 sites=29 traversals=41308
+NZCV_ROW class="exit: indirect-Return" verdict=n/a producers=30 sites=28 traversals=131512
+NZCV_ROW class="exit: indirect-Call" verdict=n/a producers=39 sites=49 traversals=9203
+NZCV_ROW class="exit: other" verdict=n/a producers=30 sites=51 traversals=35038
+NZCV_ROW class="in-unit: unfusable reader (CondSubNZCV)" verdict=n/a producers=47 sites=0 traversals=0
+NZCV_ROW class="in-unit: only fusable readers visible" verdict=n/a producers=3 sites=0 traversals=0
+# POWERarm NZCV exit-site census (stage 0 of docs/powerarm/research/power-isa/NZCV-LIVENESS.md)
+NZCV_META pid=1038059 units=8192 exit_sites=13656 producers=2760 site_slot_overflow=0
+NZCV_META scan_max_insns_per_path=48 scan_max_visited_words=96 max_class_slots_per_exit=4
+NZCV_TOTAL exit_traversals=4661530
+NZCV_EXITKIND kind=const-None sites=3467 traversals=2945208
+NZCV_EXITKIND kind=const-Call sites=4456 traversals=522908
+NZCV_EXITKIND kind=const-Return sites=0 traversals=0
+NZCV_EXITKIND kind=indirect-None sites=305 traversals=48139
+NZCV_EXITKIND kind=indirect-Call sites=3964 traversals=311140
+NZCV_EXITKIND kind=indirect-Return sites=1464 traversals=834135
+NZCV_EXITKIND kind=other sites=0 traversals=0
+NZCV_ROW class="exit: constant only" verdict=droppable-simple producers=298 sites=398 traversals=416697
+NZCV_ROW class="exit: constant only" verdict=droppable-follow-bl producers=49 sites=66 traversals=6910
+NZCV_ROW class="exit: constant only" verdict=dead-but-unfusable-reader producers=2 sites=8 traversals=165
+NZCV_ROW class="exit: constant only" verdict=live producers=33 sites=46 traversals=1024
+NZCV_ROW class="exit: constant only" verdict=unresolved producers=745 sites=1337 traversals=2192655
+NZCV_ROW class="exit: constant and indirect-Return" verdict=n/a producers=173 sites=352 traversals=176319
+NZCV_ROW class="exit: constant and indirect-Call" verdict=n/a producers=415 sites=986 traversals=131989
+NZCV_ROW class="exit: constant and other" verdict=n/a producers=28 sites=76 traversals=9387
+NZCV_ROW class="exit: indirect-Return" verdict=n/a producers=173 sites=159 traversals=188271
+NZCV_ROW class="exit: indirect-Call" verdict=n/a producers=337 sites=408 traversals=94441
+NZCV_ROW class="exit: other" verdict=n/a producers=413 sites=820 traversals=151010
+NZCV_ROW class="in-unit: unfusable reader (CondSubNZCV)" verdict=n/a producers=43 sites=0 traversals=0
+NZCV_ROW class="in-unit: unfusable reader (other)" verdict=n/a producers=5 sites=0 traversals=0
+NZCV_ROW class="in-unit: only fusable readers visible" verdict=n/a producers=39 sites=0 traversals=0
+NZCV_ROW class="in-unit: no visible reader" verdict=n/a producers=7 sites=0 traversals=0
+# POWERarm NZCV exit-site census (stage 0 of docs/powerarm/research/power-isa/NZCV-LIVENESS.md)
+NZCV_META pid=1038073 units=139524 exit_sites=293024 producers=103357 site_slot_overflow=0
+NZCV_META scan_max_insns_per_path=48 scan_max_visited_words=96 max_class_slots_per_exit=4
+NZCV_TOTAL exit_traversals=124757629
+NZCV_EXITKIND kind=const-None sites=128154 traversals=51156441
+NZCV_EXITKIND kind=const-Call sites=81568 traversals=23524649
+NZCV_EXITKIND kind=const-Return sites=0 traversals=0
+NZCV_EXITKIND kind=indirect-None sites=3305 traversals=5192381
+NZCV_EXITKIND kind=indirect-Call sites=50716 traversals=10678599
+NZCV_EXITKIND kind=indirect-Return sites=29281 traversals=34205559
+NZCV_EXITKIND kind=other sites=0 traversals=0
+NZCV_ROW class="exit: constant only" verdict=droppable-simple producers=23621 sites=31796 traversals=16054539
+NZCV_ROW class="exit: constant only" verdict=droppable-follow-bl producers=6394 sites=10283 traversals=3440161
+NZCV_ROW class="exit: constant only" verdict=dead-but-unfusable-reader producers=67 sites=115 traversals=939
+NZCV_ROW class="exit: constant only" verdict=live producers=789 sites=1145 traversals=1025658
+NZCV_ROW class="exit: constant only" verdict=unresolved producers=33236 sites=56722 traversals=22052744
+NZCV_ROW class="exit: constant and indirect-Return" verdict=n/a producers=5838 sites=11896 traversals=8568574
+NZCV_ROW class="exit: constant and indirect-Call" verdict=n/a producers=6964 sites=16816 traversals=3504255
+NZCV_ROW class="exit: constant and other" verdict=n/a producers=634 sites=1546 traversals=2820226
+NZCV_ROW class="exit: indirect-Return" verdict=n/a producers=4512 sites=3949 traversals=7217375
+NZCV_ROW class="exit: indirect-Call" verdict=n/a producers=5708 sites=6488 traversals=2328353
+NZCV_ROW class="exit: other" verdict=n/a producers=8976 sites=17448 traversals=9352629
+NZCV_ROW class="in-unit: unfusable reader (CondSubNZCV)" verdict=n/a producers=2329 sites=0 traversals=0
+NZCV_ROW class="in-unit: unfusable reader (other)" verdict=n/a producers=134 sites=0 traversals=0
+NZCV_ROW class="in-unit: only fusable readers visible" verdict=n/a producers=3679 sites=0 traversals=0
+NZCV_ROW class="in-unit: no visible reader" verdict=n/a producers=476 sites=0 traversals=0
+# POWERarm NZCV exit-site census (stage 0 of docs/powerarm/research/power-isa/NZCV-LIVENESS.md)
+NZCV_META pid=1038079 units=14054 exit_sites=27585 producers=7041 site_slot_overflow=0
+NZCV_META scan_max_insns_per_path=48 scan_max_visited_words=96 max_class_slots_per_exit=4
+NZCV_TOTAL exit_traversals=14699363
+NZCV_EXITKIND kind=const-None sites=9919 traversals=7143767
+NZCV_EXITKIND kind=const-Call sites=8837 traversals=2571061
+NZCV_EXITKIND kind=const-Return sites=0 traversals=0
+NZCV_EXITKIND kind=indirect-None sites=509 traversals=234280
+NZCV_EXITKIND kind=indirect-Call sites=5471 traversals=1089098
+NZCV_EXITKIND kind=indirect-Return sites=2849 traversals=3661157
+NZCV_EXITKIND kind=other sites=0 traversals=0
+NZCV_ROW class="exit: constant only" verdict=droppable-simple producers=842 sites=1114 traversals=1853432
+NZCV_ROW class="exit: constant only" verdict=droppable-follow-bl producers=294 sites=475 traversals=169385
+NZCV_ROW class="exit: constant only" verdict=dead-but-unfusable-reader producers=7 sites=12 traversals=566
+NZCV_ROW class="exit: constant only" verdict=live producers=70 sites=87 traversals=303116
+NZCV_ROW class="exit: constant only" verdict=unresolved producers=2558 sites=4680 traversals=3507775
+NZCV_ROW class="exit: constant and indirect-Return" verdict=n/a producers=462 sites=923 traversals=1115862
+NZCV_ROW class="exit: constant and indirect-Call" verdict=n/a producers=787 sites=1846 traversals=486416
+NZCV_ROW class="exit: constant and other" verdict=n/a producers=57 sites=142 traversals=407981
+NZCV_ROW class="exit: indirect-Return" verdict=n/a producers=315 sites=293 traversals=804473
+NZCV_ROW class="exit: indirect-Call" verdict=n/a producers=465 sites=530 traversals=199341
+NZCV_ROW class="exit: other" verdict=n/a producers=965 sites=1847 traversals=616626
+NZCV_ROW class="in-unit: unfusable reader (CondSubNZCV)" verdict=n/a producers=85 sites=0 traversals=0
+NZCV_ROW class="in-unit: unfusable reader (other)" verdict=n/a producers=1 sites=0 traversals=0
+NZCV_ROW class="in-unit: only fusable readers visible" verdict=n/a producers=116 sites=0 traversals=0
+NZCV_ROW class="in-unit: no visible reader" verdict=n/a producers=17 sites=0 traversals=0
+# POWERarm NZCV exit-site census (stage 0 of docs/powerarm/research/power-isa/NZCV-LIVENESS.md)
+NZCV_META pid=1038085 units=4608 exit_sites=6594 producers=1093 site_slot_overflow=0
+NZCV_META scan_max_insns_per_path=48 scan_max_visited_words=96 max_class_slots_per_exit=4
+NZCV_TOTAL exit_traversals=5328206
+NZCV_EXITKIND kind=const-None sites=1445 traversals=3624794
+NZCV_EXITKIND kind=const-Call sites=3565 traversals=554407
+NZCV_EXITKIND kind=const-Return sites=0 traversals=0
+NZCV_EXITKIND kind=indirect-None sites=119 traversals=42173
+NZCV_EXITKIND kind=indirect-Call sites=936 traversals=276233
+NZCV_EXITKIND kind=indirect-Return sites=529 traversals=830599
+NZCV_EXITKIND kind=other sites=0 traversals=0
+NZCV_ROW class="exit: constant only" verdict=droppable-simple producers=138 sites=172 traversals=464164
+NZCV_ROW class="exit: constant only" verdict=droppable-follow-bl producers=45 sites=59 traversals=6536
+NZCV_ROW class="exit: constant only" verdict=dead-but-unfusable-reader producers=4 sites=9 traversals=165
+NZCV_ROW class="exit: constant only" verdict=live producers=15 sites=22 traversals=383
+NZCV_ROW class="exit: constant only" verdict=unresolved producers=329 sites=572 traversals=2774296
+NZCV_ROW class="exit: constant and indirect-Return" verdict=n/a producers=71 sites=143 traversals=189987
+NZCV_ROW class="exit: constant and indirect-Call" verdict=n/a producers=163 sites=412 traversals=124900
+NZCV_ROW class="exit: constant and other" verdict=n/a producers=13 sites=31 traversals=7708
+NZCV_ROW class="exit: indirect-Return" verdict=n/a producers=25 sites=23 traversals=180327
+NZCV_ROW class="exit: indirect-Call" verdict=n/a producers=126 sites=145 traversals=88772
+NZCV_ROW class="exit: other" verdict=n/a producers=127 sites=252 traversals=138635
+NZCV_ROW class="in-unit: unfusable reader (CondSubNZCV)" verdict=n/a producers=9 sites=0 traversals=0
+NZCV_ROW class="in-unit: only fusable readers visible" verdict=n/a producers=26 sites=0 traversals=0
+NZCV_ROW class="in-unit: no visible reader" verdict=n/a producers=2 sites=0 traversals=0
+# POWERarm NZCV exit-site census (stage 0 of docs/powerarm/research/power-isa/NZCV-LIVENESS.md)
+NZCV_META pid=1038113 units=29518 exit_sites=61888 producers=21824 site_slot_overflow=0
+NZCV_META scan_max_insns_per_path=48 scan_max_visited_words=96 max_class_slots_per_exit=4
+NZCV_TOTAL exit_traversals=66194523
+NZCV_EXITKIND kind=const-None sites=26019 traversals=25591526
+NZCV_EXITKIND kind=const-Call sites=16138 traversals=14136760
+NZCV_EXITKIND kind=const-Return sites=0 traversals=0
+NZCV_EXITKIND kind=indirect-None sites=1118 traversals=1866771
+NZCV_EXITKIND kind=indirect-Call sites=12972 traversals=5229474
+NZCV_EXITKIND kind=indirect-Return sites=5641 traversals=19369992
+NZCV_EXITKIND kind=other sites=0 traversals=0
+NZCV_ROW class="exit: constant only" verdict=droppable-simple producers=3368 sites=4432 traversals=8184915
+NZCV_ROW class="exit: constant only" verdict=droppable-follow-bl producers=1062 sites=1704 traversals=1899443
+NZCV_ROW class="exit: constant only" verdict=dead-but-unfusable-reader producers=21 sites=34 traversals=1977
+NZCV_ROW class="exit: constant only" verdict=live producers=228 sites=358 traversals=364932
+NZCV_ROW class="exit: constant only" verdict=unresolved producers=8274 sites=13728 traversals=11314254
+NZCV_ROW class="exit: constant and indirect-Return" verdict=n/a producers=1050 sites=2133 traversals=5156077
+NZCV_ROW class="exit: constant and indirect-Call" verdict=n/a producers=1594 sites=3612 traversals=1714868
+NZCV_ROW class="exit: constant and other" verdict=n/a producers=201 sites=420 traversals=1009238
+NZCV_ROW class="exit: indirect-Return" verdict=n/a producers=721 sites=615 traversals=3731171
+NZCV_ROW class="exit: indirect-Call" verdict=n/a producers=1952 sites=2406 traversals=901391
+NZCV_ROW class="exit: other" verdict=n/a producers=2356 sites=3970 traversals=4732333
+NZCV_ROW class="in-unit: unfusable reader (CondSubNZCV)" verdict=n/a producers=286 sites=0 traversals=0
+NZCV_ROW class="in-unit: unfusable reader (other)" verdict=n/a producers=9 sites=0 traversals=0
+NZCV_ROW class="in-unit: only fusable readers visible" verdict=n/a producers=642 sites=0 traversals=0
+NZCV_ROW class="in-unit: no visible reader" verdict=n/a producers=60 sites=0 traversals=0
+# POWERarm NZCV exit-site census (stage 0 of docs/powerarm/research/power-isa/NZCV-LIVENESS.md)
+NZCV_META pid=1038126 units=26808 exit_sites=60723 producers=23588 site_slot_overflow=0
+NZCV_META scan_max_insns_per_path=48 scan_max_visited_words=96 max_class_slots_per_exit=4
+NZCV_TOTAL exit_traversals=34651066
+NZCV_EXITKIND kind=const-None sites=29092 traversals=15496555
+NZCV_EXITKIND kind=const-Call sites=17638 traversals=5970472
+NZCV_EXITKIND kind=const-Return sites=0 traversals=0
+NZCV_EXITKIND kind=indirect-None sites=611 traversals=451256
+NZCV_EXITKIND kind=indirect-Call sites=7653 traversals=3379527
+NZCV_EXITKIND kind=indirect-Return sites=5729 traversals=9353256
+NZCV_EXITKIND kind=other sites=0 traversals=0
+NZCV_ROW class="exit: constant only" verdict=droppable-simple producers=5541 sites=7283 traversals=4021459
+NZCV_ROW class="exit: constant only" verdict=droppable-follow-bl producers=1394 sites=2182 traversals=607897
+NZCV_ROW class="exit: constant only" verdict=dead-but-unfusable-reader producers=21 sites=38 traversals=4568
+NZCV_ROW class="exit: constant only" verdict=live producers=228 sites=355 traversals=1265798
+NZCV_ROW class="exit: constant only" verdict=unresolved producers=8355 sites=14547 traversals=6637372
+NZCV_ROW class="exit: constant and indirect-Return" verdict=n/a producers=1205 sites=2434 traversals=2428519
+NZCV_ROW class="exit: constant and indirect-Call" verdict=n/a producers=1295 sites=3063 traversals=1687881
+NZCV_ROW class="exit: constant and other" verdict=n/a producers=120 sites=273 traversals=573300
+NZCV_ROW class="exit: indirect-Return" verdict=n/a producers=1042 sites=823 traversals=1620599
+NZCV_ROW class="exit: indirect-Call" verdict=n/a producers=814 sites=870 traversals=518252
+NZCV_ROW class="exit: other" verdict=n/a producers=1788 sites=3375 traversals=1876288
+NZCV_ROW class="in-unit: unfusable reader (CondSubNZCV)" verdict=n/a producers=433 sites=0 traversals=0
+NZCV_ROW class="in-unit: unfusable reader (other)" verdict=n/a producers=36 sites=0 traversals=0
+NZCV_ROW class="in-unit: only fusable readers visible" verdict=n/a producers=1136 sites=0 traversals=0
+NZCV_ROW class="in-unit: no visible reader" verdict=n/a producers=180 sites=0 traversals=0

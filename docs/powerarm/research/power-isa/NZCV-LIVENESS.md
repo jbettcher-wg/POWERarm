@@ -448,6 +448,9 @@ stage adds an instrument that turns a wrong assumption into a deterministic fail
 exit-site traversal counter to the link record so that a later run can weight §5 by execution
 (the P12 branch census did this for probes; `LinkOutcome*` in `JIT.cpp:1765` is the place).
 Gate: none; it changes no codegen.
+**Done, §13.** It went into `DEF_OP(ExitFunction)` rather than the link record, because a link
+record counts first traversals and a linked exit never reaches it again; the counter is
+`POWERARM_NZCVEXITCENSUS`, default off, and §13.4 is the answer it gave.
 
 **Stage 1 — the table, proven against the frontend.** `NZCVPeek` as a pure function over words,
 plus `EntryNZCVLiveIn` recomputed by forward reach. A generated test enumerates every `a64.inc`
@@ -498,6 +501,10 @@ the floor), and the part that touches SMC extents last.
 - **Execution weight.** Every number in §5 is per translated site. G2's 9% of sites were worth
   3% of instructions; the constant-exit sites may be worth proportionally more or less. Stage 0's
   counter answers it; without it the estimate in §8 is a bracket, not a number.
+  **Closed 2026-09-29: §13.** The counter is `POWERARM_NZCVEXITCENSUS`; it says the DEAD sites are
+  the hotter half of the population the peek scans but that the population itself is the cold end of
+  the exit distribution, and §8's bracket comes down by about a factor of two. The in-unit classes,
+  and therefore a calibration against G2 itself, are still unweighted (§13.5 item 6).
 - **Other workloads.** Only `cc1` was censused. Firefox, VS Code and Factorio are C++ with
   exceptions and virtual calls (more `blr`, more `br` through jump tables: both UNRESOLVED),
   V8/JSC-generated code has different shapes and an SMC exposure the `cc1` census cannot show.
@@ -546,3 +553,244 @@ the floor), and the part that touches SMC extents last.
 - `nzcv-probes/RESULTS.txt` — outputs, Pi and POWERarm (fusion on and off), verbatim.
 - `nzcv-probes/nzcv_census.py` — the IR-dump census and the scan; `census/cc1-nzcv.census`
   is its output for `cc1 -O2 lvm.c` at `cffa7b4de`.
+- `nzcv-probes/nzcv_exit_weight.py` — joins the in-emulator census's static rows with its executed
+  traversals (§13); `census/cc1-nzcv-exec.census` and `census/libxul-nzcv-exec.census` are its
+  output, with the raw per-process dumps appended.
+- `FEXCore/Source/Interface/Core/JIT/PPC64LE/NZCVExitCensus.{h,cpp}` — the census itself:
+  §5.1's classification and §7.2's scan as C++ over the live IR and real guest words, plus the
+  per-thread traversal counters the JIT bumps under `POWERARM_NZCVEXITCENSUS`.
+
+## 13. Execution weight, measured
+
+Added 2026-09-29, against the tree at `ad49fb534` plus the exit-site census this section
+describes. This closes §10's first bullet and is stage 0 of §9. Nothing above is rewritten: §10
+still records what could not be measured when the document was written, and now says where the
+answer is. Two workloads, `cc1` and `libxul`, both with `POWERARM_NZCVEXITCENSUS=1`; raw output in
+`census/cc1-nzcv-exec.census` and `census/libxul-nzcv-exec.census`, joined by
+`nzcv-probes/nzcv_exit_weight.py`.
+
+**Answer in one line.** The executed weight *raises* the DEAD share within the population the
+peek scans (45.1% of constant-exit-only traversals against 39.4% of its sites on `cc1`), and
+*lowers* the value of the item, because the constant-exit population is the cold end of the exit
+distribution: §8's estimate of 2-4% for stage 2 and 3-6% for stage 3 does not survive as written.
+At the 3 host instructions per dropped compare §8 itself prices with, the measured executed
+counts give **1.7% for the simple scan and 2.2% with `BL` following on `cc1`**, and about 0.7× that
+on `libxul`. The item is still worth roughly what G2 was worth; the brackets were about twice too
+high.
+
+### 13.1 The instrument
+
+`POWERARM_NZCVEXITCENSUS=1` (`NZCVExitCensus` in `Config.json.in`, default off) turns on two
+tables over one slot space, so a static row and a dynamic row are the same row:
+
+- **Static**, filled at compile time by
+  `FEXCore/Source/Interface/Core/JIT/PPC64LE/NZCVExitCensus.cpp`. For every surviving NZCV
+  producer it walks the unit's CFG forward until every bit it wrote is overwritten — the same walk
+  `nzcv_census.py`'s `forward_reach` does, over `IROpNZCVRead`/`IROpNZCVWrite`, which are derived
+  from DFCE's own `ClassifyFast` table so the census and the pass whose seed the policy would
+  change cannot disagree. It then classifies the producer by the exits it reaches, using §5.1's
+  terms verbatim, and for the constant-exit-only population runs §7.2's scan over real guest words
+  (through `QueryGuestExecutableRange`, so a read cannot fault) in both the simple and the
+  follow-`BL` shape.
+- **Dynamic**: one 64-bit counter per slot per guest thread, and three instructions appended to
+  every `ExitFunction`'s lowering per counter it bumps — `ld TMP2, slot*8(TMP1); addi TMP2,TMP2,1;
+  std TMP2, slot*8(TMP1)`, after one `ld TMP1, Pointers.PPC64_NZCVExitCounters(STATE)`. Each site
+  bumps its own exit-kind counter plus one per distinct (class, verdict) pair whose producer's
+  flags reach it, capped at four; `site_slot_overflow` was **0** on both workloads, so nothing was
+  dropped by the cap.
+
+Three properties of the bump matter. It uses `ld`/`addi`/`std` only, so it touches no CR field and
+no XER and therefore cannot perturb the flags it is measuring, and it cannot move the r0-dirty
+state `DEF_OP(ExitFunction)` snapshots. It is per thread, so it needs no atomic — an atomic
+increment here would be an `lwarx`/`stwcx.` loop and `stwcx.` records into CR0, which is where N
+and Z live. And it reaches its array through a frame slot rather than an absolute address, so a
+block saved to the code cache in one process bumps the *loading* process's array; the slot index is
+a pure function of guest bytes plus the config id, which now hashes the option
+(`CodeCache.cpp`), so a census run can never load blocks compiled without the bump.
+
+**Why a compare is priced by the traversals of the exits it reaches.** A compare kept only by its
+exits executes once per execution of its block, and on any one execution exactly one of the exits
+its flags reach is traversed, because those exits are alternative legs. Summing their traversals is
+therefore the number of times that compare executed, which is what the saving scales with. The sum
+over exit-kind counters is the total `ExitFunction` traversal count, since every instrumented site
+bumps exactly one of them.
+
+**Off changes nothing.** One `if (NZCVExitCensusEnabled)` at the top of `DEF_OP(ExitFunction)`,
+false unless the option is set; the analysis is not run and `NZCVCensusSlots` stays empty. The one
+structural change, the counter pointer, is the **last** member of `JITPointers` and lands in
+padding the frame already had: `sizeof(CpuStateFrame)` is 2176 before and after and
+`offsetof(Pointers)` is 976 before and after, so not one STATE-relative d-form displacement in the
+backend moves. The staging-buffer allowance the census adds is `0` when it is off. Nothing in the
+census feeds a codegen decision in either state: it does not seed flags dead, does not change a
+link, does not touch DFCE. Gates: `unittests/A64Frontend/run.sh` **101 pass, 0 fail** in all three
+modes (default, `POWERARM_MAXINST=1`, `POWERARM_HOSTFEATURES=disableisa30`) with the census off and
+again with it on — six runs, same 101 — and `check-code-cache.sh` **35 ok, 0 fail**.
+
+### 13.2 `cc1 -O2 lvm.c`: the static census reproduced, then weighted
+
+Same input as §5, code cache off, fusion on. 110,592 units, 287,389 instrumented exit sites,
+128,877 kept producers, **618,683,967 executed exit traversals**. The static columns are an
+independent reimplementation of §5 inside the emulator and land on §5's numbers: kept producers
+128,877 against 128,968, constant-exit-only 79.3% against 79.3%, `constant and indirect-Return`
+9,402 against 9,409, in-unit `CondSubNZCV` 5,960 against 5,963, `indirect-Return` 5,288 against
+5,291, in-unit fusable-only 2,523 against 2,525. With fusion off it finds 141,608 kept producers
+against §4.1's 141,707, i.e. fusion drops 12,731 against 12,739.
+
+| §5.1 class | peek verdict | producers | of kept | exit sites | traversals | of all traversals | per site |
+|---|---|---|---|---|---|---|---|
+| exit: constant only | droppable, simple scan | 40,209 | 31.2% | 52,528 | 121,704,571 | 19.7% | **2,317** |
+| exit: constant only | droppable, follow-`BL` only | 15,050 | 11.7% | 23,490 | 30,695,232 | 5.0% | 1,307 |
+| exit: constant only | UNRESOLVED (keep) | 46,268 | 35.9% | 83,104 | 114,640,761 | 18.5% | **1,379** |
+| exit: constant only | LIVE (keep) | 620 | 0.5% | 1,203 | 2,809,625 | 0.5% | 2,336 |
+| exit: constant only | DEAD but unfusable reader | 9 | 0.0% | 9 | 439 | 0.0% | 49 |
+| exit: constant and indirect-Return | n/a | 9,402 | 7.3% | 19,416 | 75,890,484 | 12.3% | 3,909 |
+| exit: indirect-Return | n/a | 5,288 | 4.1% | 4,379 | 43,744,712 | 7.1% | **9,990** |
+| exit: constant and indirect-Call | n/a | 1,649 | 1.3% | 4,105 | 5,023,852 | 0.8% | 1,224 |
+| exit: constant and other | n/a | 334 | 0.3% | 714 | 2,151,974 | 0.3% | 3,014 |
+| exit: indirect-Call | n/a | 727 | 0.6% | 733 | 1,605,209 | 0.3% | 2,190 |
+| exit: other | n/a | 322 | 0.2% | 515 | 3,080,019 | 0.5% | 5,981 |
+| in-unit: unfusable reader (`CondSubNZCV`) | n/a | 5,960 | 4.6% | — | — | — | — |
+| in-unit: only fusable readers visible | n/a | 2,523 | 2.0% | — | — | — | — |
+| in-unit: unfusable reader (other) | n/a | 184 | 0.1% | — | — | — | — |
+| in-unit: no visible reader | n/a | 332 | 0.3% | — | — | — | — |
+
+An in-unit class has no traversal weight by construction: its flags reach no exit, so this
+instrument cannot price it (see 13.5). A repeat of the run moves the raw counts by 0.003% and none
+of the percentages in this section at one decimal place, so nothing here rests on a single run.
+
+Exit traversals by kind, which is where the item's real discount comes from:
+
+| exit kind | sites | traversals | share | per site |
+|---|---|---|---|---|
+| const-None | 186,739 | 323,078,762 | 52.2% | 1,730 |
+| indirect-Return | 20,012 | 143,931,283 | 23.3% | 7,192 |
+| const-Call | 74,020 | 130,594,543 | 21.1% | 1,764 |
+| indirect-Call | 5,867 | 13,194,789 | 2.1% | 2,249 |
+| indirect-None | 751 | 7,884,590 | 1.3% | 10,499 |
+
+**The side-by-side §10 asked for.**
+
+| | static share | executed share |
+|---|---|---|
+| simple scan DEAD, of constant-exit-only | **39.4%** (40,209 of 102,156; §5.2 said 36.7%) | **45.1%** (121.70 M of 269.85 M) |
+| simple scan DEAD, of all kept compares | 31.2% | 19.7% of all exit traversals, 30.3% of flag-carrying ones |
+| follow-`BL` DEAD, of constant-exit-only | **54.1%** (55,259; §5.2 said 55.5%) | **56.5%** (152.40 M of 269.85 M) |
+| follow-`BL` DEAD, of all kept compares | 42.9% | 24.6% of all exit traversals, 38.0% of flag-carrying ones |
+| constant-exit-only, of all | 79.3% of kept compares | 43.6% of exit traversals |
+
+Two things read off that. Within its own population the peek finds the *hotter* half: 2,317
+traversals per DEAD site against 1,379 per UNRESOLVED site, so the executed share (45.1%) is six
+points above the static share (39.4%). But the population itself is cold: a constant exit is
+traversed 1,730-1,764 times per site against 7,192 for an `indirect-Return` and 10,499 for an
+`indirect-None`, and constant-exit-only compares are 79.3% of the kept compares but only 43.6% of
+the executed exit traversals.
+
+### 13.3 `libxul`: the workload §10 said to check before defaulting this on
+
+Firefox 156 `--headless --screenshot` of a local page with DOM, string, array, JSON and canvas
+work, code cache on in a directory of its own, `POWERARM_PORTABLE=1` with an absolute
+`POWERARM_ROOTFS` so the content processes ran on this build rather than the promoted stable. Nine
+processes, summed: 521,966 units, 1,108,043 exit sites, 389,082 kept producers, **556,880,760
+executed exit traversals**.
+
+| | `cc1` | `libxul` |
+|---|---|---|
+| constant-exit-only, of kept compares | 79.3% | **61.1%** |
+| simple scan DEAD, of constant-exit-only: static / executed | 39.4% / 45.1% | **34.4% / 39.5%** |
+| follow-`BL` DEAD, of constant-exit-only: static / executed | 54.1% / 56.5% | **43.7% / 47.4%** |
+| simple scan DEAD, of all exit traversals | 19.7% | **14.4%** |
+| follow-`BL` DEAD, of all exit traversals | 24.6% | **17.3%** |
+| indirect-Call exit sites | 5,867 (2.0%) | **203,192 (18.3%)** |
+| traversals per const-None site | 1,730 | 496 |
+| traversals per indirect-Return site | 7,192 | 1,351 |
+
+The shape §10 predicted is there and is now sized: C++ with virtual calls moves 18.3% of exit
+sites to `indirect-Call` against `cc1`'s 2.0%, and constant-exit-only drops from 79.3% to 61.1% of
+kept compares. It is a discount, not a cliff — `libxul` keeps 87% of `cc1`'s static DEAD share and
+73% of its executed share — and the direction of the static-to-executed correction is the same
+(39.5% executed against 34.4% static). `libxul`'s exits are also far colder per site (496 per
+const-None site against `cc1`'s 1,730), which is what a one-shot page load rather than a compile
+looks like; it is the per-traversal shares, not the per-site ones, that carry across.
+
+### 13.4 What this does to §8's estimate
+
+The measured quantity is compare *executions*: 121,704,571 for the simple scan and 152,399,803
+with `BL` following, on `cc1`. Turning that into a share of executed host instructions needs one
+number this census does not measure, and which §10's last bullet already lists as not re-measured:
+the host cost of one dropped compare. From `DEF_OP(SubNZCV)` (`ALUOps.cpp`) that is 1 instruction
+for a 64-bit register compare (`subfco.`), 3 for a W-size one (two `sldi` plus `subfco.`), plus a
+1-5 instruction `LoadConstant` when an operand is an immediate; §8 prices it at 3, from
+`ISA-OPPORTUNITIES.md` §3.0. Against the recorded warm `cc1` figure of 21.25 G `instructions:u`
+(post-G2, `OPTIMIZATION-CHECKLIST.md` P5):
+
+| host instructions per dropped compare | stage 2 (simple) | stage 3 (follow-`BL`) |
+|---|---|---|
+| 1 | 0.57% | 0.72% |
+| **3 (§8's own figure)** | **1.72%** | **2.15%** |
+| 6 | 3.44% | 4.30% |
+
+**Verdict: the estimate does not survive execution weighting; it comes down by roughly a factor of
+two, and it does not collapse.** §8's 2-4% for stage 2 needs at least 3.5 host instructions per
+dropped compare, and its 3-6% for stage 3 needs at least 4.2; at the 3 the same section quotes, the
+answers are 1.7% and 2.2%. The bracket that should be carried into the plan is **0.6-3.4% for stage
+2 and 0.7-4.3% for stage 3 on `cc1`, centred on 1.7% and 2.2%**, with about 0.7× those shares on
+`libxul` — and the whole remaining width now belongs to one unmeasured quantity, the host cost of a
+dropped compare, rather than to the execution weighting. Against G2's delivered -3.0%, stage 2 at
+1.7% is still the same order of lever, and §8's separate argument (that the policy is what lets
+items 2, 4 and 5 fuse *instead of* the packed producer at 55% of exit sites rather than 9%) is
+untouched by any of this.
+
+### 13.5 What the dynamic data contradicts, and what it cannot say
+
+1. **§8 is wrong that these sites are not cold.** "A `cmp`+`B.cond` at a unit exit is by
+   construction the compare that decides which unit runs next, so it is not cold either" — but the
+   constant exits are the *cold end* of the exit distribution on both workloads: 1,730 and 1,764
+   traversals per site (const-None, const-Call) against 7,192 for `indirect-Return` and 10,499 for
+   `indirect-None` on `cc1`, and 496/346 against 1,351/1,413 on `libxul`. The hot exits are the
+   returns and the indirect jumps, which this policy leaves alone. That, not the scan's choice of
+   targets, is where the factor of two goes.
+2. **§8 is right to worry, but wrong about the mechanism.** Its hedge was that the scan's sites are
+   colder *on average*; in fact the scan picks the hotter half of the population it scans (2,317
+   traversals per DEAD site against 1,379 per UNRESOLVED one), so the executed share is six points
+   above the static share. The discount is entirely the population, not the peek.
+3. **§5.2's 36.7% was low, as it suspected.** Reading real memory instead of a partial `cc1`
+   disassembly resolves part of the 10,899 "target outside the disassembly" rows and moves the
+   simple scan's DEAD share from 36.7% to 39.4%.
+4. **§5.2's 55.5% is slightly high for a conservative implementation.** This census does not resume
+   a scan after a callee that returns with the flags still live, which the script does; its
+   follow-`BL` DEAD share is 54.1%.
+5. **§10's "other workloads" bullet is now answered for `libxul`** (13.3), including the `blr`/`br`
+   effect it named. It is still unanswered for V8/JSC-generated code, where the SMC exposure — not
+   the liveness — is the open question.
+6. **This instrument cannot price the in-unit classes, and therefore cannot calibrate against G2.**
+   A compare whose flags reach no exit has no exit traversal to be weighted by, and the 12,731
+   compares fusion drops are exactly that population: with fusion off the producer-weighted
+   traversal total is 401,280,286 against 401,346,878 with it on, a 0.02% difference. So G2's own
+   instructions-per-executed-compare, which would remove the last unknown in 13.4, needs a
+   block-execution counter rather than an exit-traversal one. That is the one thing stage 0 should
+   have measured and did not.
+7. **Unchanged from §10:** the cost of witness pages on JIT guests, ptrace fidelity, whether any
+   guest decides on `pstate`, and the host cost of a dropped compare.
+
+### 13.6 Reproducing
+
+```
+# cc1, the same input as §5, under the conditions census/cc1-nzcv.census used
+cd <lua-5.4.9>/src
+TMPDIR=<dumpdir> POWERARM_NZCVEXITCENSUS=1 POWERARM_ENABLECODECACHINGWIP=0 \
+  <build>/Bin/POWERarm <rootfs>/usr/lib/gcc/aarch64-unknown-linux-gnu/*/cc1 -quiet -O2 lvm.c -o /dev/null
+python3 nzcv-probes/nzcv_exit_weight.py <dumpdir>/powerarm-nzcv-exits-*.txt
+
+# libxul: headless, cache ON (item 21 open (c)) in a fresh directory, children on this build
+TMPDIR=<dumpdir> POWERARM_NZCVEXITCENSUS=1 POWERARM_PORTABLE=1 \
+  POWERARM_ROOTFS=$HOME/.local/share/powerarm/RootFS/ArchLinuxARM-vk \
+  POWERARM_APP_CACHE_LOCATION=<fresh> MOZ_ENABLE_WAYLAND=0 \
+  <build>/Bin/POWERarm <vk-overlay>/usr/lib/firefox/firefox --headless --no-remote \
+  --profile <fresh> --screenshot <out.png> file://<page.html>
+python3 nzcv-probes/nzcv_exit_weight.py <dumpdir>/powerarm-nzcv-exits-*.txt
+```
+
+A fresh cache directory per run is not optional: a run that loaded blocks compiled under a
+different configuration would under-count exactly the sites it is measuring. The config id hashes
+the option, so the two populations cannot mix by accident, but the option is a diagnostic and the
+cheapest safe habit is a directory per run.
