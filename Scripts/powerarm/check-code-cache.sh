@@ -32,6 +32,13 @@
 #              blocks must not be lost. The writer process outlives the guest
 #              and waits for the lock, so they are written once it frees, and
 #              they load.
+#   inlinecap  a save pass on a guest thread, with every segment name taken, is
+#              about to fold the whole namespace while the guest waits for it.
+#              Over CodeCacheInlinePublishMaxSize it must not: the namespace is
+#              left byte-identical and the pass is counted as deferred. Unbounded
+#              (the default) it folds, and the final pass folds whatever it is
+#              set to, because with no writer process that pass is the only
+#              compactor left.
 #   evict      over the size cap, a namespace of another emulator build is
 #              evicted before any of this build's, however recently it was
 #              written.
@@ -496,6 +503,143 @@ if command -v flock > /dev/null; then
   fi
 else
   echo "skip lockbusy: host flock(1) not found"
+fi
+
+# ---------------------------------------------------------------------------
+# inlinecap
+# A publish runs on whichever guest thread reached the save trigger -- inside
+# mmap, munmap or mprotect, holding SaveIOLock -- so every thread of the guest
+# waits for it. With all eight segment names taken the publish has no name to
+# link into and folds the whole namespace instead, then mirrors the result into
+# the durable tier: 9.8 s for Chrome's 1.4 GiB namespace on this machine, which
+# is long enough for Chrome to declare its own renderer unresponsive.
+# CodeCacheInlinePublishMaxSize bounds what a guest thread will fold. Over it
+# the namespace is left exactly as it was and the records come back for a later
+# pass, which is what already happens when the namespace lock is busy.
+#
+# Needs a library big enough that its eight segment names hold more than the
+# smallest bound the option can express, 1 MiB: 400 functions, which is a couple
+# of MiB of blocks. Two entry points, so the run under test has blocks of its
+# own to add to a namespace that is already full.
+bulkn=400
+{
+  echo '#include <stdint.h>'
+  i=0
+  while [ "$i" -lt "$bulkn" ]; do
+    echo "__attribute__((noinline)) uint64_t b$i(uint64_t x) {"
+    echo "  for (int j = 0; j < (int)(x & 7) + $((i % 5 + 2)); j++) x = x * 0x9E3779B97F4A7C15ULL + (uint64_t)j * $((i + 1));"
+    echo "  return x ^ (x >> $((i % 31 + 1)));"
+    echo '}'
+    i=$((i + 1))
+  done
+  for half in 1 0; do
+    if [ "$half" = 1 ]; then
+      echo 'uint64_t bulk_half(uint64_t x) {'
+      n=$((bulkn / 2))
+    else
+      echo 'uint64_t bulk_all(uint64_t x) {'
+      n=$bulkn
+    fi
+    i=0
+    while [ "$i" -lt "$n" ]; do
+      echo "  x = b$i(x);"
+      i=$((i + 1))
+    done
+    echo '  return x;'
+    echo '}'
+  done
+} > "$w/src/libbulk.c"
+cat > "$w/src/bulkprog.c" << 'EOF'
+#include <dlfcn.h>
+#include <stdint.h>
+#include <stdio.h>
+#include <string.h>
+int main(int argc, char **argv) {
+  if (argc < 3) return 2; /* bulkprog LIB half|all [keep] */
+  void *h = dlopen(argv[1], RTLD_NOW);
+  if (!h) { printf("dlopen failed: %s\n", dlerror()); return 2; }
+  const char *sym = strcmp(argv[2], "all") == 0 ? "bulk_all" : "bulk_half";
+  uint64_t (*f)(uint64_t) = (uint64_t (*)(uint64_t))dlsym(h, sym);
+  /* A constant, not argc: "keep" below is an argument, and the result must not
+     depend on how many there were. */
+  uint64_t r = f ? f(0x9E3779B9u) : 0;
+  /* Without "keep" the dlclose unmaps the library, and that munmap is the save
+     pass under test. With it the library is still mapped at exit, so the pass
+     under test is the final one. */
+  if (argc < 4 || strcmp(argv[3], "keep") != 0) dlclose(h);
+  printf("bulk %s %llu\n", sym, (unsigned long long)r);
+  return 0;
+}
+EOF
+if run - -- /usr/bin/gcc -O1 -shared -fPIC -o libbulk.so libbulk.c && run - -- /usr/bin/gcc -O1 -o bulkprog bulkprog.c -ldl; then
+  bulkall=$(run - -- ./bulkprog ./libbulk.so all)
+  # Half the library, so the runs under test have blocks of their own to add.
+  mkdir -p "$w/ic"
+  run "$w/ic" -- ./bulkprog ./libbulk.so half > /dev/null 2> "$w/ic0.log"
+  icdir=$(working "$w/ic")
+  icns=$(ls "$icdir" 2> /dev/null | grep '^libbulk\.so-' | grep -v '\.lock$' | head -1)
+  if [ -z "$icns" ]; then
+    bad "inlinecap: the priming run wrote no libbulk cache"
+  else
+    # What a namespace that has been appended to eight times looks like,
+    # without waiting for eight passes: the same blocks under every name. A
+    # publish can no longer link in, so its only way in is the fold.
+    for i in 1 2 3 4 5 6 7; do cp "$icdir/$icns" "$icdir/$icns.$i"; done
+    nsbytes=$(($(stat -c %s "$icdir/$icns") * 8))
+    icsha=$(sha256sum < "$icdir/$icns")
+    if [ "$nsbytes" -le $((2 * 1024 * 1024)) ]; then
+      bad "inlinecap: the libbulk namespace is only $nsbytes bytes; nothing under 2 MiB can be over a 1 MiB bound"
+    else
+      # Each phase gets the same starting state. Copying the whole cache is
+      # cheaper than priming again, and keeps every other namespace warm so
+      # only libbulk's blocks are compiled below.
+      cp -a "$w/ic" "$w/icb" && cp -a "$w/ic" "$w/icc" && cp -a "$w/ic" "$w/icd"
+
+      # Bounded: the unmap pass must leave the namespace alone.
+      out=$(run "$w/icb" POWERARM_CODECACHEFORKWRITER=0 POWERARM_CODECACHEINLINEPUBLISHMAXSIZE=1 -- ./bulkprog ./libbulk.so all 2> "$w/icb.log")
+      bdir=$(working "$w/icb")
+      names=$(ls "$bdir" | grep -c "^$icns\(\.[1-7]\)\?$")
+      [ "$out" = "$bulkall" ] || bad "inlinecap: the bounded run printed '$out', cache off '$bulkall'"
+      [ "$(counter deferred-compactions "$w/icb.log")" -gt 0 ] ||
+        bad "inlinecap: the bounded run deferred no compaction ($(grep -c . "$w/icb.log") stats lines)"
+      [ "$(counter inline-compactions "$w/icb.log")" = 0 ] ||
+        bad "inlinecap: the bounded run folded a namespace on a guest thread anyway"
+      if [ "$names" = 8 ] && [ "$(sha256sum < "$bdir/$icns")" = "$icsha" ]; then
+        ok "inlinecap: a guest thread left a $((nsbytes / 1048576)) MiB namespace unfolded and byte-identical (bound 1 MiB)"
+      else
+        bad "inlinecap: after the bounded run the namespace has $names names and name 0 is $([ "$(sha256sum < "$bdir/$icns")" = "$icsha" ] && echo intact || echo REWRITTEN)"
+      fi
+
+      # Unbounded, which is the default: the same pass folds it.
+      out=$(run "$w/icc" POWERARM_CODECACHEFORKWRITER=0 -- ./bulkprog ./libbulk.so all 2> "$w/icc.log")
+      cdir=$(working "$w/icc")
+      [ "$out" = "$bulkall" ] || bad "inlinecap: the unbounded run printed '$out', cache off '$bulkall'"
+      if [ "$(counter inline-compactions "$w/icc.log")" -gt 0 ] && [ ! -e "$cdir/$icns.1" ]; then
+        ok "inlinecap: unbounded, the same pass folds the namespace on the guest thread"
+      else
+        bad "inlinecap: the unbounded run counted $(counter inline-compactions "$w/icc.log") inline compactions and left $(ls "$cdir" | grep -c "^$icns\(\.[1-7]\)\?$") names"
+      fi
+      # And what it folded is the real thing.
+      warm=$(run "$w/icc" -- ./bulkprog ./libbulk.so all 2> "$w/icc2.log")
+      [ "$warm" = "$bulkall" ] && [ "$(counter loaded "$w/icc2.log")" -gt 0 ] &&
+        ok "inlinecap: the folded namespace loads" || bad "inlinecap: the folded namespace did not load (printed '$warm')"
+
+      # The final pass is exempt whatever the bound is: with no writer process
+      # it is the only compactor left, and a namespace nobody ever folds again
+      # never takes another segment either. "keep" holds the library mapped to
+      # the end, so the final pass is the one that publishes it.
+      out=$(run "$w/icd" POWERARM_CODECACHEFORKWRITER=0 POWERARM_CODECACHEINLINEPUBLISHMAXSIZE=1 -- ./bulkprog ./libbulk.so all keep 2> "$w/icd.log")
+      ddir=$(working "$w/icd")
+      [ "$out" = "$bulkall" ] || bad "inlinecap: the exit-pass run printed '$out', cache off '$bulkall'"
+      if [ ! -e "$ddir/$icns.1" ] && [ "$(sha256sum < "$ddir/$icns")" != "$icsha" ]; then
+        ok "inlinecap: the final pass folds a namespace over the bound anyway"
+      else
+        bad "inlinecap: the final pass left $(ls "$ddir" | grep -c "^$icns\(\.[1-7]\)\?$") names, name 0 $([ "$(sha256sum < "$ddir/$icns")" = "$icsha" ] && echo unchanged || echo rewritten)"
+      fi
+    fi
+  fi
+else
+  bad "inlinecap: building the bulk library failed"
 fi
 
 # ---------------------------------------------------------------------------

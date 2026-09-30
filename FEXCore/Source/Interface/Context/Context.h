@@ -117,6 +117,7 @@ public:
 
   FEX_CONFIG_OPT(EnableCodeCaching, ENABLECODECACHINGWIP);
   FEX_CONFIG_OPT(ForkWriter, CODECACHEFORKWRITER);
+  FEX_CONFIG_OPT(InlinePublishMaxSize, CODECACHEINLINEPUBLISHMAXSIZE);
 
   // Held across a SaveNewBlocks pass in place of the shared CodeInvalidationMutex.
   // The save does unbounded, cross-process I/O (a blocking flock on the cache .lock,
@@ -185,9 +186,13 @@ public:
   void DumpStats() override;
 
   // Counters for DumpStats. Relaxed atomics: diagnostic only.
+  // InlineCompactions and DeferredCompactions split Compactions by who paid for
+  // it: a guest thread of this process that folded a namespace itself, and one
+  // that found the namespace over CodeCacheInlinePublishMaxSize and left it
+  // alone. Neither counts a writer process's work, which is in the shared page.
   struct {
     std::atomic<uint64_t> Loaded, NotInIndex, NoFile, BadEntry, GuestMismatch, NotExecutable, RelocFailed, SavedBlocks, SavedSegments,
-      Compactions, SaveNS, LoadNS;
+      Compactions, InlineCompactions, DeferredCompactions, SaveNS, LoadNS;
   } Stats {};
 
   // Number of blocks compiled since the last save pass; also drives WantsSave.
@@ -236,7 +241,11 @@ private:
   // everything in the process waits on it. Segments a writer has already taken
   // are skipped. Returns how many were written, and marks each PendingSegment
   // with its own result.
-  size_t PublishSegments(std::span<PendingSegment> Pending, uint64_t ConfigId);
+  size_t PublishSegments(std::span<PendingSegment> Pending, uint64_t ConfigId, CodeCacheSaveKind Kind);
+  // CodeCacheInlinePublishMaxSize in bytes; 0 for no bound. Only a publish
+  // running on a guest thread is bounded -- the writer process exists to be the
+  // one that can take the time.
+  uint64_t InlineCompactLimitBytes();
   // Writes each pending segment to its temp file and hands the publish to this
   // process's writer, starting one if needed. Returns how many it handed over;
   // the rest keep their temp file for PublishSegments. See the block comment in

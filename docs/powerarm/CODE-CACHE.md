@@ -243,6 +243,38 @@ rewrite (726 MB for VS Code's) per pass. The exit save has a writer of its own
 (cold G4). `POWERARM_CODECACHEFORKWRITER=0` puts the whole publish back on the
 guest thread.
 
+**And a bound on the fold a guest thread will do** (C23,
+`CodeCacheInlinePublishMaxSize`, MiB, 0 = unlimited = the behaviour above).
+`CodeCacheForkWriter=0` is not the only way that whole-namespace rewrite lands on
+a guest thread: the writer's socket is non-blocking on purpose, so a writer
+already busy with a large namespace takes no request and the pass publishes for
+itself -- which is exactly the state a guest with several large namespaces is in.
+Measured here: 9.8 s for Chrome's 1.4 GiB namespace, on the guest thread, under
+`SaveIOLock`, long enough for Chrome to raise its own "page unresponsive" dialog
+and then recover. Over the bound the thread leaves the namespace alone and
+reports the segment unwritten, which is the answer a busy namespace lock already
+gives and is handled the same way: the records come back for a later pass, and
+the writer, a sibling process or this process's exit save folds it instead. The
+exit save is never bounded -- it is the process's last pass, so nothing comes
+after it, and with no writer process it is the only compactor there is; bound it
+and a namespace at eight segments would never be folded again by anyone, and so
+would never take another segment either. The cost of a bound is that a full
+namespace takes no new segment until something folds it, so later blocks land at
+the process's exit rather than mid-session, and a library dlclosed in the
+meantime loses its new blocks; for a browser its own renderers pay most of that
+back, because they share the namespace, exit often, and fold it in the child the
+exit forks. An inline fold that stops the guest for over a second names itself,
+its size and its duration on stderr whatever the bound is, and
+`POWERARM_CODECACHESTATS=1` counts `inline-compactions` and
+`deferred-compactions`. Sizing: the fold is a per-block term (~3 us a block,
+above) plus a straight copy of the namespace to the durable tier, so the
+MiB-to-seconds rate depends on how big the workload's blocks are. Anchor it on
+the workload with the problem -- Chrome's 1.4 GiB in 9.8 s is ~143 MiB/s, so
+128 MiB is ~0.9 s, inside the 4 s stall detector `SaveIOLock` exists for and
+above both namespaces that were never a problem. A synthetic namespace of eight
+disjoint segments, 57.7 MiB in 6001 blocks of ~10 KiB each, folds in under 67 ms
+here, which is that same per-block rate at 12x the bytes a block.
+
 The writer is this binary re-exec'd, not a fork of the guest. It is started by
 the first pass with something to publish, through `posix_spawn(3)` --
 `clone(CLONE_VM|CLONE_VFORK)` plus `execve(2)` -- with `/proc/self/exe`, an

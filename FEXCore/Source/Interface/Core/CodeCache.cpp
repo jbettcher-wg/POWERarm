@@ -19,6 +19,7 @@
 #include <FEXCore/Utils/ArchHelpers/PPC64CacheFlush.h>
 
 #include <FEXHeaderUtils/Filesystem.h>
+#include <FEXHeaderUtils/Syscalls.h>
 
 #include <git_version.h>
 
@@ -867,6 +868,46 @@ namespace {
     return Out;
   }
 
+  // Where a report that is NOT behind POWERARM_CODECACHESTATS goes. Not LogMan:
+  // SilentLog defaults to true and FEXInterpreter uninstalls the message handler
+  // on that path, so a LogMan line is dropped in exactly the configuration every
+  // user is in (Core.cpp's LockOnlyTSO warning says the same, for the same
+  // reason). So: the guest's stderr -- but only while it is still the file it
+  // was. A guest may close its stderr and open something else onto the number,
+  // and writing a diagnostic into a guest's data file is worse than not writing
+  // it. The identity is recorded in the CodeCache constructor, before any guest
+  // code runs, and checked at every write. Recorded, not dup'd, unlike
+  // StatsStream above: holding a descriptor of the guest's stderr open would
+  // keep a reader of it from seeing EOF when the guest closes it, and these
+  // lines are emitted while the guest runs, when its stderr is still open.
+  struct StderrIdentity {
+    bool Known = false;
+    dev_t Dev {};
+    ino_t Ino {};
+  };
+  const StderrIdentity& StartupStderr() {
+    static const StderrIdentity Id = [] {
+      struct stat St {};
+      if (::fstat(STDERR_FILENO, &St) != 0) {
+        return StderrIdentity {};
+      }
+      return StderrIdentity {true, St.st_dev, St.st_ino};
+    }();
+    return Id;
+  }
+
+  // One line, or nothing. write(2) rather than stdio: no locale, no buffering,
+  // nothing to flush, and no interleaving with a guest that has its own stdio
+  // state on the same file.
+  void Report(std::string_view Line) {
+    const auto& Id = StartupStderr();
+    struct stat St {};
+    if (!Id.Known || ::fstat(STDERR_FILENO, &St) != 0 || St.st_dev != Id.Dev || St.st_ino != Id.Ino) {
+      return;
+    }
+    [[maybe_unused]] const auto Written = ::write(STDERR_FILENO, Line.data(), Line.size());
+  }
+
   uint64_t MonotonicSeconds() {
     struct timespec TS {};
     if (::clock_gettime(CLOCK_MONOTONIC, &TS) != 0) {
@@ -1666,6 +1707,7 @@ CodeCache::CodeCache(ContextImpl& CTX_)
                 !FEXCore::Config::Get_SMCCHEAPTIER() && !FEXCore::Config::Get_SMCSTOREEMULATION() &&
                 !FEXCore::Config::Get_SMCSTOREBACKPATCH();
   StatsStream();
+  StartupStderr();
 }
 CodeCache::~CodeCache() {
   // The writer ends when every sender has closed its socket; this is the last
@@ -1808,10 +1850,12 @@ void CodeCache::DumpStats() {
   }
   const auto Line = fextl::fmt::format(
     "POWERarm code cache [{}]: loaded {} not-in-index {} no-file {} bad-entry {} guest-mismatch {} not-exec {} "
-    "reloc-failed {} saved {} blocks in {} segments, {} compactions, {} lost; save-ms {} lookup-ms {}\n",
+    "reloc-failed {} saved {} blocks in {} segments, {} compactions, {} lost; inline-compactions {} deferred-compactions {}; "
+    "save-ms {} lookup-ms {}\n",
     ::getpid(), L(Stats.Loaded), L(Stats.NotInIndex), L(Stats.NoFile), L(Stats.BadEntry), L(Stats.GuestMismatch), L(Stats.NotExecutable),
     L(Stats.RelocFailed), L(Stats.SavedBlocks) + WrittenBlocks, L(Stats.SavedSegments) + WrittenSegments,
-    L(Stats.Compactions) + WriterCompactions, LostSegments, L(Stats.SaveNS) / 1000000, L(Stats.LoadNS) / 1000000);
+    L(Stats.Compactions) + WriterCompactions, LostSegments, L(Stats.InlineCompactions), L(Stats.DeferredCompactions),
+    L(Stats.SaveNS) / 1000000, L(Stats.LoadNS) / 1000000);
   (void)::write(FD, Line.data(), Line.size());
 }
 
@@ -2820,17 +2864,106 @@ namespace {
     }
   }
 
-  // What a publish did, so the durable mirror knows what changed.
+  // What a publish did, so the durable mirror knows what changed -- and, for a
+  // publish that compacted or declined to, what it cost.
   struct PublishResult {
     bool Written = false;
     size_t Index = 0;
     bool Compacted = false;
+    // The namespace was full and the fold was over the caller's bound, so
+    // nothing was written and the records come back. Never set for a writer
+    // process or a final pass, which are unbounded.
+    bool Deferred = false;
+    // Bytes the namespace held going in, set whenever the fold was on the
+    // table. That is the quantity both the compaction and the deferral are
+    // about.
+    uint64_t NamespaceBytes = 0;
   };
+
+  // What the namespace's segment names hold right now, and whether every name
+  // is taken. A compaction reads, rehashes and rewrites all of it, and a
+  // two-tier compaction then copies the result to the durable tier, so the byte
+  // count is what a caller about to fold it is about to pay. Names are taken
+  // lowest first -- the link loop below fills the first free one and a
+  // compaction leaves only name 0 -- so the walk stops at the first one
+  // missing, and reaching MaxSegments means a link can no longer get in.
+  struct NamespaceExtent {
+    uint64_t Bytes {};
+    bool Full {};
+  };
+  NamespaceExtent MeasureNamespace(const fextl::string& Base) {
+    NamespaceExtent Extent;
+    size_t Index = 0;
+    for (; Index < MaxSegments; ++Index) {
+      struct stat St {};
+      if (::stat(SegmentPath(Base, Index).c_str(), &St) != 0) {
+        break;
+      }
+      Extent.Bytes += static_cast<uint64_t>(St.st_size);
+    }
+    Extent.Full = Index == MaxSegments;
+    return Extent;
+  }
+
+  // An inline compaction this slow is the stall this whole option exists for:
+  // it happened on a guest thread, inside mmap, munmap or mprotect, under
+  // SaveIOLock, so every thread of the guest was stopped for it. Reported
+  // always, not behind a config option or a log level, because the owner of a
+  // machine that freezes finds out by using it: 9.8 s on Chrome's 1.4 GiB
+  // namespace was long enough for Chrome to declare its own renderer
+  // unresponsive, and nothing in the emulator said so. A second is well under
+  // any hang detector and far above any compaction worth mentioning, so the
+  // line is rare enough to cost nothing and specific enough to act on.
+  constexpr uint64_t InlineCompactReportMS = 1000;
+
+  // Whole and hundredths of a MiB, without floating point: the numbers in
+  // these lines are the ones in the option's units.
+  fextl::string MiBOf(uint64_t Bytes) {
+    return fextl::fmt::format("{}.{:02} MiB", Bytes >> 20, ((Bytes & 0xFFFFF) * 100) >> 20);
+  }
+
+  void ReportInlineCompaction(const fextl::string& Base, uint64_t Bytes, uint64_t MilliSeconds) {
+    if (MilliSeconds < InlineCompactReportMS) {
+      return;
+    }
+    const auto Size = MiBOf(Bytes);
+    Report(fextl::fmt::format("POWERarm code cache [{}]: compacted {} ({}) on guest thread {} -- {} ms with the guest stopped. "
+                              "POWERARM_CODECACHEINLINEPUBLISHMAXSIZE=<MiB> keeps a fold this size off the guest's threads.\n",
+                              ::getpid(), std::string_view {Base}, std::string_view {Size}, FHU::Syscalls::gettid(), MilliSeconds));
+  }
+
+  // Once per process: that the bound fired at all is worth saying, that it
+  // keeps firing is not. A full namespace over the bound is the steady state of
+  // a large, long-running guest -- every periodic pass meets it again -- and a
+  // line a minute on the guest's stderr is noise. The counter in the stats line
+  // carries the rest.
+  void ReportDeferredCompaction(const fextl::string& Base, uint64_t Bytes, uint64_t MaxBytes) {
+    static std::atomic<bool> Said {false};
+    if (Said.exchange(true, std::memory_order_relaxed)) {
+      return;
+    }
+    const auto Size = MiBOf(Bytes);
+    const auto Limit = MiBOf(MaxBytes);
+    Report(fextl::fmt::format("POWERarm code cache [{}]: {} ({}) is over CodeCacheInlinePublishMaxSize ({}), so no guest thread of this "
+                              "process will fold it; its writer process or its exit save does that instead, and until one does this "
+                              "namespace takes no new segments.\n",
+                              ::getpid(), std::string_view {Base}, std::string_view {Size}, std::string_view {Limit}));
+  }
 
   // Links Temp into a free segment name of Base, or folds every segment plus
   // Temp into one when all MaxSegments names are taken. Temp is unlinked either
   // way; the blocks are in the namespace only if this returns Written.
-  PublishResult PublishTempSegment(const fextl::string& Base, const fextl::string& Temp, uint64_t ConfigId, uint64_t FileId, uint64_t WaitSeconds) {
+  //
+  // MaxCompactBytes bounds the fold for a caller that cannot afford it -- a
+  // guest thread, which is inside mmap, munmap or mprotect and holding
+  // SaveIOLock, so the whole guest is stopped for however long the fold takes.
+  // Over the bound it leaves the namespace alone and reports the segment
+  // unwritten, which is the same answer a busy namespace lock gives and is
+  // handled the same way: the records come back and a later pass, the writer
+  // process or the exit save does the fold instead. 0 means no bound, which is
+  // what the writer process and the final pass always pass.
+  PublishResult PublishTempSegment(const fextl::string& Base, const fextl::string& Temp, uint64_t ConfigId, uint64_t FileId,
+                                   uint64_t WaitSeconds, uint64_t MaxCompactBytes = 0) {
     PublishResult Result;
     const auto LockPath = Base + ".lock";
     const int LockFD = ::open(LockPath.c_str(), O_RDWR | O_CREAT | O_CLOEXEC, 0644);
@@ -2846,11 +2979,21 @@ namespace {
         }
         ::flock(LockFD, LOCK_UN);
       }
-      if (!Result.Written && LockWithDeadline(LockFD, LOCK_EX, WaitSeconds)) {
-        // Every segment name is taken: fold them, and this segment, into one.
-        Result.Written = CompactSegments(Base, Temp, ConfigId, FileId);
-        Result.Compacted = Result.Written;
-        ::flock(LockFD, LOCK_UN);
+      if (!Result.Written) {
+        // No free name, so the only way in is to fold every segment, and this
+        // one, into one. Measured here and not before the link loop: on the
+        // path that matters -- a namespace with a name free -- this is eight
+        // stat(2) calls nobody needs, and on the path that gets here a
+        // compaction is about to read every one of those files anyway.
+        const auto Extent = MeasureNamespace(Base);
+        Result.NamespaceBytes = Extent.Bytes;
+        if (MaxCompactBytes != 0 && Extent.Bytes > MaxCompactBytes) {
+          Result.Deferred = true;
+        } else if (LockWithDeadline(LockFD, LOCK_EX, WaitSeconds)) {
+          Result.Written = CompactSegments(Base, Temp, ConfigId, FileId);
+          Result.Compacted = Result.Written;
+          ::flock(LockFD, LOCK_UN);
+        }
       }
       ::close(LockFD);
     }
@@ -2869,12 +3012,23 @@ namespace {
     uint64_t FileId {};
     uint64_t Blocks {};
     uint64_t WaitSeconds {};
+    // Only a guest-thread publish sets this; it is not sent to the writer, whose
+    // whole purpose is to be the process that can afford the fold.
+    uint64_t MaxCompactBytes {};
+    // Something is waiting on this publish: it is a periodic or unmap pass on a
+    // guest thread, so its duration is a stall of the whole guest. False in the
+    // writer process and on the final pass, which nothing waits for.
+    bool OnGuestThread {};
   };
 
   // The publish itself. The same code on a guest thread and in the writer; only
-  // WaitSeconds differs, and the temp file is consumed either way.
+  // WaitSeconds and the bound differ, and the temp file is consumed either way.
   PublishResult RunPublish(const PublishJob& Job) {
-    const auto Published = PublishTempSegment(Job.Base, Job.Temp, Job.ConfigId, Job.FileId, Job.WaitSeconds);
+    // Timed from here, not from around CompactSegments: after a fold the durable
+    // mirror copies the whole namespace to disk, and the guest waits for that
+    // too. What is reported is what the guest paid.
+    const uint64_t Start = Job.OnGuestThread ? MonotonicMilliseconds() : 0;
+    const auto Published = PublishTempSegment(Job.Base, Job.Temp, Job.ConfigId, Job.FileId, Job.WaitSeconds, Job.MaxCompactBytes);
     if (Published.Written && !Job.DurableBase.empty()) {
       // Mirror what changed, no more: one segment for an append, the whole
       // namespace after a compaction, which is where the names the durable tier
@@ -2884,6 +3038,12 @@ namespace {
       } else {
         WriteBackSegment(Job.Base, Job.DurableBase, Published.Index);
       }
+    }
+    if (Job.OnGuestThread && Published.Compacted) {
+      ReportInlineCompaction(Job.Base, Published.NamespaceBytes, MonotonicMilliseconds() - Start);
+    }
+    if (Job.OnGuestThread && Published.Deferred) {
+      ReportDeferredCompaction(Job.Base, Published.NamespaceBytes, Job.MaxCompactBytes);
     }
     return Published;
   }
@@ -3050,10 +3210,35 @@ CodeCache::SaveWriterStats* CodeCache::GetSaveWriterStats() {
   return WriterStats;
 }
 
+// CodeCacheInlinePublishMaxSize as bytes, 0 for no bound. Read once: the option
+// cannot change after startup and a publish must not pay a config lookup per
+// segment.
+uint64_t CodeCache::InlineCompactLimitBytes() {
+  const int64_t MiB = InlinePublishMaxSize();
+  return MiB > 0 ? static_cast<uint64_t>(MiB) << 20 : 0;
+}
+
 // Publishes on the calling thread, which is a guest thread: it never waits for
-// a busy namespace lock, because everything in this process waits on it.
+// a busy namespace lock, because everything in this process waits on it. Nor
+// does it fold a namespace bigger than CodeCacheInlinePublishMaxSize, for the
+// same reason: everything in this process waits on that too, and on Chrome's
+// namespace it is seconds of file I/O inside a memory-management syscall.
 // Segments a writer has taken (Written already set) are skipped.
-size_t CodeCache::PublishSegments(std::span<PendingSegment> Pending, uint64_t ConfigId) {
+size_t CodeCache::PublishSegments(std::span<PendingSegment> Pending, uint64_t ConfigId, CodeCacheSaveKind Kind) {
+  // One question, and the bound and the reporting are both answers to it: is
+  // anything still waiting on this publish? A periodic or unmap pass, yes --
+  // the guest is stopped for it -- so its fold is bounded and a slow one
+  // reports itself. The final pass, no: the guest is over, and where the exit
+  // forked a child for it (Thread.cpp's exit_group, FEXInterpreter's return
+  // from ExecuteThread) there is nothing left to wait at all. The final pass
+  // also HAS to be the exempt one: it is this process's last, so nothing comes
+  // after it to do the fold instead, and with no writer process it is the only
+  // compactor there is -- bound it and a namespace that reached MaxSegments
+  // would never be folded again by anyone, and so would never take another
+  // segment either. On the execve path it is on the guest thread, and that is
+  // the price of that.
+  const bool Inline = Kind != CodeCacheSaveKind::Final;
+  const uint64_t MaxCompactBytes = Inline ? InlineCompactLimitBytes() : 0;
   size_t Written = 0;
   for (auto& P : Pending) {
     if (P.Written) {
@@ -3061,13 +3246,36 @@ size_t CodeCache::PublishSegments(std::span<PendingSegment> Pending, uint64_t Co
     }
     std::error_code EC;
     std::filesystem::create_directories(std::filesystem::path(std::string_view {P.Base}).parent_path(), EC);
+    // Asked before the segment is serialized, not only inside the publish: a
+    // full namespace over the bound is the steady state of a large guest, so
+    // without this every periodic pass would write a multi-megabyte temp file
+    // for the publish to refuse and unlink again, once a minute, forever. The
+    // answer can go stale between here and the publish -- a sibling may fold
+    // the namespace and free seven names -- which costs this pass its segment
+    // and no more: the records come back and the next pass takes it.
+    if (MaxCompactBytes != 0) {
+      const auto Extent = MeasureNamespace(P.Base);
+      if (Extent.Full && Extent.Bytes > MaxCompactBytes) {
+        Stats.DeferredCompactions.fetch_add(1, std::memory_order_relaxed);
+        ReportDeferredCompaction(P.Base, Extent.Bytes, MaxCompactBytes);
+        // A segment a writer would not take is already a file; the publish is
+        // what would have consumed it, and it is not going to run.
+        if (!P.Temp.empty()) {
+          ::unlink(P.Temp.c_str());
+          P.Temp.clear();
+        }
+        continue;
+      }
+    }
     auto Temp = P.Temp.empty() ? WriteTempSegment(P.Base, [&](int FD) { return WriteSegment(FD, P.Builder, ConfigId, P.FileId); }) :
                                  std::move(P.Temp);
     P.Temp.clear();
-    const PublishJob Job {P.Base, P.DurableBase, Temp, ConfigId, P.FileId, P.Builder.Blocks.size(), 0};
+    const PublishJob Job {P.Base, P.DurableBase, Temp, ConfigId, P.FileId, P.Builder.Blocks.size(), 0, MaxCompactBytes, Inline};
     const auto Published = Temp.empty() ? PublishResult {} : RunPublish(Job);
     P.Written = Published.Written;
     Stats.Compactions.fetch_add(Published.Compacted ? 1 : 0, std::memory_order_relaxed);
+    Stats.InlineCompactions.fetch_add(Inline && Published.Compacted ? 1 : 0, std::memory_order_relaxed);
+    Stats.DeferredCompactions.fetch_add(Published.Deferred ? 1 : 0, std::memory_order_relaxed);
     if (P.Written) {
       Stats.SavedBlocks.fetch_add(P.Builder.Blocks.size(), std::memory_order_relaxed);
       Stats.SavedSegments.fetch_add(1, std::memory_order_relaxed);
@@ -3486,7 +3694,7 @@ size_t CodeCache::SaveNewBlocks(Core::InternalThreadState&, std::span<const Code
     // Whatever the writer would not take -- there is none, it is busy with a
     // larger namespace, or the record did not fit -- is published here, without
     // waiting for a busy namespace lock.
-    SegmentsWritten = Handed + PublishSegments(Pending, ConfigId);
+    SegmentsWritten = Handed + PublishSegments(Pending, ConfigId, Kind);
     if (Kind != CodeCacheSaveKind::Final) {
       for (const auto& P : Pending) {
         if (!P.Written) {
