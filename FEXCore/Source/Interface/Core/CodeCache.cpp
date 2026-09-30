@@ -513,6 +513,10 @@ uint64_t ComputeCodeCacheConfigId() {
     // code produced with it on must not be reused with it off, or vice versa.
     HASH_OPT(VCMPFUSION);
 
+    // Exclusive fusion swallows the whole guest LDXR..STXR..CBNZ loop into one
+    // block with a host-level back edge, so it changes block shape too.
+    HASH_OPT(EXCLUSIVEFUSION);
+
     // Lookup-cache shape: the dispatcher's inlined L1 probe is emitted into
     // every block exit on this backend.
     HASH_OPT(DISABLEL2CACHE);

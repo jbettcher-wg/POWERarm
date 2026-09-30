@@ -70,7 +70,13 @@ gcc -static -O2 -pthread -o threadexit "$here/threadexit.c"
 # "ok" lines and rc 0; under POWERarm a leaked per-thread LookupCache makes the
 # first line differ. See threadleak.c.
 gcc -static -O2 -pthread -o threadleak "$here/threadleak.c"
-corpus="$corpus callret sigpreempt sigedit sigteardown sigqueued threadexit threadleak"
+# LDXR/STXR retry loops under contention, the shape TryFuseExclusiveLoop lowers
+# onto lwarx/stwcx. Every assertion is architecturally forced (N threads x M
+# increments leave exactly N*M), so the interleaving differing wildly between a
+# 4-core Pi and a 176-thread POWER9 cannot move the output. Nothing
+# CONSTRAINED UNPREDICTABLE is asserted -- that stays in exclusive_pair.
+gcc -static -O2 -pthread -o exclusive_contend "$here/exclusive_contend.c"
+corpus="$corpus callret sigpreempt sigedit sigteardown sigqueued threadexit threadleak exclusive_contend"
 # POWERarm configuration for run.sh (<test>.env): vdso_syscalls counts
 # syscalls with a seccomp filter, and seccomp emulation is opt-in there.
 echo POWERARM_NEEDSSECCOMP=1 > vdso_syscalls.env

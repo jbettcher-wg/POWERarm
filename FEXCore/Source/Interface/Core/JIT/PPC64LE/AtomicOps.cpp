@@ -485,6 +485,73 @@ void PPC64JITCore::EmitInlineContainedCAS(PPC64Emitter::GPR A, PPC64Emitter::GPR
 }
 
 // ---------------------------------------------------------------------------
+// LoadReserved / StoreConditional — the native reservation pair
+//
+// These two ops are one lowering split across two IR nodes, because the guest
+// instructions the loop has to re-execute sit between them. LoadReserved emits
+// the loop label and the l*arx; StoreConditional emits the st*cx. and the
+// backward branch to that label. Nothing else in this backend keeps state
+// between two ops, so the invariants are worth spelling out:
+//
+//   * They must be adjacent within one IR block, with only register-to-register
+//     work between them. The A64 frontend's TryFuseExclusiveLoop is the only
+//     emitter and it proves that shape from the decoded guest block before it
+//     emits anything; ReservationOpen is the backend's own check that it did.
+//   * Nothing between them may execute another l*arx or st*cx., which would
+//     take the reservation away on every pass and spin the loop forever. Plain
+//     stores are fine: POWER only clears a reservation on a store from
+//     *another* processor (Book II, Reservations), so the register-allocator's
+//     spills, the guest register writes and the JIT's context stores are all
+//     harmless inside the window.
+//   * There is no st*cx. status result. Control leaves StoreConditional only
+//     once the store was performed, which is what lets the frontend fold the
+//     guest's retry CBNZ into this branch.
+//   * Guest N/Z live in CR0.LT/CR0.EQ and st*cx. overwrites CR0, so the pair
+//     parks them in cr5 with an mcrf either side -- two ~1-cycle instructions
+//     against the 14 a _LoadNZCV/_StoreNZCV round trip costs. The save sits
+//     OUTSIDE the loop (before the label), so a retry does not re-save the CR0
+//     the st*cx. has already clobbered. cr5 is otherwise unused by this
+//     backend except as a scratch compare field inside one MemoryOps lowering,
+//     which cannot appear in the window.
+//   * Alignment is the guest's problem, not ours: l*arx/st*cx. raise an
+//     alignment interrupt on an unaligned address, and so does AArch64
+//     LDXR/STXR. No split-lock path, deliberately.
+// ---------------------------------------------------------------------------
+DEF_OP(LoadReserved) {
+  const auto Op = IROp->C<IR::IROp_LoadReserved>();
+  const auto Sz = IROp->Size;
+  const auto Addr = GetReg(Op->Addr);
+  const auto Dst = GetReg(Node);
+
+  LOGMAN_THROW_A_FMT(!ReservationOpen, "LoadReserved while another reservation pair is still open");
+
+  // Park guest N/Z. Outside the loop: cr5 must survive every retry.
+  mcrf(5, 0);
+
+  ReservationLoop = PPC64Emitter::Label {};
+  Bind(&ReservationLoop);
+  LOAD_RESERVED(Dst, Addr, Sz);
+  ReservationOpen = true;
+}
+
+DEF_OP(StoreConditional) {
+  const auto Op = IROp->C<IR::IROp_StoreConditional>();
+  const auto Sz = IROp->Size;
+  const auto Addr = GetReg(Op->Addr);
+  const auto Val = GetReg(Op->Value);
+
+  LOGMAN_THROW_A_FMT(ReservationOpen, "StoreConditional with no LoadReserved open in this block");
+
+  STORE_COND(Val, Addr, Sz);
+  // Reservation lost (contention, or this thread was preempted): retry. The
+  // window is straight-line host code, so a retry re-runs exactly the guest
+  // instructions the guest's own CBNZ would have re-run.
+  bc(CC_NE, &ReservationLoop);
+  mcrf(0, 5);
+  ReservationOpen = false;
+}
+
+// ---------------------------------------------------------------------------
 // AtomicSwap — exchange, returns old value
 // ---------------------------------------------------------------------------
 DEF_OP(AtomicSwap) {

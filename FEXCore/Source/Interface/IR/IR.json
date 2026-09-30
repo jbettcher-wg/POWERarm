@@ -811,6 +811,39 @@
       }
     },
     "Atomic": {
+      "GPR = LoadReserved OpSize:#Size, GPR:$Addr": {
+        "HasSideEffects": true,
+        "Desc": ["The load half of a native load-linked / store-conditional pair (POWER l{b,h,w,d}arx).",
+                 "Loads Size bytes from %Addr, zero extended, and arms the host reservation.",
+                 "Must be followed, in the SAME IR block and with no other memory operation,",
+                 "atomic, helper call or block boundary between them, by exactly one",
+                 "StoreConditional: the backend emits the loop label here and the backward",
+                 "branch there, so the pair is one straight-line host region. The A64 frontend",
+                 "emits the pair only out of TryFuseExclusiveLoop, which proves that shape;",
+                 "everything else keeps the software exclusive monitor.",
+                 "%Addr must be naturally aligned for Size -- an unaligned reservation load",
+                 "raises SIGBUS, which is also what AArch64 LDXR does."
+                ],
+        "DestSize": "Size",
+        "EmitValidation": [
+          "Size == FEXCore::IR::OpSize::i8Bit || Size == FEXCore::IR::OpSize::i16Bit || Size == FEXCore::IR::OpSize::i32Bit || Size == FEXCore::IR::OpSize::i64Bit"
+        ]
+      },
+      "StoreConditional OpSize:#Size, GPR:$Value, GPR:$Addr": {
+        "HasSideEffects": true,
+        "Desc": ["The store half of a native load-linked / store-conditional pair (POWER st{b,h,w,d}cx.).",
+                 "Stores the low Size bytes of %Value to %Addr if the reservation armed by the",
+                 "matching LoadReserved still holds, and otherwise branches back to it and retries.",
+                 "It therefore has no status result: control only leaves it once the store was",
+                 "performed, which is why the frontend can fold the guest's retry CBNZ away.",
+                 "Guest N/Z (CR0.LT/CR0.EQ) are preserved across the pair with an mcrf pair,",
+                 "so this op is NOT an ImplicitFlagClobber."
+                ],
+        "DestSize": "Size",
+        "EmitValidation": [
+          "Size == FEXCore::IR::OpSize::i8Bit || Size == FEXCore::IR::OpSize::i16Bit || Size == FEXCore::IR::OpSize::i32Bit || Size == FEXCore::IR::OpSize::i64Bit"
+        ]
+      },
       "GPR = CAS OpSize:#Size, GPR:$Expected, GPR:$Desired, GPR:$Addr, i1:$Relaxed{false}": {
         "HasSideEffects": true,
         "Desc": ["Does a compare and swap of values to a memory location",

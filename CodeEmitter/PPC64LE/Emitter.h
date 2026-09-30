@@ -651,6 +651,20 @@ public:
     Emit32((19u << 26) | (bt << 21) | (ba << 16) | (bb << 11) | (129u << 1));
   }
 
+  // mcrf BF, BFA  (move one condition register field to another — XL-form,
+  // opcode 19, XO 0; base ISA, on every POWER this backend targets).
+  // Four bits, CR[BF] <- CR[BFA], in one uncracked ~1-cycle instruction. That
+  // is the cheap way to park guest N/Z (which live in CR0.LT/CR0.EQ) across a
+  // CR0-writing instruction: the mfocrf/mtocrf pair costs +7 cycles each way,
+  // and the mfocrf/std/ld/mtocrf shape the AtomicFetch* lowerings use adds a
+  // store-forward on top.
+  // Verified against llvm-mc -triple=powerpc64le: mcrf 5,0 = 0x4E800000,
+  // mcrf 0,5 = 0x4C140000, mcrf 1,7 = 0x4C9C0000.
+  void mcrf(uint32_t bf, uint32_t bfa) {
+    assert(bf < 8 && bfa < 8 && "mcrf BF/BFA are 3-bit CR field indices");
+    Emit32((19u << 26) | (bf << 23) | (bfa << 18));
+  }
+
   // mfcr RT  (move from condition register, XO 19)
   void mfcr(GPR rt) { Emit32((31u << 26) | (rt.idx << 21) | (19u << 1)); }
 

@@ -9,3 +9,9 @@ AArch64 to PPC
 "DMB SY" -> "sync"
 "DMB LD" -> "lwsync"
 "DMB ST" -> "lwsync"
+# The rejected trailing-sync proposal applied to the pair, to match STLR above:
+# lwsync before the store, sync after it.
+"LDXR %r,[%a]; STXR W%s,W%v,[%a]" -> "lwarx %r,r0,%a; li %s,1; stwcx. %v,r0,%a; bne xd; li %s,0; xd:"
+"LDAXR %r,[%a]; STXR W%s,W%v,[%a]" -> "lwarx %r,r0,%a; lwsync; li %s,1; stwcx. %v,r0,%a; bne xd; li %s,0; xd:"
+"LDXR %r,[%a]; STLXR W%s,W%v,[%a]" -> "lwsync; lwarx %r,r0,%a; li %s,1; stwcx. %v,r0,%a; sync; bne xd; li %s,0; xd:"
+"LDAXR %r,[%a]; STLXR W%s,W%v,[%a]" -> "lwsync; lwarx %r,r0,%a; lwsync; li %s,1; stwcx. %v,r0,%a; sync; bne xd; li %s,0; xd:"

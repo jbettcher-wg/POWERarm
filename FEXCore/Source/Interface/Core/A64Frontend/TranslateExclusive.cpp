@@ -1,8 +1,14 @@
 // SPDX-License-Identifier: MIT
 //
-// A64 exclusive loads and stores (LDXR/LDAXR, STXR/STLXR) through the
-// software exclusive monitor in CPUState (DESIGN.md §4.3), and the plain
+// A64 exclusive loads and stores (LDXR/LDAXR, STXR/STLXR) and the plain
 // atomic-width loads and stores LDAR/LDLAR/STLR/STLLR.
+//
+// There are two lowerings for the exclusives. TryFuseExclusiveLoop at the
+// bottom of this file recognises the complete guest retry loop and emits
+// POWER's native lwarx/stwcx. reservation for it; everything else goes through
+// the software exclusive monitor in CPUState (DESIGN.md §4.3) described next.
+// The two agree by construction: the fused path clears excl_valid, so a
+// software STXR that is not paired with a software LDXR always fails.
 //
 // LDXR records the address, size and loaded value and marks the monitor
 // valid. STXR succeeds when the monitor is valid for the same address and
@@ -12,9 +18,14 @@
 // two is not detected (the ABA case the design accepts for the software
 // path). Either way the monitor is cleared.
 #include "Interface/Core/A64Frontend/IRBuilder.h"
+#include "Interface/Core/A64Frontend/DecodeTable.h"
+#include "Interface/Core/A64Frontend/Decoder.h"
 #include "Interface/Core/A64Frontend/TranslateCommon.h"
 
 #include <FEXCore/Core/CoreState.h>
+#include <FEXCore/Utils/LogManager.h>
+
+#include <string_view>
 
 namespace FEXCore::A64 {
 using namespace FEXCore::IR;
@@ -26,6 +37,13 @@ bool IRBuilder::LoadExclusive(uint32_t Word) {
   const uint32_t Rt = Bits(Word, 4, 0);
 
   Ref Address = LoadXSP(Rn);
+  // LDAXR is RCsc, exactly as LDAR is: a preceding STLR and this load may not
+  // be reordered. That is a leading hwsync, and the trailing acquire fence
+  // below is only the other half -- see LoadStoreAtomicWidth for the whole
+  // argument and for why both halves have to use the same convention.
+  if (Bit(Word, 15)) {
+    _Fence(IR::FenceType::LoadStore);
+  }
   Ref Value = _LoadMem(RegClass::GPR, MemSize, Address, Invalid(), OpSize::i8Bit, MemOffsetType::SXTX, 1);
   _StoreContext(OpSize::i64Bit, RegClass::GPR, Address, offsetof(FEXCore::Core::CPUState, excl_addr));
   _StoreContext(OpSize::i64Bit, RegClass::GPR, Value, offsetof(FEXCore::Core::CPUState, excl_value));
@@ -45,6 +63,10 @@ bool IRBuilder::LoadExclusivePair(uint32_t Word) {
   const uint32_t Rt2 = Bits(Word, 14, 10);
 
   Ref Address = LoadXSP(Rn);
+  // LDAXP is RCsc; see LoadExclusive.
+  if (Bit(Word, 15)) {
+    _Fence(IR::FenceType::LoadStore);
+  }
   if (Is64) {
     Ref Val1 = _LoadMem(RegClass::GPR, OpSize::i64Bit, Address, Invalid(), OpSize::i8Bit, MemOffsetType::SXTX, 1);
     Ref Val2 = _LoadMem(RegClass::GPR, OpSize::i64Bit, Address, Constant(8), OpSize::i8Bit, MemOffsetType::SXTX, 1);
@@ -78,6 +100,12 @@ bool IRBuilder::StoreExclusive(uint32_t Word) {
   const uint32_t Rs = Bits(Word, 20, 16);
   const uint32_t Rn = Bits(Word, 9, 5);
   const uint32_t Rt = Bits(Word, 4, 0);
+  // Bit 15 is o0, the release bit: STLXR has it, STXR does not. A plain STXR
+  // asks for atomicity and nothing else, so its CAS drops the hwsync/isync
+  // bracket the same way a fully relaxed LSE RMW does (AtomicMemOp explains
+  // why that is safe). Until this was passed, an exclusive pair with neither
+  // acquire nor release still paid two heavyweight syncs.
+  const bool Relaxed = !Bit(Word, 15);
 
   // Match = valid && excl_addr == Rn && excl_size == size.
   Ref Valid = _LoadContext(OpSize::i8Bit, RegClass::GPR, offsetof(FEXCore::Core::CPUState, excl_valid));
@@ -98,7 +126,7 @@ bool IRBuilder::StoreExclusive(uint32_t Word) {
     // The CAS lowering clobbers the host flags that hold NZCV.
     Ref NZCV = _LoadNZCV();
     Ref Expected = _LoadContext(OpSize::i64Bit, RegClass::GPR, offsetof(FEXCore::Core::CPUState, excl_value));
-    Ref Old = _CAS(MemSize, Expected, LoadX(Rt), LoadXSP(Rn));
+    Ref Old = _CAS(MemSize, Expected, LoadX(Rt), LoadXSP(Rn), Relaxed);
     Ref Status = _Select(OpSize::i64Bit, OpSize::i64Bit, CondClass::EQ, Old, Expected, Constant(0), Constant(1));
     _StoreNZCV(NZCV);
     StoreW(Rs, Status);
@@ -124,6 +152,9 @@ bool IRBuilder::StoreExclusivePair(uint32_t Word) {
   const uint32_t Rn = Bits(Word, 9, 5);
   const uint32_t Rt = Bits(Word, 4, 0);
   const uint32_t Rt2 = Bits(Word, 14, 10);
+  // As in StoreExclusive: bit 15 is o0. Only the 32-bit form can use it --
+  // _CASPair has no Relaxed flag and keeps its unconditional bracket.
+  const bool Relaxed = !Bit(Word, 15);
 
   // Match = valid && excl_addr == Rn && excl_size == (Is64 ? 16 : 8).
   Ref Valid = _LoadContext(OpSize::i8Bit, RegClass::GPR, offsetof(FEXCore::Core::CPUState, excl_valid));
@@ -161,7 +192,7 @@ bool IRBuilder::StoreExclusivePair(uint32_t Word) {
       Ref Lo = _Bfe(OpSize::i64Bit, 32, 0, LoadX(Rt));
       Ref Hi = _Lshl(OpSize::i64Bit, LoadX(Rt2), Constant(32));
       Ref Desired = _Or(OpSize::i64Bit, Hi, Lo);
-      Ref Old = _CAS(OpSize::i64Bit, Expected, Desired, LoadXSP(Rn));
+      Ref Old = _CAS(OpSize::i64Bit, Expected, Desired, LoadXSP(Rn), Relaxed);
       Status = _Select(OpSize::i64Bit, OpSize::i64Bit, CondClass::EQ, Old, Expected, Constant(0), Constant(1));
     }
     _StoreNZCV(NZCV);
@@ -447,6 +478,238 @@ bool IRBuilder::CompareAndSwapPair(uint32_t Word) {
   StoreReg(Rs, Is64, OutLo);
   StoreReg(Rs + 1, Is64, OutHi);
   return true;
+}
+
+// ---------------------------------------------------------------------------
+// Native lwarx/stwcx. for the complete LDXR..STXR retry loop
+// ---------------------------------------------------------------------------
+//
+// POWER's reservation is weaker than AArch64's monitor in the one way that
+// matters: anything between the l*arx and the st*cx. can take it away. A store
+// to the granule from another processor, another l*arx, a st*cx., a context
+// switch. AArch64 lets STXR fail spuriously, so losing it is always
+// *architecturally* legal -- but it is not automatically *progress*. If the
+// emulator does real work between the guest's LDXR and its STXR (a block
+// boundary, a dispatcher round trip, a lookup miss, a compile, a helper call
+// that itself takes a reservation) the st*cx. can fail every single time and
+// the guest spins forever.
+//
+// So the fusion condition is not "the pair is in one block", it is stronger:
+// **the guest's entire retry loop is the block**, exactly
+//
+//     L: LDXR|LDAXR  Wt, [Xn]
+//        <body: register-to-register instructions only>
+//        STXR|STLXR  Ws, Wv, [Xn]
+//        CBNZ        Ws, L
+//
+// with the CBNZ branching back to the LDXR itself. Three things follow, and
+// together they are the forward-progress argument:
+//
+//   (a) The emitted region is straight-line host code with one backward branch
+//       at its end. The decoder cannot have put a branch target inside it (a
+//       leader ends a block), the body's whitelist contains nothing that
+//       touches memory, calls a helper, raises a signal or emits another
+//       reservation instruction, and no IR block boundary falls inside it, so
+//       there is no dispatcher exit, no block link, no drain-point branch and
+//       no second l*arx in the window. Nothing the *emulator* does can lose
+//       the reservation. Only real contention and real preemption can.
+//   (b) A retry is therefore progress-equivalent to the guest's own retry. The
+//       host loop re-executes precisely the guest instructions the guest's
+//       CBNZ would have re-executed, in the same order, on the same registers
+//       -- because the fused region *is* the guest's loop body. The guest
+//       cannot tell the two apart, which is also why the body may freely
+//       overwrite its own inputs: the guest's loop has the same property.
+//   (c) Under contention the loop is the ordinary POWER LL/SC loop that every
+//       native atomic on this machine already is: lock-free, and some CPU
+//       always completes. Preemption between the l*arx and the st*cx. costs
+//       one extra pass, not a livelock, since the reservation is re-armed by
+//       the retry.
+//
+// A guest signal cannot be delivered inside the region -- deferred signals are
+// drained at the poke the backend emits at entry points and backward IR edges,
+// and there is neither inside a fused loop -- so the window is a handful of
+// instructions during which signals stay pending, exactly as they already do
+// inside the CAS lowering's own l*arx/st*cx. loop. A *synchronous* fault is
+// possible (the l*arx or st*cx. can SIGSEGV, or SIGBUS on an unaligned
+// address, which is what AArch64 LDXR does too); the region emits a RIP-table
+// marker per fused guest instruction, so the fault is attributed to the right
+// guest PC, and resuming there re-enters through the software monitor, whose
+// excl_valid this region clears -- so the STXR reports failure and the guest
+// loops round. Terminating, and architecturally permitted.
+//
+// Everything that is not this shape keeps the software monitor. The compare-
+// exchange loop (`ldaxr; cmp; b.ne out; stlxr; cbnz`) is the notable one: the
+// b.ne ends the decoded block, so the pair straddles two blocks and cannot
+// carry a progress guarantee. It falls back, and the fallback is now cheaper
+// too (see StoreExclusive's Relaxed flag).
+//
+// LDXP/STXP stay on the software monitor unconditionally. lqarx/stqcx. need an
+// even register pair and 16-byte alignment, and there is no ldxp/stxp retry
+// loop in the reference binaries worth the second lowering; the progress
+// argument would have to be made again for a pair whose granule handling
+// differs. Said once here so the next reader does not have to re-derive it.
+
+// The body instructions a fused window may contain: AArch64 data-processing
+// forms that write exactly one GPR (Rd, bits 4:0), read only GPRs, touch no
+// memory, set no flags, raise no signal, and whose ppc64le lowerings emit
+// neither a helper call nor a reservation instruction. Deliberately narrow:
+// this covers what compilers actually put in an exclusive loop (the
+// __atomic_fetch_* bodies, the exchange with no body at all) and nothing whose
+// lowering would have to be re-audited.
+static bool ExclusiveBodyWrites(const InstMatcher* Matcher, uint32_t Word, uint32_t& Rd) {
+  if (!Matcher || !Matcher->Handler) {
+    return false;
+  }
+  static constexpr std::string_view Allowed[] = {
+    "ADD_imm", "SUB_imm", "AND_imm", "ORR_imm", "EOR_imm",
+    "ADD_shift", "SUB_shift", "AND_shift", "ORR_shift", "EOR_shift", "BIC_shift", "ORN_shift", "EON",
+    "ADD_ext", "SUB_ext", "MOVZ", "MOVN", "MOVK", "UBFM", "SBFM",
+  };
+  const std::string_view Name {Matcher->Name};
+  for (const auto& A : Allowed) {
+    if (Name == A) {
+      Rd = Bits(Word, 4, 0);
+      return true;
+    }
+  }
+  return false;
+}
+
+size_t IRBuilder::TryFuseExclusiveLoop(const Decoder::DecodedBlocks& Block, size_t Index) {
+  // At most this many register-only guest instructions between the pair. Every
+  // real body is 0-2 (an add, a bic+orr); the bound only keeps a pathological
+  // decode from growing the reservation window without a reason.
+  constexpr size_t MaxBody = 8;
+
+  // The LDXR must be the block's first instruction. That is not an extra
+  // requirement: the CBNZ below has to target it, so its PC is a leader, and
+  // the decoder splits a block at every leader.
+  if (Index != 0 || Block.NumInstructions < 3 || Block.NumInstructions > MaxBody + 3) {
+    return 0;
+  }
+  const size_t LastIdx = Block.NumInstructions - 1;
+  const size_t StoIdx = LastIdx - 1;
+
+  const auto& Ld = Block.DecodedInstructions[Index];
+  const auto& Sto = Block.DecodedInstructions[StoIdx];
+  const auto& Br = Block.DecodedInstructions[LastIdx];
+  if (!Ld.Matcher || !Sto.Matcher || !Br.Matcher) {
+    return 0;
+  }
+
+  const std::string_view LdName {Ld.Matcher->Name};
+  const std::string_view StoName {Sto.Matcher->Name};
+  if ((LdName != "LDXR" && LdName != "LDAXR") || (StoName != "STXR" && StoName != "STLXR") ||
+      std::string_view {Br.Matcher->Name} != "CBNZ") {
+    return 0;
+  }
+
+  // CBZ is not this idiom (it branches on success, not on failure), and is
+  // rejected above by name. The CBNZ must close the loop at the LDXR.
+  const uint64_t TargetPC = Br.PC + SignExtend(Bits(Br.Word, 23, 5), 19) * 4;
+  if (TargetPC != Ld.PC) {
+    return 0;
+  }
+
+  const uint32_t Size = Bits(Ld.Word, 31, 30);
+  const uint32_t Rn = Bits(Ld.Word, 9, 5);
+  const uint32_t RtLd = Bits(Ld.Word, 4, 0);
+  const uint32_t Rs = Bits(Sto.Word, 20, 16);
+  const uint32_t RtSt = Bits(Sto.Word, 4, 0);
+
+  // Same access width and same base register, or the pair is not a pair.
+  if (Bits(Sto.Word, 31, 30) != Size || Bits(Sto.Word, 9, 5) != Rn) {
+    return 0;
+  }
+  // The CBNZ must test the status the STXR wrote, and nothing else.
+  if (Bits(Br.Word, 4, 0) != Rs) {
+    return 0;
+  }
+  // STXR with s == t or s == n is CONSTRAINED UNPREDICTABLE; leave those to the
+  // software monitor rather than pick a behaviour here. Rs == 31 discards the
+  // status, which makes the CBNZ a `cbnz wzr` that never retries -- not this
+  // idiom either.
+  if (Rs == 31 || Rs == Rn || Rs == RtSt) {
+    return 0;
+  }
+  // The loaded value must not land in the base register: the second pass round
+  // the loop would then address somewhere else, and the address SSA value this
+  // region hands both halves of the pair would no longer be Xn.
+  if (RtLd == Rn) {
+    return 0;
+  }
+
+  // Body: whitelisted, and it must leave the base register and the status
+  // register alone. It may do anything it likes to the loaded value.
+  for (size_t i = Index + 1; i < StoIdx; ++i) {
+    uint32_t Rd = 0;
+    if (!ExclusiveBodyWrites(Block.DecodedInstructions[i].Matcher, Block.DecodedInstructions[i].Word, Rd)) {
+      return 0;
+    }
+    if (Rd == Rn || Rd == Rs) {
+      return 0;
+    }
+  }
+
+  const auto MemSize = IR::SizeToOpSize(1U << Size);
+  const bool Is64 = Size == 3;
+  const bool Acquire = Bit(Ld.Word, 15);  // LDAXR
+  const bool Release = Bit(Sto.Word, 15); // STLXR
+
+  // One address value for both halves of the pair. Same SSA node, so the
+  // register allocator keeps it in one register across the whole region and the
+  // st*cx. cannot address anywhere other than the l*arx did.
+  Ref Address = LoadXSP(Rn);
+
+  // The software monitor must not survive a fused loop: a later unpaired
+  // software STXR has to fail, and a stale excl_valid from an earlier software
+  // LDXR would let it succeed. Reporting failure there is exactly what the
+  // architecture permits. One byte store, outside the loop, and a store by this
+  // processor never clears a POWER reservation.
+  _StoreContext(OpSize::i8Bit, RegClass::GPR, Constant(0), offsetof(FEXCore::Core::CPUState, excl_valid));
+
+  // Leading hwsync, once, before the loop. LDAXR and STLXR are RCsc, the same
+  // as LDAR and STLR, so both need the leading sync that forbids store-then-load
+  // reordering -- see LoadStoreAtomicWidth for why that half cannot be moved to
+  // the trailing side. Hoisting it above the l*arx rather than emitting one per
+  // annotation is what collapses two syncs into one; it is at least as strong as
+  // a per-instruction placement, because everything it orders it orders against
+  // both halves of the pair, and the l*arx/st*cx. pair is ordered internally by
+  // the reservation itself. unittests/MemoryModel/check.sh gates this.
+  if (Acquire || Release) {
+    _Fence(IR::FenceType::LoadStore);
+  }
+
+  Ref Value = _LoadReserved(MemSize, Address);
+  StoreReg(RtLd, Is64, Value);
+  if (Acquire) {
+    // The acquire half, inside the loop: it has to order the value this pass
+    // loaded against everything after it.
+    _Fence(IR::FenceType::Acquire);
+  }
+
+  // The body, translated exactly as it would be outside a loop.
+  for (size_t i = Index + 1; i < StoIdx; ++i) {
+    const auto& Inst = Block.DecodedInstructions[i];
+    _GuestOpcode(Inst.PC - Entry);
+    if (!TranslateInstruction(Inst)) {
+      // Unreachable: every whitelisted handler returns true for a matched word.
+      // If one ever does not, the region is already half emitted, so fail loudly
+      // rather than leave a l*arx with no st*cx.
+      ERROR_AND_DIE_FMT("exclusive-loop body instruction {:#x} at {:#x} did not translate", Inst.Word, Inst.PC);
+    }
+  }
+
+  _GuestOpcode(Sto.PC - Entry);
+  _StoreConditional(MemSize, LoadX(RtSt), Address);
+  // The st*cx. only falls through once it stored, so the architectural status is
+  // always success and the guest's CBNZ is never taken. One `li Ws,0`; dropped
+  // entirely when Ws is the zero register, which the Rs == 31 reject above means
+  // cannot happen here.
+  _GuestOpcode(Br.PC - Entry);
+  StoreW(Rs, Constant(0));
+  ExitToPC(Br.PC + INSTRUCTION_SIZE);
+  return Block.NumInstructions - Index;
 }
 
 } // namespace FEXCore::A64

@@ -70,6 +70,13 @@ public:
   // Returns number of instructions consumed (4 on match, 0 if not matched).
   size_t TryFuseVectorScan(const Decoder::DecodedBlocks& Block, size_t Index);
 
+  // Recognizes the complete AArch64 exclusive retry loop
+  //   L: LDXR/LDAXR Wt,[Xn] ; <register-only body> ; STXR/STLXR Ws,Wv,[Xn] ; CBNZ Ws,L
+  // and lowers it onto POWER's native lwarx/stwcx. reservation instead of the
+  // software exclusive monitor. Returns the number of guest instructions
+  // consumed (>= 3 on a match, 0 if not matched). See TranslateExclusive.cpp.
+  size_t TryFuseExclusiveLoop(const Decoder::DecodedBlocks& Block, size_t Index);
+
   // Guest SIGSEGV (SEGV_ACCERR) at PC: the instruction word could not be read.
   void NoExecInstruction(uint64_t PC);
 

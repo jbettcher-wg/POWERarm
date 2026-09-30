@@ -9,3 +9,24 @@ AArch64 to PPC
 "DMB SY" -> "sync"
 "DMB LD" -> "lwsync"
 "DMB ST" -> "lwsync"
+# LDXR..STXR fused onto the native reservation (TranslateExclusive.cpp,
+# TryFuseExclusiveLoop). One rule per pair rather than one per instruction,
+# because the lowering is one region: the leading fence is hoisted above the
+# l*arx and shared by both halves, which no per-instruction rule could express.
+#
+# Modelled as a SINGLE attempt with its status materialised, not as the retry
+# loop the JIT emits. That is deliberate and it is the faithful abstraction: the
+# ordering structure of one pass is the ordering structure of every pass, and
+# herd7 then explores the st*cx. failing exactly where AArch64 lets the STXR
+# fail, so the two sides stay comparable. The `bne` is not an artefact either --
+# CR0 is the only place POWER puts the status, so every real lowering branches
+# on it, including the JIT's `bne-` back edge.
+#
+# The leading `sync` is what the model insists on. An `lwsync` there is unsound
+# for the R shape (three tests), which settles the question OPTIMIZATION-CHECKLIST
+# P7 left open: a release RMW cannot take lwsync on this mapping. Dropping the
+# leading sync on the acquire side is unsound too, which is why LDAXR gets one.
+"LDXR %r,[%a]; STXR W%s,W%v,[%a]" -> "lwarx %r,r0,%a; li %s,1; stwcx. %v,r0,%a; bne xd; li %s,0; xd:"
+"LDAXR %r,[%a]; STXR W%s,W%v,[%a]" -> "sync; lwarx %r,r0,%a; lwsync; li %s,1; stwcx. %v,r0,%a; bne xd; li %s,0; xd:"
+"LDXR %r,[%a]; STLXR W%s,W%v,[%a]" -> "sync; lwarx %r,r0,%a; li %s,1; stwcx. %v,r0,%a; bne xd; li %s,0; xd:"
+"LDAXR %r,[%a]; STLXR W%s,W%v,[%a]" -> "sync; lwarx %r,r0,%a; lwsync; li %s,1; stwcx. %v,r0,%a; bne xd; li %s,0; xd:"

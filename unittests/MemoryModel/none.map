@@ -9,3 +9,8 @@ AArch64 to PPC
 "DMB SY" -> "li r0,0"
 "DMB LD" -> "li r0,0"
 "DMB ST" -> "li r0,0"
+# No fences at all, as everywhere else in this file. A negative control.
+"LDXR %r,[%a]; STXR W%s,W%v,[%a]" -> "lwarx %r,r0,%a; li %s,1; stwcx. %v,r0,%a; bne xd; li %s,0; xd:"
+"LDAXR %r,[%a]; STXR W%s,W%v,[%a]" -> "lwarx %r,r0,%a; li %s,1; stwcx. %v,r0,%a; bne xd; li %s,0; xd:"
+"LDXR %r,[%a]; STLXR W%s,W%v,[%a]" -> "lwarx %r,r0,%a; li %s,1; stwcx. %v,r0,%a; bne xd; li %s,0; xd:"
+"LDAXR %r,[%a]; STLXR W%s,W%v,[%a]" -> "lwarx %r,r0,%a; li %s,1; stwcx. %v,r0,%a; bne xd; li %s,0; xd:"

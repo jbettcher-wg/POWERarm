@@ -869,6 +869,20 @@
           "The elided vector and GPR destination registers are architecturally exact on all exit paths."
         ]
       },
+      "ExclusiveFusion": {
+        "Type": "bool",
+        "Default": "true",
+        "Desc": [
+          "Lower the AArch64 LDXR..STXR retry loop onto POWER's native lwarx/stwcx.",
+          "reservation instead of the software exclusive monitor. Only the complete",
+          "guest loop is fused -- `L: LDXR Wt,[Xn]; <register-only body>; STXR Ws,Wv,[Xn];",
+          "CBNZ Ws,L` -- because the emitted host loop then re-executes exactly the",
+          "instructions the guest's own retry would, and nothing in the window between",
+          "the lwarx and the stwcx. can lose the reservation except real contention or",
+          "preemption. Every other shape keeps the software monitor and its CAS.",
+          "Off: the software monitor everywhere, as before."
+        ]
+      },
       "SMCStoreBackpatch": {
         "Type": "bool",
         "Default": "false",

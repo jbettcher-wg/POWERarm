@@ -13,7 +13,9 @@
 # 1. diy7 generates a family of AArch64 litmus tests: every shape up to 4 threads
 #    and 6 edges (MP, SB, LB, R, S, 2+2W, IRIW, WRC, ISA2, RWC, WWC, Z6, ...)
 #    containing at least one of the ordering edges POWERarm has to lower --
-#    acquire, release and acquirePC accesses and the three DMB flavours.
+#    acquire, release and acquirePC accesses and the three DMB flavours -- plus a
+#    second family (names suffixed "Lx") whose ordering edge is an LDXR..STXR
+#    pair in each of its four annotations, for the native lwarx/stwcx. lowering.
 # 2. herd7 with Arm's own aarch64.cat says which outcomes AArch64 forbids.
 # 3. jingle7 rewrites each test into Power code through MAP.map, which is a
 #    lowering written down as rules -- current.map is what the JIT emits today.
@@ -44,6 +46,24 @@ DMB=""
 for k in SY LD ST; do for p in WW WR RW RR; do DMB="$DMB DMB.${k}d$p"; done; done
 
 diy7 -arch AArch64 -size 6 -nprocs 4 -relax "$ANN $DMB" -safe "Rfe Fre Wse $PO" -o "$work/gen" >/dev/null
+
+# Exclusive pairs. LxSx is diy7's read-modify-write edge; the two annotation
+# letters are the load's and the store's, so these four are LDXR/STXR,
+# LDAXR/STXR, LDXR/STLXR and LDAXR/STLXR. They go in -relax so every test in
+# this family contains one, with the DMB edges and plain program order as the
+# safe set around it (adding the annotated pods as well grows the family from
+# 576 tests to 1454 and finds nothing the smaller one misses -- checked).
+#
+#   -ua 0   emit the pair straight-line instead of inside a retry loop. jingle7
+#           cannot parse a label in a source pattern, and a single attempt is
+#           the right thing to model anyway: see the comment in current.map.
+#   -oneloc the pair's load and store are the same location, so some shapes are
+#           single-location and diy7 otherwise rejects them.
+#   -sufname keeps the two families' generated names apart -- both number their
+#           shapes from 000, and they share one output directory.
+LX="LxSxPP LxSxAP LxSxPL LxSxAL"
+diy7 -oneloc -ua 0 -sufname Lx -arch AArch64 -size 5 -nprocs 4 -relax "$LX" \
+     -safe "Rfe Fre Wse $PO $DMB" -o "$work/gen" >/dev/null
 # IRIW with release (STLR) writers. The family above cannot produce these, because an
 # IRIW writer has no Pod edge to annotate. SC-IRIW1 is the all-seq_cst IRIW that C++
 # std::atomic compiles to on AArch64, and is the case that rejects trailing-sync.
@@ -56,6 +76,19 @@ for cyc in "RfeLA PodRRAA FreAL RfeLA PodRRAA FreAL" "RfeLA PodRRAP FrePL RfeLA 
   # stays empty), so run it from inside the generated-test directory.
   # shellcheck disable=SC2086
   (cd "$work/gen" && diyone7 -arch AArch64 -name "SC-IRIW$n" $cyc >/dev/null 2>&1)
+done
+# Two hand-built controls for the divergence current.known calls CO-R: the R
+# shape with a coherence edge and a strong barrier on the reader. They contain no
+# exclusive at all -- the writer is a plain store -- and they are unsound under
+# current.map, which is what proves that R011Lx's unsoundness belongs to the
+# `DMB ST -> lwsync` and `STLR -> sync; stw` mappings and not to the reservation
+# lowering that made it visible. diy7's own family never produces this cycle
+# (two barrier edges in a 4-edge cycle), which is why it went unnoticed.
+n=0
+for cyc in "DMB.STdWW Coe DMB.SYdWR Fre" "DMB.STdWW Coe PodWRLA FreAP"; do
+  n=$((n + 1))
+  # shellcheck disable=SC2086
+  (cd "$work/gen" && diyone7 -arch AArch64 -name "CO-R$n" $cyc >/dev/null 2>&1)
 done
 total=$(ls "$work/gen"/*.litmus | wc -l)
 

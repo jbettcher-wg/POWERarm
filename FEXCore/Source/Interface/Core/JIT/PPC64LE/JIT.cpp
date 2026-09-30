@@ -5807,6 +5807,11 @@ CPUBackend::CompiledCode PPC64JITCore::CompileCode(
     // emitted block's trailing register contents may be assumed here.
     InvalidateAESCache();
     XERProjectionValid = false;
+    // A reservation pair never crosses a block boundary (see DEF_OP(LoadReserved)).
+    // Clearing here turns a frontend bug that split one into two blocks into the
+    // LOGMAN_THROW in DEF_OP(StoreConditional) rather than a branch into the
+    // previous block.
+    ReservationOpen = false;
     FlagsFromFCmp = false;
     LastConstantCache.Valid = false;
 

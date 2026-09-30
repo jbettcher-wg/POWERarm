@@ -1330,6 +1330,17 @@ private:
   // switch in CompileCode and the rationale in ProjectXERToCR1).
   bool XERProjectionValid = false;
 
+  // The open half of a native reservation pair: DEF_OP(LoadReserved) binds
+  // ReservationLoop and sets the flag, DEF_OP(StoreConditional) branches back
+  // to the label and clears it. The label is only ever a *backward* target, so
+  // it is bound before its single use and carries no pending fixups -- which is
+  // why holding it as a member does not trip the Label copy hazard. Lifecycle
+  // owned by CompileCode: cleared at every block entry, so a pair that somehow
+  // straddled a block boundary dies in StoreConditional instead of branching
+  // into the previous block.
+  PPC64Emitter::Label ReservationLoop {};
+  bool ReservationOpen = false;
+
   // Emit-time flag indicating condition codes in CR0 were set by DEF_OP(FCmp).
   // When true, MapNZCVCC evaluates ARM condition codes directly against CR0/CR3,
   // bypassing ProjectXERToCR1 and XER projection entirely (F5).

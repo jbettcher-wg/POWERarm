@@ -1077,6 +1077,23 @@ ContextImpl::GenerateIR(FEXCore::Core::InternalThreadState* Thread, uint64_t Gue
           }
         }
 
+        // Native lwarx/stwcx. for a complete guest LDXR..STXR retry loop. Like
+        // the vector-scan fusion this swallows the rest of the block, and like
+        // it, it must not run under full SMC validation: that inserts a
+        // _ValidateCode CondJump between every pair of guest instructions, which
+        // would put an IR block boundary -- and an exit -- inside the
+        // reservation window the fusion's forward-progress argument depends on.
+        if (!FullSMCValidation && Config.ExclusiveFusion) {
+          const size_t Fused = Thread->OpDispatcher->TryFuseExclusiveLoop(Block, i);
+          if (Fused > 0) {
+            BlockInstructionsLength += Fused * FEXCore::A64::INSTRUCTION_SIZE;
+            TotalInstructionsLength += Fused * FEXCore::A64::INSTRUCTION_SIZE;
+            TotalInstructions += Fused;
+            Thread->OpDispatcher->FinishOp(InstAddress + Fused * FEXCore::A64::INSTRUCTION_SIZE, true);
+            break;
+          }
+        }
+
         if (!Thread->OpDispatcher->TranslateInstruction(DecodedInfo)) {
           if (TotalInstructions == 0) {
             Thread->OpDispatcher->DelayedDisownBuffer();
