@@ -157,6 +157,104 @@ DEF_OP(A64FloatFromGPR) {
   PlaceSingleFromDoubleword0(this, Dst, VTMP1);
 }
 
+// ---------------------------------------------------------------------------
+// Vector conversions (IR.json: A64VecIntToFloat, A64VecFloatToInt)
+//
+// The frontend used to convert vector lanes one at a time through the scalar
+// ops above: about 37 host instructions for SCVTF v0.4s and 40 for FCVTZS,
+// with one GPR<->VSR round trip per lane on the dependent chain
+// (ISA-OPPORTUNITIES.md 3.3). The VSX vector converts do the whole register
+// in one instruction and are all ISA 2.06, so neither op has an ISA 3.0
+// fast path or a POWER8 fallback -- the only version-dependent instruction
+// either can emit is the FPSCR.RN bracket the f64 ties-to-even rounding
+// needs, which is the same mffscrni/mffscrn vs mffs/mtfsb0/mtfsf choice
+// DEF_OP(Vector_FToI) and DEF_OP(A64FloatToGPR) already make.
+//
+// Both ops read and write whole 128-bit registers. A 2S or 2D form leaves
+// garbage in the lanes the guest does not use; the frontend's VMov(64) clears
+// it on the way to the guest register, and a garbage lane cannot be observed
+// in between because these converts write no status the JIT reads (VSX
+// converts, unlike VMX vctsxs, never touch VSCR.SAT, which N11 reports as
+// FPSR.QC).
+// ---------------------------------------------------------------------------
+
+// Rounds every lane to an integral value in the current FPSCR.RN, with RN
+// forced to nearest-even for the duration. The f32 form needs no bracket:
+// vrfin is a fixed round-to-nearest-even that ignores RN.
+static void EmitVecRoundNearestEven(PPC64JITCore* J, VR Dst, VR Src, bool Is64, bool ISA30) {
+  if (!Is64) {
+    J->vrfin(Dst, Src);
+    return;
+  }
+  if (ISA30) {
+    J->mffscrni(f(0), 0);
+    J->xvrdpic(Dst, Src);
+    J->mffscrn(f(0), f(0));
+    return;
+  }
+  J->mffs(f(0));
+  J->mtfsb0(FPSCR_RN_HI);
+  J->mtfsb0(FPSCR_RN_LO);
+  J->xvrdpic(Dst, Src);
+  J->mtfsf(0x01, f(0)); // field 7: XE, NI and RN
+}
+
+DEF_OP(A64VecIntToFloat) {
+  const auto Op = IROp->C<IR::IROp_A64VecIntToFloat>();
+  const auto Dst = GetVReg(Node);
+  const auto Src = GetVReg(Op->Vector);
+
+  // One instruction; the rounding is FPSCR.RN, which F7 keeps equal to
+  // FPCR.RMode, so SCVTF's "round with FPCR.RMode" costs nothing.
+  switch (IROp->ElementSize) {
+  case IR::OpSize::i32Bit: Op->Signed ? xvcvsxwsp(Dst, Src) : xvcvuxwsp(Dst, Src); break;
+  case IR::OpSize::i64Bit: Op->Signed ? xvcvsxddp(Dst, Src) : xvcvuxddp(Dst, Src); break;
+  default: Op_Unhandled(IROp, Node); break;
+  }
+}
+
+DEF_OP(A64VecFloatToInt) {
+  const auto Op = IROp->C<IR::IROp_A64VecFloatToInt>();
+  const auto ElemSz = IROp->ElementSize;
+  if (ElemSz != IR::OpSize::i32Bit && ElemSz != IR::OpSize::i64Bit) {
+    Op_Unhandled(IROp, Node);
+    return;
+  }
+  const bool Is64 = ElemSz == IR::OpSize::i64Bit;
+  const auto Dst = GetVReg(Node);
+  const auto Src = GetVReg(Op->Vector);
+
+  // The signed converts return the most negative integer for a NaN lane and
+  // A64 wants zero, so keep an ordered mask of the source. It is built first
+  // because the convert may write Dst over Src, and from Src rather than the
+  // rounded value so that it is off the dependent chain (rounding a NaN gives
+  // a NaN either way). The unsigned converts need no fix: they already give 0
+  // for a NaN and 0 for every negative value, which is exactly A64's
+  // saturation to the unsigned range.
+  if (Op->Signed) {
+    Is64 ? xvcmpeqdp(VTMP2, Src, Src) : xvcmpeqsp(VTMP2, Src, Src);
+  }
+
+  // The VSX converts round toward zero whatever FPSCR.RN says, so every other
+  // A64 rounding is a round-to-integral first; truncating an already-integral
+  // value is exact, so this does not double-round.
+  VR R = Src;
+  switch (Op->Rounding) {
+  case 0: EmitVecRoundNearestEven(this, VTMP1, Src, Is64, CTX->HostFeatures.SupportsISA30); R = VTMP1; break;
+  case 1: Is64 ? xvrdpip(VTMP1, Src) : xvrspip(VTMP1, Src); R = VTMP1; break;
+  case 2: Is64 ? xvrdpim(VTMP1, Src) : xvrspim(VTMP1, Src); R = VTMP1; break;
+  case 3: break; // the converts below truncate
+  default: Is64 ? xvrdpi(VTMP1, Src) : xvrspi(VTMP1, Src); R = VTMP1; break; // ties away
+  }
+
+  if (!Op->Signed) {
+    Is64 ? xvcvdpuxds(Dst, R) : xvcvspuxws(Dst, R);
+    return;
+  }
+  Is64 ? xvcvdpsxds(Dst, R) : xvcvspsxws(Dst, R);
+  xxland(Dst, Dst, VTMP2);
+}
+
 // Half precision <-> double, element 0.
 //
 // ISA 3.0 has xscvhpdp/xscvdphp. Measured on the POWER9: xscvhpdp reads the

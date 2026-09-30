@@ -644,7 +644,10 @@ bool IRBuilder::FABD_2(uint32_t Word) { return FPAbsoluteDifference(Word, true);
 bool IRBuilder::FABD_4(uint32_t Word) { return FPAbsoluteDifference(Word, false); }
 
 bool IRBuilder::FPVectorIntToFloat(uint32_t Word, bool Signed) {
-  // Lane by lane through the scalar conversion, which rounds with FPCR.RMode.
+  // One VSX convert for the whole register; it rounds with FPCR.RMode. The 2S
+  // form converts the two lanes the guest does not name as well, which is
+  // harmless (the converts write no status this backend reads) and StoreVQ
+  // clears them.
   const bool Q = Bit(Word, 30);
   const bool Z = Bit(Word, 22);
   if (Z && !Q) {
@@ -652,14 +655,8 @@ bool IRBuilder::FPVectorIntToFloat(uint32_t Word, bool Signed) {
   }
   const auto ES = Z ? OpSize::i64Bit : OpSize::i32Bit;
   const auto RS = OpSize::i128Bit;
-  const uint8_t Lanes = (Q ? 16 : 8) / IR::OpSizeToSize(ES);
   Ref V = LoadV(Bits(Word, 9, 5));
-  Ref Result = _VectorImm(RS, OpSize::i8Bit, 0);
-  for (uint8_t i = 0; i < Lanes; ++i) {
-    Ref Converted = _A64FloatFromGPR(ES, ES, _VExtractToGPR(RS, ES, V, i), Signed);
-    Result = _VInsElement(RS, ES, i, 0, Result, Converted);
-  }
-  StoreV(Bits(Word, 4, 0), Result);
+  StoreVQ(Bits(Word, 4, 0), Q, _A64VecIntToFloat(RS, ES, V, Signed));
   return true;
 }
 

@@ -1265,11 +1265,18 @@ public:
   void xvcvdpsxws(VR t, VR b) { EmitXX2(t.idx, b.idx, 216); }
   void xvcvdpuxws(VR t, VR b) { EmitXX2(t.idx, b.idx, 200); }
   void xvcvdpsxds(VR t, VR b) { EmitXX2(t.idx, b.idx, 472); }
+  // The unsigned twin of every convert sits 16 below the signed one in the XO
+  // field (xscvdpsxds 344 / xscvdpuxds 328, xscvsxddp 376 / xscvuxddp 360,
+  // xvcvspsxws 152 / xvcvspuxws 136, xvcvsxwsp 184 / xvcvuxwsp 168,
+  // xvcvdpsxws 216 / xvcvdpuxws 200 -- five pairs already in this file), which
+  // is how these two were derived from xvcvdpsxds (472) and xvcvsxddp (504).
+  void xvcvdpuxds(VR t, VR b) { EmitXX2(t.idx, b.idx, 456); } // f64 -> u64 trunc
   void xvcvspdp  (VR t, VR b) { EmitXX2(t.idx, b.idx, 457); }
   void xvcvdpsp  (VR t, VR b) { EmitXX2(t.idx, b.idx, 393); }
   // Signed integer -> float. XO fields cross-checked against llvm-mc, using
   // xvcvspdp (457) as the control that the extraction method is right.
   void xvcvsxddp (VR t, VR b) { EmitXX2(t.idx, b.idx, 504); } // i64 -> f64
+  void xvcvuxddp (VR t, VR b) { EmitXX2(t.idx, b.idx, 488); } // u64 -> f64
   void xvcvsxdsp (VR t, VR b) { EmitXX2(t.idx, b.idx, 440); } // i64 -> f32, single rounding
   void xvcvsxwdp (VR t, VR b) { EmitXX2(t.idx, b.idx, 248); } // i32 -> f64
   // Copy-sign (per element)

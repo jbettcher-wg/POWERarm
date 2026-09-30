@@ -322,6 +322,17 @@ NaN, +/-Inf, +/-0, 2^31, -2^31-1 and 2^32 lanes if the corpus lacks them.
 **Size.** One to two days: A64-specific IR ops (mirroring `A64FArith`) or flags on the
 existing `Vector_*` ops, three emitter lines, the frontend loops replaced.
 
+**Landed** as `A64VecIntToFloat` / `A64VecFloatToInt`, gate `simd_veccvt`. Two corrections to
+the analysis above. The unsigned converts need no NaN mask on this hardware -- ISA 3.0B gives
+0 for a NaN and 0 for every negative source, which is A64's saturation exactly -- so FCVTZU.4S
+is one instruction, not 1-3. And the f32 ties-to-even rounding needs no FPSCR bracket either:
+`vrfin` is a fixed round-to-nearest-even that ignores FPSCR.RN, so FCVTNS.4S is 4 instructions
+with no `mffscrni` and the bracket survives only in the f64 form. Measured before/after by
+reading the emitter: SCVTF.4S 41 -> 1, SCVTF.2D 11 -> 1, FCVTZS.4S 40 -> 3, FCVTZU.4S 28 -> 1,
+FCVTNS.4S 52 -> 4, FCVTNS.2D 24 -> 6 (ISA 3.0; the POWER8 before-figures are far larger
+because `VInsGPR`/`VInsElement` fall back to a pool-built `vperm`, ~96 for FCVTZS.4S, while
+the after-figures are the same on both).
+
 ### 3.4 RBIT+CLZ is CTZ: `cnttzd`/`cnttzw`; standalone RBIT through the vector unit
 
 **Today.** `DEF_OP(Rbit)` (`ALUOps.cpp:1807-1892`) is a three-stage SWAR swap with three

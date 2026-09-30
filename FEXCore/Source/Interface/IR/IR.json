@@ -2875,6 +2875,30 @@
                 ],
         "DestSize": "DstElementSize"
       },
+      "FPR = A64VecIntToFloat OpSize:#RegisterSize, OpSize:#ElementSize, FPR:$Vector, i1:$Signed": {
+        "Desc": ["A64 vector SCVTF/UCVTF: every ElementSize lane of Vector is a signed (Signed) or",
+                 "unsigned integer; the lane becomes the float of the same size, rounded with",
+                 "FPCR.RMode. Only 32- and 64-bit element sizes exist (A64 has no vector integer",
+                 "to half-precision convert that is not a fixed-point one)",
+                 "Lowering: one xvcv{sx,ux}{wsp,ddp}, ISA 2.06, no fallback needed"
+                ],
+        "DestSize": "RegisterSize",
+        "ElementSize": "ElementSize"
+      },
+      "FPR = A64VecFloatToInt OpSize:#RegisterSize, OpSize:#ElementSize, FPR:$Vector, u8:$Rounding, i1:$Signed": {
+        "Desc": ["A64 vector FCVT{N,P,M,Z,A}{S,U}: every ElementSize lane of Vector becomes a signed",
+                 "(Signed) or unsigned integer of the same size",
+                 "Rounding: 0 ties to even, 1 toward +Inf, 2 toward -Inf, 3 toward zero, 4 ties away",
+                 "Out-of-range values saturate to the destination range; NaN converts to 0",
+                 "Lowering: the fixed-mode round-to-integral (vrfin/xvrsp/xvrdp family) where the",
+                 "rounding is not truncation, then xvcv{sp,dp}{sx,ux}{ws,ds}, which round toward zero.",
+                 "The signed converts give INT_MIN for a NaN lane, so those are masked to 0 with an",
+                 "ordered-compare of the source; the unsigned ones already give 0 for NaN and for",
+                 "every negative value"
+                ],
+        "DestSize": "RegisterSize",
+        "ElementSize": "ElementSize"
+      },
       "FPR = A64FToF OpSize:#DstElementSize, OpSize:$SrcElementSize, FPR:$Scalar": {
         "Desc": ["Scalar op: A64 FCVT between half, single and double precision of element 0",
                  "Narrowing rounds with the host rounding mode; a signalling NaN is quieted and keeps its payload",

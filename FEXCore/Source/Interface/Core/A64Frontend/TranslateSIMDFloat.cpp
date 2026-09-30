@@ -355,12 +355,16 @@ bool IRBuilder::SIMDFloatToInt(uint32_t Word, uint8_t Rounding, bool Signed, boo
   }
   const auto RS = OpSize::i128Bit;
   Ref V = LoadV(Bits(Word, 9, 5));
-  const uint8_t Lanes = Scalar ? 1 : (Bit(Word, 30) ? 16 : 8) / IR::OpSizeToSize(ES);
-  Ref Result = _VectorImm(RS, OpSize::i8Bit, 0);
-  for (uint8_t i = 0; i < Lanes; ++i) {
-    Ref Lane = i == 0 ? V : _VDupElement(RS, ES, V, i).Node;
-    Result = _VInsGPR(RS, ES, i, Result, _A64FloatToGPR(ES, ES, Lane, Rounding, Signed));
+  if (!Scalar) {
+    // One VSX convert for every lane. The scalar form keeps the per-lane path:
+    // it is a single conversion either way, and its result reaches the guest
+    // register through a GPR, which is the shape SCALAR-FP-LOWERING.md 5.5
+    // asks for (a float->int result feeding an int->float convert inside the
+    // vector unit costs a ~50-cycle forwarding flush).
+    StoreVQ(Bits(Word, 4, 0), Bit(Word, 30), _A64VecFloatToInt(RS, ES, V, Rounding, Signed));
+    return true;
   }
+  Ref Result = _VInsGPR(RS, ES, 0, _VectorImm(RS, OpSize::i8Bit, 0), _A64FloatToGPR(ES, ES, V, Rounding, Signed));
   StoreV(Bits(Word, 4, 0), Result);
   return true;
 }
@@ -405,8 +409,10 @@ bool IRBuilder::SIMDFixedConvert(uint32_t Word, bool ToFloat, bool Signed, bool 
 
   Ref Result = _VectorImm(RS, OpSize::i8Bit, 0);
   if (ToFloat) {
-    for (uint8_t i = 0; i < Lanes; ++i) {
-      Result = _VInsElement(RS, ES, i, 0, Result, _A64FloatFromGPR(ES, ES, _VExtractToGPR(RS, ES, V, i), Signed));
+    if (Lanes > 1) {
+      Result = _A64VecIntToFloat(RS, ES, V, Signed);
+    } else {
+      Result = _VInsElement(RS, ES, 0, 0, Result, _A64FloatFromGPR(ES, ES, _VExtractToGPR(RS, ES, V, 0), Signed));
     }
     // One rounding in the conversion; the power-of-two scale is exact
     // (magnitudes stay at or above 2^-64).
@@ -417,9 +423,10 @@ bool IRBuilder::SIMDFixedConvert(uint32_t Word, bool ToFloat, bool Signed, bool 
     // saturates like the exact product.
     const uint64_t ScaleBits = Is64 ? (static_cast<uint64_t>(1023 + FBits) << 52) : (static_cast<uint64_t>(127 + FBits) << 23);
     Ref Scaled = _VFMul(RS, ES, V, FPConstant(ScaleBits, ES));
-    for (uint8_t i = 0; i < Lanes; ++i) {
-      Ref Lane = i == 0 ? Scaled : _VDupElement(RS, ES, Scaled, i).Node;
-      Result = _VInsGPR(RS, ES, i, Result, _A64FloatToGPR(ES, ES, Lane, ROUND_ZERO, Signed));
+    if (Lanes > 1) {
+      Result = _A64VecFloatToInt(RS, ES, Scaled, ROUND_ZERO, Signed);
+    } else {
+      Result = _VInsGPR(RS, ES, 0, Result, _A64FloatToGPR(ES, ES, Scaled, ROUND_ZERO, Signed));
     }
   }
   if (Scalar) {
