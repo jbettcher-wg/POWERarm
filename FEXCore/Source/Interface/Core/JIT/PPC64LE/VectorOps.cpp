@@ -5367,17 +5367,9 @@ DEF_OP(Vector_FToI) {
     case FEXCore::IR::RoundMode::TowardsZero: xvrdpiz(Dst, Src); break;
     case FEXCore::IR::RoundMode::NearestAway: xvrdpi(Dst, Src); break;
     case FEXCore::IR::RoundMode::Nearest:
-      if (CTX->HostFeatures.SupportsISA30) {
-        mffscrni(f(0), 0);
-        xvrdpic(Dst, Src);
-        mffscrn(f(0), f(0));
-      } else {
-        mffs(f(0));
-        mtfsb0(30);
-        mtfsb0(31);
-        xvrdpic(Dst, Src);
-        mtfsf(0x01, f(0));
-      }
+      // FRINTN.2D. The FPSCR bracket is skipped when the guest's FPCR.RMode is
+      // already round-to-nearest; see EmitRoundNearestEven (A64FPOps.cpp).
+      EmitRoundNearestEven(Dst, Src, true);
       break;
     case FEXCore::IR::RoundMode::Host:
     default:                                  xvrdpic(Dst, Src); break;  // FPSCR.RN

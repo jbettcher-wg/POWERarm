@@ -77,6 +77,52 @@ static void PlaceSingleFromDoubleword0(PPC64JITCore* J, VR Dst, VR Src) {
   PlaceElement0(J, Dst, VTMP1);
 }
 
+// Round to integral, ties to even, whatever the guest's FPCR.RMode is.
+//
+// FPSCR.RN is kept equal to FPCR.RMode (checklist F7), so xsrdpic/xvrdpic --
+// "round using FPSCR.RN" -- already round ties to even whenever the guest is
+// in round-to-nearest, which is where it is unless it has explicitly left it.
+// The code this replaces paid for the other three modes at every site and in
+// every mode: mffs/mtfsb0/mtfsb0/mtfsf on POWER8, whose mtfsf alone is about
+// 140 cycles in an FP stream, or mffscrni/mffscrn on ISA 3.0, which is lighter
+// but still serialises.
+//
+// So read the shadow FPCR and bracket only when the mode is not nearest. Four
+// instructions on the fast path against five (POWER8) or three (ISA 3.0) on
+// the old one, and no FPSCR write: SCALAR-FP-LOWERING.md 5.2 measures the
+// whole FCVTNS at 57.6 cycles for the POWER8 sandwich, 51.3 for the ISA 3.0
+// pair and 39.2 for this. Static cost is 9 instructions on ISA 3.0 and 11 on
+// POWER8 against 3 and 5, all but 5 of them off the executed path.
+//
+// The compare goes to CR1. CR0 and XER hold the guest NZCV and are untouched
+// here, as everywhere else in this file.
+void PPC64JITCore::EmitRoundNearestEven(VR Dst, VR Src, bool Wide) {
+  static const int16_t FPCROff = static_cast<int16_t>(offsetof(FEXCore::Core::CpuStateFrame, State.fpcr));
+  PPC64Emitter::Label Fast, Done;
+
+  lwz(TMP1, FPCROff, STATE);
+  rlwinm(TMP1, TMP1, 0, 8, 9);              // FPCR bits 23:22 = RMode, in place
+  cmpwi(PPC64Emitter::cr(1), TMP1, 0);
+  bc(PPC64Emitter::Cond {12, 6}, &Fast);    // CR1.EQ set: RMode is round-to-nearest
+
+  if (CTX->HostFeatures.SupportsISA30) {
+    mffscrni(f(0), 0);
+    Wide ? xvrdpic(Dst, Src) : xsrdpic(Dst, Src);
+    mffscrn(f(0), f(0));
+  } else {
+    mffs(f(0));
+    mtfsb0(FPSCR_RN_HI);
+    mtfsb0(FPSCR_RN_LO);
+    Wide ? xvrdpic(Dst, Src) : xsrdpic(Dst, Src);
+    mtfsf(0x01, f(0)); // field 7: XE, NI and RN
+  }
+  b(&Done);
+
+  Bind(&Fast);
+  Wide ? xvrdpic(Dst, Src) : xsrdpic(Dst, Src);
+  Bind(&Done);
+}
+
 DEF_OP(A64FloatToGPR) {
   const auto Op = IROp->C<IR::IROp_A64FloatToGPR>();
   const auto Dst = GetReg(Node);
@@ -86,19 +132,7 @@ DEF_OP(A64FloatToGPR) {
   PositionElement0AsDouble(this, VTMP1, Src, Op->SrcElementSize);
 
   switch (Op->Rounding) {
-  case 0: // Ties to even: round with RN forced to nearest, then restore RN.
-    if (CTX->HostFeatures.SupportsISA30) {
-      mffscrni(f(0), 0);
-      xsrdpic(VTMP1, VTMP1);
-      mffscrn(f(0), f(0));
-    } else {
-      mffs(f(0));
-      mtfsb0(FPSCR_RN_HI);
-      mtfsb0(FPSCR_RN_LO);
-      xsrdpic(VTMP1, VTMP1);
-      mtfsf(0x01, f(0)); // field 7: XE, NI and RN
-    }
-    break;
+  case 0: EmitRoundNearestEven(VTMP1, VTMP1, false); break; // ties to even
   case 1: xsrdpip(VTMP1, VTMP1); break;
   case 2: xsrdpim(VTMP1, VTMP1); break;
   case 3: break; // The converts below truncate.
@@ -167,8 +201,8 @@ DEF_OP(A64FloatFromGPR) {
 // in one instruction and are all ISA 2.06, so neither op has an ISA 3.0
 // fast path or a POWER8 fallback -- the only version-dependent instruction
 // either can emit is the FPSCR.RN bracket the f64 ties-to-even rounding
-// needs, which is the same mffscrni/mffscrn vs mffs/mtfsb0/mtfsf choice
-// DEF_OP(Vector_FToI) and DEF_OP(A64FloatToGPR) already make.
+// needs, which is EmitRoundNearestEven above, shared with
+// DEF_OP(A64FloatToGPR) and DEF_OP(Vector_FToI).
 //
 // Both ops read and write whole 128-bit registers. A 2S or 2D form leaves
 // garbage in the lanes the guest does not use; the frontend's VMov(64) clears
@@ -177,27 +211,6 @@ DEF_OP(A64FloatFromGPR) {
 // converts, unlike VMX vctsxs, never touch VSCR.SAT, which N11 reports as
 // FPSR.QC).
 // ---------------------------------------------------------------------------
-
-// Rounds every lane to an integral value in the current FPSCR.RN, with RN
-// forced to nearest-even for the duration. The f32 form needs no bracket:
-// vrfin is a fixed round-to-nearest-even that ignores RN.
-static void EmitVecRoundNearestEven(PPC64JITCore* J, VR Dst, VR Src, bool Is64, bool ISA30) {
-  if (!Is64) {
-    J->vrfin(Dst, Src);
-    return;
-  }
-  if (ISA30) {
-    J->mffscrni(f(0), 0);
-    J->xvrdpic(Dst, Src);
-    J->mffscrn(f(0), f(0));
-    return;
-  }
-  J->mffs(f(0));
-  J->mtfsb0(FPSCR_RN_HI);
-  J->mtfsb0(FPSCR_RN_LO);
-  J->xvrdpic(Dst, Src);
-  J->mtfsf(0x01, f(0)); // field 7: XE, NI and RN
-}
 
 DEF_OP(A64VecIntToFloat) {
   const auto Op = IROp->C<IR::IROp_A64VecIntToFloat>();
@@ -240,7 +253,12 @@ DEF_OP(A64VecFloatToInt) {
   // value is exact, so this does not double-round.
   VR R = Src;
   switch (Op->Rounding) {
-  case 0: EmitVecRoundNearestEven(this, VTMP1, Src, Is64, CTX->HostFeatures.SupportsISA30); R = VTMP1; break;
+  case 0:
+    // Ties to even. The f32 form needs no FPSCR bracket at all: vrfin is a
+    // fixed round-to-nearest-even that ignores FPSCR.RN.
+    Is64 ? EmitRoundNearestEven(VTMP1, Src, true) : vrfin(VTMP1, Src);
+    R = VTMP1;
+    break;
   case 1: Is64 ? xvrdpip(VTMP1, Src) : xvrspip(VTMP1, Src); R = VTMP1; break;
   case 2: Is64 ? xvrdpim(VTMP1, Src) : xvrspim(VTMP1, Src); R = VTMP1; break;
   case 3: break; // the converts below truncate

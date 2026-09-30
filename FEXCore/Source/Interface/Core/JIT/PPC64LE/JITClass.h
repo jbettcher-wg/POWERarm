@@ -1472,6 +1472,14 @@ private:
 
   // Shared SHA-1 four-round emitter for VSha1C/M/P (Choose/Majority/Parity).
   // Same structure and borrow protocol as EmitSha256Rounds4.
+  // Round to integral, ties to even, whatever the guest's FPCR.RMode is
+  // (A64FPOps.cpp). Emitted by every FCVTN*/FRINTN lowering that cannot use a
+  // fixed-mode host instruction: the scalar A64FloatToGPR, the f64 half of
+  // A64VecFloatToInt and Vector_FToI's RoundMode::Nearest. Wide=false emits
+  // xsrdpic, Wide=true xvrdpic. Reads TMP1 and CR1; never CR0 or XER, which
+  // carry the guest NZCV.
+  void EmitRoundNearestEven(PPC64Emitter::VR Dst, PPC64Emitter::VR Src, bool Wide);
+
   enum class Sha1Fn { Choose, Majority, Parity };
   void EmitSha1Rounds4(PPC64Emitter::VR Dst, PPC64Emitter::VR ABCD, PPC64Emitter::VR E,
                        PPC64Emitter::VR WK, Sha1Fn Fn);
