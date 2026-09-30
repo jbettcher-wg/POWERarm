@@ -77,22 +77,32 @@ DEF_OP(VMov) {
   // bytes so those bytes land at physical [0..N-1], then shift right by N
   // bytes (with zero on the high side) so they end up at [16-N..15] with
   // physical [0..15-N] cleared.
-  vspltisw(VTMP1, 0);
+  // The zero operand is materialized per case, not once up front: the 64-bit
+  // case takes it from the pinned VZERO_VSX instead, and the default case never
+  // wanted one. This op is the tail of EVERY D-register result
+  // (StoreVSized -> _VMov(i64), IRBuilder.h), so that one instruction is the
+  // single most repeated wasted instruction in scalar FP and 64-bit NEON code.
   switch (OpSize) {
   case IR::OpSize::i8Bit:
+    vspltisw(VTMP1, 0);
     vsldoi(VTMP2, Src, VTMP1, 15);  // VTMP2 phys[0] = Src phys[15], rest zero
     vsldoi(Dst,  VTMP1, VTMP2, 1);  // Dst phys[15] = VTMP2 phys[0], rest zero
     break;
   case IR::OpSize::i16Bit:
+    vspltisw(VTMP1, 0);
     vsldoi(VTMP2, Src, VTMP1, 14);
     vsldoi(Dst,  VTMP1, VTMP2, 2);
     break;
   case IR::OpSize::i32Bit:
+    vspltisw(VTMP1, 0);
     vsldoi(VTMP2, Src, VTMP1, 12);
     vsldoi(Dst,  VTMP1, VTMP2, 4);
     break;
   case IR::OpSize::i64Bit:
-    xxpermdi(Dst, VTMP1, Src, 1);
+    // DM=1: dw0 <- XA.dw0, dw1 <- XB.dw1. XA is VZERO_VSX and the DM HIGH bit
+    // is 0, so this reads only the half ELFv2 preserves across a host call --
+    // the rule stated at VZERO_VSX's declaration in PPC64Emitter.h.
+    xxpermdi(AsVSX(Dst), VZERO_VSX, AsVSX(Src), 1);
     break;
   default:
     if (Dst != Src) vmr(Dst, Src);
@@ -4787,31 +4797,44 @@ DEF_OP(VCastFromGPR) {
   const auto Src   = GetReg(Op->Src);
 
   // Place the GPR value into the lowest element of the vector (all others zero).
-  // mtvsrd places the GPR in physical bytes [0..7] of VTMP1 (BE order); the
-  // other doubleword is *undefined* per ISA, so we never read it.  Zero-extend
-  // the GPR to the desired width first, then use `vsldoi(Dst, zero, VTMP1, 8)`
-  // to combine [zero | VTMP1_high] — the result has the value in LE element 0
-  // (phys[8..15]) and zeros everywhere else.
-  vspltisw(VTMP2, 0);
+  // FEX's LE convention puts LE element 0 in physical bytes [8..15], i.e. the
+  // register's dw1, and requires dw0 == 0.
+  //
+  // ISA 3.0 does that in one instruction: mtvsrdd VRT,RA,RB writes RA to dw0
+  // and RB to dw1, and RA=0 is defined as the literal value zero rather than
+  // r0's contents (ISA 3.0B, MTVSRDD), so `mtvsrdd Dst, r0, Src` IS the whole
+  // op. This is the lowering of FMOV d,x and FMOV d,#imm (TranslateFP.cpp).
+  //
+  // Without it: mtvsrd puts the GPR in dw0 of VTMP1 (its dw1 is *undefined*
+  // per ISA, so we never read it) and one xxpermdi moves that into place
+  // against the pinned zero -- DM=0b00 takes XA.dw0 (VZERO_VSX's preserved
+  // half) and XB.dw0, which is the hazard rule at VZERO_VSX's declaration.
+  // The vspltisw + vsldoi pair this replaces cost one instruction more and a
+  // scratch vector register.
+  const bool ISA30 = CTX->HostFeatures.SupportsISA30;
   switch (ElemSz) {
   case IR::OpSize::i8Bit:
     rldicl(TMP1, Src, 0, 56);
+    if (ISA30) { mtvsrdd(Dst, r0, TMP1); break; }
     mtvsrd(VTMP1, TMP1);
-    vsldoi(Dst, VTMP2, VTMP1, 8);
+    xxpermdi(AsVSX(Dst), VZERO_VSX, AsVSX(VTMP1), 0b00);
     break;
   case IR::OpSize::i16Bit:
     rldicl(TMP1, Src, 0, 48);
+    if (ISA30) { mtvsrdd(Dst, r0, TMP1); break; }
     mtvsrd(VTMP1, TMP1);
-    vsldoi(Dst, VTMP2, VTMP1, 8);
+    xxpermdi(AsVSX(Dst), VZERO_VSX, AsVSX(VTMP1), 0b00);
     break;
   case IR::OpSize::i32Bit:
     rldicl(TMP1, Src, 0, 32);
+    if (ISA30) { mtvsrdd(Dst, r0, TMP1); break; }
     mtvsrd(VTMP1, TMP1);
-    vsldoi(Dst, VTMP2, VTMP1, 8);
+    xxpermdi(AsVSX(Dst), VZERO_VSX, AsVSX(VTMP1), 0b00);
     break;
   case IR::OpSize::i64Bit:
+    if (ISA30) { mtvsrdd(Dst, r0, Src); break; }
     mtvsrd(VTMP1, Src);
-    vsldoi(Dst, VTMP2, VTMP1, 8);
+    xxpermdi(AsVSX(Dst), VZERO_VSX, AsVSX(VTMP1), 0b00);
     break;
   default:
     vspltisw(Dst, 0);
