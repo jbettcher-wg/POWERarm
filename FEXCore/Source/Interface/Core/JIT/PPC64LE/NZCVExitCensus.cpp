@@ -293,6 +293,10 @@ const char* WordClassName(WordClass C) {
 }
 
 ScanVerdict Scan(uint64_t Target, bool FollowBL, ReadWordFn Read, void* Opaque) {
+  return ScanWitnessed(Target, FollowBL, Read, Opaque, nullptr);
+}
+
+ScanVerdict ScanWitnessed(uint64_t Target, bool FollowBL, ReadWordFn Read, void* Opaque, Witness* Out) {
   // Depth-first over paths, each path bounded at kMaxInsnsPerPath and the whole
   // scan at kMaxVisitedWords, exactly as nzcv_census.py's Dis.scan does. The
   // verdict is DEAD only if every path ended DEAD.
@@ -334,6 +338,11 @@ ScanVerdict Scan(uint64_t Target, bool FollowBL, ReadWordFn Read, void* Opaque) 
       if (!Read(Opaque, PC, &Insn)) {
         return SCAN_UNRESOLVED; // not provably executable: the census's "no-code"
       }
+      // Noted AFTER the read succeeded: a word that could not be read is not a
+      // witness, and the verdict it produces is UNRESOLVED anyway.
+      if (Out) {
+        Out->Note(PC);
+      }
       ++Depth;
       ++Path;
       const Word W = ClassifyWord(Insn);
@@ -361,7 +370,7 @@ ScanVerdict Scan(uint64_t Target, bool FollowBL, ReadWordFn Read, void* Opaque) 
         // the flags still live) leaves the caller unresolved; resuming after
         // the call would need the ret-with-live-flags distinction that §7.4
         // keeps behind its own switch, and this census does not turn it on.
-        const ScanVerdict Callee = Scan(PC + W.Offset, false, Read, Opaque);
+        const ScanVerdict Callee = ScanWitnessed(PC + W.Offset, false, Read, Opaque, Out);
         if (Callee == SCAN_DEAD) {
           break;
         }

@@ -529,6 +529,31 @@
           "Changes no codegen decision; when off, not one emitted byte differs."
         ]
       },
+      "NZCVExitDead": {
+        "Type": "uint8",
+        "Default": "FEXCore::Config::CONFIG_NZCVEXITDEAD_OFF",
+        "TextDefault": "off",
+        "ArgumentHandler": "NZCVExitDeadHandler",
+        "Desc": [
+          "NZCV exit-deadness (docs/powerarm/research/power-isa/NZCV-LIVENESS.md SS7).",
+          "When a compile unit leaves by a CONSTANT exit, scan forward through the",
+          "guest's own instructions at the target until the first NZCV reader or full",
+          "writer. If every path reaches a full writer first, the guest's NZCV is dead",
+          "there and DeadFlagCalculationElimination may drop the producers that only",
+          "that exit kept alive.",
+          "\toff: (default) exits are seeded FLAG_ALL, as before. Byte-identical.",
+          "\ton: seed dead at proven-dead constant exits.",
+          "\tcanary: `on`, and at every exit the scan marked dead write a DELIBERATELY",
+          "\t     WRONG NZCV (N set, Z clear, C set, V clear) into the host state the",
+          "\t     guest flags live in. Anything that reads flags at such a target then",
+          "\t     takes the wrong branch deterministically instead of the right one by",
+          "\t     luck. This is the mode a suite run proves something in.",
+          "\tstrict: `on` plus the tripwire abort -- a target the scan called dead",
+          "\t     that the frontend later translates into a unit reading NZCV from",
+          "\t     entry aborts the process instead of being counted.",
+          "Hashed into the code cache config id: it changes emitted code."
+        ]
+      },
       "InjectLibSegFault": {
         "Type": "bool",
         "Default": "false",

@@ -690,6 +690,19 @@ private:
   }
   bool BlockSetPC {};
   bool ShouldDump {};
+
+public:
+  // NZCV exit-deadness (NZCVPeek.h, NZCV-LIVENESS.md §7.3). The ISB exit in
+  // icache mode is an ordinary constant ExitFunction in the IR and there is no
+  // other way to tell it apart, so the builder records its targets and the peek
+  // refuses them. An ISB is the guest announcing that it has rewritten code;
+  // the design keeps the peek's hands off the far side of one.
+  const fextl::vector<uint64_t>& GetISBExitTargets() const {
+    return ISBExitTargets;
+  }
+
+private:
+  fextl::vector<uint64_t> ISBExitTargets;
 };
 
 } // namespace FEXCore::A64

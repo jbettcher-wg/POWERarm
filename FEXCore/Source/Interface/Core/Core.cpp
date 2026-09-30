@@ -962,10 +962,21 @@ bool ContextImpl::CheckIfBlockIsCacheable(FEXCore::Core::InternalThreadState& Th
   return Thread.FrontendDecoder->CheckIfCacheable(Thread, GuestRIP, MaxInst);
 }
 
-// POWERARM_NZCVTABLECHECK=1: run NZCV-LIVENESS.md 9 stage 1's exhaustive table
-// check once and print its verdict. A presence-and-value check resolved once
-// per process, the convention for diagnostic-only toggles that must not cost a
-// config lookup on a hot path.
+// POWERARM_NZCVEXITDEAD, as the peek's own enum. Anything unrecognised is Off:
+// the option changes emitted code, so it fails closed.
+static A64::NZCVPeek::Mode NZCVExitDeadModeOf(uint8_t Raw) {
+  switch (Raw) {
+  case FEXCore::Config::CONFIG_NZCVEXITDEAD_ON: return A64::NZCVPeek::Mode::On;
+  case FEXCore::Config::CONFIG_NZCVEXITDEAD_CANARY: return A64::NZCVPeek::Mode::Canary;
+  case FEXCore::Config::CONFIG_NZCVEXITDEAD_STRICT: return A64::NZCVPeek::Mode::Strict;
+  default: return A64::NZCVPeek::Mode::Off;
+  }
+}
+
+// POWERARM_NZCVTABLECHECK=1: run §9 stage 1's exhaustive table check once and
+// print its verdict. A presence-and-value check resolved once per process, the
+// convention for diagnostic-only toggles that must not cost a config lookup on
+// a hot path.
 static bool NZCVTableCheckRequested() {
   static const bool Requested = []() {
     const char* Env = getenv("POWERARM_NZCVTABLECHECK");
@@ -978,11 +989,13 @@ ContextImpl::GenerateIRResult
 ContextImpl::GenerateIR(FEXCore::Core::InternalThreadState* Thread, uint64_t GuestRIP, bool ExtendedDebugInfo, uint64_t MaxInst) {
   FEXCORE_PROFILE_SCOPED("GenerateIR");
 
-  // NZCV-LIVENESS.md 9 stage 1's gate: the guest-word table the exit-deadness
-  // peek will use, proven against the frontend over every a64.inc entry with a
-  // handler. It needs a live IRBuilder to translate through, which is why it
-  // runs from here (once per process) rather than from a standalone host test
-  // -- the frontend cannot be instantiated without a Context.
+  const auto NZCVExitDeadMode = NZCVExitDeadModeOf(Config.NZCVExitDead());
+
+  // §9 stage 1's gate: the peek's word table proven against the frontend, over
+  // every a64.inc entry with a handler. It needs a live IRBuilder to translate
+  // through, which is why it runs from here (once per process) rather than from
+  // a standalone host test -- the frontend cannot be instantiated without a
+  // Context. POWERARM_NZCVTABLECHECK=1 only; nothing runs otherwise.
   if (NZCVTableCheckRequested()) [[unlikely]] {
     static std::once_flag TableCheckOnce;
     std::call_once(TableCheckOnce, [Thread]() { A64::NZCVPeek::RunTableCheck(Thread); });
@@ -1160,6 +1173,16 @@ ContextImpl::GenerateIR(FEXCore::Core::InternalThreadState* Thread, uint64_t Gue
     Thread->OpDispatcher->Finalize();
 
     Thread->FrontendDecoder->DelayedDisownBuffer();
+
+    // NZCV exit-deadness (POWERARM_NZCVEXITDEAD, default off). The peek runs
+    // here and nowhere else: after the whole unit has been emitted, so every
+    // constant exit exists and the decoder's extent is final; before the pass
+    // manager, so DeadFlagCalculationElimination reads the verdict as an input
+    // and the decoder's extent can still be widened to the hull of unit and
+    // witnesses before StartAddr/Length are read out below. See NZCVPeek.h.
+    if (NZCVExitDeadMode != A64::NZCVPeek::Mode::Off) {
+      A64::NZCVPeek::Apply(Thread, Thread->OpDispatcher.get(), GuestRIP, NZCVExitDeadMode);
+    }
   }
 
   IR::IREmitter* IREmitter = Thread->OpDispatcher.get();
@@ -1172,6 +1195,15 @@ ContextImpl::GenerateIR(FEXCore::Core::InternalThreadState* Thread, uint64_t Gue
 
   // Run the passmanager over the IR from the dispatcher
   Thread->PassManager->Run(IREmitter);
+
+  // NZCV exit-deadness tripwire (§7.7). DFCE has just recomputed
+  // EntryNZCVLiveIn by forward reach from the entry block, so this is the
+  // frontend's own verdict on whether THIS unit reads NZCV from its entry.
+  // Against the record of targets the peek called dead, the pair is a
+  // contradiction: counted always, fatal under `strict`.
+  if (NZCVExitDeadMode != A64::NZCVPeek::Mode::Off) [[unlikely]] {
+    A64::NZCVPeek::NoteUnitCompiled(Thread, GuestRIP, IREmitter->ViewIR().GetHeader()->EntryNZCVLiveIn, NZCVExitDeadMode);
+  }
 
   // Debug
   if (ShouldDump) {

@@ -296,6 +296,10 @@ bool IRBuilder::ISB(uint32_t Word) {
     return HINT(Word);
   }
   ExitFunction(_InlineEntrypointOffset(OpSize::i64Bit, CurrentPC + INSTRUCTION_SIZE - Entry));
+  // NZCV-LIVENESS.md §7.3: this exit stays conservative under the exit-deadness
+  // policy. The IR gives the peek no way to tell it from any other constant
+  // exit, so record the target here; NZCVPeek::Apply refuses it.
+  ISBExitTargets.push_back(CurrentPC + INSTRUCTION_SIZE);
   BlockSetPC = true;
   return true;
 }

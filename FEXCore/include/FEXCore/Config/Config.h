@@ -33,6 +33,21 @@ namespace Handler {
     }
     return "0";
   }
+
+  // POWERARM_NZCVEXITDEAD. Anything unrecognised is "off": this option changes
+  // emitted code, so a typo must not silently arm it.
+  static inline std::optional<fextl::string> NZCVExitDeadHandler(std::string_view Value) {
+    if (Value == "off" || Value == "0") {
+      return "0";
+    } else if (Value == "on" || Value == "1") {
+      return "1";
+    } else if (Value == "canary") {
+      return "2";
+    } else if (Value == "strict") {
+      return "3";
+    }
+    return "0";
+  }
 } // namespace Handler
 
 enum ConfigOption {
@@ -55,6 +70,15 @@ enum ConfigSMCChecks {
   // CTR_EL0.DIC=0, which makes every real runtime issue that announcement.
   // See docs/powerarm/research/cold-translation/LATENCY-ROUND3.md section X1.
   CONFIG_SMC_ICACHE,
+};
+
+// POWERARM_NZCVEXITDEAD. See Config.json.in and
+// docs/powerarm/research/power-isa/NZCV-LIVENESS.md §7/§9.
+enum ConfigNZCVExitDead {
+  CONFIG_NZCVEXITDEAD_OFF = 0,
+  CONFIG_NZCVEXITDEAD_ON,
+  CONFIG_NZCVEXITDEAD_CANARY,
+  CONFIG_NZCVEXITDEAD_STRICT,
 };
 
 enum class LayerType {

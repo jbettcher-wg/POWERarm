@@ -395,6 +395,13 @@ DEF_OP(ExitFunction) {
   if (NZCVExitCensusEnabled) {
     EmitNZCVCensusBump(IR->GetID(Node).Value);
   }
+  // NZCV exit-deadness canary (POWERARM_NZCVEXITDEAD=canary). The peek proved
+  // nothing reads the guest's NZCV at this exit's constant target, so write a
+  // deliberately wrong one and let any reader fail deterministically. Same
+  // placement argument as the census bump above; see EmitNZCVDeadCanary.
+  if (NZCVExitDeadCanary && Op->NZCVDeadAtTarget) {
+    EmitNZCVDeadCanary();
+  }
   // Snapshot the unit's r0-dirty state BEFORE this handler emits anything:
   // the shadow-RET fast path below emits its own `li r0,0`, which would
   // otherwise make the hoist and hit leg below think the unit was dirty.

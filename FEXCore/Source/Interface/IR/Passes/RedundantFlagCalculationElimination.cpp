@@ -727,6 +727,19 @@ bool DeadFlagCalculationEliminination::ProcessBlock(IREmitter* IREmit, IRListVie
     FlagsRead = CFG.Get(Op->TrueBlock)->Flags | CFG.Get(Op->FalseBlock)->Flags;
   } else if (ExitOp->Op == IR::OP_JUMP) {
     FlagsRead = CFG.Get(ExitOp->Args[0])->Flags;
+  } else if (ExitOp->Op == IR::OP_EXITFUNCTION && ExitOp->CW<IR::IROp_ExitFunction>()->NZCVDeadAtTarget) {
+    // NZCV exit-deadness (POWERARM_NZCVEXITDEAD; NZCVPeek.h, NZCV-LIVENESS.md
+    // §7.1). The peek scanned the guest's own instructions at this exit's
+    // CONSTANT target and found a full NZCV writer on every path before any
+    // reader. So nothing on the far side of this exit can observe the flags,
+    // and the block is seeded with them dead instead of with the FLAG_ALL that
+    // every unit exit has carried until now.
+    //
+    // This is the one line of the whole item that changes what is emitted.
+    // Everything downstream -- the backward walk below, compare fusion's
+    // NZCVLiveOut, the StoreNZCV/MSR drop -- follows with no change.
+    FlagsRead = 0;
+    CurrentIR.GetHeader()->ExitsAssumeNZCVDead = true;
   }
 
   if (!BlockIROp->HasFlags) {

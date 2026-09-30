@@ -155,6 +155,35 @@ using ReadWordFn = bool (*)(void* Opaque, uint64_t Address, uint32_t* Out);
 
 ScanVerdict Scan(uint64_t Target, bool FollowBL, ReadWordFn Read, void* Opaque);
 
+// The witness extent of a scan: the half-open guest range [Low, High) covering
+// every word the scan actually read. The policy (NZCVPeek.h) needs it because
+// a DEAD verdict is only as valid as those bytes, so they have to join the
+// unit's SMC footprint -- see NZCV-LIVENESS.md §7.5. Low > High means the scan
+// read nothing.
+struct Witness {
+  uint64_t Low {~0ULL};
+  uint64_t High {0};
+
+  bool Empty() const {
+    return Low > High;
+  }
+  void Note(uint64_t Address) {
+    Low = Address < Low ? Address : Low;
+    High = (Address + 4) > High ? (Address + 4) : High;
+  }
+  void Merge(const Witness& Other) {
+    if (Other.Empty()) {
+      return;
+    }
+    Low = Other.Low < Low ? Other.Low : Low;
+    High = Other.High > High ? Other.High : High;
+  }
+};
+
+// Same scan, additionally reporting the witness extent. Scan() above is this
+// with the extent discarded, so there is exactly one walk in the tree.
+ScanVerdict ScanWitnessed(uint64_t Target, bool FollowBL, ReadWordFn Read, void* Opaque, Witness* Out);
+
 // ---------------------------------------------------------------------------
 // The per-word half of §7.2's table, exposed so that the policy and the
 // table-vs-frontend self-check (POWERARM_NZCVTABLECHECK, NZCVPeek.cpp) classify

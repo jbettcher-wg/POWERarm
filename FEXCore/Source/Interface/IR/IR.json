@@ -165,7 +165,7 @@
         "SwitchGen": false,
         "JITDispatchOverride": "NoOp"
       },
-      "IRHeader SSA:$Blocks, u64:$OriginalRIP, u32:$BlockCount, u32:$NumHostInstructions, u32:$SpillSlots, i1:$PostRA{false}, i1:$EntryNZCVLiveIn{false}": {
+      "IRHeader SSA:$Blocks, u64:$OriginalRIP, u32:$BlockCount, u32:$NumHostInstructions, u32:$SpillSlots, i1:$PostRA{false}, i1:$EntryNZCVLiveIn{false}, i1:$ExitsAssumeNZCVDead{false}": {
         "SwitchGen": false,
         "JITDispatchOverride": "NoOp"
       },
@@ -329,8 +329,18 @@
         "HasSideEffects": true,
         "RAOverride": "2"
       },
-      "ExitFunction OpSize:#Size, GPR:$NewRIP, BranchHint:$Hint, GPR:$CallReturnAddress, SSA:$CallReturnBlock": {
-        "Desc": ["Exits the current JIT function with a target RIP"
+      "ExitFunction OpSize:#Size, GPR:$NewRIP, BranchHint:$Hint, GPR:$CallReturnAddress, SSA:$CallReturnBlock, i1:$NZCVDeadAtTarget{false}": {
+        "Desc": ["Exits the current JIT function with a target RIP",
+                 "",
+                 "NZCVDeadAtTarget is the verdict of the guest-code peek at a CONSTANT",
+                 "target (docs/powerarm/research/power-isa/NZCV-LIVENESS.md 7.2): every",
+                 "path from the target reaches a full NZCV writer before any reader, so",
+                 "the guest's NZCV is dead on the far side of this exit. Only ever set",
+                 "for a constant target with hint None or Call, never Return, never an",
+                 "indirect destination, and only when POWERARM_NZCVEXITDEAD is on.",
+                 "DeadFlagCalculationElimination seeds this block's exit with the NZCV",
+                 "bits CLEARED when it is set; the PPC64LE lowering additionally writes",
+                 "a deliberately wrong NZCV here in `canary` mode."
                 ],
         "Inline": ["Any"],
         "HasSideEffects": true,

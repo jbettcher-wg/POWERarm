@@ -734,6 +734,45 @@ void PPC64JITCore::EmitNZCVCensusBump(uint32_t ExitNodeID) {
   }
 }
 
+// NZCV exit-deadness canary: a deliberately wrong NZCV at an exit the peek
+// marked dead. See JITClass.h::NZCVExitDeadCanary.
+//
+// The value is the document's fixed `N-C-`: N set, Z clear, C set, V clear.
+// Fixed rather than "the last kept value inverted" because there may not BE a
+// last kept value -- the seed this canary tests is exactly what lets DFCE drop
+// the producer -- and because a constant is the one thing a failing guest
+// branch reproduces identically on every run.
+//
+// Guest NZCV lives in CR0.LT (N), CR0.EQ (Z), XER.CA (C) and XER.OV (V) while a
+// unit executes (IRBuilder.h, MapNZCVCC). So:
+//
+//   crset 0   CR0.LT = 1        N = 1
+//   crclr 2   CR0.EQ = 0        Z = 0
+//   li TMP1,0                   a known zero; r0 is NOT provably 0 at the top of
+//                               DEF_OP(ExitFunction) (the handler samples
+//                               R0Dirty() before emitting anything)
+//   subfc     XER.CA = 1        C = 1
+//   addo      XER.OV = 0        V = 0
+//
+// Five instructions, no mfocrf/mtocrf round trip, no CR field but CR0, and the
+// same TMP1-TMP3 the census bump already uses at this point. Emitted at the top
+// of the handler, which is the one place every exit shape passes through --
+// linked `b`, thunk, L1 probe hit and miss, link-first, paired call. That is
+// sound because nothing the handler emits afterwards writes CR0 or XER: the
+// probe compares into cr7 with no-Rc forms by documented discipline, the
+// address-dependency `xor_` and the tag `and_` are Rc=0, and the RIP
+// materialisation is lis/ori/rldicr. So the poisoned flags reach the direct
+// link's target, the thunk's target, AND the miss leg's SpillStaticRegs, which
+// packs them into State.nzcv for the dispatcher, the signal frame and any
+// cache-loaded successor.
+void PPC64JITCore::EmitNZCVDeadCanary() {
+  crset(0); // CR0.LT <- 1: N
+  crclr(2); // CR0.EQ <- 0: Z
+  li(TMP1, 0);
+  SetCAConstant(true, TMP1, TMP2);  // C
+  SetOVConstant(false, TMP1, TMP3); // V
+}
+
 bool PPC64JITCore::IsSplatFormValue(const IR::OrderedNodeWrapper& WNode, IR::OpSize ElementSize) const {
   if (WNode.IsInvalid() || WNode.IsImmediate()) {
     return false;
@@ -2399,6 +2438,18 @@ PPC64JITCore::PPC64JITCore(FEXCore::Context::ContextImpl* ctx,
   // per-thread counter array is parked in the frame because that is what the
   // emitted bump loads -- see CoreState.h::PPC64_NZCVExitCounters for why it
   // is a frame slot and not an absolute address.
+  // NZCV exit-deadness: the backend's only interest in the policy is the
+  // canary. `on` and `strict` change what DFCE drops, which reaches the backend
+  // as ordinary IR and needs nothing here.
+  NZCVExitDeadCanary = CTX->Config.NZCVExitDead() == FEXCore::Config::CONFIG_NZCVEXITDEAD_CANARY;
+  if (NZCVExitDeadCanary) {
+    static std::once_flag AnnounceCanary;
+    std::call_once(AnnounceCanary, []() {
+      LogMan::Msg::IFmt("PPC64 JIT: POWERARM_NZCVEXITDEAD=canary -- writing DELIBERATELY WRONG NZCV at every exit "
+                        "the guest-code peek marked dead. This is a correctness probe, not a performance mode.");
+    });
+  }
+
   NZCVExitCensusEnabled = CTX->Config.NZCVExitCensus();
   if (NZCVExitCensusEnabled) {
     NZCVCensusCounters = FEXCore::CPU::NZCVExitCensus::AllocateThreadCounters();

@@ -343,7 +343,10 @@ if [ -f nzcvlate.golden ]; then
     awk -v want="#0x$(echo "$1" | sed 's/^0*//'), " '
       $2 == "IRHeader" && index($0, want) {
         blocks = $5; sub(/^#/, "", blocks); sub(/,$/, "", blocks)
-        bit = $0; sub(/.*EntryNZCVLiveIn=/, "", bit)
+        # The header line grew a second trailing bit (ExitsAssumeNZCVDead,
+        # NZCV-LIVENESS.md 7.1), so take the digit and stop -- not the rest of
+        # the line.
+        bit = $0; sub(/.*EntryNZCVLiveIn=/, "", bit); sub(/[^0-9].*$/, "", bit)
         found = blocks " " bit
       }
       END { print found }' nzcvlate.livein.irdump
@@ -373,14 +376,58 @@ if [ -f nzcvlate.golden ]; then
   fi
 fi
 
-# NZCV-LIVENESS.md 9 stage 1's gate: the guest-word table the exit-deadness peek
-# will use, against the frontend. POWERARM_NZCVTABLECHECK=1 synthesises words
-# for every a64.inc entry with a handler, translates each one alone, classifies
-# the IR with DeadFlagCalculationElimination's own table and requires the peek
-# to agree wherever a disagreement would be unsound -- a word the scan walks
-# through at which the frontend reads NZCV, or a word the table calls a full
-# writer that the frontend does not fully write. Conservative disagreements are
-# counted, not fatal.
+# ---------------------------------------------------------------------------
+# NZCV exit-deadness (POWERARM_NZCVEXITDEAD; NZCV-LIVENESS.md 7, 9 stage 2).
+# ---------------------------------------------------------------------------
+
+# 1. The golden itself. exitdead is self-checking AND differential, which means
+#    a golden taken from hardware that was failing would compare equal to a
+#    POWERarm run that was failing the same way, and the suite would report
+#    PASS. One such golden has shipped here before. So require the golden to be
+#    all PASS, independently of the comparison.
+if [ -f exitdead.golden ]; then
+  ed_pass=$(grep -c '^PASS' exitdead.golden)
+  ed_fail=$(grep -c '^FAIL' exitdead.golden)
+  ed_other=$(grep -vc '^PASS' exitdead.golden)
+  if [ "$ed_fail" = 0 ] && [ "$ed_pass" -gt 0 ] && [ "$ed_other" = 0 ] && [ "$(cat exitdead.rc)" = 0 ]; then
+    report PASS exitdead_golden "$ed_pass hardware checks, none failing"
+  else
+    report FAIL exitdead_golden "the golden is not all-PASS: pass=$ed_pass fail=$ed_fail other=$ed_other rc=$(cat exitdead.rc); see $out/exitdead.golden"
+  fi
+fi
+
+# 2. The policy actually fires. With POWERARM_NZCVEXITDEAD=on the guest-code
+#    peek must prove deadness at some constant exit of some unit of a program
+#    full of compares, and DeadFlagCalculationElimination must act on it --
+#    which is what ExitsAssumeNZCVDead in the IR header records. Without this,
+#    every `on` and `canary` run in this suite could be a run in which the
+#    policy silently did nothing, and a green result would mean nothing.
+#
+#    The code cache is off for this run: a cached unit is not compiled, so the
+#    pass never runs and dumps nothing.
+if [ -f cmpbranch.golden ]; then
+  POWERARM_NZCVEXITDEAD=on POWERARM_ENABLECODECACHINGWIP=0 POWERARM_DUMPIR=stderr POWERARM_PASSMANAGERDUMPIR=afteropt \
+    "$emu" ./cmpbranch > nzcv_exitdead.out 2> nzcv_exitdead.irdump
+  ed_units=$(grep -c 'IRHeader' nzcv_exitdead.irdump)
+  ed_assume=$(grep -c 'ExitsAssumeNZCVDead=1' nzcv_exitdead.irdump)
+  # And with the option off, not one unit may claim it.
+  POWERARM_NZCVEXITDEAD=off POWERARM_ENABLECODECACHINGWIP=0 POWERARM_DUMPIR=stderr POWERARM_PASSMANAGERDUMPIR=afteropt \
+    "$emu" ./cmpbranch > /dev/null 2> nzcv_exitdead_off.irdump
+  ed_off=$(grep -c 'ExitsAssumeNZCVDead=1' nzcv_exitdead_off.irdump)
+  if [ "$ed_units" -gt 0 ] && [ "$ed_assume" -gt 0 ] && [ "$ed_off" = 0 ]; then
+    report PASS nzcv_exit_dead "on: $ed_assume of $ed_units units assume NZCV dead at an exit; off: 0"
+  else
+    report FAIL nzcv_exit_dead "units=$ed_units assume_on=$ed_assume assume_off=$ed_off (want >0, >0, 0); see $out/nzcv_exitdead.irdump"
+  fi
+fi
+
+# 3. Stage 1's gate: the peek's word table against the frontend. POWERARM_NZCVTABLECHECK=1
+#    synthesises words for every a64.inc entry with a handler, translates each
+#    one alone, classifies the IR with DeadFlagCalculationElimination's own
+#    table and requires the peek to agree wherever a disagreement would be
+#    unsound -- a word the scan walks through at which the frontend reads NZCV,
+#    or a word the table calls a full writer that the frontend does not fully
+#    write. Conservative disagreements are counted, not fatal.
 if [ -f hello.golden ]; then
   POWERARM_NZCVTABLECHECK=1 "$emu" ./hello > /dev/null 2> nzcv_tablecheck.err
   tc=$(grep '^NZCV_TABLECHECK checked=' nzcv_tablecheck.err | tail -1)

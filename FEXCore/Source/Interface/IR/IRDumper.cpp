@@ -355,8 +355,15 @@ void Dump(fextl::stringstream* out, const IRListView* IR) {
   // unittests/A64Frontend/run.sh's nzcv_entry_livein check reads it from here.
   // Appended rather than inserted: nzcv_census.py's header regex matches a
   // prefix of this line.
-  *out << fextl::fmt::format("(%0) IRHeader %{}, #{:#x}, #{}, #{}, EntryNZCVLiveIn={}\n", HeaderOp->Blocks.ID(), +HeaderOp->OriginalRIP,
-                             +HeaderOp->BlockCount, +HeaderOp->NumHostInstructions, HeaderOp->EntryNZCVLiveIn ? 1 : 0);
+  //
+  // ExitsAssumeNZCVDead is appended after it for the same reason and under the
+  // same rule: it is what DeadFlagCalculationElimination records when it seeded
+  // an exit's flags dead on the strength of the guest-code peek
+  // (POWERARM_NZCVEXITDEAD; NZCVPeek.h), and unittests/A64Frontend/run.sh's
+  // nzcv_exit_dead check reads it from here.
+  *out << fextl::fmt::format("(%0) IRHeader %{}, #{:#x}, #{}, #{}, EntryNZCVLiveIn={}, ExitsAssumeNZCVDead={}\n", HeaderOp->Blocks.ID(),
+                             +HeaderOp->OriginalRIP, +HeaderOp->BlockCount, +HeaderOp->NumHostInstructions,
+                             HeaderOp->EntryNZCVLiveIn ? 1 : 0, HeaderOp->ExitsAssumeNZCVDead ? 1 : 0);
 
   for (auto [BlockNode, BlockHeader] : IR->GetBlocks()) {
     {

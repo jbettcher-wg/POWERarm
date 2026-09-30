@@ -317,6 +317,7 @@ void IRBuilder::ResetWorkingList() {
 
 void IRBuilder::BeginFunction(uint64_t PC, const fextl::vector<Decoder::DecodedBlocks>* Blocks, uint32_t NumInstructions) {
   Entry = PC;
+  ISBExitTargets.clear();
   auto IRHeader = _IRHeader(InvalidNode, PC, 0, NumInstructions, 0, 0);
 
   Ref PrevCodeBlock {};

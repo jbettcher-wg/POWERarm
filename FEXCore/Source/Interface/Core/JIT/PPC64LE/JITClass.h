@@ -814,6 +814,22 @@ private:
   // r0-dirty tracking DEF_OP(ExitFunction) snapshots.
   void EmitNZCVCensusBump(uint32_t ExitNodeID);
 
+  // ---------------------------------------------------------------------
+  // NZCV exit-deadness canary (POWERARM_NZCVEXITDEAD=canary). Stage 2's whole
+  // safety argument, and not optional -- see NZCV-LIVENESS.md §9.
+  //
+  // At every exit the guest-code peek marked dead, write a DELIBERATELY WRONG
+  // NZCV into the host state the guest flags live in. If the peek's assumption
+  // is ever wrong, the successor, signal handler or cache-loaded unit that
+  // reads flags there takes the wrong direction EVERY time instead of the right
+  // one by luck. A green suite under `on` proves nothing on its own; this
+  // project has twice shipped silently wrong flag handling, once a Firefox
+  // miscompile that passed every test then in existence.
+  //
+  // Only set when the mode is exactly `canary`; `on` and `strict` emit nothing.
+  bool NZCVExitDeadCanary {};
+  void EmitNZCVDeadCanary();
+
   // Resolved once at construction: code caching OR SMCSemanticPatch on, i.e.
   // something consumes the relocations this backend records for guest-RIP
   // loads. Off means no relocation is recorded at all. See JIT.cpp.

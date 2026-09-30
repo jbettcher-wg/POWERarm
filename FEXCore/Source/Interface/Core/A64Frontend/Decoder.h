@@ -29,9 +29,11 @@
 
 #include "Interface/IR/IR.h"
 
+#include <FEXCore/Utils/AllocatorHooks.h>
 #include <FEXCore/fextl/set.h>
 #include <FEXCore/fextl/vector.h>
 
+#include <algorithm>
 #include <array>
 #include <cstdint>
 
@@ -117,6 +119,36 @@ public:
 
   uint64_t DecodedMinAddress {};
   uint64_t DecodedMaxAddress {~0ULL};
+
+  // NZCV exit-deadness (NZCV-LIVENESS.md §7.5). The peek reads guest words
+  // OUTSIDE the decoded extent, and a DEAD verdict is only as good as those
+  // words, so they have to join this unit's SMC footprint: every page they
+  // touch becomes a CodePage (which is what mtrack invalidation and the
+  // has-code bitmap index), and the decoded extent widens to the hull of unit
+  // and witnesses (which is what the granule bitmap and the extent-overlap
+  // filter in LookupCache use, and what the code cache hashes). The caller --
+  // NZCVPeek::Apply, from GenerateIR, before the pass manager runs -- has
+  // already bounded the hull; this only records it.
+  //
+  // It must run after DecodeInstructionsAtEntry and before GenerateIR reads
+  // DecodedMin/MaxAddress, which is exactly where it is called from. The next
+  // decode resets both, so nothing leaks between units.
+  void AddPeekWitnessRange(uint64_t Start, uint64_t End) {
+    if (Start >= End) {
+      return;
+    }
+    DecodedMinAddress = std::min(DecodedMinAddress, Start);
+    DecodedMaxAddress = std::max(DecodedMaxAddress, End);
+    for (uint64_t Page = Start & FEXCore::Utils::FEX_GUEST_PAGE_MASK; Page < End; Page += FEXCore::Utils::FEX_GUEST_PAGE_SIZE) {
+      BlockInfo.CodePages.insert(Page);
+    }
+  }
+
+  // Executability of a peeked word, through the decoder's own cached range
+  // query so the peek cannot read something the decoder would refuse.
+  bool PeekRangeExecutable(uint64_t Address, uint64_t Size) {
+    return CheckRangeExecutable(Address, Size);
+  }
 
   void SetExternalBranches(fextl::set<uint64_t>* v) {
     ExternalBranches = v;

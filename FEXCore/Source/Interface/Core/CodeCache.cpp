@@ -723,6 +723,15 @@ uint64_t ComputeCodeCacheConfigId() {
     // namespaces, so neither can happen by accident.
     HASH_OPT(NZCVEXITCENSUS);
 
+    // NZCV exit-deadness (NZCV-LIVENESS.md §7). Unlike the census this DOES
+    // change emitted code -- it removes flag producers, and in `canary` mode it
+    // adds a deliberately wrong flag write at every exit it marked dead -- so
+    // the four modes must be four cache namespaces. A block compiled under
+    // `on` loaded into a `canary` run would be a canary run that proves
+    // nothing, and a block compiled under `canary` loaded into an `on` run
+    // would corrupt flags for real.
+    HASH_OPT(NZCVEXITDEAD);
+
     // Detected host capabilities are hashed above, next to the build identity.
 #undef HASH_OPT
 #undef HASH_STR_OPT
