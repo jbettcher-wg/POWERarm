@@ -178,13 +178,22 @@ id_for() {
   local dir="$w/cc-$src-$val"
   rm -rf "$dir"
   mkdir -p "$dir"
+  # CodeCacheForkWriter=0 so the segment is published in-process before exit.
+  # With the writer on, the files land asynchronously and this helper raced it:
+  # a run would see no id at all, or catch a half-written
+  # '<name>-<hash>-<id>.tmp.<pid>.<n>' and compare that whole string.
   if [ "$src" = json ]; then
-    run "$(cfg VSXClasses "$val")" "$dir" -- > /dev/null
+    run "$(cfg VSXClasses "$val")" "$dir" POWERARM_CODECACHEFORKWRITER=0 -- > /dev/null
   else
-    run - "$dir" POWERARM_VSXCLASSES="$val" -- > /dev/null
+    run - "$dir" POWERARM_VSXCLASSES="$val" POWERARM_CODECACHEFORKWRITER=0 -- > /dev/null
   fi
-  find "$dir" -type f 2> /dev/null | sed 's#.*/##' | grep -v '\.lock$' |
-    sed 's/.*-\([0-9a-f]*\)$/\1/' | sort -u | tr '\n' ' '
+  # Match the id as a 16-hex field at end of name, and drop .tmp/.lock outright.
+  # The old pattern anchored '[0-9a-f]*$' with a star, so it matched the EMPTY
+  # string at the end of any name it did not understand and passed the whole
+  # filename through.
+  find "$dir" -type f 2> /dev/null | sed 's#.*/##' |
+    grep -v -e '\.lock$' -e '\.tmp\.' |
+    sed -n 's/.*-\([0-9a-f]\{16\}\)$/\1/p' | sort -u | tr '\n' ' '
 }
 
 on_id=$(id_for json 1)
