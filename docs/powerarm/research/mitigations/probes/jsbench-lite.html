@@ -1,0 +1,46 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>jsbench</title></head>
+<body><div id="out">running</div>
+<script>
+// A JS-heavy, allocation-heavy, polymorphic-dispatch workload. No network, no
+// timers beyond the end: it is meant to keep V8's JIT and GC busy for a few
+// seconds so the emulator's steady-state host syscall rate can be read off.
+function Rng(s){this.s=s>>>0;}
+Rng.prototype.next=function(){var x=this.s;x^=x<<13;x>>>=0;x^=x>>>17;x^=x<<5;x>>>=0;this.s=x;return x;};
+
+function Node(k,v){this.k=k;this.v=v;this.l=null;this.r=null;}
+function insert(t,k,v){if(t===null)return new Node(k,v);if(k<t.k)t.l=insert(t.l,k,v);else t.r=insert(t.r,k,v);return t;}
+function depth(t){return t===null?0:1+Math.max(depth(t.l),depth(t.r));}
+
+function Shape(a){this.a=a;}  Shape.prototype.area=function(){return this.a*this.a;};
+function Circle(r){this.r=r;} Circle.prototype.area=function(){return 3.14159*this.r*this.r;};
+function Strip(w,h){this.w=w;this.h=h;} Strip.prototype.area=function(){return this.w*this.h;};
+
+function run(){
+  var rng=new Rng(12345), acc=0, i, j;
+  // 1. tree build + walk (allocation + GC pressure)
+  for(j=0;j<4;j++){
+    var t=null;
+    for(i=0;i<20000;i++){var k=rng.next()%1000000;t=insert(t,k,k^j);}
+    acc+=depth(t);
+  }
+  // 2. polymorphic dispatch
+  var objs=[];
+  for(i=0;i<30000;i++){var m=rng.next()%3;objs.push(m===0?new Shape(i%7):m===1?new Circle(i%5):new Strip(i%3,i%11));}
+  for(j=0;j<20;j++){for(i=0;i<objs.length;i++)acc+=objs[i].area();}
+  // 3. string + map work
+  var map=new Map();
+  for(j=0;j<6;j++){
+    for(i=0;i<20000;i++){var s="k"+((rng.next()%50000)|0);map.set(s,(map.get(s)||0)+1);}
+    map.clear();
+  }
+  // 4. float array math
+  var f=new Float64Array(1<<16);
+  for(j=0;j<30;j++){for(i=0;i<f.length;i++)f[i]=Math.sqrt(f[i]+i*0.5)+Math.sin(i*0.001);acc+=f[j&0xffff];}
+  return acc;
+}
+var t0=Date.now();
+var r=run();
+document.getElementById('out').textContent="done acc="+r+" ms="+(Date.now()-t0);
+document.title="done";
+</script></body></html>
