@@ -837,11 +837,10 @@ void PPC64JITCore::InsertNamedThunkRelocation(GPR Reg, const IR::SHA256Sum& Sum)
   Relocations.emplace_back(Reloc);
 }
 
-// S3.7-C2: guest-RIP-derived constant load with relocation record.
-// LoadConstantFixed reserves the 20-byte patch window; the recording captures
-// the ABSOLUTE guest RIP (TakeRelocations rebases against the section base at
-// serialization time). On load, ApplyCodeRelocations at
-// CodeCache.cpp::RELOC_GUEST_RIP_MOVE re-emits LoadConstantFixed with
+// S3.7-C2: guest-RIP-derived constant load with relocation record. The
+// recording captures the ABSOLUTE guest RIP (TakeRelocations rebases against
+// the section base at serialization time). On load, ApplyCodeRelocations at
+// CodeCache.cpp::RELOC_GUEST_RIP_MOVE re-emits the load with
 // `GuestEntry + delta` — i.e. the block's current-session guest RIP.
 void PPC64JITCore::InsertGuestRIPMove(GPR Reg, uint64_t Constant) {
   Relocation Reloc {};
@@ -851,130 +850,36 @@ void PPC64JITCore::InsertGuestRIPMove(GPR Reg, uint64_t Constant) {
   };
   Reloc.GuestRIP.GuestRIP      = Constant;   // TakeRelocations subtracts base
   Reloc.GuestRIP.RegisterIndex = Reg.idx;
-  if (ExitRIPFixedWidth) {
-    // Instructions == 0: the fixed 5-instruction window.
-    LoadConstantFixed(Reg, Constant);
-  } else {
-    // Variable width: the loader re-emits LoadConstant for the rebased value
-    // into these instructions, padding with nops, and rejects the block when
-    // the new value needs more. Load bases are page-aligned, so the low bits
-    // that decide the width seldom change.
-    const auto Start = GetOffset();
-    LoadConstant(Reg, Constant);
-    Reloc.GuestRIP.Instructions = static_cast<uint8_t>((GetOffset() - Start) / 4);
-  }
+  // The loader re-emits LoadConstant for the rebased value into these
+  // instructions, padding with nops, and rejects the block when the new value
+  // needs more. Load bases are page-aligned, so the low bits that decide the
+  // width seldom change.
+  const auto Start = GetOffset();
+  LoadConstant(Reg, Constant);
+  Reloc.GuestRIP.Instructions = static_cast<uint8_t>((GetOffset() - Start) / 4);
   Relocations.emplace_back(Reloc);
 }
 
-// EntrypointOffset's guest RIP. Structurally identical to the gate in
-// InsertExitRIPMove below, and correct for the same reason.
+// The guest RIPs that DEF_OP(ExitFunction)'s constant destination and
+// DEF_OP(EntrypointOffset) materialise. Relocations are consumed by the code
+// cache alone, so with RetainRelocations off there is no consumer for the
+// record and the ordinary LoadConstant is emitted bare.
 //
-// The fixed-width form exists only so CodeCache::ApplyCodeRelocations has a
-// 20-byte window to re-emit RELOC_GUEST_RIP_MOVE into with a rebased address.
-// Relocations are consumed by nothing else, so when ExitRIPFixedWidth is false
-// -- neither code caching nor SMCSemanticPatch is on, which is the default --
-// there is no consumer for either the window or the record. Emitting the
-// ordinary variable-width load is then both correct and strictly shorter: every
-// sub-4GiB guest RIP (all of a 32-bit guest, and non-PIE 64-bit ones) collapses
-// to 1-3 instructions instead of always 5, and the sequence is never longer
-// than the fixed form.
+// No RELOC_GUEST_RIP_MOVE is recorded in that case, deliberately: a relocation
+// promises ApplyCodeRelocations a window it can re-emit into, and recording one
+// anyway would let a cache loader overrun the following instructions. Correct
+// because relocations are only ever consumed by the code cache, which
+// RetainRelocations already proved to be off -- the same construction-time
+// assumption BlockLinkingEnabled has always made.
 //
-// This matters more than the exit-RIP case it copies: EntrypointOffset is how
-// the return address of every guest `call` is materialised, so it is on the
-// hot emission path of essentially every block.
-//
-// Gating on ExitRIPFixedWidth rather than the caching knob alone is deliberate
-// conservatism: SMCSemanticPatch never repatches an *entrypoint* window, but
-// keeping the two RIP paths on one predicate means a future consumer that
-// scans for fixed-width RIP windows cannot find one path converted and the
-// other not.
-void PPC64JITCore::InsertEntrypointRIPMove(GPR Reg, uint64_t Constant) {
+// EntrypointOffset is how the return address of every guest `call` is
+// materialised, so this is on the hot emission path of essentially every block.
+void PPC64JITCore::InsertRelocatableRIPMove(GPR Reg, uint64_t Constant) {
   if (!RetainRelocations) {
     LoadConstant(Reg, Constant);
     return;
   }
   InsertGuestRIPMove(Reg, Constant);
-}
-
-// SMC Idea 4: see JITClass.h. Records the emitted window so the fault handler
-// can repatch it, and (flag on only) verifies that SMCSemanticPatch.h's
-// dependency-free re-encoder still agrees with the emitter byte for byte --
-// the whole scheme rests on synthesizing an identical 20-byte window, so any
-// future change to LoadImm64Fixed must fail here rather than silently turn
-// every fault-time match into a miss.
-void PPC64JITCore::InsertExitRIPMove(GPR Reg, uint64_t Constant) {
-  if (!RetainRelocations) {
-    // Neither consumer of the fixed-width window exists in this configuration
-    // (see the ExitRIPFixedWidth resolution in the constructor), so emit the
-    // ordinary variable-width load: 1-5 instructions instead of always 5.
-    // Guest RIPs below 4 GiB -- every 32-bit guest, and non-PIE 64-bit ones --
-    // collapse to 1-3, and the sequence is never longer than the fixed form.
-    //
-    // No RELOC_GUEST_RIP_MOVE is recorded here, deliberately: a relocation
-    // promises ApplyCodeRelocations a 20-byte window it can re-emit into, and
-    // there is no such window now. Recording one anyway would let a cache
-    // loader overrun the following instructions. Correct because relocations
-    // are only ever consumed by the code cache, which ExitRIPFixedWidth
-    // already proved to be off -- the same construction-time assumption
-    // BlockLinkingEnabled has always made.
-    LoadConstant(Reg, Constant);
-    return;
-  }
-
-  if (!CTX->Config.SMCSemanticPatch()) {
-    InsertGuestRIPMove(Reg, Constant);
-    return;
-  }
-
-  auto* Window = GetCursorAddress<uint8_t*>();
-  InsertGuestRIPMove(Reg, Constant);
-
-  [[maybe_unused]] uint32_t Expected[FEXCore::SMC::kRIPWindowWords];
-  FEXCore::SMC::SynthesizeRIPWindow(Reg.idx, Constant, Expected);
-  LOGMAN_THROW_A_FMT(::memcmp(Window, Expected, FEXCore::SMC::kRIPWindowBytes) == 0,
-                     "SMCSemanticPatch::SynthesizeRIPWindow disagrees with LoadImm64Fixed for {:#x}", Constant);
-
-  if (CodeData.ExitRIPSites.size() >= FEXCore::SMC::kMaxSitesPerBlock) {
-    // Over the cap: drop the whole table so the block is ineligible rather than
-    // partially described (a partial table would let the handler conclude "this
-    // branch has no constant exit" and decline for the wrong reason -- or worse,
-    // match a different site).
-    CodeData.ExitRIPSites.clear();
-    ExitRIPSitesOverflowed = true;
-    return;
-  }
-  if (ExitRIPSitesOverflowed) {
-    return;
-  }
-  CodeData.ExitRIPSites.push_back({reinterpret_cast<uint64_t>(Window)});
-}
-
-// SMC Idea 4, mov-immediate half: see JITClass.h.
-bool PPC64JITCore::TryInsertPatchableImmMove(GPR Reg, uint64_t Constant, uint32_t PatchSite) {
-  if (PatchSite == 0 || !CTX->Config.SMCSemanticPatch()) {
-    return false;
-  }
-  if (MovImmWindowsOverflowed) {
-    return false;
-  }
-  if (CodeData.MovImmWindows.size() >= FEXCore::SMC::kMaxSitesPerBlock) {
-    // Over the cap: drop the whole table so the block is ineligible rather than
-    // partially described, exactly as InsertExitRIPMove does.
-    CodeData.MovImmWindows.clear();
-    MovImmWindowsOverflowed = true;
-    return false;
-  }
-
-  auto* Window = GetCursorAddress<uint8_t*>();
-  LoadConstantFixed(Reg, Constant);
-
-  [[maybe_unused]] uint32_t Expected[FEXCore::SMC::kRIPWindowWords];
-  FEXCore::SMC::SynthesizeRIPWindow(Reg.idx, Constant, Expected);
-  LOGMAN_THROW_A_FMT(::memcmp(Window, Expected, FEXCore::SMC::kRIPWindowBytes) == 0,
-                     "SMCSemanticPatch::SynthesizeRIPWindow disagrees with LoadImm64Fixed for {:#x}", Constant);
-
-  CodeData.MovImmWindows.push_back({reinterpret_cast<uint64_t>(Window), PatchSite - 1});
-  return true;
 }
 
 // -------------------------------------------------------------------------
@@ -2321,27 +2226,21 @@ PPC64JITCore::PPC64JITCore(FEXCore::Context::ContextImpl* ctx,
     MemSetDcbzEnabled = !(SetDcbzEnv && SetDcbzEnv[0] == '0');
   }
 
-  // SMC interlocks: two fork features are only sound when every constant-target
-  // exit re-probes the lookup path, which is exactly what a established direct
-  // link bypasses.
-  //  * FEX_SMCSEMANTICPATCH patches the exit's destination-RIP window; a linked
-  //    exit never reloads that window, so the patch would be silently
-  //    ineffective (worse than a fault — stale target, no error).
-  //  * FEX_SMCLAZYINVAL's soundness (FEX_SMCLAZYSCRUB) forces the faulting
-  //    thread's next dispatch through ExitFunctionLink to drain; a linked exit
-  //    skips ExitFunctionLink entirely, reopening the same-thread stale hole.
-  //    EXCEPT under FEX_SMCLAZYLINK: there the SMC fault handler additionally
-  //    arms the writer's InterruptFaultPage, and the per-EntryPoint fault-page
-  //    poke (EmitSuspendInterruptCheck — executed by linked arrivals too,
-  //    since links target block entries) faults the thread into a drain at its
-  //    next block transfer. See SignalDelegator's fault-page branch.
+  // SMC interlock: FEX_SMCLAZYINVAL's soundness (FEX_SMCLAZYSCRUB) forces the
+  // faulting thread's next dispatch through ExitFunctionLink to drain, and a
+  // linked exit skips ExitFunctionLink entirely, reopening the same-thread
+  // stale hole. EXCEPT under FEX_SMCLAZYLINK: there the SMC fault handler
+  // additionally arms the writer's InterruptFaultPage, and the per-EntryPoint
+  // fault-page poke (EmitSuspendInterruptCheck — executed by linked arrivals
+  // too, since links target block entries) faults the thread into a drain at
+  // its next block transfer. See SignalDelegator's fault-page branch.
   // Soft-invalidate alone stays compatible with linking: it severs inbound
   // links via SeverBlockLinks(), same as legacy Erase.
-  const bool LazyLinkArmed = FEXCore::Config::Get_SMCLAZYLINK() && FEXCore::Config::Get_SMCLAZYSCRUB() && !CTX->Config.SMCSemanticPatch();
-  if (BlockLinkingEnabled && (CTX->Config.SMCSemanticPatch() || (FEXCore::Config::Get_SMCLAZYINVAL() && !LazyLinkArmed))) {
-    LogMan::Msg::IFmt("BlockLinking disabled: incompatible with POWERARM_SMCSEMANTICPATCH/POWERARM_SMCLAZYINVAL "
-                      "(both need every constant-target exit to re-probe the lookup path; "
-                      "POWERARM_SMCLAZYLINK=1 lifts the LAZYINVAL restriction).");
+  const bool LazyLinkArmed = FEXCore::Config::Get_SMCLAZYLINK() && FEXCore::Config::Get_SMCLAZYSCRUB();
+  if (BlockLinkingEnabled && FEXCore::Config::Get_SMCLAZYINVAL() && !LazyLinkArmed) {
+    LogMan::Msg::IFmt("BlockLinking disabled: incompatible with POWERARM_SMCLAZYINVAL "
+                      "(it needs every constant-target exit to re-probe the lookup path; "
+                      "POWERARM_SMCLAZYLINK=1 lifts the restriction).");
     BlockLinkingEnabled = false;
   } else if (BlockLinkingEnabled && FEXCore::Config::Get_SMCLAZYINVAL() && LazyLinkArmed) {
     // Announce the decision once per process (this constructor runs per guest
@@ -2366,16 +2265,12 @@ PPC64JITCore::PPC64JITCore(FEXCore::Context::ContextImpl* ctx,
   CallLinkingEnabled = BlockLinkingEnabled && !LazyLinkArmed;
 
   // Shadow return stack (FEX_SHADOWRETSTACK). Read once here, mirroring
-  // BlockLinkingEnabled. Independent of code caching and of SMCSemanticPatch:
-  //  * Code caching: the pushed host trampoline is discovered at RUNTIME via
-  //    bcl/mflr (position-independent) and lives only in the per-thread
-  //    call-ret stack, never serialized into the code stream; a reloaded cache
-  //    zeroes the stack (CodeCache.cpp). So unlike BlockLinking's absolute-
-  //    address thunk records, nothing here is base-sensitive.
-  //  * SMCSemanticPatch rewrites a block's exit-RIP window in place; a RET has
-  //    no constant exit window to patch, and the fast path delivers control to
-  //    the return block's ENTRY, where its (possibly patched) body runs
-  //    normally -- nothing is bypassed that the patch depends on.
+  // BlockLinkingEnabled. Independent of code caching: the pushed host
+  // trampoline is discovered at RUNTIME via bcl/mflr (position-independent) and
+  // lives only in the per-thread call-ret stack, never serialized into the code
+  // stream; a reloaded cache zeroes the stack (CodeCache.cpp). So unlike
+  // BlockLinking's absolute-address thunk records, nothing here is
+  // base-sensitive.
   // The ONE lazy-SMC hole is identical to BlockLinking's: the RET fast path
   // skips ExitFunctionLink's drain, so under FEX_SMCLAZYINVAL a same-thread
   // writer's next dispatch would not drain -- UNLESS FEX_SMCLAZYLINK arms the
@@ -2391,43 +2286,29 @@ PPC64JITCore::PPC64JITCore(FEXCore::Context::ContextImpl* ctx,
     ShadowRetStackEnabled = false;
   }
 
-  // Resolve the exit-RIP constant width ONCE, at backend construction, from
-  // the same config sources and with the same "read once" assumption as
-  // BlockLinkingEnabled above.
+  // Resolve ONCE, at backend construction, from the same config source and with
+  // the same "read once" assumption as BlockLinkingEnabled above: whether
+  // anything consumes the relocations this backend records for guest-RIP loads.
   //
   // DEF_OP(ExitFunction)'s constant destination used to be materialised with
   // LoadConstantFixed unconditionally -- always 5 instructions, whatever the
-  // value. Exactly two consumers need that fixed 20-byte window:
-  //   * CodeCache::ApplyCodeRelocations re-emits RELOC_GUEST_RIP_MOVE in place
-  //     with a rebased address, so the window must be wide enough for any
-  //     value it might produce.
-  //   * FEX_SMCSEMANTICPATCH's fault handler rewrites this exact window in
-  //     place from SMCSemanticPatch.h's dependency-free re-encoder
-  //     (SynthesizeRIPWindow); a variable-width site would be unrecognisable
-  //     to it, and repatching it would splice a 5-instruction sequence over
-  //     whatever followed a shorter one.
-  // With BOTH off nothing ever rewrites the emitted bytes, so the ordinary
-  // variable-width LoadConstant is correct and shorter. Note the caching gate
-  // is deliberately NOT the BlockLinking one: SMCSemanticPatch forces
-  // BlockLinkingEnabled off, so testing BlockLinkingEnabled here would silently
-  // pick the variable form in exactly the configuration that must not have it.
-  //
-  // The code cache alone no longer needs the fixed window: its relocations
-  // record the emitted width, and the loader re-emits within it (see
-  // InsertGuestRIPMove). Only SMCSemanticPatch still forces it.
-  RetainRelocations = FEXCore::Config::Get_ENABLECODECACHINGWIP() || CTX->Config.SMCSemanticPatch();
-  ExitRIPFixedWidth = CTX->Config.SMCSemanticPatch();
+  // value -- because CodeCache::ApplyCodeRelocations re-emits
+  // RELOC_GUEST_RIP_MOVE in place with a rebased address and needed a window
+  // wide enough for any value it might produce. It no longer does: the
+  // relocation records the emitted width and the loader re-emits within it (see
+  // InsertGuestRIPMove), so the ordinary variable-width LoadConstant is correct
+  // everywhere, and with the cache off the record itself is dropped too.
+  RetainRelocations = FEXCore::Config::Get_ENABLECODECACHINGWIP();
 
   // Announce the decision once per process (this constructor runs per guest
   // thread). This is the only externally observable statement of which form
-  // block exits are being emitted in, and the thing to check when a
-  // semantic-patch or code-cache run misbehaves.
+  // block exits are being emitted in, and the thing to check when a code-cache
+  // run misbehaves.
   {
     static std::once_flag Announce;
     std::call_once(Announce, [this]() {
-      LogMan::Msg::IFmt("PPC64 JIT: exit-RIP constants are {} (code caching {}, SMCSemanticPatch {})",
-                        ExitRIPFixedWidth ? "FIXED width (5 insns, patchable window)" : RetainRelocations ? "variable width (1-5 insns, relocatable)" : "variable width (1-5 insns)",
-                        FEXCore::Config::Get_ENABLECODECACHINGWIP() ? "on" : "off", CTX->Config.SMCSemanticPatch() ? "on" : "off");
+      LogMan::Msg::IFmt("PPC64 JIT: exit-RIP constants are variable width (1-5 insns{}) (code caching {})",
+                        RetainRelocations ? ", relocatable" : "", RetainRelocations ? "on" : "off");
     });
   }
 
@@ -3782,8 +3663,6 @@ void PPC64JITCore::Compute32MaskElision() {
 //   EntrypointOffset          Its constant window is rewritten in place by
 //                             ApplyCodeRelocations on a code-cache load, so
 //                             the emit-time value is not the executed value.
-//   Constant with PatchSite   FEX_SMCSEMANTICPATCH rewrites the immediate at
-//                             fault time to a different guest constant.
 //   Spill slots, helper       Reached only through ops that are off the table
 //   results, anything else    and therefore clear the whole lattice.
 //
@@ -4040,11 +3919,9 @@ void PPC64JITCore::ComputeHighZeroElision() {
       }
       case IR::OP_CONSTANT: {
         auto C = IROp->C<IR::IROp_Constant>();
-        // PatchSite != 0 is the FEX_SMCSEMANTICPATCH repatchable window: the
-        // executed immediate can be rewritten later, so nothing is known. All
-        // three ordinary paths (LoadConstant, and the LastConstantCache
-        // addi/mr shortcuts) materialize exactly C->Constant.
-        if (C->PatchSite == 0 && HaveDst) {
+        // All three paths (LoadConstant, and the LastConstantCache addi/mr
+        // shortcuts) materialize exactly C->Constant.
+        if (HaveDst) {
           Action = Act::Write;
           WriteReg = DstReg;
           WriteZero = (C->Constant >> 32) == 0;
@@ -4520,10 +4397,8 @@ void PPC64JITCore::ComputeHighZeroElision() {
 //    InlineConstant, InlineEntrypointOffset.
 //  * DEF_OP'd no-ops: GuestOpcode (DebugData table entry only, zero host
 //    instructions), SetSmallNZV / TelemetrySetValue / WFET (empty bodies).
-//  * Constant: TryInsertPatchableImmMove -> LoadConstantFixed
-//    (lis/ori/sldi/oris/ori) or LoadConstant -> LoadImm64 (li/lis/ori/sldi/
-//    rldic/oris family). EntrypointOffset: InsertEntrypointRIPMove ->
-//    LoadConstant or InsertGuestRIPMove -> LoadConstantFixed. All immediate
+//  * Constant: LoadConstant -> LoadImm64 (li/lis/ori/sldi/rldic/oris family).
+//    EntrypointOffset: InsertRelocatableRIPMove -> LoadConstant. All immediate
 //    builders, no memory.
 //  * Copy: mr only. Bfe/Sbfe: rlwinm/rldicl/extsb/extsh/extsw/neg/sldi/or_/mr.
 //  * Add/Sub/Neg/Not/Or/And/Xor/Andn: addi/addis/add/subf/neg/isel/nor/
@@ -5272,8 +5147,6 @@ CPUBackend::CompiledCode PPC64JITCore::CompileCode(
   SetBuffer(StagingBase, StagingCapacity);
 
   CodeData = {};
-  ExitRIPSitesOverflowed = false;
-  MovImmWindowsOverflowed = false;
   CodeData.BlockBegin = GetCursorAddress<uint8_t*>();
 
   // -------------------------------------------------------------------------
@@ -6101,7 +5974,7 @@ CPUBackend::CompiledCode PPC64JITCore::CompileCode(
         if (IROp->Op == IR::OP_CONSTANT) {
           auto COp = IROp->C<IR::IROp_Constant>();
           const auto PR = IR::PhysicalRegister(CodeNode);
-          if (!ConstCacheDisabled() && COp->PatchSite == 0 && PR.AsRegClass() == IR::RegClass::GPR) {
+          if (!ConstCacheDisabled() && PR.AsRegClass() == IR::RegClass::GPR) {
             LastConstantCache = {static_cast<uint64_t>(COp->Constant), PR.Reg, true, false};
           } else {
             LastConstantCache.Valid = false;
@@ -6114,19 +5987,11 @@ CPUBackend::CompiledCode PPC64JITCore::CompileCode(
           // OP_CONSTANT: the dest is a dynamic RA register, the op writes
           // nothing else, and every op that could overwrite it invalidates.
           //
-          // Gated on !ExitRIPFixedWidth to match the consumer in
-          // DEF_OP(EntrypointOffset): with a code cache or SMCSemanticPatch on,
-          // the handler emits the fixed 20-byte relocatable window instead, and
-          // that window must stay byte-exact — so nothing must be tempted to
-          // addi off it. (The register would in fact hold the right value
-          // there; keeping producer and consumer on one predicate is the point,
-          // so a future reader cannot find one converted and the other not.)
           // With relocatable variable-width loads (the code cache) the entry
           // is marked GuestRIP and seeds only another guest RIP's delta; a
           // 32-bit masked value is not rebase-invariant and seeds nothing.
           const auto PR = IR::PhysicalRegister(CodeNode);
-          if (!ConstCacheDisabled() && !ExitRIPFixedWidth && PR.AsRegClass() == IR::RegClass::GPR &&
-              (!RetainRelocations || IROp->Size != IR::OpSize::i32Bit)) {
+          if (!ConstCacheDisabled() && PR.AsRegClass() == IR::RegClass::GPR && (!RetainRelocations || IROp->Size != IR::OpSize::i32Bit)) {
             LastConstantCache = {EntrypointOffsetValue(IROp), PR.Reg, true, true};
           } else {
             LastConstantCache.Valid = false;
@@ -6401,12 +6266,6 @@ CPUBackend::CompiledCode PPC64JITCore::CompileCode(
 
   for (auto& EntryPoint : CodeData.EntryPoints) {
     EntryPoint.second += Delta;
-  }
-  for (auto& Site : CodeData.ExitRIPSites) {
-    Site.HostAddr += Delta;
-  }
-  for (auto& Window : CodeData.MovImmWindows) {
-    Window.HostAddr += Delta;
   }
   for (auto& Thunk : PendingJumpThunks) {
     Thunk.CallerAddress += Delta;

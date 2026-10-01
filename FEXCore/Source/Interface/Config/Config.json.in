@@ -52,8 +52,8 @@
           "from still match, so a replaced binary or self-modified code costs a",
           "recompile, not wrong code.",
           "Turn it off with POWERARM_ENABLECODECACHINGWIP=0. It is also off when",
-          "SMCSemanticPatch, SMCLazyInval, SMCCheapTier, SMCStoreEmulation or",
-          "SMCStoreBackpatch is enabled."
+          "SMCLazyInval, SMCCheapTier, SMCStoreEmulation or SMCStoreBackpatch is",
+          "enabled."
         ]
       },
       "CodeCacheMaxSize": {
@@ -916,8 +916,7 @@
           "linked branches) then faults, and the deferred-drain debt is settled",
           "in that handler before any further translated code runs. Costs one",
           "extra mprotect + one extra fault per lazy SMC fault, on the writer",
-          "only. Incompatible with SMCSemanticPatch (linking stays off there:",
-          "a patched exit immediate does not retarget an already-linked branch)."
+          "only."
         ]
       },
       "SMCStoreEmulation": {
@@ -930,22 +929,6 @@
           "re-protecting the page. Eliminates false-sharing invalidation",
           "storms (data and code on the same guest page). Writes that DO",
           "overlap compiled code fall back to the normal invalidation path."
-        ]
-      },
-      "SMCSemanticPatch": {
-        "Type": "bool",
-        "Default": "false",
-        "Desc": [
-          "SMC Idea 4 (ppc64le): recognise a guest store that overwrites only a",
-          "patchable immediate inside an already-compiled block -- the rel32",
-          "target of a direct call/jmp/jcc, or the immediate of a mov r32,imm32",
-          "/ mov r64,imm64 / C7 /0 reg,imm32. Instead of invalidating, emulate",
-          "the store and patch the value baked into the block's translated code",
-          "(the destination RIP of the exit, or the tagged constant's fixed-width",
-          "materialisation window), leaving the page protected and the block",
-          "live. Anything else (partial/oversized writes, writes that also change",
-          "instruction bytes, ambiguous or non-atomically patchable constants)",
-          "falls back to the normal path. Off: no effect."
         ]
       },
       "VCmpFusion": {

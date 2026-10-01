@@ -630,8 +630,8 @@ int main(int argc, char** argv, char** const envp) {
   // cache does not store, or patch code in ways a stored block cannot carry
   // (store backpatch stubs), so they turn the whole cache off, writes included.
   // Nothing has read the option yet.
-  if (FEXCore::Config::Get_SMCSEMANTICPATCH() || FEXCore::Config::Get_SMCLAZYINVAL() || FEXCore::Config::Get_SMCCHEAPTIER() ||
-      FEXCore::Config::Get_SMCSTOREEMULATION() || FEXCore::Config::Get_SMCSTOREBACKPATCH()) {
+  if (FEXCore::Config::Get_SMCLAZYINVAL() || FEXCore::Config::Get_SMCCHEAPTIER() || FEXCore::Config::Get_SMCSTOREEMULATION() ||
+      FEXCore::Config::Get_SMCSTOREBACKPATCH()) {
     FEXCore::Config::Set(FEXCore::Config::CONFIG_ENABLECODECACHINGWIP, "0");
   }
 

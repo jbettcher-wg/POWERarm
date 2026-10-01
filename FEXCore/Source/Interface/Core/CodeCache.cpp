@@ -493,16 +493,13 @@ uint64_t ComputeCodeCacheConfigId() {
     HASH_OPT(DISABLEDFCESTOREELIM);
     HASH_STR_OPT(EXTENDEDVOLATILEMETADATA);
 
-    // SMC. SMCSemanticPatch in particular changes constant materialisation
-    // (fixed-width windows instead of the shortest sequence), and the cheap tier
-    // changes the block shape outright.
+    // SMC. The cheap tier in particular changes the block shape outright.
     HASH_OPT(SMCCHECKS);
     HASH_OPT(SMCSOFTINVALIDATE);
     HASH_OPT(SMCFILEIMMUTABLE);
     HASH_OPT(SMCLAZYINVAL);
     HASH_OPT(SMCLAZYSCRUB);
     HASH_OPT(SMCSTOREEMULATION);
-    HASH_OPT(SMCSEMANTICPATCH);
     HASH_OPT(SMCSTOREBACKPATCH);
     HASH_OPT(SMCCHEAPTIER);
     HASH_OPT(SMCCHEAPTIERTHRESHOLD);
@@ -1705,12 +1702,11 @@ struct CodeCache::FileCache {
 CodeCache::CodeCache(ContextImpl& CTX_)
   : CTX(CTX_) {
   // Loading installs blocks through the same registration a compile uses, but
-  // not the per-block metadata these SMC modes attach at compile time (semantic
-  // patch sites, cheap-tier state, store emulation), so they and the cache are
-  // mutually exclusive.
-  LoadEnabled = EnableCodeCaching() && !FEXCore::Config::Get_SMCSEMANTICPATCH() && !FEXCore::Config::Get_SMCLAZYINVAL() &&
-                !FEXCore::Config::Get_SMCCHEAPTIER() && !FEXCore::Config::Get_SMCSTOREEMULATION() &&
-                !FEXCore::Config::Get_SMCSTOREBACKPATCH();
+  // not the per-block metadata these SMC modes attach at compile time
+  // (cheap-tier state, store emulation), so they and the cache are mutually
+  // exclusive.
+  LoadEnabled = EnableCodeCaching() && !FEXCore::Config::Get_SMCLAZYINVAL() && !FEXCore::Config::Get_SMCCHEAPTIER() &&
+                !FEXCore::Config::Get_SMCSTOREEMULATION() && !FEXCore::Config::Get_SMCSTOREBACKPATCH();
   StatsStream();
   StartupStderr();
 }

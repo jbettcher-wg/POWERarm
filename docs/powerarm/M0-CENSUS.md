@@ -379,10 +379,8 @@ Decisions found behind fatal errors while fixing files. Each has a TODO:
 - `Source/Tools/LinuxEmulation/Thunks.cpp:643`: low-4GB host ranges only mattered for 32-bit x86 guests; drop this export with the host thunk pool once thunks are redesigned.
 - `ThunkLibs/Generator/main.cpp:99`: the guest data-layout parse still targets x86_64-linux-gnu; it needs an aarch64 (AAPCS64) guest model (DESIGN.md §6.1).
 
-#### smc (4)
+#### smc (2)
 
-- `FEXCore/Source/Interface/Core/Core.cpp:906`: SMC Idea 4 (FEX_SMCSEMANTICPATCH) site tables stay empty; the x86 rel32/mov-imm site decoders have no A64 counterpart yet (ADRP/MOVZ/B imm26 are the analogues).
-- `FEXCore/Source/Interface/Core/SMCSemanticPatch.h:348`: DecodeRel32BranchSite and DecodeMovImmSite below recognise x86 encodings and have no caller since the x86 frontend was removed; the A64 frontend needs B/BL/B.cond/CBZ/TBZ imm-field site recording and a MOVZ/MOVK counterpart.
 - `Source/Tools/CommonTools/Linux/Utils/ELFParser.h:292`: code-cache relocation classes were chosen for x86-64 data relocations; re-check which AArch64 relocations can land in cached code ranges.
 - `Source/Tools/FEXOfflineCompiler/Main.cpp:154`: the offline compiler only countered 32-bit x86 relocations here; decide whether AArch64 RELATIVE/ABS64 data needs the same treatment.
 

@@ -8,8 +8,6 @@ $end_info$
 
 #pragma once
 
-#include "Interface/Core/SMCSemanticPatch.h"
-
 #include <FEXCore/Utils/CompilerDefs.h>
 #include <atomic>
 #include <FEXCore/Utils/SignalScopeGuards.h>
@@ -315,19 +313,6 @@ namespace CPU {
       fextl::map<uint64_t, uint8_t*> EntryPoints;
       // The total size of the codeblock from [BlockBegin, BlockBegin+Size).
       size_t Size;
-
-      // SMC Idea 4 (FEX_SMCSEMANTICPATCH): host addresses of the fixed-width
-      // guest-RIP materialisation windows this block's ExitFunctions emitted
-      // for compile-time-constant destinations. Populated by the PPC64LE
-      // backend only, and only when the flag is on; empty otherwise, which
-      // makes the block ineligible for semantic patching.
-      // See Interface/Core/SMCSemanticPatch.h.
-      FEXCore::SMC::ExitRIPSites ExitRIPSites;
-
-      // SMC Idea 4, mov-immediate half: the fixed-width windows this block
-      // materialised its tagged guest immediates into, each carrying the index
-      // of the MovImmSite it came from. Same population rules as above.
-      FEXCore::SMC::MovImmWindows MovImmWindows;
 
       // Cold G2: the compile-time-constant destination RIPs this unit's
       // ExitFunctions carry, i.e. where control provably goes next. Fed to the

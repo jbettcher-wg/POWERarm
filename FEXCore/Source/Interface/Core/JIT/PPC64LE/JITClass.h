@@ -249,14 +249,6 @@ private:
   uint64_t                           Entry {};
   CPUBackend::CompiledCode           CodeData {};
 
-  // SMC Idea 4: sticky "this block had more constant exits than
-  // kMaxSitesPerBlock", so a later exit can't repopulate the cleared table.
-  // Reset with CodeData at the top of CompileCode.
-  bool                               ExitRIPSitesOverflowed {};
-
-  // Same, for the mov-immediate window table.
-  bool                               MovImmWindowsOverflowed {};
-
   // Per-block jump targets
   fextl::vector<PPC64Emitter::Label> JumpTargets;
 
@@ -849,16 +841,12 @@ private:
   bool NZCVExitDeadCanary {};
   void EmitNZCVDeadCanary();
 
-  // Resolved once at construction: code caching OR SMCSemanticPatch on, i.e.
-  // something consumes the relocations this backend records for guest-RIP
-  // loads. Off means no relocation is recorded at all. See JIT.cpp.
+  // Resolved once at construction: code caching on, i.e. something consumes the
+  // relocations this backend records for guest-RIP loads. Off means no
+  // relocation is recorded at all. Guest-RIP loads are always the ordinary
+  // variable-width LoadConstant; the relocation records the width the loader
+  // may re-emit into (RelocGuestRIP::Instructions). See JIT.cpp.
   bool RetainRelocations {};
-
-  // SMCSemanticPatch on: guest-RIP loads are the fixed 20-byte window its fault
-  // handler re-encodes. With only the code cache on they are the ordinary
-  // variable-width LoadConstant, and the relocation records the width the
-  // loader may re-emit into (RelocGuestRIP::Instructions).
-  bool ExitRIPFixedWidth {};
 
   // Spill slots management.
   //
@@ -1247,46 +1235,21 @@ private:
   // a RELOC_NAMED_THUNK_MOVE relocation for code-cache patching.
   void InsertNamedThunkRelocation(GPR Reg, const IR::SHA256Sum& Sum);
 
-  // S3.7-C2: Load a guest-RIP-derived Constant into Reg via LoadConstantFixed
-  // and record a RELOC_GUEST_RIP_MOVE. Every site that used to emit a bare
+  // S3.7-C2: Load a guest-RIP-derived Constant into Reg and record a
+  // RELOC_GUEST_RIP_MOVE. Every site that used to emit a bare
   // `LoadConstant(reg, Entry + Op->Offset)` must use this instead, or cached
   // code loaded in a different ASLR session will jump to a stale address.
   // TakeRelocations() rebases these against the caller-supplied guest base
   // before serialization; the patcher adds the new base back on load.
   void InsertGuestRIPMove(GPR Reg, uint64_t Constant);
 
-  // DEF_OP(EntrypointOffset)'s guest RIP -- the return address a guest `call`
-  // pushes, so one of the hottest constants the JIT materialises. Same gating
-  // argument as InsertExitRIPMove: the fixed 20-byte window and its
-  // RELOC_GUEST_RIP_MOVE exist solely so the code cache can re-emit a rebased
-  // address into it, so with ExitRIPFixedWidth false this drops to a plain
-  // variable-width LoadConstant (1-3 instructions for any sub-4GiB RIP) and
-  // records no relocation.
-  void InsertEntrypointRIPMove(GPR Reg, uint64_t Constant);
-
-  // SMC Idea 4 (FEX_SMCSEMANTICPATCH): as InsertGuestRIPMove, but additionally
-  // records the host address of the 20-byte window in CodeData.ExitRIPSites so
-  // the SMC fault handler can repatch this destination when the guest rewrites
-  // the rel32 that produced it. Only ExitFunction destinations may use this --
-  // the fault handler identifies a window by the RIP value it materialises, and
-  // recording any other guest-RIP constant would make that lookup ambiguous.
-  // See Interface/Core/SMCSemanticPatch.h.
-  //
-  // When ExitRIPFixedWidth is false (no code cache, no semantic patching) this
-  // drops to a plain variable-width LoadConstant with no relocation and no
-  // site record -- nothing rewrites the window in that configuration.
-  void InsertExitRIPMove(GPR Reg, uint64_t Constant);
-
-  // SMC Idea 4, mov-immediate half: materialise a constant the frontend tagged
-  // as a patchable guest immediate (IROp_Constant::PatchSite != 0) into the same
-  // fixed-width 20-byte window, and record it against its site index. Returns
-  // false without emitting anything when the constant is untagged, the flag is
-  // off, or the table overflowed -- the caller then emits the ordinary
-  // variable-width LoadConstant. Unlike InsertGuestRIPMove this records NO
-  // relocation: the value is a plain guest immediate, not an address, so it is
-  // correct as-is in a code-cache session with a different ASLR base.
-  // See Interface/Core/SMCSemanticPatch.h.
-  bool TryInsertPatchableImmMove(GPR Reg, uint64_t Constant, uint32_t PatchSite);
+  // The guest RIPs DEF_OP(ExitFunction)'s constant destination and
+  // DEF_OP(EntrypointOffset) materialise -- the latter being the return address
+  // a guest `call` pushes, so one of the hottest constants the JIT emits. The
+  // RELOC_GUEST_RIP_MOVE exists solely so the code cache can re-emit a rebased
+  // address, so with RetainRelocations false this drops to a plain LoadConstant
+  // and records no relocation.
+  void InsertRelocatableRIPMove(GPR Reg, uint64_t Constant);
 
   // Emit the JIT block entry sequence (SRA fill, TF check)
   void EmitEntryPoint(PPC64Emitter::Label& HeaderLabel, bool CheckTF);
@@ -1460,17 +1423,13 @@ private:
   // of a 2-5 insn LoadConstant. Targets clustered guest addresses (rip-
   // relative coefficient loads in polynomial code: one lis+ori then addi per
   // subsequent constant). Lifecycle owned by CompileCode's post-handler
-  // switch: set by non-PatchSite OP_CONSTANT with a dynamic-GPR dest,
-  // survives ONLY across the verified no-dynamic-GPR-write allowlist
-  // (FPR-class LoadMem, the scalar-FP insert family), reset at block entry.
+  // switch: set by OP_CONSTANT with a dynamic-GPR dest, survives ONLY across
+  // the verified no-dynamic-GPR-write allowlist (FPR-class LoadMem, the
+  // scalar-FP insert family), reset at block entry.
   //
-  // OP_ENTRYPOINTOFFSET is a producer AND a consumer too, on the variable-
-  // width path only: the return address of every guest `call` is one of these,
-  // and consecutive calls in a basic block sit a handful of bytes apart, so
-  // the delta form applies constantly. Both directions are gated on
-  // !ExitRIPFixedWidth -- when a code cache or SMCSemanticPatch is on, that op
-  // must emit the byte-exact 20-byte LoadConstantFixed window that
-  // CodeCache::ApplyCodeRelocations re-emits RELOC_GUEST_RIP_MOVE into.
+  // OP_ENTRYPOINTOFFSET is a producer AND a consumer too: the return address of
+  // every guest `call` is one of these, and consecutive calls in a basic block
+  // sit a handful of bytes apart, so the delta form applies constantly.
   //
   // With RetainRelocations and variable-width RIP loads (the code cache), a
   // guest RIP is rebased on load and a plain constant is not, so a delta is

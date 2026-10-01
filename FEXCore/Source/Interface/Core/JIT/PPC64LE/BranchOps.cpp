@@ -182,8 +182,7 @@ DEF_OP(CallbackReturn) {
 //
 //     li    r0, 0                         hoisted from the hit leg (P5.0.2)
 //   PatchSite:                            4-byte aligned by construction
-//     InsertExitRIPMove TMP1, NewRIP      (1-5 insns; 5 fixed when
-//                                          ExitRIPFixedWidth -- see below)
+//     InsertRelocatableRIPMove TMP1, NewRIP      (1-5 insns)
 //     std   TMP1, State.rip(STATE)        sunk from BOTH probe legs
 //     <L1 probe, hit leg ends mtctr;bctr, miss leg spills and branches to
 //      this exit's jump thunk LinkPath — see CompileCode's thunk emission>
@@ -442,19 +441,14 @@ DEF_OP(ExitFunction) {
     // a code cache saved in one ASLR session and loaded in another would jump
     // to a stale address without a RELOC_GUEST_RIP_MOVE. Record placed AFTER
     // the 32-bit mask so the recorded value matches the emitted immediate.
-    // SMC Idea 4: this is the ONLY guest-RIP constant the semantic-patch fault
-    // handler is allowed to rewrite, so it is the only one recorded.
     //
-    // WIDTH: InsertExitRIPMove emits the fixed 20-byte window only when
-    // something rewrites it in place — code caching (ApplyCodeRelocations) or
-    // FEX_SMCSEMANTICPATCH (the fault handler's SynthesizeRIPWindow). With
-    // both off it degrades to a variable-width LoadConstant and records no
-    // relocation; see PPC64JITCore::ExitRIPFixedWidth in JIT.cpp. Neither the
-    // hoist below nor the linker cares about the width — PatchSite is captured
-    // from the cursor after this call, not computed from a fixed offset.
-    // (Note BlockLinking is separately interlocked off when
-    // FEX_SMCSEMANTICPATCH is enabled; see JIT.cpp BlockLinkingEnabled.)
-    InsertExitRIPMove(TMP1, NewRIP);
+    // WIDTH: always a variable-width LoadConstant; the relocation records the
+    // width the cache loader may re-emit into, and with code caching off no
+    // relocation is recorded at all (see PPC64JITCore::RetainRelocations in
+    // JIT.cpp). Neither the hoist below nor the linker cares about the width —
+    // PatchSite is captured from the cursor after this call, not computed from
+    // a fixed offset.
+    InsertRelocatableRIPMove(TMP1, NewRIP);
   };
 
   // -------------------------------------------------------------------------
@@ -825,10 +819,9 @@ DEF_OP(ExitFunction) {
     // form did; only the linked fast path stops updating it.
     //
     // Overwriting the first sunk instruction is the intended behaviour: the
-    // linker only ever patches this word forward, never back. Nothing on this
-    // port unlinks -- LookupCache's BlockLinks map is permanently empty here
-    // (see SMCSemanticPatch.h) so SeverBlockLinks is a no-op -- so the word is
-    // dead the moment it is patched.
+    // link record keeps the pre-link word (PPC64BlockLinkRecord::OrigCallerWord)
+    // and PPC64Direct/IndirectBlockDelinker restores it, so severing a link
+    // recovers exactly this unlinked lowering.
     //
     // SinkAfterShadowPush defers this to just past EmitShadowCallPush below:
     // for a shadow CALL the `bcl` of that push must be the FIRST word after

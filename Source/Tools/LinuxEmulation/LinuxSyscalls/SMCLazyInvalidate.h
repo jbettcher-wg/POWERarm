@@ -260,10 +260,6 @@
 //     poke outside the outermost deferring section.  FEX-internal code inside
 //     those sections reaches guest code only through drain points (a)-(c).
 //   - The in-flight current block: exactly the scrub's existing carve-out.
-//   - FEX_SMCSEMANTICPATCH: linking stays hard-off; a patched destination-RIP
-//     immediate cannot retarget an already-linked branch.  The two options
-//     refuse to combine (Syscalls.cpp arming, JIT.cpp interlock — keep the
-//     two predicates in sync).
 // Cost: one mprotect + one extra SIGSEGV per lazy SMC fault, writer thread
 // only, on top of a fault path that already costs microseconds.
 // ===========================================================================

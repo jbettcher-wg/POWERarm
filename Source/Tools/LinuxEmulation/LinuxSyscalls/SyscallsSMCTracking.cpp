@@ -483,15 +483,7 @@ bool SyscallHandler::HandleSegfault(FEXCore::Core::InternalThreadState* Thread, 
     // "the overlap test is too coarse" (fixable, Idea 3) from "the store form
     // isn't decoded" (fixable, widen the decoder) from "these are all shared
     // mappings" (out of scope for v1).
-    // SMC Idea 4 (FEX_SMCSEMANTICPATCH) shares this decode and this store
-    // emulation, but applies where v1 gives up: when the written bytes DO
-    // overlap compiled code and are exactly the rel32 field of a direct branch.
-    // It repatches the destination RIP baked into every affected block's
-    // translated exit and then lets the store through with the page still
-    // protected -- no invalidation, no recompile. Independent flag: either
-    // option alone enables its own half of the "emulate the store" outcome.
-    // See FEXCore/Source/Interface/Core/SMCSemanticPatch.h.
-    if (_SyscallHandler->SMCStoreEmulation() || _SyscallHandler->SMCSemanticPatch()) {
+    if (_SyscallHandler->SMCStoreEmulation()) {
       const uint64_t StorePC = ArchHelpers::Context::GetPc(ucontext);
       const uint32_t RawInsn = *reinterpret_cast<const uint32_t*>(StorePC);
       DecodedStore Store {};
@@ -502,17 +494,8 @@ bool SyscallHandler::HandleSegfault(FEXCore::Core::InternalThreadState* Thread, 
                   Width, RawInsn);
       };
 
-      // Set when the overlap test says "this is a write into live code" and the
-      // semantic patcher then successfully rewrote the translated exits; the
-      // store emulation below is then the completion of that patch rather than
-      // the false-sharing fast path.
-      bool SemanticPatched = false;
-      // Which shape it recognised, for per-shape attribution in the trace:
-      // "rel32", "movimm" or "mixed".
-      const char* SemanticPatchKind = "unknown";
-
-      // Decide the overlap/patch question once, so it can be expressed inside
-      // the existing else-if chain without evaluating it twice.
+      // Decide the overlap question once, so it can be expressed inside the
+      // existing else-if chain without evaluating it twice.
       const auto OverlapDeclines = [&]() -> bool {
         // SMC Idea 3: same substitution as the backpatch helper -- the overlap
         // query is front-ended by the lock-free code-granule bitmap inside
@@ -520,36 +503,11 @@ bool SyscallHandler::HandleSegfault(FEXCore::Core::InternalThreadState* Thread, 
         // "provably no code here"; every other answer falls through to the
         // original locked CodePages/BlockList walk unchanged. See
         // FEXCore/Source/Interface/Core/SMCCodeGranules.h.
-        if (!Thread->CTX->GuestRangeOverlapsCompiledCode(Thread, Store.EA, Store.Width)) {
-          // Pure false sharing: v1's case. Only SMCStoreEmulation may take it.
-          if (_SyscallHandler->SMCStoreEmulation()) {
-            return false;
-          }
-          Fallback("storeemulation-off", Store.EA, Store.Width);
-          return true;
-        }
-
-        if (!_SyscallHandler->SMCSemanticPatch()) {
+        if (Thread->CTX->GuestRangeOverlapsCompiledCode(Thread, Store.EA, Store.Width)) {
           Fallback("overlaps-code", Store.EA, Store.Width);
           return true;
         }
-
-        // The bytes this store is about to write, in guest order. Store.Value
-        // is the source register; only the low Width bytes are written, and
-        // ppc64le is little-endian so they are already in place.
-        uint8_t NewBytes[8];
-        ::memcpy(NewBytes, &Store.Value, sizeof(NewBytes));
-
-        const char* PatchReason = "unknown";
-        if (!_SyscallHandler->TM.SemanticPatchGuestCodeRange(Store.EA, Store.Width, NewBytes, &PatchReason)) {
-          SMC_AUDIT("[%d] fault addr=%lx SEMPATCH-DECLINE reason=%s ea=%lx w=%u insn=%08x\n", FHU::Syscalls::gettid(), FaultAddress,
-                    PatchReason, Store.EA, Store.Width, RawInsn);
-          Fallback("overlaps-code", Store.EA, Store.Width);
-          return true;
-        }
-
-        SemanticPatched = true;
-        SemanticPatchKind = PatchReason;
+        // Pure false sharing: v1's case.
         return false;
       };
 
@@ -576,14 +534,7 @@ bool SyscallHandler::HandleSegfault(FEXCore::Core::InternalThreadState* Thread, 
         // never traps.  A refusal is not an error: the site simply stays
         // faulting and keeps taking this path, exactly as it does today.
         // Either way the current store is emulated below.
-        //
-        // Not when this fault was serviced as a semantic patch: that site's
-        // writes hit live code on a page that deliberately stays protected, so
-        // a stub would just fault again from inside itself on every later
-        // patch — strictly worse than faulting here directly. A site that
-        // mixes false-sharing and imm-field writes still gets backpatched the
-        // first time it faults as false sharing.
-        if (!SemanticPatched && _SyscallHandler->SMCStoreBackpatch()) {
+        if (_SyscallHandler->SMCStoreBackpatch()) {
           bool QuietRefusal = false;
           const char* Reason = FEX::HLE::SMCBackpatch::TryBackpatchStore(Thread, StorePC, &QuietRefusal);
           if (Reason && !QuietRefusal) {
@@ -596,12 +547,7 @@ bool SyscallHandler::HandleSegfault(FEXCore::Core::InternalThreadState* Thread, 
           ArchHelpers::Context::SetPPCGpReg(ucontext, Store.UpdateRA, Store.EA);
         }
         ArchHelpers::Context::SetPc(ucontext, StorePC + 4);
-        if (SemanticPatched) {
-          SMC_AUDIT("[%d] fault addr=%lx SEMANTIC-PATCH kind=%s ea=%lx w=%u\n", FHU::Syscalls::gettid(), FaultAddress, SemanticPatchKind,
-                    Store.EA, Store.Width);
-        } else {
-          SMC_AUDIT("[%d] fault addr=%lx EMULATED-STORE ea=%lx w=%u\n", FHU::Syscalls::gettid(), FaultAddress, Store.EA, Store.Width);
-        }
+        SMC_AUDIT("[%d] fault addr=%lx EMULATED-STORE ea=%lx w=%u\n", FHU::Syscalls::gettid(), FaultAddress, Store.EA, Store.Width);
         FEXCORE_PROFILE_INSTANT_INCREMENT(Thread, AccumulatedSMCCount, 1);
         return true;
       }

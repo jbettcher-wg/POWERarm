@@ -213,7 +213,6 @@ namespace {
       *Value = Hdr->C<IROp_InlineConstant>()->Constant;
       return true;
     }
-    // Declines PatchSite-tagged constants, whose value may change at run time.
     return IREmit->IsValueConstant(Arg, Value);
   }
 

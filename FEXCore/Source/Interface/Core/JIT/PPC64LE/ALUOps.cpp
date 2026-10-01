@@ -188,17 +188,6 @@ uint64_t PPC64JITCore::EntrypointOffsetValue(const IR::IROp_Header* IROp) const 
 DEF_OP(Constant) {
   auto Op  = IROp->C<IR::IROp_Constant>();
   auto Dst = GetReg(Node);
-  // SMC Idea 4 (FEX_SMCSEMANTICPATCH): a constant the frontend tagged as the
-  // immediate of a guest mov gets a fixed-width, repatchable window instead of
-  // the ordinary value-dependent 1..5 instruction sequence. Untagged constants
-  // (everything, with the flag off) take the unchanged path.
-  // See Interface/Core/SMCSemanticPatch.h.
-  if (Op->PatchSite != 0) {
-    if (!TryInsertPatchableImmMove(Dst, Op->Constant, Op->PatchSite)) {
-      LoadConstant(Dst, Op->Constant);
-    }
-    return;
-  }
 
   // Last-constant delta: clustered constants (rip-relative coefficient
   // addresses in polynomial code load a fresh absolute address per use, all
@@ -247,20 +236,10 @@ DEF_OP(EntrypointOffset) {
   // addi's ±32K — so the delta form applies far more often here than it does
   // for arbitrary constants.
   //
-  // ONLY on the variable-width path. With ExitRIPFixedWidth set (code caching
-  // or FEX_SMCSEMANTICPATCH), InsertEntrypointRIPMove must emit the byte-exact
-  // 20-byte LoadConstantFixed window plus its RELOC_GUEST_RIP_MOVE record,
-  // because CodeCache::ApplyCodeRelocations re-emits into that window in place
-  // on load. A one-instruction addi off a neighbouring register is neither 20
-  // bytes nor self-contained (its base register's value is not knowable to the
-  // relocation applier), so it must never appear there. The producer side is
-  // gated on the same predicate, so a fixed-width unit never even populates a
-  // cache entry from this op.
-  //
-  // With only the code cache on, the delta is taken between two guest RIPs of
-  // this block, which the load base moves together, so the addi stays correct
-  // after relocation. A plain constant's register is not a valid base there.
-  if (!ExitRIPFixedWidth && !ConstCacheDisabled() && LastConstantCache.Valid &&
+  // With the code cache on, the delta is taken between two guest RIPs of this
+  // block, which the load base moves together, so the addi stays correct after
+  // relocation. A plain constant's register is not a valid base there.
+  if (!ConstCacheDisabled() && LastConstantCache.Valid &&
       (!RetainRelocations || (LastConstantCache.GuestRIP && IROp->Size != IR::OpSize::i32Bit))) {
     const int64_t Delta = static_cast<int64_t>(Value) - static_cast<int64_t>(LastConstantCache.Value);
     const GPR Base = GeneralRegisters[LastConstantCache.Reg];
@@ -276,7 +255,7 @@ DEF_OP(EntrypointOffset) {
     }
   }
 
-  InsertEntrypointRIPMove(Dst, Value);
+  InsertRelocatableRIPMove(Dst, Value);
 }
 
 DEF_OP(InlineConstant)         { /* nop — handled by IsInlineConstant */ }
