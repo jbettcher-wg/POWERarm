@@ -256,10 +256,53 @@ run_rootfs_overlay() {
   rm -rf "$ovt"
 }
 
+# readlink(2)/readlinkat(2) errno and target fidelity (readlinkerr.c), run
+# twice: once with its fixture as the rootfs, so FileManager::Readlink{,at}'s
+# openat2(RESOLVE_IN_ROOT) trampoline answers every path, and once against a
+# host path the rootfs lacks, so the host fallback does. Every answer is forced
+# by POSIX plus Linux's documented behaviour, so the two must agree with each
+# other and with the Pi. The O_DIRECTORY fast path answers a directory out of
+# the openat2 alone and a symlink -- including a symlink to a directory -- must
+# still fall through to the full probe and come back with its target, which is
+# what these two runs together pin down.
+#
+# Self-checking as well as differential: with no Pi golden the matrix still has
+# to be all-PASS, which is the threadleak/sysreg precedent.
+run_readlinkerr() {
+  rlt=$(mktemp -d "${TMPDIR:-/tmp}/readlinkerr.XXXXXX")
+  "$emu" ./readlinkerr --make-fixture "$rlt/rootfs" > readlinkerr.stderr 2>&1
+  "$emu" ./readlinkerr --make-fixture "$rlt/host" >> readlinkerr.stderr 2>&1
+  POWERARM_ROOTFS="$rlt/rootfs" "$emu" ./readlinkerr > readlinkerr.powerarm 2>> readlinkerr.stderr
+  echo $? > readlinkerr.powerarm.rc
+  POWERARM_ROOTFS="$rlt/rootfs" RLFIX_ROOT="$rlt/host" "$emu" ./readlinkerr > readlinkerr.host 2>> readlinkerr.stderr
+  echo $? > readlinkerr.host.rc
+  rl_pass=$(grep -c '^PASS' readlinkerr.powerarm)
+  rl_fail=$(grep -c '^FAIL' readlinkerr.powerarm)
+  if [ "$(cat readlinkerr.powerarm.rc)" != 0 ] || [ "$rl_fail" != 0 ] || [ "$rl_pass" -lt 26 ]; then
+    report FAIL readlinkerr "rootfs-answered: rc=$(cat readlinkerr.powerarm.rc) pass=$rl_pass fail=$rl_fail; see $out/readlinkerr.powerarm"
+  elif [ "$(cat readlinkerr.host.rc)" != 0 ] || ! cmp -s readlinkerr.powerarm readlinkerr.host; then
+    report FAIL readlinkerr "the rootfs and the host answer differently (host rc=$(cat readlinkerr.host.rc)): $(diff readlinkerr.powerarm readlinkerr.host | head -4 | tr '\n' ' ')"
+  elif [ -f readlinkerr.golden ] && ! cmp -s readlinkerr.golden readlinkerr.powerarm; then
+    report FAIL readlinkerr "stdout differs from the Pi: $(cmp readlinkerr.golden readlinkerr.powerarm 2>&1 | head -1)"
+  else
+    note=
+    [ -f readlinkerr.golden ] || note=", no Pi golden (the answers are architecturally forced; self-checked)"
+    report PASS readlinkerr "$rl_pass checks, the rootfs and the host answer identically$note"
+  fi
+  rm -rf "$rlt"
+}
+if [ -f readlinkerr ]; then
+  run_readlinkerr
+fi
+
 for golden in *.golden; do
   t=${golden%.golden}
   if [ "$t" = rootfs_overlay ]; then
     run_rootfs_overlay
+    continue
+  fi
+  # Handled above: it needs its fixture as the rootfs, not a plain run.
+  if [ "$t" = readlinkerr ]; then
     continue
   fi
   case $t in

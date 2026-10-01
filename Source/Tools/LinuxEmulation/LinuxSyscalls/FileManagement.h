@@ -224,8 +224,12 @@ private:
   // escaping into the host filesystem (e.g. an x86 libtinfo.so.6 in the
   // rootfs accidentally resolving through to the host's PowerPC libncursesw).
   // FollowSymlink: true follows the leaf symlink, false uses O_NOFOLLOW.
+  // ExtraFlags are OR'd into the open flags, so a caller can make the kernel
+  // answer a question about the leaf's type as part of the resolution instead
+  // of with a second syscall on the returned fd (see FM.Readlink's
+  // O_DIRECTORY fast path).
   // Returns -1 on error (errno is set). Caller owns returned fd.
-  int OpenPathInRootFS(const EmulatedFDPathResult& Path, bool FollowSymlink) const;
+  int OpenPathInRootFS(const EmulatedFDPathResult& Path, bool FollowSymlink, int ExtraFlags = 0) const;
 
   std::optional<std::string_view> GetSelf(const char* Pathname) const;
   bool IsSelfNoFollow(const char* Pathname, int flags) const;

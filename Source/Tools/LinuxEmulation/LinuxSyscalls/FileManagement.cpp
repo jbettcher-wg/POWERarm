@@ -784,7 +784,7 @@ FileManager::GetEmulatedFDPath(int dirfd, const char* pathname, bool FollowSymli
   return EmulatedFDPathResult {RootFSFD, &SubPath[1]};
 }
 
-int FileManager::OpenPathInRootFS(const EmulatedFDPathResult& Path, bool FollowSymlink) const {
+int FileManager::OpenPathInRootFS(const EmulatedFDPathResult& Path, bool FollowSymlink, int ExtraFlags) const {
   // Path.FD == -1 means GetEmulatedFDPath returned NoEntry; nothing to do.
   if (Path.FD == -1) {
     errno = ENOENT;
@@ -794,7 +794,7 @@ int FileManager::OpenPathInRootFS(const EmulatedFDPathResult& Path, bool FollowS
   // Path.FD == AT_FDCWD means a thunk overlay; just open it from the host
   // namespace (the overlay path is a real host file we control).
   if (Path.FD == AT_FDCWD) {
-    int OpenFlags = O_PATH | O_CLOEXEC;
+    int OpenFlags = O_PATH | O_CLOEXEC | ExtraFlags;
     if (!FollowSymlink) {
       OpenFlags |= O_NOFOLLOW;
     }
@@ -806,7 +806,7 @@ int FileManager::OpenPathInRootFS(const EmulatedFDPathResult& Path, bool FollowS
   // encounters) scoped to the rootfs FD. RESOLVE_IN_ROOT does exactly
   // that, including reinterpreting absolute symlinks as if dirfd were /.
   FEX::HLE::open_how how = {
-    .flags = static_cast<uint64_t>(O_PATH | O_CLOEXEC | (FollowSymlink ? 0 : O_NOFOLLOW)),
+    .flags = static_cast<uint64_t>(O_PATH | O_CLOEXEC | ExtraFlags | (FollowSymlink ? 0 : O_NOFOLLOW)),
     .mode = 0,
     .resolve = RESOLVE_IN_ROOT,
   };
@@ -840,7 +840,7 @@ int FileManager::OpenPathInRootFS(const EmulatedFDPathResult& Path, bool FollowS
   // host lookup is precisely the containment breach this function exists to
   // prevent.
   if (SavedErrno == EXDEV || SavedErrno == ENOSYS) {
-    int OpenFlags = O_PATH | O_CLOEXEC | (FollowSymlink ? 0 : O_NOFOLLOW);
+    int OpenFlags = O_PATH | O_CLOEXEC | ExtraFlags | (FollowSymlink ? 0 : O_NOFOLLOW);
     int Fallback = ::syscall(SYSCALL_DEF(openat), Path.FD, Path.Path, OpenFlags);
     if (Fallback == -1 && errno == ENOSYS) {
       // Shouldn't happen (openat predates every kernel we support), but don't
@@ -1404,7 +1404,44 @@ uint64_t FileManager::Readlink(const char* pathname, char* buf, size_t bufsiz) {
   FDPathTmpData TmpFilename;
   auto Path = GetEmulatedFDPath(AT_FDCWD, pathname, false, TmpFilename);
   uint64_t Result = -1;
-  int RootScopedFD = OpenPathInRootFS(Path, false);
+
+  // A directory is not a symlink, so readlink(2) on one is EINVAL and the
+  // readlinkat(2) below would only ask the kernel to say so. O_DIRECTORY folds
+  // that type test into the openat2(2) this has to do anyway: it succeeds only
+  // when the resolved leaf is a directory, which answers the call from the
+  // open alone and leaves just the close. Two syscalls instead of three, the
+  // RESOLVE_IN_ROOT scoping untouched, and nothing remembered between calls.
+  // It is the common case by a wide margin because the guests that readlink at
+  // all are walking a path a component at a time: 91.7% of the 799 readlinks
+  // in a reference `gcc -c` are directories and none are symlinks
+  // (docs/powerarm/research/rootfs-paths/ROOTFS-PATH-CACHE.md §1 and §6).
+  //
+  // O_DIRECTORY adds exactly one new way for the open to fail -- the final
+  // d_can_lookup() test in path_lookupat(), reported as ENOTDIR -- and changes
+  // nothing about the resolution itself. So every other errno (ENOENT, EACCES,
+  // ELOOP, EXDEV, ENAMETOOLONG, ...) is the same answer the probe without
+  // O_DIRECTORY would have produced and is handled below exactly as before.
+  // Only ENOTDIR has to re-ask, because it conflates "the leaf exists and is
+  // not a directory" with "an intermediate component is not a directory", and
+  // a leaf that is a symlink is in the first group: O_NOFOLLOW with O_PATH
+  // opens the symlink itself, which cannot be looked up, so a symlink -- even
+  // one pointing at a directory -- fails this open and is resolved by the full
+  // probe below, which is what keeps the symlink answers honest.
+  //
+  // The cost of being wrong is one extra syscall: a non-directory leaf that
+  // does exist pays four where it paid three. At the measured 91.7% that is a
+  // net cut, but it is a regression for the rest, and for a workload whose
+  // readlinks are mostly files it would be a small loss rather than a win.
+  int RootScopedFD = OpenPathInRootFS(Path, false, O_DIRECTORY);
+  if (RootScopedFD != -1) {
+    ::close(RootScopedFD);
+    errno = EINVAL;
+    return -1;
+  }
+  if (errno == ENOTDIR) {
+    RootScopedFD = OpenPathInRootFS(Path, false);
+  }
+
   if (RootScopedFD != -1) {
     Result = ::readlinkat(RootScopedFD, "", buf, bufsiz);
     int SavedErrno = errno;
@@ -1528,7 +1565,19 @@ uint64_t FileManager::Readlinkat(int dirfd, const char* pathname, char* buf, siz
   auto NewPath = GetEmulatedFDPath(dirfd, pathname, false, TmpFilename);
   uint64_t Result = -1;
 
-  int RootScopedFD = OpenPathInRootFS(NewPath, false);
+  // See FM.Readlink for why O_DIRECTORY answers this without the readlinkat,
+  // why ENOTDIR is the only errno that has to re-ask, and what a non-directory
+  // leaf pays for it.
+  int RootScopedFD = OpenPathInRootFS(NewPath, false, O_DIRECTORY);
+  if (RootScopedFD != -1) {
+    ::close(RootScopedFD);
+    errno = EINVAL;
+    return -1;
+  }
+  if (errno == ENOTDIR) {
+    RootScopedFD = OpenPathInRootFS(NewPath, false);
+  }
+
   if (RootScopedFD != -1) {
     Result = ::readlinkat(RootScopedFD, "", buf, bufsiz);
     int SavedErrno = errno;
