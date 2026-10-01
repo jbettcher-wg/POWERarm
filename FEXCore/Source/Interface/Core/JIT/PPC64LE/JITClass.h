@@ -913,7 +913,19 @@ private:
     LOGMAN_THROW_A_FMT(RegClass == IR::RegClass::FPRFixed || RegClass == IR::RegClass::FPR,
                        "Unexpected RegClass: {}", Reg.Class);
     if (RegClass == IR::RegClass::FPRFixed) {
-      LOGMAN_THROW_A_FMT(Reg.Reg < 16, "GetVReg called on low-bank FPRFixed {}", Reg.Reg);
+      // ERROR_AND_DIE, not LOGMAN_THROW_A: assertions are compiled out in Release
+      // (ENABLE_ASSERTIONS=OFF is the default and what this tree builds with), and
+      // StaticFPRegisters has 16 entries. A low-bank FPRFixed arriving here would
+      // therefore be a SILENT out-of-bounds read in every shipped build, handing a
+      // VMX-form lowering whatever follows the array -- a wrong-register miscompile
+      // with no crash and no diagnostic. The allocator refuses to produce one today
+      // (RegisterAllocationPass::DecodeSRANode returns nullptr for FPRFixed >= 16),
+      // so this cannot fire; it is the guard that has to survive Release for the
+      // VSX register-class work, which relaxes exactly that refusal.
+      // See docs/powerarm/research/power-isa/VSX-REGISTER-CLASSES.md.
+      if (Reg.Reg >= 16) {
+        ERROR_AND_DIE_FMT("GetVReg called on low-bank FPRFixed {}", Reg.Reg);
+      }
       return StaticFPRegisters[Reg.Reg];
     }
     return GeneralFPRegisters[Reg.Reg];
