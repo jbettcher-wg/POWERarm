@@ -5,7 +5,7 @@ separate mechanisms, and they are easy to confuse:
 
 | | Bare `getenv` switches | Config options |
 |---|---|---|
-| count | 56 | 97 |
+| count | 56 | 96 |
 | set via | environment only | environment **or** AppConfig JSON |
 | spelling | exactly as listed | `FEX_<OPTIONNAME>` |
 | tested for | **presence**, mostly — `=0` often still enables | value |
@@ -730,8 +730,7 @@ skip it, so this option additionally arms the writing thread's InterruptFaultPag
 time — the fault- page poke every block entry executes (including entries reached by linked
 branches) then faults, and the deferred-drain debt is settled in that handler before any further
 translated code runs. Costs one extra mprotect + one extra fault per lazy SMC fault, on the
-writer only. Incompatible with SMCSemanticPatch (linking stays off there: a patched exit
-immediate does not retarget an already-linked branch).
+writer only.
 
 ### `FEX_SMCLAZYSCRUB`
 `bool` · default `true`
@@ -764,17 +763,6 @@ deferred-dirty and left unprotected, so the guest's writes run at full speed. Th
 invalidation is performed when the guest mprotects the page back to PROT_EXEC, before that
 syscall returns. Only legal because the guest cannot execute the intermediate, non-PROT_EXEC
 protection; a W+X request keeps legacy behaviour.
-
-### `FEX_SMCSEMANTICPATCH`
-`bool` · default `false`
-
-SMC Idea 4 (ppc64le): recognise a guest store that overwrites only a patchable immediate inside
-an already-compiled block -- the rel32 target of a direct call/jmp/jcc, or the immediate of a
-mov r32,imm32 / mov r64,imm64 / C7 /0 reg,imm32. Instead of invalidating, emulate the store and
-patch the value baked into the block's translated code (the destination RIP of the exit, or the
-tagged constant's fixed-width materialisation window), leaving the page protected and the block
-live. Anything else (partial/oversized writes, writes that also change instruction bytes,
-ambiguous or non-atomically patchable constants) falls back to the normal path. Off: no effect.
 
 ### `FEX_SMCSOFTINVALIDATE`
 `bool` · default `false`

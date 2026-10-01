@@ -414,7 +414,6 @@ public:
   bool GuestRangeOverlapsCompiledCode(FEXCore::Core::InternalThreadState* Thread, uint64_t Start, uint64_t Length) override;
   bool GuestRangeProvablyHasNoCode(FEXCore::Core::InternalThreadState* Thread, uint64_t Start, uint64_t Length) override;
   void InvalidateCodeBuffersCodeRangePrecise(uint64_t Start, uint64_t Length) override;
-  bool TrySemanticPatchCodeRange(uint64_t Start, uint64_t Length, const void* NewBytes, const char** Reason) override;
 
   ///// Cheap compile tier for churn arenas (FEX_SMCCHEAPTIER) /////
   //
@@ -485,7 +484,6 @@ public:
     FEX_CONFIG_OPT(TranslateAhead, TRANSLATEAHEAD);
     FEX_CONFIG_OPT(TranslateAheadDepth, TRANSLATEAHEADDEPTH);
     FEX_CONFIG_OPT(SMCSoftInvalidate, SMCSOFTINVALIDATE);
-    FEX_CONFIG_OPT(SMCSemanticPatch, SMCSEMANTICPATCH);
     // SMC Idea 3 uses these two only to decide whether to build the code-granule
     // bitmap. Their policy still lives entirely in the Linux frontend
     // (LinuxSyscalls/Syscalls.h); this is a read of the same options, not a new
@@ -576,11 +574,6 @@ public:
     uint64_t StartAddr;
     uint64_t Length;
     bool NeedsAddGuestCodeRanges;
-    // SMC Idea 4 (FEX_SMCSEMANTICPATCH): rel32 fields of the direct branches
-    // the frontend decoded into this block, and the immediate fields of its
-    // mov-immediates. Both empty unless the flag is on.
-    FEXCore::SMC::BranchImmSites BranchImmSites;
-    FEXCore::SMC::MovImmSites MovImmSites;
   };
   [[nodiscard]]
   GenerateIRResult GenerateIR(FEXCore::Core::InternalThreadState* Thread, uint64_t GuestRIP, bool ExtendedDebugInfo, uint64_t MaxInst);
@@ -591,8 +584,6 @@ public:
     uint64_t StartAddr;
     uint64_t Length;
     bool NeedsAddGuestCodeRanges;
-    FEXCore::SMC::BranchImmSites BranchImmSites;
-    FEXCore::SMC::MovImmSites MovImmSites;
   };
   [[nodiscard]]
   CompileCodeResult CompileCode(FEXCore::Core::InternalThreadState* Thread, uint64_t GuestRIP, uint64_t MaxInst = 0);

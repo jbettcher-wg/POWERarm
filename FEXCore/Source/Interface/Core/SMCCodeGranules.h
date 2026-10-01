@@ -101,8 +101,8 @@ namespace FEXCore::SMC {
 
 // Process-global enable. Set once from ContextImpl's constructor, before any
 // CodeBuffer (and therefore any GuestToHostMap) exists, from the SAME config
-// flags that consume the bitmap -- FEX_SMCSTOREEMULATION, FEX_SMCSTOREBACKPATCH
-// and FEX_SMCSEMANTICPATCH. There is no separate flag. With all of them off
+// flags that consume the bitmap -- FEX_SMCSTOREEMULATION and
+// FEX_SMCSTOREBACKPATCH. There is no separate flag. With both of them off
 // nothing is allocated and no reader ever consults it.
 //
 // It is read only in GuestToHostMap's constructor, so a map can never be born

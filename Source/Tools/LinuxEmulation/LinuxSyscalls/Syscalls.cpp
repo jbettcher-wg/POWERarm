@@ -1265,16 +1265,14 @@ SyscallHandler::SyscallHandler(FEXCore::Context::Context* _CTX, FEX::HLE::Signal
       }
     }
     // FEX_SMCLAZYLINK: fault-page-armed drains for linked chains. Only arms if
-    // the scrub (the guarantee being extended) is itself on, and never with
-    // semantic patch (which keeps linking hard-off in the JIT regardless —
-    // see PPC64JITCore BlockLinkingEnabled). The JIT makes the matching
-    // decision from the same three options; keep the predicates in sync.
-    if (SMCLazyLink() && SMCLazyScrub() && !SMCSemanticPatch()) {
+    // the scrub (the guarantee being extended) is itself on. The JIT makes the
+    // matching decision from the same two options; keep the predicates in sync.
+    if (SMCLazyLink() && SMCLazyScrub()) {
       SMCLazyLinkEnabled.store(true, std::memory_order_relaxed);
       LogMan::Msg::IFmt("POWERARM_SMCLAZYLINK armed: SMC faults will arm the writer's InterruptFaultPage so "
                         "linked block chains drain at their next block entry.");
     } else if (SMCLazyLink()) {
-      LogMan::Msg::EFmt("POWERARM_SMCLAZYLINK needs POWERARM_SMCLAZYSCRUB=1 and no POWERARM_SMCSEMANTICPATCH; staying off.");
+      LogMan::Msg::EFmt("POWERARM_SMCLAZYLINK needs POWERARM_SMCLAZYSCRUB=1; staying off.");
     }
     if (SMCLazyScrub()) {
       LogMan::Msg::IFmt("POWERARM_SMCLAZYINVAL is ON: SMC invalidation is deferred to drain points. Same-thread "

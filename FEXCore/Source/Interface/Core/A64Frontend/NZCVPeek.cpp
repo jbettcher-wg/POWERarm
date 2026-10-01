@@ -379,7 +379,7 @@ void Apply(FEXCore::Core::InternalThreadState* Thread, FEXCore::IR::IREmitter* I
   // NZCVDeadExits bitmask in JITCodeTail plus a re-scan at load. The re-scan
   // needs the exit targets back, and §7.5 expected the relocation records to
   // carry them -- but RELOC_GUEST_RIP_MOVE is also what every guest CALL's
-  // return address is recorded as (InsertEntrypointRIPMove), so the records are
+  // return address is recorded as (InsertRelocatableRIPMove), so the records are
   // not in one-to-one correspondence with constant exits and an index-based
   // bitmask cannot be matched to them. Widening the hashed extent is both
   // simpler and strictly stronger: it refuses the block when ANY witness byte

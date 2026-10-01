@@ -23,7 +23,7 @@ and is capped at `CodeCacheMaxSize` MiB (default 8192,
 `POWERARM_CODECACHEMAXSIZE`). The working copy is a hot tier in RAM over it
 (`$XDG_RUNTIME_DIR/powerarm/cache/`); see [Two tiers](#two-tiers-a-hot-copy-in-ram). `POWERARM_CODECACHESTATS=1`
 prints each process's counters to stderr. The SMC modes that the cache cannot
-serve (`SMCSemanticPatch`, `SMCLazyInval`, `SMCCheapTier`, `SMCStoreEmulation`,
+serve (`SMCLazyInval`, `SMCCheapTier`, `SMCStoreEmulation`,
 `SMCStoreBackpatch`) turn it off. See [Default-on](#default-on).
 
 ## Where cold-process time goes
@@ -126,7 +126,6 @@ needs more. Load bases are page-aligned, so the low bits that decide the width
 rarely change (`reloc-failed` stays 0 on `cc1`). The last-constant delta form
 applies between two guest RIPs of the same block, whose difference the load
 base does not change, but never between a guest RIP and a plain constant.
-`SMCSemanticPatch` still uses the fixed 5-instruction window.
 
 **Loading is lazy, per block.** `CompileBlock` asks `CodeCache::TryLoadBlock`
 before compiling. Nothing is read at `mmap` time, so a process pays only for

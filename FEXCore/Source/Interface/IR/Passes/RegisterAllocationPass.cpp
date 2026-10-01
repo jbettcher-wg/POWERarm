@@ -121,11 +121,7 @@ private:
   int64_t SourceIndex {};
 
   bool Rematerializable(IROp_Header* IROp) {
-    // A PatchSite-tagged constant (FEX_SMCSEMANTICPATCH) must flow to its
-    // consumers from its one materialisation window — a rematerialized copy
-    // is untagged, so the SMC fault handler would patch a window nothing
-    // executes.
-    return IROp->Op == OP_CONSTANT && IROp->C<IROp_Constant>()->PatchSite == 0;
+    return IROp->Op == OP_CONSTANT;
   }
 
   Ref InsertFill(Ref Node) {
@@ -400,9 +396,7 @@ private:
 
     // If we already spilled the Candidate, we don't need to spill again.
     // Similarly, if we can rematerialize the instruction, we don't spill it.
-    // (PatchSite-tagged constants are not rematerializable — see
-    // Rematerializable — so they spill like ordinary values.)
-    if (!Spilled && !(Header->Op == OP_CONSTANT && Header->C<IROp_Constant>()->PatchSite == 0)) {
+    if (!Spilled && Header->Op != OP_CONSTANT) {
       LOGMAN_THROW_A_FMT(Reg.AsRegClass() == GetRegClassFromNode(IR, Header), "Consistent");
 
       // SpillSlots allocation is deferred.
@@ -558,9 +552,7 @@ inline bool IsSignext(const IROp_Header* IROp, OrderedNodeWrapper Src, OpSize Si
 }
 
 inline bool IsZero(const IROp_Header* IROp) {
-  // A PatchSite-tagged constant's value can be rewritten at runtime by the SMC
-  // semantic patcher; folding on its compile-time value would go stale.
-  return IROp->Op == OP_CONSTANT && IROp->C<IROp_Constant>()->Constant == 0 && IROp->C<IROp_Constant>()->PatchSite == 0;
+  return IROp->Op == OP_CONSTANT && IROp->C<IROp_Constant>()->Constant == 0;
 }
 
 bool ConstrainedRAPass::TryPostRAMerge(Ref LastNode, Ref CodeNode, IROp_Header* IROp) {

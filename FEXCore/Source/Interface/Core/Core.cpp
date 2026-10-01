@@ -17,7 +17,6 @@ $end_info$
 #include "Interface/Core/LookupCache.h"
 #include "Interface/Core/SMCICache.h"
 #include "Interface/Core/SMCSoftInvalidate.h"
-#include "Interface/Core/SMCSemanticPatch.h"
 #include "Interface/Core/CPUBackend.h"
 #include "Interface/Core/A64Frontend/Decoder.h"
 #include "Interface/Core/A64Frontend/IRBuilder.h"
@@ -298,11 +297,9 @@ ContextImpl::ContextImpl(const FEXCore::HostFeatures& Features)
   // lock-free "no translation lives in this 64-byte line" gate, so it enables
   // it unconditionally. The bitmap's granule IS the IminLine we advertise in
   // CTR_EL0, which is what makes that answer exact rather than conservative.
-  if (Config.SMCStoreEmulation() || Config.SMCStoreBackpatch() || Config.SMCSemanticPatch() ||
-      Config.SMCChecks == FEXCore::Config::CONFIG_SMC_ICACHE) {
+  if (Config.SMCStoreEmulation() || Config.SMCStoreBackpatch() || Config.SMCChecks == FEXCore::Config::CONFIG_SMC_ICACHE) {
     FEXCore::SMC::CodeGranuleTrackingEnabled.store(true, std::memory_order_release);
   }
-
 }
 
 // Maps a host PC to the JIT block containing it.
@@ -1008,10 +1005,6 @@ ContextImpl::GenerateIR(FEXCore::Core::InternalThreadState* Thread, uint64_t Gue
 
   bool HasCustomIR {};
 
-  // POWERARM-M0-TODO(smc): SMC Idea 4 (FEX_SMCSEMANTICPATCH) site tables stay empty; the x86 rel32/mov-imm site decoders have no A64 counterpart yet (ADRP/MOVZ/B imm26 are the analogues).
-  FEXCore::SMC::BranchImmSites BranchImmSites;
-  FEXCore::SMC::MovImmSites MovImmSites;
-
   if (HasCustomIRHandlers.load(std::memory_order_relaxed)) {
     std::shared_lock lk(CustomIRMutex);
     auto Handler = CustomIRHandlers.find(GuestRIP);
@@ -1217,8 +1210,6 @@ ContextImpl::GenerateIR(FEXCore::Core::InternalThreadState* Thread, uint64_t Gue
     .StartAddr = Thread->FrontendDecoder->DecodedMinAddress,
     .Length = Thread->FrontendDecoder->DecodedMaxAddress - Thread->FrontendDecoder->DecodedMinAddress,
     .NeedsAddGuestCodeRanges = !HasCustomIR,
-    .BranchImmSites = std::move(BranchImmSites),
-    .MovImmSites = std::move(MovImmSites),
   };
 }
 
@@ -1232,11 +1223,11 @@ ContextImpl::CompileCodeResult ContextImpl::CompileCode(FEXCore::Core::InternalT
   }
 
   // Generate IR + Meta Info
-  auto [IRView, TotalInstructions, TotalInstructionsLength, StartAddr, Length, NeedsAddGuestCodeRanges, BranchImmSites, MovImmSites] =
+  auto [IRView, TotalInstructions, TotalInstructionsLength, StartAddr, Length, NeedsAddGuestCodeRanges] =
     GenerateIR(Thread, GuestRIP, Config.GDBSymbols(), MaxInst);
   if (!IRView) {
     // OpDispatcher IR already released in this case.
-    return {{}, nullptr, 0, 0, false, {}, {}};
+    return {{}, nullptr, 0, 0, false};
   }
 
   // Attempt to get the CPU backend to compile this code
@@ -1252,9 +1243,7 @@ ContextImpl::CompileCodeResult ContextImpl::CompileCode(FEXCore::Core::InternalT
               .DebugData = nullptr,
               .StartAddr = 0,
               .Length = 0,
-              .NeedsAddGuestCodeRanges = false,
-              .BranchImmSites = {},
-              .MovImmSites = {}};
+              .NeedsAddGuestCodeRanges = false};
     }
   }
 
@@ -1274,8 +1263,6 @@ ContextImpl::CompileCodeResult ContextImpl::CompileCode(FEXCore::Core::InternalT
     .StartAddr = StartAddr,
     .Length = Length,
     .NeedsAddGuestCodeRanges = NeedsAddGuestCodeRanges,
-    .BranchImmSites = std::move(BranchImmSites),
-    .MovImmSites = std::move(MovImmSites),
   };
 }
 
@@ -1341,8 +1328,7 @@ uintptr_t ContextImpl::CompileBlock(FEXCore::Core::CpuStateFrame* Frame, uint64_
 
   auto* CompileLog = GetCompileLog();
   const uint64_t CompileStartNS = CompileLog ? CompileLogState::NowNS() : 0;
-  auto [CompiledCode, DebugData, StartAddr, Length, NeedsAddGuestCodeRanges, BranchImmSites, MovImmSites] =
-    CompileCode(Thread, GuestRIP, MaxInst);
+  auto [CompiledCode, DebugData, StartAddr, Length, NeedsAddGuestCodeRanges] = CompileCode(Thread, GuestRIP, MaxInst);
   auto CodePtr = CompiledCode.EntryPoints[GuestRIP];
   if (CodePtr == nullptr) {
     return 0;
@@ -1465,32 +1451,13 @@ uintptr_t ContextImpl::CompileBlock(FEXCore::Core::CpuStateFrame* Frame, uint64_
   // BlockBegin is shared across all EntryPoints of a single CompiledCode
   // (each block has one begin, potentially multiple entry points).
   const uint64_t BlockBegin = reinterpret_cast<uintptr_t>(CompiledCode.BlockBegin);
-  // SMC Idea 4: the block is eligible for semantic patching only if BOTH halves
-  // of the metadata survived (a decoded rel32 field to match the guest write
-  // against, and a constant exit window to repatch). Either table empty leaves
-  // both empty, so the fault handler's "block claims the write but has no exit
-  // sites" decline can only mean a genuine multiblock-folded branch.
-  if (BranchImmSites.empty() || CompiledCode.ExitRIPSites.empty()) {
-    BranchImmSites.clear();
-    CompiledCode.ExitRIPSites.clear();
-  }
-  // The mov-immediate half is independent: a block can be eligible for one
-  // shape and not the other. Same all-or-nothing rule per half -- a site table
-  // without windows (or windows whose site indices were invalidated by an
-  // overflowing site table) must not be consulted at fault time.
-  if (MovImmSites.empty() || CompiledCode.MovImmWindows.empty()) {
-    MovImmSites.clear();
-    CompiledCode.MovImmWindows.clear();
-  }
-
   for (auto [GuestAddr, HostAddr] : CompiledCode.EntryPoints) {
     // [StartAddr, StartAddr+Length) is the frontend's decoded span for this
     // unit and is recorded unconditionally: it is what SMCChecks=icache filters
     // on when an IC IVAU names a 64-byte line. HashedRangeLength beside it is
     // the SMC v3 hash window and is zero unless FEX_SMCSOFTINVALIDATE is on.
     Thread->LookupCache->AddBlockMapping(Thread, GuestAddr, BlockBegin, CodePages, HostAddr, StartAddr, HashedRangeLength, GuestHash,
-                                         StartAddr, Length, BranchImmSites, CompiledCode.ExitRIPSites, MovImmSites,
-                                         CompiledCode.MovImmWindows);
+                                         StartAddr, Length);
   }
 
   // Cold G2: hand this unit's constant exit targets to the translate-ahead
@@ -1565,7 +1532,7 @@ uintptr_t ContextImpl::CompileSingleStep(FEXCore::Core::CpuStateFrame* Frame, ui
   // Invalidate might take a unique lock on this, to guarantee that during invalidation no code gets compiled
   auto lk = GuardSignalDeferringSection<std::shared_lock>(CodeInvalidationMutex, Thread);
 
-  auto [CompiledCode, DebugData, StartAddr, Length, _, __, ___] = CompileCode(Thread, GuestRIP, 1);
+  auto [CompiledCode, DebugData, StartAddr, Length, _] = CompileCode(Thread, GuestRIP, 1);
   auto CodePtr = CompiledCode.EntryPoints[GuestRIP];
   if (CodePtr == nullptr) {
     if (SMCAuditCompileFD() >= 0) {
@@ -1758,16 +1725,9 @@ uintptr_t ContextImpl::TryRelinkSoftInvalidatedBlock(FEXCore::Core::InternalThre
     }
   }
 
-  // SMC Idea 4: carry the semantic-patch metadata across the relink. A relink
-  // only happens when the guest bytes hashed identical, and the host code is
-  // the same code that was compiled from them -- so every recorded guest field
-  // and every recorded host window is still exactly as valid as it was before
-  // the soft-invalidation. Dropping it here would silently make every
-  // soft-invalidated block ineligible for patching from then on.
   Thread->LookupCache->AddBlockMapping(Thread, GuestRIP, Retained->BlockBegin, Retained->CodePages,
                                        reinterpret_cast<void*>(Retained->HostCode), Retained->GuestRangeStart, Retained->GuestRangeLength,
-                                       Retained->GuestHash, Retained->ExtentStart, Retained->ExtentLength, Retained->BranchImmSites,
-                                       Retained->ExitRIPSites, Retained->MovImmSites, Retained->MovImmWindows);
+                                       Retained->GuestHash, Retained->ExtentStart, Retained->ExtentLength);
 
   if (SMCAuditCompileFD() >= 0) {
     dprintf(SMCAuditCompileFD(), "relink rip=%lx host=%lx pages=%zu\n", GuestRIP, Retained->HostCode, Retained->CodePages.size());
