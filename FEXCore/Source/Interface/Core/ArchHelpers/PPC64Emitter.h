@@ -717,6 +717,39 @@ public:
   void LoadUnalignedV128(VR dst, GPR ea);
   void StoreUnalignedV128(VR src, GPR ea);
 
+  // A guest 128-bit effective address in the form the ACCESS INSTRUCTION can
+  // consume, rather than collapsed into one register:
+  //   EA = GPR[RA] + GPR[RB] + Disp
+  // with at most one of RB (X-form index) and Disp (ISA 3.0 DQ-form
+  // displacement) non-trivial; the unused one is r0 / 0. RA is never r0.
+  //
+  // Why this exists: the single-`ea` signature above dates from the historical
+  // ld/std bounce, which needed one register. Every VSX form these helpers
+  // actually emit — lxvx/stxvx AND the pre-3.0 lxvd2x/stxvd2x — is X-form and
+  // takes RA+RB directly, and ISA 3.0's lxv/stxv additionally take a
+  // multiple-of-16 displacement. A caller that collapsed base+index with an
+  // `add`, or folded a displacement with an `addi`, was paying for an operand
+  // the instruction already had.
+  struct V128AddrForm {
+    GPR RA;
+    GPR RB;
+    int16_t Disp;
+  };
+
+  // Build one. Emits at most one instruction, always arithmetic (addi, or a
+  // LoadConstant for a displacement no 16-bit field can hold) and never a
+  // memory access — which is what lets StoreMemTSO call this on the
+  // leading-barrier side without disturbing the TSOStoreLeadingBarrierElided
+  // proof shape. Writes TMP3 only, and only when it emits anything.
+  // `base` must not be r0 (RA=0 encodes literal zero in every form here).
+  V128AddrForm PrepareV128Addr(GPR base, GPR index, bool has_index, int64_t disp);
+
+  // Same instruction selection and the same clobber contract as the
+  // single-`ea` forms above; these just let the access absorb the addressing
+  // mode. A non-zero Disp is only ever produced for ISA 3.0.
+  void LoadUnalignedV128(VR dst, const V128AddrForm& A);
+  void StoreUnalignedV128(VR src, const V128AddrForm& A);
+
   // Size-correct FPR memory ops (x86 movd/movq/movdqu semantics): for size <16
   // the load zero-extends the upper bits of dst, and the store writes only the
   // low `size` bytes to *ea. Sizes accepted: 1, 2, 4, 8, 16 (load also 10).

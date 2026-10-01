@@ -1466,6 +1466,32 @@ public:
   void lxvx   (VSXR vst, GPR ra, GPR rb) { EmitX(31, vst.idx & 31u, ra.idx, rb.idx, 268, (vst.idx >> 5) & 1u); }
   void stxvx  (VSXR vss, GPR ra, GPR rb) { EmitX(31, vss.idx & 31u, ra.idx, rb.idx, 396, (vss.idx >> 5) & 1u); }
 
+  // lxv XT,DQ(RA) / stxv XS,DQ(RA) — **ISA 3.0 (POWER9)** — p.500/p.516,
+  // DQ-form. Same operation, same LE element order (mem[EA+i] → BE byte
+  // element 15-i) and the same freedom from alignment as lxvx/stxvx above:
+  // the EFFECTIVE ADDRESS may be anything. Only the DISPLACEMENT is
+  // restricted, because the DQ field holds EA bits 4:15 — so the byte
+  // displacement must be a multiple of 16 and fit a signed 16-bit field,
+  // i.e. [-32768, 32752]. That is exactly the shape AArch64's `ldr q`/`str q`
+  // unsigned-offset form produces (imm12 scaled by 16), which is why this
+  // form is worth having: it turns an addi + lxvx pair into one instruction.
+  //
+  // Encoding verified against llvm-mc (-mcpu=pwr9) over 1500 (XT, RA, DQ)
+  // triples spanning both halves of the VSR file, every RA and both ends of
+  // the displacement range — zero mismatches — and llvm-mc rejects 32768,
+  // -32784 and 8, which pins the range and the multiple-of-16 rule.
+  //
+  // RA=0 encodes the literal value zero here exactly as it does in the
+  // X-forms above, so never pass a base that lives in r0.
+  void lxv (VR vrt, int16_t dq, GPR ra) { EmitDQ(vrt.idx + 32u, ra.idx, dq, 1); }
+  void stxv(VR vrs, int16_t dq, GPR ra) { EmitDQ(vrs.idx + 32u, ra.idx, dq, 5); }
+  // VSXR overloads: the TX/SX bit comes from bit 5 of the register number, so
+  // the FPR-aliased low half (vs0-vs31 — where guest V16-V31 live) is
+  // reachable. Both forms define the whole register, so this is safe for the
+  // low bank in the way the scalar loads below are not.
+  void lxv (VSXR vst, int16_t dq, GPR ra) { EmitDQ(vst.idx, ra.idx, dq, 1); }
+  void stxv(VSXR vss, int16_t dq, GPR ra) { EmitDQ(vss.idx, ra.idx, dq, 5); }
+
   // Scalar loads into dword[0].  CAUTION: ISA 3.0 defines dword[1] ← 0 for
   // all four, but on ISA 2.06/2.07 hardware (POWER7/POWER8) lxsdx/lxsiwzx
   // leave dword[1] UNDEFINED — never rely on the zeroing in an ungated path.
@@ -2414,6 +2440,22 @@ private:
   // D-form: op(6) | RT/RS(5) | RA(5) | D/SI/UI(16)
   void EmitD(uint32_t op, uint32_t rt, uint32_t ra, uint16_t d) {
     Emit32((op << 26) | (rt << 21) | (ra << 16) | d);
+  }
+
+  // DQ-form (ISA 3.0 VSX, primary opcode 61):
+  //   op(6) | T(5) | RA(5) | DQ(12) | TX(1) | XO(3)
+  // BE bits:  0:5 | 6:10  | 11:15  | 16:27 |  28  | 29:31
+  // `t` is the FULL 6-bit VSR number: its low five bits go to T and bit 5 to
+  // TX, the same split the VSXR X-form overloads use. DQ holds EA bits 4:15,
+  // so the byte displacement must be a multiple of 16; an int16_t that is a
+  // multiple of 16 is exactly the legal range ([-32768, 32752]).
+  // XO selects the form: 1 = lxv, 5 = stxv.
+  void EmitDQ(uint32_t t, uint32_t ra, int16_t dq, uint32_t xo) {
+    LOGMAN_THROW_A_FMT((dq & 0xF) == 0,
+                       "PPC64 EmitDQ: displacement {} is not a multiple of 16; DQ holds EA bits 4:15, so low bits would drop", dq);
+    LOGMAN_THROW_A_FMT(t < 64, "PPC64 EmitDQ: VSR number {} out of range; bit 6 would bleed into the DQ field", t);
+    const uint32_t DQField = static_cast<uint32_t>(static_cast<uint16_t>(dq)) & 0xFFF0u;
+    Emit32((61u << 26) | ((t & 31u) << 21) | (ra << 16) | DQField | (((t >> 5) & 1u) << 3) | xo);
   }
 
   // M-form: op(6) | RS(5) | RA(5) | SH(5) | MB(5) | ME(5) | Rc(1)

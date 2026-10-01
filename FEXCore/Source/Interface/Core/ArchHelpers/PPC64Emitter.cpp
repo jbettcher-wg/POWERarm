@@ -450,6 +450,9 @@ void PPC64EmitterBase::RestoreDynVRsFromFrame(int32_t BaseOffset) {
 //   * lxvx/stxvx (ISA 3.0): LE semantics place mem[EA+i] into element 15-i
 //     directly — 1 instruction, any alignment, no scratch, no memory bounce.
 //     Emit-time gated on HostFeatures.SupportsISA30 (POWER8 would SIGILL).
+//     Their DQ-form siblings lxv/stxv are the same operation with the
+//     displacement in the instruction, and are selected by PrepareV128Addr
+//     when the displacement is a multiple of 16 — see below.
 //   * lxvd2x/stxvd2x (ISA 2.06, POWER8-legal): produce/consume the
 //     DOUBLEWORD-SWAPPED image (dword[0] = LE int mem[EA..7], dword[1] =
 //     LE int mem[EA+8..15]); xxpermdi DM=2 (T.dw0 = A.dw1, T.dw1 = B.dw0)
@@ -463,18 +466,67 @@ void PPC64EmitterBase::RestoreDynVRsFromFrame(int32_t BaseOffset) {
 // NOTE: `ea` must not be r0 — RA=0 in the encoding reads literal zero (the
 // same constraint the old D-form ld/std bounce had).
 void PPC64EmitterBase::LoadUnalignedV128(VR dst, GPR ea) {
-  if (EmitterCTX->HostFeatures.SupportsISA30) {
-    lxvx(dst, ea, GPRegs::r0);          // EA = GPR[ea] + GPR[r0], r0 ≡ 0
-    return;
-  }
-  // Pre-3.0 VSX fallback (POWER7/POWER8): swapped-image load + fixup.
-  lxvd2x(dst, ea, GPRegs::r0);
-  xxpermdi(dst, dst, dst, 2);           // swap dword[0] <-> dword[1]
+  LoadUnalignedV128(dst, V128AddrForm {ea, GPRegs::r0, 0});
 }
 
 void PPC64EmitterBase::StoreUnalignedV128(VR src, GPR ea) {
+  StoreUnalignedV128(src, V128AddrForm {ea, GPRegs::r0, 0});
+}
+
+// Address-form selection for the two above. Every form they emit is X-form
+// (RA+RB), so an index needs no `add`; ISA 3.0's lxv/stxv additionally hold a
+// multiple-of-16 displacement in the instruction, so it needs no `addi`
+// either. See the V128AddrForm comment in the header for why the single-`ea`
+// signature was costing an instruction.
+PPC64EmitterBase::V128AddrForm PPC64EmitterBase::PrepareV128Addr(GPR base, GPR index, bool has_index, int64_t disp) {
+  LOGMAN_THROW_A_FMT(base != GPRegs::r0, "PPC64 V128 base register must not be r0; RA=0 encodes literal zero");
+  if (has_index) {
+    // The X-form absorbs it on every ISA level. Nothing to emit.
+    return {base, index, 0};
+  }
+  if (disp == 0) {
+    return {base, GPRegs::r0, 0};
+  }
+  // DQ holds EA bits 4:15, so the displacement must be a multiple of 16 and
+  // fit a signed 16-bit field. AArch64's `ldr q`/`str q` unsigned-offset form
+  // scales imm12 by 16 and `ldp q`/`stp q` scales imm7 by 16, so the common
+  // guest shapes land here; LDUR's unscaled simm9 does not and falls through.
+  if (EmitterCTX->HostFeatures.SupportsISA30 && (disp & 0xF) == 0 && disp >= -32768 && disp <= 32752) {
+    return {base, GPRegs::r0, static_cast<int16_t>(disp)};
+  }
+  if (disp >= -32768 && disp <= 32767) {
+    addi(TMP3, base, static_cast<int16_t>(disp));
+    return {TMP3, GPRegs::r0, 0};
+  }
+  // Wider than any displacement field: materialize it and let the X-form's RB
+  // carry it. Still cheaper than materialize-then-add.
+  LoadConstant(TMP3, static_cast<uint64_t>(disp));
+  return {base, TMP3, 0};
+}
+
+void PPC64EmitterBase::LoadUnalignedV128(VR dst, const V128AddrForm& A) {
   if (EmitterCTX->HostFeatures.SupportsISA30) {
-    stxvx(src, ea, GPRegs::r0);
+    if (A.Disp != 0) {
+      lxv(dst, A.Disp, A.RA);           // DQ-form: EA = GPR[RA] + Disp
+      return;
+    }
+    lxvx(dst, A.RA, A.RB);              // EA = GPR[RA] + GPR[RB], r0 ≡ 0
+    return;
+  }
+  // Pre-3.0 VSX fallback (POWER7/POWER8): swapped-image load + fixup.
+  // PrepareV128Addr never hands this arm a displacement.
+  LOGMAN_THROW_A_FMT(A.Disp == 0, "pre-ISA-3.0 has no DQ-form vector load");
+  lxvd2x(dst, A.RA, A.RB);
+  xxpermdi(dst, dst, dst, 2);           // swap dword[0] <-> dword[1]
+}
+
+void PPC64EmitterBase::StoreUnalignedV128(VR src, const V128AddrForm& A) {
+  if (EmitterCTX->HostFeatures.SupportsISA30) {
+    if (A.Disp != 0) {
+      stxv(src, A.Disp, A.RA);
+      return;
+    }
+    stxvx(src, A.RA, A.RB);
     return;
   }
   // Pre-3.0 VSX fallback: stxvd2x writes the doubleword-swapped image, so
@@ -482,8 +534,9 @@ void PPC64EmitterBase::StoreUnalignedV128(VR src, GPR ea) {
   // scratch is VTMP3_VSX from the RA-invisible low bank — both consumers
   // (xxpermdi, stxvd2x) are VSX-form so they can encode it, and using it
   // instead of VTMP1/VTMP2 means this path clobbers NO VMX register at all.
+  LOGMAN_THROW_A_FMT(A.Disp == 0, "pre-ISA-3.0 has no DQ-form vector store");
   xxpermdi(VTMP3_VSX, toVSX(src), toVSX(src), 2);
-  stxvd2x(VTMP3_VSX, ea, GPRegs::r0);
+  stxvd2x(VTMP3_VSX, A.RA, A.RB);
 }
 
 // x86 sub-128-bit FPR memory ops (vmovd/vmovq/vmov{ss,sd}) write/read only

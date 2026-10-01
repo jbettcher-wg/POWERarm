@@ -752,7 +752,24 @@ static MemAddrForm LegalizeForm(PPC64EmitterBase& E, const MemAddrForm& A, IR::O
 // The one thing lvx/stvx do differently from lxvd2x/stxvd2x is MASK the
 // effective address down to a 16-byte boundary (EA & ~0xF) rather than
 // honouring it. That is precisely what IR.json's $Align field certifies for a
-// 128-bit access, so the fast path is gated on that field and on nothing else.
+// 128-bit access, so the fast path is gated on that field.
+//
+// THIS WHOLE TIER IS POWER8-ONLY, and the gate includes !SupportsISA30.
+// Its entire value was being one instruction instead of two, and on ISA 3.0
+// that premise is gone: PrepareV128Addr (ArchHelpers/PPC64Emitter.cpp) now
+// hands lxvx the X-form index and lxv the DQ-form displacement, so the
+// architecturally-correct unaligned path is one instruction in every shape
+// this tier covers — and strictly fewer in the multiple-of-16 displacement
+// shape, where this tier still has to emit an addi that lxv absorbs. Keeping
+// it on for ISA 3.0 would mean choosing a slower lowering that ALSO masks the
+// effective address. So on the target machine the behavioural risk noted
+// below simply does not arise; on POWER8, where lxvd2x+xxpermdi really is two
+// instructions, nothing about the tier changes.
+//
+// The two instruments below are therefore POWER8-only now as well.
+// FEX_ALIGNTRAP has nothing to catch on ISA 3.0 (a wrong $Align certification
+// cannot change the emitted access there), and FEX_DISABLEALIGNEDVECTORLDST
+// has nothing to disable.
 //
 // ALIGN POLARITY — get this backwards and every movdqu silently corrupts.
 // $Align is an IR::OpSize whose enumerator value IS the byte count (IR.h:498),
@@ -801,8 +818,12 @@ static bool AlignedVectorLdStEnabled() {
   return Enabled;
 }
 
-static bool UseAlignedV128Access(IR::OpSize Size, IR::OpSize Align) {
+static bool UseAlignedV128Access(IR::OpSize Size, IR::OpSize Align, bool ISA30) {
   if (Size != IR::OpSize::i128Bit) {
+    return false;
+  }
+  // POWER8 only — see the block comment above.
+  if (ISA30) {
     return false;
   }
   // iInvalid (0xFF) means "opsize aligned"; the size check above means opsize is
@@ -874,8 +895,8 @@ static VmxAddrForm MakeVmxAddr(PPC64EmitterBase& E, const MemAddrForm& A) {
 
 // Returns true when the aligned form was emitted and the caller must not emit
 // the unaligned one.
-static bool TryEmitAlignedV128Load(PPC64EmitterBase& E, VR Dst, IR::OpSize Size, IR::OpSize Align, const MemAddrForm& A) {
-  if (!UseAlignedV128Access(Size, Align)) {
+static bool TryEmitAlignedV128Load(PPC64EmitterBase& E, VR Dst, IR::OpSize Size, IR::OpSize Align, const MemAddrForm& A, bool ISA30) {
+  if (!UseAlignedV128Access(Size, Align, ISA30)) {
     return false;
   }
   const VmxAddrForm V = MakeVmxAddr(E, A);
@@ -883,13 +904,20 @@ static bool TryEmitAlignedV128Load(PPC64EmitterBase& E, VR Dst, IR::OpSize Size,
   return true;
 }
 
-static bool TryEmitAlignedV128Store(PPC64EmitterBase& E, VR Src, IR::OpSize Size, IR::OpSize Align, const MemAddrForm& A) {
-  if (!UseAlignedV128Access(Size, Align)) {
+static bool TryEmitAlignedV128Store(PPC64EmitterBase& E, VR Src, IR::OpSize Size, IR::OpSize Align, const MemAddrForm& A, bool ISA30) {
+  if (!UseAlignedV128Access(Size, Align, ISA30)) {
     return false;
   }
   const VmxAddrForm V = MakeVmxAddr(E, A);
   E.stvx(Src, V.RA, V.RB);
   return true;
+}
+
+// MemAddrForm -> the form the 128-bit access instruction consumes. The two
+// are the same shape; this only adapts the spelling and keeps the
+// displacement/index exclusivity in one place.
+static PPC64EmitterBase::V128AddrForm PrepV128Addr(PPC64EmitterBase& E, const MemAddrForm& A) {
+  return E.PrepareV128Addr(A.Base, A.Index, A.HasIndex, A.HasIndex ? 0 : A.Disp);
 }
 
 static void EmitLoadGPR(PPC64EmitterBase& E, IR::OpSize Size, GPR Dst, const MemAddrForm& A_) {
@@ -1000,10 +1028,20 @@ DEF_OP(LoadMem) {
       SplatFormLoadNodes.push_back(IR->GetID(Node).Value);
       return;
     }
-    // movaps/movdqa and friends certify a 16-byte boundary in Op->Align, which
-    // is exactly what lvx needs to mask for free (see the lvx/stvx block
-    // comment above). One instruction instead of lxvd2x + xxpermdi.
-    if (TryEmitAlignedV128Load(*this, GetVReg(Dst), IROp->Size, Op->Align, EAF)) {
+    // POWER8 only: movaps/movdqa and friends certify a 16-byte boundary in
+    // Op->Align, which is exactly what lvx needs to mask for free (see the
+    // lvx/stvx block comment above). One instruction instead of
+    // lxvd2x + xxpermdi.
+    if (TryEmitAlignedV128Load(*this, GetVReg(Dst), IROp->Size, Op->Align, EAF, CTX->HostFeatures.SupportsISA30)) {
+      return;
+    }
+    // Full-width: the access takes the addressing mode itself (X-form index,
+    // or an ISA 3.0 DQ-form displacement) instead of MaterializeAddr
+    // collapsing it into one register with an add/addi. This is the path every
+    // AArch64 `ldr q` takes -- the frontend never certifies $Align, because
+    // AArch64 has no alignment requirement to certify.
+    if (IROp->Size == IR::OpSize::i128Bit) {
+      LoadUnalignedV128(GetVReg(Dst), PrepV128Addr(*this, EAF));
       return;
     }
     // Honour Op->Size so vmovd/vmovq don't read 16B and clobber upper lanes.
@@ -1011,8 +1049,8 @@ DEF_OP(LoadMem) {
     return;
   }
   if (IROp->Size == IR::OpSize::i128Bit) {
-    if (!TryEmitAlignedV128Load(*this, GetVReg(Dst), IROp->Size, Op->Align, EAF)) {
-      LoadUnalignedV128(GetVReg(Dst), MaterializeAddr(*this, EAF));
+    if (!TryEmitAlignedV128Load(*this, GetVReg(Dst), IROp->Size, Op->Align, EAF, CTX->HostFeatures.SupportsISA30)) {
+      LoadUnalignedV128(GetVReg(Dst), PrepV128Addr(*this, EAF));
     }
     return;
   }
@@ -1064,6 +1102,15 @@ DEF_OP(LoadMemPair) {
     // LoadFPRSized (like LoadUnalignedV128) clobbers TMP1-TMP3.
     auto D1 = GetVReg(Op->OutValue1);
     auto D2 = GetVReg(Op->OutValue2);
+    if (Stride == 16) {
+      // Both halves address off Addr directly: ISA 3.0's DQ-form takes the
+      // displacement, so a pair whose offsets are multiples of 16 — which is
+      // every AArch64 `ldp q`, since imm7 is scaled by 16 — costs two
+      // instructions instead of two addis plus two loads.
+      LoadUnalignedV128(D1, PrepareV128Addr(Addr, r0, false, Offset));
+      LoadUnalignedV128(D2, PrepareV128Addr(Addr, r0, false, Offset + 16));
+      return;
+    }
     GPR B1 = ComputeOffsetAddrInto(*this, Addr, Offset, TMP1);
     LoadFPRSized(D1, B1, Stride);
     GPR B2 = ComputeOffsetAddrInto(*this, Addr, Offset + static_cast<int64_t>(Stride), TMP1);
@@ -1092,10 +1139,16 @@ DEF_OP(StoreMem) {
   // *node's* class which can disagree with the store's class (e.g. an FPR-class
   // value stored as a GPR-sized chunk). Use the IR-declared class.
   if (Op->Class == IR::RegClass::FPR) {
-    // movaps/movdqa and friends certify a 16-byte boundary in Op->Align, which
-    // stvx masks for free (see the lvx/stvx block comment above). One
-    // instruction instead of xxpermdi-into-VTMP3_VSX + stxvd2x.
-    if (TryEmitAlignedV128Store(*this, GetVReg(Op->Value), IROp->Size, Op->Align, EAF)) {
+    // POWER8 only: movaps/movdqa and friends certify a 16-byte boundary in
+    // Op->Align, which stvx masks for free (see the lvx/stvx block comment
+    // above). One instruction instead of xxpermdi-into-VTMP3_VSX + stxvd2x.
+    if (TryEmitAlignedV128Store(*this, GetVReg(Op->Value), IROp->Size, Op->Align, EAF, CTX->HostFeatures.SupportsISA30)) {
+      return;
+    }
+    // Full-width: the store takes the addressing mode itself. Mirror of the
+    // LoadMem arm above.
+    if (IROp->Size == IR::OpSize::i128Bit) {
+      StoreUnalignedV128(GetVReg(Op->Value), PrepV128Addr(*this, EAF));
       return;
     }
     // Honour Op->Size so vmovd m32 / vmovq m64 don't write 16B and stomp on
@@ -1130,8 +1183,8 @@ DEF_OP(StoreMem) {
     return;
   }
   if (IROp->Size == IR::OpSize::i128Bit) {
-    if (!TryEmitAlignedV128Store(*this, GetVReg(Op->Value), IROp->Size, Op->Align, EAF)) {
-      StoreUnalignedV128(GetVReg(Op->Value), MaterializeAddr(*this, EAF));
+    if (!TryEmitAlignedV128Store(*this, GetVReg(Op->Value), IROp->Size, Op->Align, EAF, CTX->HostFeatures.SupportsISA30)) {
+      StoreUnalignedV128(GetVReg(Op->Value), PrepV128Addr(*this, EAF));
     }
     return;
   }
@@ -1179,6 +1232,12 @@ DEF_OP(StoreMemPair) {
   } else {
     auto S1 = GetVReg(Op->Value1);
     auto S2 = GetVReg(Op->Value2);
+    if (Stride == 16) {
+      // Mirror of LoadMemPair's full-width arm.
+      StoreUnalignedV128(S1, PrepareV128Addr(Addr, r0, false, Offset));
+      StoreUnalignedV128(S2, PrepareV128Addr(Addr, r0, false, Offset + 16));
+      return;
+    }
     GPR B1 = ComputeOffsetAddrInto(*this, Addr, Offset, TMP1);
     StoreFPRSized(S1, B1, Stride);
     GPR B2 = ComputeOffsetAddrInto(*this, Addr, Offset + static_cast<int64_t>(Stride), TMP1);
@@ -1281,10 +1340,16 @@ DEF_OP(LoadMemTSO) {
   // an engineering answer to barrier cost. Fixing the cost properly means a
   // cheaper *correct* lowering, not deleting the barrier.
   if (Op->Class == IR::RegClass::FPR) {
-    // Aligned 128-bit fast path (see the lvx/stvx block comment above). Only the
-    // access instruction changes; the acquire lwsync stays exactly where it was,
-    // after the load, on both arms.
-    if (!TryEmitAlignedV128Load(*this, GetVReg(Dst), IROp->Size, Op->Align, EAF)) {
+    // Aligned 128-bit fast path, POWER8 only (see the lvx/stvx block comment
+    // above). Only the access instruction changes; the acquire lwsync stays
+    // exactly where it was, after the load, on every arm.
+    if (TryEmitAlignedV128Load(*this, GetVReg(Dst), IROp->Size, Op->Align, EAF, CTX->HostFeatures.SupportsISA30)) {
+      lwsync();
+      return;
+    }
+    if (IROp->Size == IR::OpSize::i128Bit) {
+      LoadUnalignedV128(GetVReg(Dst), PrepV128Addr(*this, EAF));
+    } else {
       LoadFPRSized(GetVReg(Dst), MaterializeAddr(*this, EAF), IR::OpSizeToSize(IROp->Size));
     }
     lwsync();
@@ -1363,17 +1428,23 @@ DEF_OP(StoreMemTSO) {
     // the lwsync is exactly what it was; the GPR path now folds the
     // displacement into the store itself and needs no address arithmetic at all.
     //
-    // The aligned 128-bit form (see the lvx/stvx block comment above) is decided
-    // and addressed on this side of the barrier too. MakeVmxAddr emits at most
-    // one addi and never a memory access, so the elision prepass's "everything
-    // this handler emits before the barrier is arithmetic-only" premise holds
-    // for it exactly as it does for MaterializeAddr. Only the access instruction
-    // sits after the barrier, and the barrier itself is untouched on both arms.
-    const bool AlignedV128 = UseAlignedV128Access(IROp->Size, Op->Align);
+    // The aligned 128-bit form (POWER8 only, see the lvx/stvx block comment
+    // above) is decided and addressed on this side of the barrier too, and so
+    // is the full-width VSX form's address. MakeVmxAddr and PrepareV128Addr
+    // each emit at most one arithmetic instruction and never a memory access,
+    // so the elision prepass's "everything this handler emits before the
+    // barrier is arithmetic-only" premise holds for them exactly as it does
+    // for MaterializeAddr. Only the access instruction sits after the
+    // barrier, and the barrier itself is untouched on every arm.
+    const bool AlignedV128 = UseAlignedV128Access(IROp->Size, Op->Align, CTX->HostFeatures.SupportsISA30);
+    const bool FullWidthV128 = !AlignedV128 && IROp->Size == IR::OpSize::i128Bit;
     VmxAddrForm VA {r0, r0};
+    V128AddrForm V128A {r0, r0, 0};
     GPR EA = r0;
     if (AlignedV128) {
       VA = MakeVmxAddr(*this, EAF);
+    } else if (FullWidthV128) {
+      V128A = PrepV128Addr(*this, EAF);
     } else {
       EA = MaterializeAddr(*this, EAF);
     }
@@ -1386,6 +1457,10 @@ DEF_OP(StoreMemTSO) {
     }
     if (AlignedV128) {
       stvx(GetVReg(Op->Value), VA.RA, VA.RB);
+      return;
+    }
+    if (FullWidthV128) {
+      StoreUnalignedV128(GetVReg(Op->Value), V128A);
       return;
     }
     // Size-aware so TSO `vmovd m32, %xmm` writes 4B not 16B.
