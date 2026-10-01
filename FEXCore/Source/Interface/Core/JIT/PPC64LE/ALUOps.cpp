@@ -3089,11 +3089,11 @@ DEF_OP(NZCVSelect) {
   if (IROp->Size <= IR::OpSize::i32Bit) Mask32Tail(Dst, Node);
 }
 
-DEF_OP(NZCVSelectV) {
+DEF_OP_VSX(NZCVSelectV) {
   auto Op    = IROp->C<IR::IROp_NZCVSelectV>();
-  auto Dst   = GetVReg(Node);
-  auto True  = GetVReg(Op->TrueVal);
-  auto False_= GetVReg(Op->FalseVal);
+  auto Dst   = GetVSXReg(Node);
+  auto True  = GetVSXReg(Op->TrueVal);
+  auto False_= GetVSXReg(Op->FalseVal);
   auto CC    = MapNZCVCC(IntegerNZCVCond(Op->Cond));
 
   // Branch-free vector select via GPR isel and VSX xxsel (F5).
@@ -3103,12 +3103,12 @@ DEF_OP(NZCVSelectV) {
   li(TMP2, 0);
   iselcc(TMP1, CC, TMP1, TMP2);
   if (CTX->HostFeatures.SupportsISA30) {
-    mtvsrdd(VTMP1, TMP1, TMP1);
+    mtvsrdd(VTMP1_VSX, TMP1, TMP1);
   } else {
-    mtvsrd(VTMP1, TMP1);
-    xxpermdi(VTMP1, VTMP1, VTMP1, 0);
+    mtvsrd(VTMP1_VSX, TMP1);
+    xxpermdi(VTMP1_VSX, VTMP1_VSX, VTMP1_VSX, 0);
   }
-  xxsel(Dst, False_, True, VTMP1);
+  xxsel(Dst, False_, True, VTMP1_VSX);
 }
 
 DEF_OP(NZCVSelectIncrement) {
@@ -4620,10 +4620,10 @@ DEF_OP(Float_ToGPR_S) {
 // fcmpu only writes CR0; we also lift CR0.SO and !CR0.LT into XER.OV/CA so
 // that AXFlag's NZCV translation and any downstream MapNZCVCC consumer
 // (which routes V/C through ProjectXERToCR1) see consistent state.
-DEF_OP(FCmp) {
+DEF_OP_VSX(FCmp) {
   auto Op = IROp->C<IR::IROp_FCmp>();
-  auto S1 = GetVReg(Op->Scalar1);
-  auto S2 = GetVReg(Op->Scalar2);
+  auto S1 = GetVSXReg(Op->Scalar1);
+  auto S2 = GetVSXReg(Op->Scalar2);
   const auto ESize = Op->ElementSize;
 
   // Register-only compare, same staging as EmitCompare's fused-FP path
@@ -4635,15 +4635,15 @@ DEF_OP(FCmp) {
   // the same SP->DP promotion lfs did, so NaN/denormal ordering semantics
   // are unchanged; both paths end in an unordered compare into CR0.
   if (ESize == IR::OpSize::i32Bit) {
-    xxsldwi(VTMP1, S1, S1, 3);         // BE w0 <- elem0 (BE w3)
-    xscvspdp(VTMP1, VTMP1);
-    xxsldwi(VTMP2, S2, S2, 3);
-    xscvspdp(VTMP2, VTMP2);
+    xxsldwi(VTMP1_VSX, S1, S1, 3);         // BE w0 <- elem0 (BE w3)
+    xscvspdp(VTMP1_VSX, VTMP1_VSX);
+    xxsldwi(VTMP2_VSX, S2, S2, 3);
+    xscvspdp(VTMP2_VSX, VTMP2_VSX);
   } else {
-    xxpermdi(VTMP1, S1, S1, 0b10);     // dw0 <- dw1
-    xxpermdi(VTMP2, S2, S2, 0b10);
+    xxpermdi(VTMP1_VSX, S1, S1, 0b10);     // dw0 <- dw1
+    xxpermdi(VTMP2_VSX, S2, S2, 0b10);
   }
-  xscmpudp(0, VTMP1, VTMP2);
+  xscmpudp(0, VTMP1_VSX, VTMP2_VSX);
   FlagsFromFCmp = true;
 
   // Lift CR0.SO and !CR0.LT into XER.OV/CA — arithmetically, both bits fully

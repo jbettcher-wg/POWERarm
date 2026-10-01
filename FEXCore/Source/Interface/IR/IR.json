@@ -1584,6 +1584,7 @@
         ]
       },
       "FPR = NZCVSelectV OpSize:#ResultSize, CondClass:$Cond, FPR:$TrueVal, FPR:$FalseVal": {
+        "VSXClean": true,
         "Desc": [
           "Select based on value in NZCV flags, where TrueVal and FalseVal are both FPRs.",
           "op:",
@@ -1700,6 +1701,8 @@
       },
 
       "FCmp OpSize:$ElementSize, FPR:$Scalar1, FPR:$Scalar2": {
+
+        "VSXClean": true,
         "Desc": ["Does a scalar unordered compare and sets NZCV accordingly.",
                  "NZCV follows Arm conventions, a separate AXFLAG instruction is required for x86",
                  "Ordering flag result is true if either float input is NaN"
@@ -1945,6 +1948,7 @@
     },
     "Vector": {
       "FPR = VMov OpSize:#RegisterSize, FPR:$Source": {
+        "VSXClean": true,
         "Desc" : ["Copy vector register",
                   "When Register size is smaller than Source register size,",
                   "this op is defined to truncate and zero extend"
@@ -1977,6 +1981,7 @@
         "ElementSize": "ElementSize"
       },
       "FPR = VNot OpSize:#RegisterSize, OpSize:#ElementSize, FPR:$Vector": {
+        "VSXClean": true,
         "DestSize": "RegisterSize",
         "ElementSize": "ElementSize"
       },
@@ -2040,11 +2045,14 @@
         "ElementSize": "ElementSize"
       },
       "FPR = VFAbs OpSize:#RegisterSize, OpSize:#ElementSize, FPR:$Vector": {
+        "VSXClean": true,
         "DestSize": "RegisterSize",
         "ElementSize": "ElementSize"
       },
 
       "FPR = VFNeg OpSize:#RegisterSize, OpSize:#ElementSize, FPR:$Vector": {
+
+        "VSXClean": true,
         "DestSize": "RegisterSize",
         "ElementSize": "ElementSize"
       },
@@ -2071,6 +2079,8 @@
       },
 
       "FPR = VFSqrt OpSize:#RegisterSize, OpSize:#ElementSize, FPR:$Vector": {
+
+        "VSXClean": true,
         "DestSize": "RegisterSize",
         "ElementSize": "ElementSize"
       },
@@ -2297,6 +2307,8 @@
       },
 
       "FPR = VAnd OpSize:#RegisterSize, OpSize:#ElementSize, FPR:$Vector1, FPR:$Vector2": {
+
+        "VSXClean": true,
         "DestSize": "RegisterSize",
         "ElementSize": "ElementSize",
         "EmitValidation": [
@@ -2305,6 +2317,8 @@
       },
 
       "FPR = VAndn OpSize:#RegisterSize, OpSize:#ElementSize, FPR:$Vector1, FPR:$Vector2": {
+
+        "VSXClean": true,
         "DestSize": "RegisterSize",
         "ElementSize": "ElementSize",
         "EmitValidation": [
@@ -2313,6 +2327,8 @@
       },
 
       "FPR = VOrn OpSize:#RegisterSize, OpSize:#ElementSize, FPR:$Vector1, FPR:$Vector2": {
+
+        "VSXClean": true,
         "DestSize": "RegisterSize",
         "ElementSize": "ElementSize",
         "EmitValidation": [
@@ -2321,6 +2337,8 @@
       },
 
       "FPR = VOr OpSize:#RegisterSize, OpSize:#ElementSize, FPR:$Vector1, FPR:$Vector2": {
+
+        "VSXClean": true,
         "DestSize": "RegisterSize",
         "ElementSize": "ElementSize",
         "EmitValidation": [
@@ -2329,6 +2347,8 @@
       },
 
       "FPR = VXor OpSize:#RegisterSize, OpSize:#ElementSize, FPR:$Vector1, FPR:$Vector2": {
+
+        "VSXClean": true,
         "DestSize": "RegisterSize",
         "ElementSize": "ElementSize",
         "EmitValidation": [
@@ -2410,6 +2430,8 @@
       },
 
       "FPR = VFAdd OpSize:#RegisterSize, OpSize:#ElementSize, FPR:$Vector1, FPR:$Vector2": {
+
+        "VSXClean": true,
         "DestSize": "RegisterSize",
         "ElementSize": "ElementSize"
       },
@@ -2426,14 +2448,17 @@
         "ElementSize": "ElementSize"
       },
       "FPR = VFSub OpSize:#RegisterSize, OpSize:#ElementSize, FPR:$Vector1, FPR:$Vector2": {
+        "VSXClean": true,
         "DestSize": "RegisterSize",
         "ElementSize": "ElementSize"
       },
       "FPR = VFMul OpSize:#RegisterSize, OpSize:#ElementSize, FPR:$Vector1, FPR:$Vector2": {
+        "VSXClean": true,
         "DestSize": "RegisterSize",
         "ElementSize": "ElementSize"
       },
       "FPR = VFDiv OpSize:#RegisterSize, OpSize:#ElementSize, FPR:$Vector1, FPR:$Vector2": {
+        "VSXClean": true,
         "DestSize": "RegisterSize",
         "ElementSize": "ElementSize"
       },
@@ -2707,6 +2732,7 @@
         "DestSize": "RegisterSize"
       },
       "FPR = VBSL OpSize:#RegisterSize, FPR:$VectorMask, FPR:$VectorTrue, FPR:$VectorFalse": {
+        "VSXClean": true,
         "Desc": ["Does a vector bitwise select.",
                  "If the bit in the field is 1 then the corresponding bit is pulled from VectorTrue",
                  "If the bit in the field is 0 then the corresponding bit is pulled from VectorFalse"
@@ -2720,6 +2746,7 @@
         "ElementSize": "ElementSize"
       },
       "FPR = VFMLA OpSize:#RegisterSize, OpSize:#ElementSize, FPR:$Vector1, FPR:$Vector2, FPR:$Addend": {
+        "VSXClean": true,
         "Desc": [
           "Dest = (Vector1 * Vector2) + Addend",
           "This explicitly matches x86 FMA semantics because ARM semantics are mind-bending."
@@ -2729,6 +2756,7 @@
         "TiedSource": 2
       },
       "FPR = VFMLS OpSize:#RegisterSize, OpSize:#ElementSize, FPR:$Vector1, FPR:$Vector2, FPR:$Addend": {
+        "VSXClean": true,
         "Desc": [
           "Dest = (Vector1 * Vector2) - Addend",
           "This explicitly matches x86 FMA semantics because ARM semantics are mind-bending."
@@ -2738,6 +2766,7 @@
         "TiedSource": 2
       },
       "FPR = VFNMLA OpSize:#RegisterSize, OpSize:#ElementSize, FPR:$Vector1, FPR:$Vector2, FPR:$Addend": {
+        "VSXClean": true,
         "Desc": [
           "Dest = (-Vector1 * Vector2) + Addend",
           "This explicitly matches x86 FMA semantics because ARM semantics are mind-bending."
@@ -2747,6 +2776,7 @@
         "TiedSource": 2
       },
       "FPR = VFNMLS OpSize:#RegisterSize, OpSize:#ElementSize, FPR:$Vector1, FPR:$Vector2, FPR:$Addend": {
+        "VSXClean": true,
         "Desc": [
           "Dest = (-Vector1 * Vector2) - Addend",
           "This explicitly matches x86 FMA semantics because ARM semantics are mind-bending."
@@ -2758,6 +2788,7 @@
     },
     "Conv": {
       "FPR = VCastFromGPR OpSize:#RegisterSize, OpSize:#ElementSize, GPR:$Src": {
+        "VSXClean": true,
         "Desc": ["Moves a GPR to a Vector register with zero extension to full length of the register.",
                  "No conversion is done on the data as it moves register files"
                 ],
@@ -2772,6 +2803,8 @@
       },
 
       "FPR = VLoadTwoGPRs GPR:$Lower, GPR:$Upper": {
+
+        "VSXClean": true,
         "Desc": ["Moves two 64-bit registers to a vector register optimally"],
         "DestSize": "OpSize::i128Bit",
         "ElementSize": "OpSize::i64Bit"
@@ -2862,6 +2895,8 @@
       },
 
       "GPR = A64FloatToGPR OpSize:#DestSize, OpSize:$SrcElementSize, FPR:$Scalar, u8:$Rounding, i1:$Signed": {
+
+        "VSXClean": true,
         "Desc": ["Scalar op: A64 FPToFixed of element 0 (half, single or double) to a 32- or 64-bit integer",
                  "Rounding: 0 ties to even, 1 toward +Inf, 2 toward -Inf, 3 toward zero, 4 ties away from zero",
                  "Out-of-range values saturate to the destination range; NaN converts to 0"
@@ -2869,6 +2904,7 @@
         "DestSize": "DestSize"
       },
       "FPR = A64FloatFromGPR OpSize:#DstElementSize, OpSize:$SrcSize, GPR:$Src, i1:$Signed": {
+        "VSXClean": true,
         "Desc": ["Scalar op: A64 FixedToFP of a signed or unsigned 32- or 64-bit integer",
                  "Rounds with the host rounding mode (FPCR.RMode)",
                  "The result is element 0; every other bit of the vector register is zero"
@@ -2876,6 +2912,7 @@
         "DestSize": "DstElementSize"
       },
       "FPR = A64VecIntToFloat OpSize:#RegisterSize, OpSize:#ElementSize, FPR:$Vector, i1:$Signed": {
+        "VSXClean": true,
         "Desc": ["A64 vector SCVTF/UCVTF: every ElementSize lane of Vector is a signed (Signed) or",
                  "unsigned integer; the lane becomes the float of the same size, rounded with",
                  "FPCR.RMode. Only 32- and 64-bit element sizes exist (A64 has no vector integer",
@@ -2900,6 +2937,7 @@
         "ElementSize": "ElementSize"
       },
       "FPR = A64FToF OpSize:#DstElementSize, OpSize:$SrcElementSize, FPR:$Scalar": {
+        "VSXClean": true,
         "Desc": ["Scalar op: A64 FCVT between half, single and double precision of element 0",
                  "Narrowing rounds with the host rounding mode; a signalling NaN is quieted and keeps its payload",
                  "The result is element 0; every other bit of the vector register is zero"
@@ -2907,6 +2945,7 @@
         "DestSize": "DstElementSize"
       },
       "FPR = A64FArith OpSize:#RegisterSize, OpSize:#ElementSize, FPR:$Vector1, FPR:$Vector2, u8:$Op": {
+        "VSXClean": true,
         "Desc": ["A64 FPAdd/FPSub/FPMul/FPDiv on every ElementSize lane of RegisterSize",
                  "Op: 0 Add, 1 Sub, 2 Mul, 3 Div (matches IRBuilder::FPBinaryOp order)",
                  "NaN rule (FPProcessNaNs): a lane whose Vector1 is a quiet NaN and whose Vector2 is a",
@@ -2922,6 +2961,7 @@
         "ElementSize": "ElementSize"
       },
       "FPR = A64FMinMax OpSize:#RegisterSize, OpSize:#ElementSize, FPR:$Vector1, FPR:$Vector2, i1:$IsMax, i1:$IsNumber": {
+        "VSXClean": true,
         "Desc": ["A64 FPMin/FPMax (IsNumber=0) or FPMinNum/FPMaxNum (IsNumber=1) per lane",
                  "Ordered lanes: the min/max, with -0 below +0 (max(+0,-0)=+0, min=-0)",
                  "IsNumber=0: any NaN operand yields the FPProcessNaNs result (A64FArith's NaN rule)",
@@ -2935,6 +2975,7 @@
         "ElementSize": "ElementSize"
       },
       "FPR = A64FMulAdd OpSize:#RegisterSize, OpSize:#ElementSize, FPR:$Addend, FPR:$Vector1, FPR:$Vector2": {
+        "VSXClean": true,
         "Desc": ["A64 FPMulAdd: Addend + Vector1*Vector2 per lane, one rounding",
                  "Operand negations (FMSUB/FNMADD/FNMSUB, FMLS) are applied by the frontend BEFORE this",
                  "op, as A64 does (FPNeg flips a NaN's sign); the host's negating fused forms are never",

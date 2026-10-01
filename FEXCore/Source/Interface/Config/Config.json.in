@@ -1292,6 +1292,25 @@
           "which is exactly the kind of data-dependent corruption that wants a field kill switch of its own."
         ]
       },
+      "VSXClasses": {
+        "Type": "bool",
+        "Default": "false",
+        "Desc": [
+          "PPC64LE: let the register allocator coalesce guest V16-V31 onto their pinned registers the way it already does V0-V15",
+          "(POWERARM_VSXCLASSES=1 turns it ON; default OFF while it earns its place). CHANGES EMITTED CODE, so it is hashed into the",
+          "code-cache config id.",
+          "Guest V16-V31 are pinned in the FPR-aliased low bank vs16-vs31, which only VSX-form host instructions can name. Because 67 of",
+          "the 116 vector ops the A64 frontend emits are VMX-form by semantics and physically cannot name that half, the allocator has so",
+          "far refused to coalesce a low-bank static register onto anything but the LoadRegister/StoreRegister that moves it -- so every",
+          "operation on V16-V31 pays xxlor moves across the halves. Measured at +4 host instructions for a scalar FP op (fadd d16 emits 16",
+          "against 12 for fadd d0) and +5 for an FMA, with the whole executed hot path doubling from 4 to 8.",
+          "With this on, the refusal becomes exact instead of blanket: a value is coalesced iff its defining op and every op that reads it",
+          "is flagged VSXClean in IR.json, which the backend can only be if its lowering is a member of PPC64VSXView -- a class in which no",
+          "VMX-form emitter method and no GetVReg is in scope, so a wrong lowering does not compile. A wrong allocator decision dies at",
+          "translation (RegisterAllocationPass's post-RA validator); a wrong flag does not compile.",
+          "docs/powerarm/research/power-isa/VSX-REGISTER-CLASSES.md is the design and says what each stage's gate is."
+        ]
+      },
       "DisableAlignedVectorLdSt": {
         "Type": "bool",
         "Default": "false",

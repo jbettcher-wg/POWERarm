@@ -669,6 +669,11 @@ uint64_t ComputeCodeCacheConfigId() {
       // lxvd2x+xxpermdi / xxpermdi+stxvd2x pair. Different bytes for the same
       // guest instruction, so the two are not interchangeable in a cache.
       HASH_OPT(DISABLEALIGNEDVECTORLDST);
+      // VSX register classes: with it on, an operation on guest V16-V31 reads
+      // and writes the pinned low-bank register directly; with it off the same
+      // guest instruction is bracketed by xxlor moves into the VMX pool.
+      // Different bytes for the same guest instruction.
+      HASH_OPT(VSXCLASSES);
 
       // Spin collapse changes the emitted Sub and CondJump inside every matched
       // spin region, so the raw option value is part of the block identity.

@@ -960,6 +960,32 @@ When TSO emulation is enabled, controls if vector loadstores should also be atom
 Use volatile metadata in PE files to inform TSO instructions when available. When metadata is
 unavailable falls back to the currently enabled TSO options.
 
+### `FEX_VSXCLASSES`
+`bool` · default `false`
+
+PPC64LE: let the register allocator coalesce guest V16-V31 onto their pinned registers the way it
+already does V0-V15 (POWERARM_VSXCLASSES=1 turns it ON). Changes emitted code, so it is hashed into
+the code-cache config id.
+
+Guest V16-V31 are pinned in the FPR-aliased low bank vs16-vs31, which only VSX-form host
+instructions can name. 67 of the 116 vector ops the A64 frontend emits are VMX-form by semantics and
+physically cannot name that half, so the allocator has so far refused to coalesce a low-bank static
+register onto anything but the LoadRegister/StoreRegister that moves it -- every operation on
+V16-V31 pays xxlor moves across the halves. Measured: `fadd d16,d17,d18` emits 16 host instructions
+against 12 for `fadd d0,d1,d2`, `fmadd` 22.25 against 17.25, and a one-instruction NEON `and` or
+`eor` becomes four.
+
+With this on the refusal becomes exact instead of blanket: a value is coalesced iff its defining op
+and every op that reads it carries IR.json's VSXClean flag, which the backend can only set if the
+lowering is a member of PPC64VSXView -- a class in which no VMX-form emitter method and no GetVReg
+is in scope, so a wrong lowering does not compile, a wrong flag does not compile, and a wrong
+allocator decision dies at translation. With the scalar-FP set flagged, the V16-V31 cost of every
+one of those shapes falls to exactly the V0-V15 cost, on both ISA levels, and V0-V15 code is
+byte-identical either way.
+
+`docs/powerarm/research/power-isa/VSX-REGISTER-CLASSES.md` is the design, and says what each stage's
+gate is. Default OFF until Octane has been run against it.
+
 ### `FEX_X87REDUCEDPRECISION`
 `bool` · default `false`
 

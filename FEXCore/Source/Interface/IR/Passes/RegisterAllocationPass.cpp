@@ -10,6 +10,7 @@ $end_info$
 #include "Interface/IR/IREmitter.h"
 #include "Interface/IR/RegisterAllocationData.h"
 #include "Interface/IR/Passes.h"
+#include <FEXCore/Config/Config.h>
 #include <FEXCore/IR/IR.h>
 #include <FEXCore/Utils/EnumUtils.h>
 #include <FEXCore/Utils/LogManager.h>
@@ -181,10 +182,111 @@ private:
   // (i.e. "no low bank") on a backend whose FPRFixed class is smaller, which
   // is what makes everything below free on every other target.
   uint32_t LowBankFPRFirst {32};
+  // POWERARM_VSXCLASSES. Off by default; hashed into the code-cache config id
+  // (CodeCache.cpp) because it changes emitted code.
+  FEX_CONFIG_OPT(VSXClassesCfg, VSXCLASSES);
+  bool VSXClasses {};
+
+  // Per-SSA-value answers to "may this value live in the low bank", computed
+  // once per region by VSXCleanPrepass below.
+  //   VSXUsesOnly[v]  every op that READS v is VSXClean
+  //   VSXDef[v]       the op that DEFINES v is VSXClean
+  // Both are meaningless unless VSXClasses is on and the region actually
+  // references a low-bank static register, which is what RegionHasLowBank
+  // records -- most units have no V16-V31 traffic at all and pay one scan.
+  fextl::vector<bool> VSXUsesOnly;
+  fextl::vector<bool> VSXDef;
+  bool RegionHasLowBank {};
   // Set when this region actually coalesces a low-bank static register onto a
   // value. Nothing to validate otherwise, which is the common case: most units
   // never touch guest V16-V31.
   bool AnyLowBankCoalesced {};
+
+  // One linear sweep over the region (VSX-REGISTER-CLASSES.md 6.2 step 1).
+  // Runs only when the region contains a LoadRegister or StoreRegister of an
+  // FPR numbered 16 or above, which the same sweep finds out, so a unit with no
+  // low-bank traffic pays one pass over its ops and allocates nothing.
+  void VSXCleanPrepass() {
+    RegionHasLowBank = false;
+    if (!VSXClasses || LowBankFPRFirst >= 32) {
+      return;
+    }
+
+    for (Ref BlockNode : Region) {
+      for (auto [CodeNode, IROp] : IR->GetCode(BlockNode)) {
+        if (IROp->Op == OP_LOADREGISTER) {
+          const auto* Op = IROp->C<IR::IROp_LoadRegister>();
+          if (Op->Class == RegClass::FPR && Op->Reg >= LowBankFPRFirst) {
+            RegionHasLowBank = true;
+            break;
+          }
+        } else if (IROp->Op == OP_STOREREGISTER) {
+          const auto Reg = PhysicalRegister(CodeNode);
+          if (Reg.AsRegClass() == RegClass::FPRFixed && Reg.Reg >= LowBankFPRFirst) {
+            RegionHasLowBank = true;
+            break;
+          }
+        }
+      }
+      if (RegionHasLowBank) {
+        break;
+      }
+    }
+
+    if (!RegionHasLowBank) {
+      return;
+    }
+
+    const size_t Count = IR->GetSSACount();
+    VSXUsesOnly.assign(Count, true);
+    VSXDef.assign(Count, false);
+
+    for (Ref BlockNode : Region) {
+      for (auto [CodeNode, IROp] : IR->GetCode(BlockNode)) {
+        const uint32_t ID = IR->GetID(CodeNode).Value;
+        // A LoadRegister/StoreRegister is the move itself; coalescing it is the
+        // whole point, so it does not count as a VMX reader, and the value a
+        // coalesced LoadRegister produces comes from the pinned register rather
+        // than from an op.
+        const bool IsSRAMove = IROp->Op == OP_LOADREGISTER || IROp->Op == OP_STOREREGISTER;
+        if (ID < Count) {
+          VSXDef[ID] = IR::VSXClean(IROp->Op) || IROp->Op == OP_LOADREGISTER;
+        }
+
+        if (IsSRAMove || IR::VSXClean(IROp->Op)) {
+          continue;
+        }
+
+        const int NumArgs = IR::GetRAArgs(IROp->Op);
+        for (int Arg = 0; Arg < NumArgs; ++Arg) {
+          auto V = IROp->Args[Arg];
+          V.ClearKill();
+          if (V.IsInvalid()) {
+            continue;
+          }
+          const uint32_t Index = V.ID().Value;
+          if (Index < Count) {
+            VSXUsesOnly[Index] = false;
+          }
+        }
+      }
+    }
+  }
+
+  // May this SSA value be coalesced onto a low-bank static register? Only if
+  // the whole closed set of ops that touch it -- its writer and every reader --
+  // is VSX-form. That is what the IR.json VSXClean flag means, and the backend
+  // cannot set it without the lowering being in PPC64VSXView.
+  bool LowBankCoalesceAllowed(Ref Node, bool CheckDef) const {
+    if (!RegionHasLowBank) {
+      return false;
+    }
+    const uint32_t ID = IR->GetID(Node).Value;
+    if (ID >= VSXUsesOnly.size()) {
+      return false;
+    }
+    return VSXUsesOnly[ID] && (!CheckDef || VSXDef[ID]);
+  }
 
   bool IsLowBankFPR(PhysicalRegister Reg) const {
     return Reg.AsRegClass() == RegClass::FPRFixed && Reg.Reg >= LowBankFPRFirst;
@@ -292,7 +394,14 @@ private:
     if (IROp->Op == OP_LOADREGISTER) {
       const auto* Op = IROp->C<IR::IROp_LoadRegister>();
       if (Op->Class == RegClass::FPR && Op->Reg >= LowBankFPRFirst) {
-        return nullptr;
+        // Guest V16-V31 live in the low bank vs16-vs31, which only VSX-form
+        // host instructions can name. Coalesce the load onto the pinned
+        // register iff every consumer of the loaded value is a VSX-form
+        // lowering; otherwise keep the xxlor into the VMX pool.
+        if (!LowBankCoalesceAllowed(Node, false)) {
+          return nullptr;
+        }
+        AnyLowBankCoalesced = true;
       }
       return Node;
     } else if (IROp->Op == OP_STOREREGISTER) {
@@ -301,7 +410,14 @@ private:
       V.ClearKill();
       Ref Value = IR->GetNode(V);
       if (Reg.AsRegClass() == RegClass::FPRFixed && Reg.Reg >= LowBankFPRFirst) {
-        return nullptr;
+        // The mirror image: hoist the write into the pinned register iff the
+        // value's producer AND every other reader are VSX-form, and the value
+        // is an ordinary FPR-class result rather than something already fixed.
+        if (GetRegClassFromNode(IR, IR->GetOp<IROp_Header>(Value)) != RegClass::FPR ||
+            !LowBankCoalesceAllowed(Value, true)) {
+          return nullptr;
+        }
+        AnyLowBankCoalesced = true;
       }
       return Value;
     }
@@ -688,6 +804,7 @@ void ConstrainedRAPass::Run(IREmitter* IREmit_) {
   // 16 static FPRs means one bank and nothing to police; 32 means the ppc64le
   // split file, where 16-31 are the low bank.
   LowBankFPRFirst = Classes[FEXCore::ToUnderlying(RegClass::FPRFixed)].Count > 16 ? 16u : 32u;
+  VSXClasses = VSXClassesCfg();
 
   // Region prepass. RegionPred is 0 on every block unless the frontend asked
   // for a continuation, so an ordinary unit pays one walk of the block list
@@ -738,6 +855,9 @@ void ConstrainedRAPass::Run(IREmitter* IREmit_) {
     // Spilling is region-local, so reset this per-region
     AnySpilled = false;
     AnyLowBankCoalesced = false;
+
+    // Two bits per SSA value, consulted by DecodeSRANode below.
+    VSXCleanPrepass();
 
 
     // Phase 1 of spill-slot reuse: reset per-region bookkeeping.  Slots do not
@@ -982,6 +1102,8 @@ void ConstrainedRAPass::Run(IREmitter* IREmit_) {
 
   PreferredReg.clear();
   SSAToReg.clear();
+  VSXUsesOnly.clear();
+  VSXDef.clear();
   SpillSlots.clear();
   NextUses.clear();
   Seen.clear();

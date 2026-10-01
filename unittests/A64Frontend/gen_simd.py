@@ -2016,6 +2016,175 @@ def gen_simd_scalarshift(p):
             p.vcase(["msr fpsr, xzr", f"{op} {rn}{d}, {rw}{n}, #{sh}"], {d: p.vec(), n: lane_vec(p, bits * 2)})
 
 
+# ---------------------------------------------------------------------------
+# Low-bank register classes (docs/powerarm/research/power-isa/VSX-REGISTER-CLASSES.md)
+# ---------------------------------------------------------------------------
+#
+# Guest V16-V31 live in the FPR-aliased low bank vs16-vs31 of the host VSX
+# file, and with POWERARM_VSXCLASSES=1 the register allocator leaves them
+# there instead of copying them into the VMX half for every operation. The
+# failure mode that buys is a WRONG REGISTER: a lowering whose extension bit
+# is wrong, or an allocator decision that hands a low-bank value to a VMX-form
+# op, reads or writes the other half of the file. Nothing faults; the number
+# is just someone else's.
+#
+# A test can only catch that if the other half holds something DIFFERENT. So
+# every case here reloads all thirty-two V registers with a distinct payload
+# first -- the "poisoned twin" of the design's 7.5 -- and vdump prints all
+# thirty-two afterwards, so a wrong read shows up as a different number and a
+# wrong write as a changed register rather than as luck.
+#
+# Beyond the plain shapes it covers the three ways the allocator itself can go
+# wrong on a coalesced value:
+#   * aliasing, where the result is tied to a source and the lowering has to
+#     stash it (fadd d16,d16,d16; fmadd d16,d17,d16,d16);
+#   * an older value still live, where a guest register is rewritten while an
+#     earlier read of it still feeds a later op, which is what the allocator's
+#     evict-with-copy exists for;
+#   * NaN operands, which take the out-of-line cold stubs with a low-bank
+#     operand -- a path that runs on the low bank already and has to agree
+#     about which register it was handed.
+LOW = [16, 17, 20, 23, 26, 29, 30, 31]
+HIGH_BANK_PAIRS = [(16, 17), (0, 16), (16, 0), (31, 15), (20, 21)]
+
+
+def poison(p):
+    """A distinct 128-bit payload for every V register.
+
+    Distinct in BOTH doublewords and in every byte lane, so a read of the
+    wrong half, the wrong doubleword or the wrong word all differ. Each is a
+    quiet NaN in both f64 and f32 interpretation with the register number in
+    its payload, so it also survives being read as a float without becoming
+    the same default NaN as its neighbour.
+    """
+    return {r: (0x7FF8000000000000 | (0x0D0C0B0A0000 + r * 0x010101),
+                0x7FC00000_7FC00000 ^ (r * 0x01010101)) for r in range(32)}
+
+
+def gen_fp_lowbank(p):
+    def case(body, over=None, x=None, fpcr=0):
+        v = poison(p)
+        for reg, val in (over or {}).items():
+            v[reg] = val
+        p.vcase(body, v, x=x, fpcr=fpcr)
+
+    # --- scalar arithmetic, both widths, operands from both banks ----------
+    for op in ("fadd", "fsub", "fmul", "fdiv"):
+        for d, n in HIGH_BANK_PAIRS:
+            for m in (p.rng.choice(LOW), p.rng.choice([0, 1, 2, 3, 5, 7, 12, 15])):
+                case([f"{op} d{d}, d{n}, d{m}"],
+                     {n: p.fp(True), m: p.fp(True)})
+                case([f"{op} s{d}, s{n}, s{m}"],
+                     {n: p.fp(False), m: p.fp(False)})
+        # aliasing: the result is tied to a source, so the lowering stashes it
+        for r in LOW[:4]:
+            case([f"{op} d{r}, d{r}, d{r}"], {r: p.fp(True)})
+            case([f"{op} d{r}, d{r}, d{(r + 1) % 32}"],
+                 {r: p.fp(True), (r + 1) % 32: p.fp(True)})
+    # --- min/max, including the IsNumber forms whose cold path has a prologue
+    for op in ("fmax", "fmin", "fmaxnm", "fminnm"):
+        for d, n in HIGH_BANK_PAIRS:
+            m = p.rng.choice(LOW)
+            case([f"{op} d{d}, d{n}, d{m}"], {n: p.fp(True), m: p.fp(True)})
+            case([f"{op} s{d}, s{n}, s{m}"], {n: p.fp(False), m: p.fp(False)})
+    # --- the fused multiply-adds, whose cold stub takes four registers ------
+    for op in ("fmadd", "fmsub", "fnmadd", "fnmsub"):
+        for d, n in HIGH_BANK_PAIRS:
+            m, a = p.rng.sample(LOW, 2)
+            case([f"{op} d{d}, d{n}, d{m}, d{a}"],
+                 {n: p.fp(True), m: p.fp(True), a: p.fp(True)})
+            case([f"{op} s{d}, s{n}, s{m}, s{a}"],
+                 {n: p.fp(False), m: p.fp(False), a: p.fp(False)})
+        for r in LOW[:3]:
+            case([f"{op} d{r}, d{(r + 1) % 32}, d{r}, d{r}"],
+                 {r: p.fp(True), (r + 1) % 32: p.fp(True)})
+    # --- the NaN rows: every one takes the out-of-line stub ----------------
+    for a, b in NAN_PAIRS64:
+        d, n = p.rng.choice(HIGH_BANK_PAIRS)
+        m = p.rng.choice(LOW)
+        for op in ("fadd", "fmul", "fmax", "fminnm"):
+            case([f"{op} d{d}, d{n}, d{m}"],
+                 {n: (a, p.rng.getrandbits(64)), m: (b, p.rng.getrandbits(64))})
+        a2 = p.rng.choice(LOW)
+        case([f"fmadd d{d}, d{n}, d{m}, d{a2}"],
+             {n: (a, 0), m: (b, 0), a2: (p.rng.choice(F64_EDGE), 0)})
+    for a, b in NAN_PAIRS32:
+        d, n = p.rng.choice(HIGH_BANK_PAIRS)
+        m = p.rng.choice(LOW)
+        case([f"fadd s{d}, s{n}, s{m}"],
+             {n: (a, p.rng.getrandbits(64)), m: (b, p.rng.getrandbits(64))})
+    # --- unary, converts and the GPR crossings -----------------------------
+    for d in LOW:
+        n = p.rng.choice(LOW)
+        case([f"fsqrt d{d}, d{n}"], {n: p.fp(True)})
+        case([f"fneg d{d}, d{n}"], {n: p.fp(True)})
+        case([f"fabs d{d}, d{n}"], {n: p.fp(True)})
+        case([f"fcvt s{d}, d{n}"], {n: p.fp(True)})
+        case([f"fcvt d{d}, s{n}"], {n: p.fp(False)})
+        case([f"fcvt h{d}, d{n}"], {n: p.fp(True)})
+        case([f"fcvt d{d}, h{n}"], {n: p.fp(True)})
+        case([f"fmov d{d}, x{p.xreg()}"], x={1: p.f64()})
+        case([f"fmov x1, d{n}"], {n: p.fp(True)})
+        case([f"scvtf d{d}, x1"], x={1: p.rng.getrandbits(64)})
+        case([f"ucvtf d{d}, x1"], x={1: p.rng.getrandbits(64)})
+        for r in RMODES:
+            case([f"fcvtzs x1, d{n}"], {n: p.fp(True)}, fpcr=r)
+            case([f"fcvtns x1, d{n}"], {n: p.fp(True)}, fpcr=r)
+    # --- compare, select, and the flag path --------------------------------
+    for d, n in HIGH_BANK_PAIRS:
+        m = p.rng.choice(LOW)
+        for cc in ("eq", "ne", "gt", "le", "mi", "vs"):
+            case([f"fcmp d{n}, d{m}", f"fcsel d{d}, d{n}, d{m}, {cc}"],
+                 {n: p.fp(True), m: p.fp(True)})
+        case([f"fcmpe d{n}, d{m}", f"fcsel s{d}, s{n}, s{m}, ne"],
+             {n: p.fp(True), m: p.fp(True)})
+    # --- the vector arms of the same lowerings -----------------------------
+    for d, n in HIGH_BANK_PAIRS:
+        m = p.rng.choice(LOW)
+        for t in ("2d", "4s", "2s"):
+            case([f"fadd v{d}.{t}, v{n}.{t}, v{m}.{t}"], {n: p.vec(), m: p.vec()})
+            case([f"fmul v{d}.{t}, v{n}.{t}, v{m}.{t}"], {n: p.vec(), m: p.vec()})
+            case([f"fabs v{d}.{t}, v{n}.{t}"], {n: p.vec()})
+            case([f"fneg v{d}.{t}, v{n}.{t}"], {n: p.vec()})
+            case([f"fsqrt v{d}.{t}, v{n}.{t}"], {n: p.vec()})
+        for t in ("2d", "4s"):
+            case([f"fmla v{d}.{t}, v{n}.{t}, v{m}.{t}"],
+                 {d: p.vec(), n: p.vec(), m: p.vec()})
+            case([f"fmls v{d}.{t}, v{n}.{t}, v{m}.{t}"],
+                 {d: p.vec(), n: p.vec(), m: p.vec()})
+        for t in ("16b", "8b"):
+            for op in ("and", "orr", "eor", "bic", "orn"):
+                case([f"{op} v{d}.{t}, v{n}.{t}, v{m}.{t}"], {n: p.vec(), m: p.vec()})
+            for op in ("bsl", "bit", "bif"):
+                case([f"{op} v{d}.{t}, v{n}.{t}, v{m}.{t}"],
+                     {d: p.vec(), n: p.vec(), m: p.vec()})
+            case([f"mvn v{d}.{t}, v{n}.{t}"], {n: p.vec()})
+            case([f"mov v{d}.{t}, v{n}.{t}"], {n: p.vec()})
+    # --- an older value still live across a rewrite of its own register ----
+    #
+    # The allocator coalesces a guest write onto the pinned register, which
+    # hoists it; an earlier read that still has a consumer has to survive that
+    # by being evicted into the pool first. These shapes are the ones where it
+    # has to.
+    for d in LOW[:5]:
+        e = (d + 1) % 32
+        f = p.rng.choice(LOW)
+        case([f"fadd d{f}, d{d}, d{e}",
+              f"fmul d{d}, d{e}, d{e}",
+              f"fsub d{e}, d{f}, d{d}",
+              f"fadd d{f}, d{f}, d{e}"],
+             {d: p.fp(True), e: p.fp(True)})
+        case([f"mov v{f}.16b, v{d}.16b",
+              f"fadd d{d}, d{e}, d{e}",
+              f"fadd d{e}, d{f}, d{d}"],
+             {d: p.fp(True), e: p.fp(True)})
+        case([f"ldr d{d}, [sp, #-16]",
+              f"fadd d{e}, d{d}, d{e}",
+              f"str d{e}, [sp, #-16]",
+              f"ldr d{f}, [sp, #-16]"],
+             {d: p.fp(True), e: p.fp(True)})
+
+
 GROUPS = {
     "simd_loadstore": gen_simd_loadstore,
     "simd_copy": gen_simd_copy,
@@ -2046,6 +2215,7 @@ GROUPS = {
     "simd_fcvtxn": gen_simd_fcvtxn,
     "simd_half": gen_simd_half,
     "simd_scalarshift": gen_simd_scalarshift,
+    "fp_lowbank": gen_fp_lowbank,
 }
 
 

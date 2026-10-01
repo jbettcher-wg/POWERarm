@@ -53,6 +53,11 @@ fi
 gcc -static -O2 -o callret "$here/callret.c"
 gcc -static -O2 -o sigpreempt "$here/sigpreempt.c"
 gcc -static -O2 -o sigedit "$here/sigedit.c"
+# A signal taken with the live floating-point state in D16-D31, whose handler
+# reads and edits the frame's fpsimd_context. Those guest registers are pinned
+# in the host's FPR-aliased low bank, so this is the frame test for the VSX
+# register-class work (VSX-REGISTER-CLASSES.md).
+gcc -static -O2 -o sigfploop "$here/sigfploop.c"
 # Threaded: a guest signal handler returning through rt_sigreturn while its
 # thread is torn down.
 gcc -static -O2 -pthread -o sigteardown "$here/sigteardown.c"

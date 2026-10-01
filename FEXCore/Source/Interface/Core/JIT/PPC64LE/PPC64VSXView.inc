@@ -420,6 +420,7 @@
   // --- PPC64EmitterBase
   using PPC64JITCore::Align16B;
   using PPC64JITCore::ArmInSyscallSentinel;
+  using PPC64JITCore::EmitSpillStubs;
   using PPC64JITCore::FillForABICall;
   using PPC64JITCore::FillForABICallChecked;
   using PPC64JITCore::FillStaticRegs;
@@ -453,6 +454,25 @@
   using PPC64JITCore::ComputeTSOPairElision;
   using PPC64JITCore::ConstCacheDisabled;
   using PPC64JITCore::ConstantCallReturnAddress;
+  using PPC64JITCore::EmitA64PairedCall;
+  using PPC64JITCore::EmitAESLoadMask;
+  using PPC64JITCore::EmitEdgeSuspendInterruptCheck;
+  using PPC64JITCore::EmitEntryPoint;
+  using PPC64JITCore::EmitExitR0Zero;
+  using PPC64JITCore::EmitFPColdStubs;
+  using PPC64JITCore::EmitFPFMAFixBody;
+  using PPC64JITCore::EmitFPNMPrepBody;
+  using PPC64JITCore::EmitFPNaNFixBody;
+  using PPC64JITCore::EmitLinkFirstConstExit;
+  using PPC64JITCore::EmitLoadPPC64Helper;
+  using PPC64JITCore::EmitNZCVCensusBump;
+  using PPC64JITCore::EmitNZCVDeadCanary;
+  using PPC64JITCore::EmitRoundNearestEven;
+  using PPC64JITCore::EmitShortCondIsland;
+  using PPC64JITCore::EmitSpinEdgeHint;
+  using PPC64JITCore::EmitStoreBlockBeginToInlineHeader;
+  using PPC64JITCore::EmitSuspendInterruptCheck;
+  using PPC64JITCore::EmitTestNZSetCR;
   using PPC64JITCore::EnsureStagingBuffer;
   using PPC64JITCore::EntrypointOffsetValue;
   using PPC64JITCore::ExitFunctionLink;
@@ -501,3 +521,21 @@
   using PPC64JITCore::ZExtTrapEnabled;
   // --- declared through DEF_OP
   using PPC64JITCore::Op_Unhandled;
+  using PPC64JITCore::mffs;
+  using PPC64JITCore::mffsl;
+  using PPC64JITCore::mtfsf;
+  using PPC64JITCore::mffscrn;
+  using PPC64JITCore::mffscrni;
+  using PPC64JITCore::mffprd;
+  using PPC64JITCore::mtfprd;
+  using PPC64JITCore::CTX;
+  using PPC64JITCore::EmitterCTX;
+  using PPC64JITCore::FPColdStubs;
+  using PPC64JITCore::FPNaNFixBody;
+  using PPC64JITCore::FPNaNFixBodyUsed;
+  using PPC64JITCore::FPNMPrepBody;
+  using PPC64JITCore::FPNMPrepBodyUsed;
+  using PPC64JITCore::FPFMAFixBody;
+  using PPC64JITCore::FPFMAFixBodyUsed;
+  using PPC64JITCore::FPColdStub;
+  using PPC64JITCore::FlagsFromFCmp;

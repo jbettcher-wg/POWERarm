@@ -59,14 +59,14 @@ static void EmitVSplat(PPC64JITCore* jit, VR Dst, VR Src,
 // ---------------------------------------------------------------------------
 // VMov — copy vector register (zero upper bits for sub-128-bit ops)
 // ---------------------------------------------------------------------------
-DEF_OP(VMov) {
+DEF_OP_VSX(VMov) {
   const auto Op = IROp->C<IR::IROp_VMov>();
   const auto OpSize = IROp->Size;
-  const auto Dst = GetVReg(Node);
-  const auto Src = GetVReg(Op->Source);
+  const auto Dst = GetVSXReg(Node);
+  const auto Src = GetVSXReg(Op->Source);
 
   if (OpSize == IR::OpSize::i128Bit) {
-    if (Dst != Src) vmr(Dst, Src);
+    if (Dst != Src) xxlor(Dst, Src, Src);
     return;
   }
 
@@ -83,29 +83,50 @@ DEF_OP(VMov) {
   // (StoreVSized -> _VMov(i64), IRBuilder.h), so that one instruction is the
   // single most repeated wasted instruction in scalar FP and 64-bit NEON code.
   switch (OpSize) {
+  // The 8- and 16-bit cases cannot use the word shifter: vsldoi shifts by
+  // BYTES and its VSX twin xxsldwi only by words, and VSX has no byte or
+  // halfword splat to build a mask with below ISA 3.0. So they mask instead:
+  // the bytes to keep are the low ones of doubleword 1, which mtvsrdd can
+  // place in one instruction on 3.0 and mtvsrd + xxpermdi in two on POWER8.
+  //
+  // Cost against the VMX form's three: byte 3 on ISA 3.0 and 4 on POWER8,
+  // halfword 4 and 5. These are the B- and H-register results, which A64 only
+  // produces for FP16 and a few element ops.
   case IR::OpSize::i8Bit:
-    vspltisw(VTMP1, 0);
-    vsldoi(VTMP2, Src, VTMP1, 15);  // VTMP2 phys[0] = Src phys[15], rest zero
-    vsldoi(Dst,  VTMP1, VTMP2, 1);  // Dst phys[15] = VTMP2 phys[0], rest zero
+  case IR::OpSize::i16Bit: {
+    // li sign-extends its 16-bit immediate, so 0xFFFF is -1 and would keep the
+    // whole doubleword. The halfword mask costs a clrldi.
+    if (OpSize == IR::OpSize::i8Bit) {
+      li(TMP1, 0xFF);
+    } else {
+      li(TMP1, -1);
+      clrldi(TMP1, TMP1, 48);
+    }
+    if (EmitterCTX->HostFeatures.SupportsISA30) {
+      mtvsrdd(VTMP1_VSX, r0, TMP1);          // dw0 <- 0, dw1 <- mask
+    } else {
+      mtvsrd(VTMP1_VSX, TMP1);
+      // DM=0: dw0 <- VZERO.dw0 (the half ELFv2 preserves), dw1 <- VTMP1.dw0.
+      xxpermdi(VTMP1_VSX, VZERO_VSX, VTMP1_VSX, 0);
+    }
+    xxland(Dst, Src, VTMP1_VSX);
     break;
-  case IR::OpSize::i16Bit:
-    vspltisw(VTMP1, 0);
-    vsldoi(VTMP2, Src, VTMP1, 14);
-    vsldoi(Dst,  VTMP1, VTMP2, 2);
-    break;
+  }
   case IR::OpSize::i32Bit:
-    vspltisw(VTMP1, 0);
-    vsldoi(VTMP2, Src, VTMP1, 12);
-    vsldoi(Dst,  VTMP1, VTMP2, 4);
+    // xxlxor for the zero and xxsldwi for the two byte shifts, which are
+    // multiples of four here: word 3 then word 1. Same instruction count.
+    xxlxor(VTMP1_VSX, VTMP1_VSX, VTMP1_VSX);
+    xxsldwi(VTMP2_VSX, Src, VTMP1_VSX, 3);
+    xxsldwi(Dst, VTMP1_VSX, VTMP2_VSX, 1);
     break;
   case IR::OpSize::i64Bit:
     // DM=1: dw0 <- XA.dw0, dw1 <- XB.dw1. XA is VZERO_VSX and the DM HIGH bit
     // is 0, so this reads only the half ELFv2 preserves across a host call --
     // the rule stated at VZERO_VSX's declaration in PPC64Emitter.h.
-    xxpermdi(AsVSX(Dst), VZERO_VSX, AsVSX(Src), 1);
+    xxpermdi(Dst, VZERO_VSX, Src, 1);
     break;
   default:
-    if (Dst != Src) vmr(Dst, Src);
+    if (Dst != Src) xxlor(Dst, Src, Src);
     break;
   }
 }
@@ -315,11 +336,11 @@ DEF_OP(LoadNamedVectorIndexedConstant) {
 // Simple unary vector ops
 // ---------------------------------------------------------------------------
 
-DEF_OP(VNot) {
+DEF_OP_VSX(VNot) {
   const auto Op = IROp->C<IR::IROp_VNot>();
-  const auto Dst = GetVReg(Node);
-  const auto Src = GetVReg(Op->Vector);
-  vnot(Dst, Src);
+  const auto Dst = GetVSXReg(Node);
+  const auto Src = GetVSXReg(Op->Vector);
+  xxlnor(Dst, Src, Src);
 }
 
 DEF_OP(VNeg) {
@@ -423,11 +444,11 @@ DEF_OP(VPMullB) {
 }
 
 // VFAbs / VFNeg: VSX has direct per-element abs/neg instructions on POWER8.
-DEF_OP(VFAbs) {
+DEF_OP_VSX(VFAbs) {
   const auto Op = IROp->C<IR::IROp_VFAbs>();
   const auto ElemSz = Op->Header.ElementSize;
-  const auto Dst = GetVReg(Node);
-  const auto Src = GetVReg(Op->Vector);
+  const auto Dst = GetVSXReg(Node);
+  const auto Src = GetVSXReg(Op->Vector);
   switch (ElemSz) {
   case IR::OpSize::i32Bit: xvabssp(Dst, Src); break;
   case IR::OpSize::i64Bit: xvabsdp(Dst, Src); break;
@@ -435,11 +456,11 @@ DEF_OP(VFAbs) {
   }
 }
 
-DEF_OP(VFNeg) {
+DEF_OP_VSX(VFNeg) {
   const auto Op = IROp->C<IR::IROp_VFNeg>();
   const auto ElemSz = Op->Header.ElementSize;
-  const auto Dst = GetVReg(Node);
-  const auto Src = GetVReg(Op->Vector);
+  const auto Dst = GetVSXReg(Node);
+  const auto Src = GetVSXReg(Op->Vector);
   switch (ElemSz) {
   case IR::OpSize::i32Bit: xvnegsp(Dst, Src); break;
   case IR::OpSize::i64Bit: xvnegdp(Dst, Src); break;
@@ -514,11 +535,11 @@ DEF_OP(VFRecpPrecision) {
   vsel(Dst, VTMP1, Dst, VTMP2);             // non-finite Newton lanes ← vrefp
 }
 
-DEF_OP(VFSqrt) {
+DEF_OP_VSX(VFSqrt) {
   const auto Op = IROp->C<IR::IROp_VFSqrt>();
   const auto ElemSz = Op->Header.ElementSize;
-  const auto Dst = GetVReg(Node);
-  const auto Src = GetVReg(Op->Vector);
+  const auto Dst = GetVSXReg(Node);
+  const auto Src = GetVSXReg(Op->Vector);
   switch (ElemSz) {
   case IR::OpSize::i32Bit: xvsqrtsp(Dst, Src); break;
   case IR::OpSize::i64Bit: xvsqrtdp(Dst, Src); break;
@@ -1725,42 +1746,48 @@ DEF_OP(VSub) {
   }
 }
 
-DEF_OP(VAnd) {
+// The bit-exact VSX twins of vand/vandc/vorc/vor/vxor. Same instruction, same
+// count, and reachable in both halves of the register file, which vand is not.
+DEF_OP_VSX(VAnd) {
   const auto Op = IROp->C<IR::IROp_VAnd>();
-  const auto Dst = GetVReg(Node);
-  vand(Dst, GetVReg(Op->Vector1), GetVReg(Op->Vector2));
+  const auto Dst = GetVSXReg(Node);
+  xxland(Dst, GetVSXReg(Op->Vector1), GetVSXReg(Op->Vector2));
 }
 
-DEF_OP(VAndn) {
+DEF_OP_VSX(VAndn) {
   const auto Op = IROp->C<IR::IROp_VAndn>();
-  const auto Dst = GetVReg(Node);
-  vandc(Dst, GetVReg(Op->Vector1), GetVReg(Op->Vector2));
+  const auto Dst = GetVSXReg(Node);
+  xxlandc(Dst, GetVSXReg(Op->Vector1), GetVSXReg(Op->Vector2));
 }
 
-DEF_OP(VOrn) {
+DEF_OP_VSX(VOrn) {
   const auto Op = IROp->C<IR::IROp_VOrn>();
-  const auto Dst = GetVReg(Node);
-  vorc(Dst, GetVReg(Op->Vector1), GetVReg(Op->Vector2));
+  const auto Dst = GetVSXReg(Node);
+  xxlorc(Dst, GetVSXReg(Op->Vector1), GetVSXReg(Op->Vector2));
 }
 
-DEF_OP(VOr) {
+DEF_OP_VSX(VOr) {
   const auto Op = IROp->C<IR::IROp_VOr>();
-  const auto Dst = GetVReg(Node);
-  vor(Dst, GetVReg(Op->Vector1), GetVReg(Op->Vector2));
+  const auto Dst = GetVSXReg(Node);
+  xxlor(Dst, GetVSXReg(Op->Vector1), GetVSXReg(Op->Vector2));
   if (IROp->Size == IR::OpSize::i64Bit) {
     // IR contract: with RegSize=i64Bit the upper 64 of the result must be 0.
-    // ARM64 NEON gets this for free via D-register encoding; AltiVec ops
-    // always touch all 128 bits, so zero the upper LE doubleword explicitly.
+    // ARM64 NEON gets this for free via D-register encoding; a 128-bit op
+    // always touches all 128 bits, so zero the upper LE doubleword explicitly.
     // SSE4a INSERTQ relies on this for the post-merge store.
-    vspltisb(VTMP1, 0);
-    xxpermdi(Dst, VTMP1, Dst, 1);  // BE: VT.dw0=zero.dw0=0, VT.dw1=Dst.dw1 (= LE low 64)
+    //
+    // One instruction rather than two now: the zero comes from the pinned
+    // VZERO_VSX, and DM=1 takes only its doubleword 0 -- the half ELFv2
+    // preserves across a host call, which is the rule stated at VZERO_VSX's
+    // declaration in PPC64Emitter.h.
+    xxpermdi(Dst, VZERO_VSX, Dst, 1);  // BE: VT.dw0=zero.dw0=0, VT.dw1=Dst.dw1 (= LE low 64)
   }
 }
 
-DEF_OP(VXor) {
+DEF_OP_VSX(VXor) {
   const auto Op = IROp->C<IR::IROp_VXor>();
-  const auto Dst = GetVReg(Node);
-  vxor(Dst, GetVReg(Op->Vector1), GetVReg(Op->Vector2));
+  const auto Dst = GetVSXReg(Node);
+  xxlxor(Dst, GetVSXReg(Op->Vector1), GetVSXReg(Op->Vector2));
 }
 
 // Saturating add/sub
@@ -2261,12 +2288,12 @@ DEF_OP(VTrn2) {
 // element ordering after `lvx`, no byte-swap is needed.
 // ---------------------------------------------------------------------------
 
-DEF_OP(VFAdd) {
+DEF_OP_VSX(VFAdd) {
   const auto Op = IROp->C<IR::IROp_VFAdd>();
   const auto ElemSz = Op->Header.ElementSize;
-  const auto Dst = GetVReg(Node);
-  const auto V1  = GetVReg(Op->Vector1);
-  const auto V2  = GetVReg(Op->Vector2);
+  const auto Dst = GetVSXReg(Node);
+  const auto V1  = GetVSXReg(Op->Vector1);
+  const auto V2  = GetVSXReg(Op->Vector2);
   switch (ElemSz) {
   case IR::OpSize::i32Bit: xvaddsp(Dst, V1, V2); break;
   case IR::OpSize::i64Bit: xvadddp(Dst, V1, V2); break;
@@ -2309,12 +2336,12 @@ DEF_OP(VFAddP) {
   }
 }
 
-DEF_OP(VFSub) {
+DEF_OP_VSX(VFSub) {
   const auto Op = IROp->C<IR::IROp_VFSub>();
   const auto ElemSz = Op->Header.ElementSize;
-  const auto Dst = GetVReg(Node);
-  const auto V1  = GetVReg(Op->Vector1);
-  const auto V2  = GetVReg(Op->Vector2);
+  const auto Dst = GetVSXReg(Node);
+  const auto V1  = GetVSXReg(Op->Vector1);
+  const auto V2  = GetVSXReg(Op->Vector2);
   switch (ElemSz) {
   case IR::OpSize::i32Bit: xvsubsp(Dst, V1, V2); break;
   case IR::OpSize::i64Bit: xvsubdp(Dst, V1, V2); break;
@@ -2322,12 +2349,12 @@ DEF_OP(VFSub) {
   }
 }
 
-DEF_OP(VFMul) {
+DEF_OP_VSX(VFMul) {
   const auto Op = IROp->C<IR::IROp_VFMul>();
   const auto ElemSz = Op->Header.ElementSize;
-  const auto Dst = GetVReg(Node);
-  const auto V1  = GetVReg(Op->Vector1);
-  const auto V2  = GetVReg(Op->Vector2);
+  const auto Dst = GetVSXReg(Node);
+  const auto V1  = GetVSXReg(Op->Vector1);
+  const auto V2  = GetVSXReg(Op->Vector2);
   switch (ElemSz) {
   case IR::OpSize::i32Bit: xvmulsp(Dst, V1, V2); break;
   case IR::OpSize::i64Bit: xvmuldp(Dst, V1, V2); break;
@@ -2335,12 +2362,12 @@ DEF_OP(VFMul) {
   }
 }
 
-DEF_OP(VFDiv) {
+DEF_OP_VSX(VFDiv) {
   const auto Op = IROp->C<IR::IROp_VFDiv>();
   const auto ElemSz = Op->Header.ElementSize;
-  const auto Dst = GetVReg(Node);
-  const auto V1  = GetVReg(Op->Vector1);
-  const auto V2  = GetVReg(Op->Vector2);
+  const auto Dst = GetVSXReg(Node);
+  const auto V1  = GetVSXReg(Op->Vector1);
+  const auto V2  = GetVSXReg(Op->Vector2);
   switch (ElemSz) {
   case IR::OpSize::i32Bit: xvdivsp(Dst, V1, V2); break;
   case IR::OpSize::i64Bit: xvdivdp(Dst, V1, V2); break;
@@ -3980,15 +4007,15 @@ DEF_OP(VTBX1) {
 // ---------------------------------------------------------------------------
 // VBSL — bitwise select
 // ---------------------------------------------------------------------------
-DEF_OP(VBSL) {
+DEF_OP_VSX(VBSL) {
   const auto Op   = IROp->C<IR::IROp_VBSL>();
-  const auto Dst  = GetVReg(Node);
-  const auto Mask = GetVReg(Op->VectorMask);
-  const auto VT   = GetVReg(Op->VectorTrue);
-  const auto VF   = GetVReg(Op->VectorFalse);
-  // vsel(A, B, C): result[i] = C[i] ? B[i] : A[i]
+  const auto Dst  = GetVSXReg(Node);
+  const auto Mask = GetVSXReg(Op->VectorMask);
+  const auto VT   = GetVSXReg(Op->VectorTrue);
+  const auto VF   = GetVSXReg(Op->VectorFalse);
+  // xxsel(A, B, C): result[i] = C[i] ? B[i] : A[i] -- vsel's exact twin.
   // We want: result[i] = Mask[i] ? VT[i] : VF[i]
-  vsel(Dst, VF, VT, Mask);
+  xxsel(Dst, VF, VT, Mask);
 }
 
 // ---------------------------------------------------------------------------
@@ -4031,18 +4058,18 @@ DEF_OP(VFCADD) {
 // VTMP before the vmr destroys it. The previous impl used the a-form but
 // seeded Dst with V1 (`vmr(Dst, V1)`), giving the wrong arithmetic
 // (V2*Add + V1 instead of V1*V2 + Add) — every FMA test failed.
-DEF_OP(VFMLA) {
+DEF_OP_VSX(VFMLA) {
   const auto Op   = IROp->C<IR::IROp_VFMLA>();
   const auto ElemSz = Op->Header.ElementSize;
-  const auto Dst  = GetVReg(Node);
-  const auto V1   = GetVReg(Op->Vector1);
-  const auto V2   = GetVReg(Op->Vector2);
-  const auto Add  = GetVReg(Op->Addend);
-  VR A = V1, B = V2;
+  const auto Dst  = GetVSXReg(Node);
+  const auto V1   = GetVSXReg(Op->Vector1);
+  const auto V2   = GetVSXReg(Op->Vector2);
+  const auto Add  = GetVSXReg(Op->Addend);
+  VSXR A = V1, B = V2;
   if (Dst != Add) {
-    if (Dst == V1) { vmr(VTMP1, V1); A = VTMP1; }
-    if (Dst == V2) { vmr(VTMP2, V2); B = VTMP2; }
-    vmr(Dst, Add);
+    if (Dst == V1) { xxlor(VTMP1_VSX, V1, V1); A = VTMP1_VSX; }
+    if (Dst == V2) { xxlor(VTMP2_VSX, V2, V2); B = VTMP2_VSX; }
+    xxlor(Dst, Add, Add);
   }
   switch (ElemSz) {
   case IR::OpSize::i32Bit: xvmaddasp(Dst, A, B); break;
@@ -4051,18 +4078,18 @@ DEF_OP(VFMLA) {
   }
 }
 
-DEF_OP(VFMLS) {
+DEF_OP_VSX(VFMLS) {
   const auto Op   = IROp->C<IR::IROp_VFMLS>();
   const auto ElemSz = Op->Header.ElementSize;
-  const auto Dst  = GetVReg(Node);
-  const auto V1   = GetVReg(Op->Vector1);
-  const auto V2   = GetVReg(Op->Vector2);
-  const auto Add  = GetVReg(Op->Addend);
-  VR A = V1, B = V2;
+  const auto Dst  = GetVSXReg(Node);
+  const auto V1   = GetVSXReg(Op->Vector1);
+  const auto V2   = GetVSXReg(Op->Vector2);
+  const auto Add  = GetVSXReg(Op->Addend);
+  VSXR A = V1, B = V2;
   if (Dst != Add) {
-    if (Dst == V1) { vmr(VTMP1, V1); A = VTMP1; }
-    if (Dst == V2) { vmr(VTMP2, V2); B = VTMP2; }
-    vmr(Dst, Add);
+    if (Dst == V1) { xxlor(VTMP1_VSX, V1, V1); A = VTMP1_VSX; }
+    if (Dst == V2) { xxlor(VTMP2_VSX, V2, V2); B = VTMP2_VSX; }
+    xxlor(Dst, Add, Add);
   }
   switch (ElemSz) {
   case IR::OpSize::i32Bit: xvmsubasp(Dst, A, B); break;
@@ -4071,46 +4098,46 @@ DEF_OP(VFMLS) {
   }
 }
 
-DEF_OP(VFNMLA) {
+DEF_OP_VSX(VFNMLA) {
   const auto Op   = IROp->C<IR::IROp_VFNMLA>();
   const auto ElemSz = Op->Header.ElementSize;
-  const auto Dst  = GetVReg(Node);
-  const auto V1   = GetVReg(Op->Vector1);
-  const auto V2   = GetVReg(Op->Vector2);
-  const auto Add  = GetVReg(Op->Addend);
+  const auto Dst  = GetVSXReg(Node);
+  const auto V1   = GetVSXReg(Op->Vector1);
+  const auto V2   = GetVSXReg(Op->Vector2);
+  const auto Add  = GetVSXReg(Op->Addend);
   if (ElemSz != IR::OpSize::i32Bit && ElemSz != IR::OpSize::i64Bit) {
     Op_Unhandled(IROp, Node);
     return;
   }
-  // -V1 into VTMP1 first: that also serves as the stash when Dst == V1.
-  VR B = V2;
-  if (Dst != Add && Dst == V2) { vmr(VTMP2, V2); B = VTMP2; }
-  if (ElemSz == IR::OpSize::i32Bit) xvnegsp(VTMP1, V1); else xvnegdp(VTMP1, V1);
-  if (Dst != Add) vmr(Dst, Add);
+  // -V1 into VTMP1_VSX first: that also serves as the stash when Dst == V1.
+  VSXR B = V2;
+  if (Dst != Add && Dst == V2) { xxlor(VTMP2_VSX, V2, V2); B = VTMP2_VSX; }
+  if (ElemSz == IR::OpSize::i32Bit) xvnegsp(VTMP1_VSX, V1); else xvnegdp(VTMP1_VSX, V1);
+  if (Dst != Add) xxlor(Dst, Add, Add);
   switch (ElemSz) {
-  case IR::OpSize::i32Bit: xvmaddasp(Dst, VTMP1, B); break;
-  default:                 xvmaddadp(Dst, VTMP1, B); break;
+  case IR::OpSize::i32Bit: xvmaddasp(Dst, VTMP1_VSX, B); break;
+  default:                 xvmaddadp(Dst, VTMP1_VSX, B); break;
   }
 }
 
-DEF_OP(VFNMLS) {
+DEF_OP_VSX(VFNMLS) {
   const auto Op   = IROp->C<IR::IROp_VFNMLS>();
   const auto ElemSz = Op->Header.ElementSize;
-  const auto Dst  = GetVReg(Node);
-  const auto V1   = GetVReg(Op->Vector1);
-  const auto V2   = GetVReg(Op->Vector2);
-  const auto Add  = GetVReg(Op->Addend);
+  const auto Dst  = GetVSXReg(Node);
+  const auto V1   = GetVSXReg(Op->Vector1);
+  const auto V2   = GetVSXReg(Op->Vector2);
+  const auto Add  = GetVSXReg(Op->Addend);
   if (ElemSz != IR::OpSize::i32Bit && ElemSz != IR::OpSize::i64Bit) {
     Op_Unhandled(IROp, Node);
     return;
   }
-  VR B = V2;
-  if (Dst != Add && Dst == V2) { vmr(VTMP2, V2); B = VTMP2; }
-  if (ElemSz == IR::OpSize::i32Bit) xvnegsp(VTMP1, V1); else xvnegdp(VTMP1, V1);
-  if (Dst != Add) vmr(Dst, Add);
+  VSXR B = V2;
+  if (Dst != Add && Dst == V2) { xxlor(VTMP2_VSX, V2, V2); B = VTMP2_VSX; }
+  if (ElemSz == IR::OpSize::i32Bit) xvnegsp(VTMP1_VSX, V1); else xvnegdp(VTMP1_VSX, V1);
+  if (Dst != Add) xxlor(Dst, Add, Add);
   switch (ElemSz) {
-  case IR::OpSize::i32Bit: xvmsubasp(Dst, VTMP1, B); break;
-  default:                 xvmsubadp(Dst, VTMP1, B); break;
+  case IR::OpSize::i32Bit: xvmsubasp(Dst, VTMP1_VSX, B); break;
+  default:                 xvmsubadp(Dst, VTMP1_VSX, B); break;
   }
 }
 
@@ -4799,10 +4826,10 @@ DEF_OP(VFCopySign) {
 // Conv ops
 // ---------------------------------------------------------------------------
 
-DEF_OP(VCastFromGPR) {
+DEF_OP_VSX(VCastFromGPR) {
   const auto Op    = IROp->C<IR::IROp_VCastFromGPR>();
   const auto ElemSz = Op->Header.ElementSize;
-  const auto Dst   = GetVReg(Node);
+  const auto Dst   = GetVSXReg(Node);
   const auto Src   = GetReg(Op->Src);
 
   // Place the GPR value into the lowest element of the vector (all others zero).
@@ -4814,7 +4841,7 @@ DEF_OP(VCastFromGPR) {
   // r0's contents (ISA 3.0B, MTVSRDD), so `mtvsrdd Dst, r0, Src` IS the whole
   // op. This is the lowering of FMOV d,x and FMOV d,#imm (TranslateFP.cpp).
   //
-  // Without it: mtvsrd puts the GPR in dw0 of VTMP1 (its dw1 is *undefined*
+  // Without it: mtvsrd puts the GPR in dw0 of VTMP1_VSX (its dw1 is *undefined*
   // per ISA, so we never read it) and one xxpermdi moves that into place
   // against the pinned zero -- DM=0b00 takes XA.dw0 (VZERO_VSX's preserved
   // half) and XB.dw0, which is the hazard rule at VZERO_VSX's declaration.
@@ -4825,28 +4852,28 @@ DEF_OP(VCastFromGPR) {
   case IR::OpSize::i8Bit:
     rldicl(TMP1, Src, 0, 56);
     if (ISA30) { mtvsrdd(Dst, r0, TMP1); break; }
-    mtvsrd(VTMP1, TMP1);
-    xxpermdi(AsVSX(Dst), VZERO_VSX, AsVSX(VTMP1), 0b00);
+    mtvsrd(VTMP1_VSX, TMP1);
+    xxpermdi(Dst, VZERO_VSX, VTMP1_VSX, 0b00);
     break;
   case IR::OpSize::i16Bit:
     rldicl(TMP1, Src, 0, 48);
     if (ISA30) { mtvsrdd(Dst, r0, TMP1); break; }
-    mtvsrd(VTMP1, TMP1);
-    xxpermdi(AsVSX(Dst), VZERO_VSX, AsVSX(VTMP1), 0b00);
+    mtvsrd(VTMP1_VSX, TMP1);
+    xxpermdi(Dst, VZERO_VSX, VTMP1_VSX, 0b00);
     break;
   case IR::OpSize::i32Bit:
     rldicl(TMP1, Src, 0, 32);
     if (ISA30) { mtvsrdd(Dst, r0, TMP1); break; }
-    mtvsrd(VTMP1, TMP1);
-    xxpermdi(AsVSX(Dst), VZERO_VSX, AsVSX(VTMP1), 0b00);
+    mtvsrd(VTMP1_VSX, TMP1);
+    xxpermdi(Dst, VZERO_VSX, VTMP1_VSX, 0b00);
     break;
   case IR::OpSize::i64Bit:
     if (ISA30) { mtvsrdd(Dst, r0, Src); break; }
-    mtvsrd(VTMP1, Src);
-    xxpermdi(AsVSX(Dst), VZERO_VSX, AsVSX(VTMP1), 0b00);
+    mtvsrd(VTMP1_VSX, Src);
+    xxpermdi(Dst, VZERO_VSX, VTMP1_VSX, 0b00);
     break;
   default:
-    vspltisw(Dst, 0);
+    xxlxor(Dst, Dst, Dst);
     break;
   }
 }
@@ -4906,9 +4933,9 @@ DEF_OP(VDupFromGPR) {
   }
 }
 
-DEF_OP(VLoadTwoGPRs) {
+DEF_OP_VSX(VLoadTwoGPRs) {
   const auto Op  = IROp->C<IR::IROp_VLoadTwoGPRs>();
-  const auto Dst = GetVReg(Node);
+  const auto Dst = GetVSXReg(Node);
   const auto Lo  = GetReg(Op->Lower);
   const auto Hi  = GetReg(Op->Upper);
 
@@ -4923,9 +4950,9 @@ DEF_OP(VLoadTwoGPRs) {
   // LE element 0. Byte-identical to the std/std/lvx roundtrip it replaces
   // (checked on POWER8 by stvx'ing both forms with distinguishable halves),
   // three instructions instead of five and no store-hit-load.
-  mtvsrd(VTMP1, Hi);
-  mtvsrd(VTMP2, Lo);
-  xxpermdi(Dst, VTMP1, VTMP2, 0);
+  mtvsrd(VTMP1_VSX, Hi);
+  mtvsrd(VTMP2_VSX, Lo);
+  xxpermdi(Dst, VTMP1_VSX, VTMP2_VSX, 0);
 }
 
 DEF_OP(Float_FromGPR_S) {

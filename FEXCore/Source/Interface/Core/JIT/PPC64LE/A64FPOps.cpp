@@ -44,7 +44,11 @@ namespace {
 } // namespace
 
 // Positions element 0 of Vec in doubleword 0 of Dst as a double.
-static void PositionElement0AsDouble(PPC64JITCore* J, VR Dst, VR Vec, IR::OpSize ElementSize) {
+//
+// These helpers take PPC64VSXView*, not PPC64JITCore*: every caller is a
+// VSX-clean lowering, whose `this` is a view, and the view cannot be converted
+// back to the core (that is the point). VSXR operands for the same reason.
+static void PositionElement0AsDouble(PPC64VSXView* J, VSXR Dst, VSXR Vec, IR::OpSize ElementSize) {
   if (ElementSize == IR::OpSize::i32Bit) {
     J->xxsldwi(Dst, Vec, Vec, 3);   // word 0 <- element 0
     J->xscvspdpn(Dst, Dst);         // bit-preserving for NaN
@@ -55,16 +59,16 @@ static void PositionElement0AsDouble(PPC64JITCore* J, VR Dst, VR Vec, IR::OpSize
 
 // Dst = [0 : Value] with Value a 64-bit pattern in doubleword 0 of Src, or a
 // 32-bit pattern in TMP1 when FromGPR32 is set.
-static void PlaceElement0(PPC64JITCore* J, VR Dst, VR Src) {
-  J->xxpermdi(AsVSX(Dst), VZERO_VSX, AsVSX(Src), 0); // dw0 <- 0, dw1 <- Src.dw0
+static void PlaceElement0(PPC64VSXView* J, VSXR Dst, VSXR Src) {
+  J->xxpermdi(Dst, VZERO_VSX, Src, 0); // dw0 <- 0, dw1 <- Src.dw0
 }
 
-static void PlaceSingleFromDoubleword0(PPC64JITCore* J, VR Dst, VR Src) {
+static void PlaceSingleFromDoubleword0(PPC64VSXView* J, VSXR Dst, VSXR Src) {
   // The single's bits are in the low word of doubleword 0; the high word is
   // not guaranteed to be zero.
   J->mfvsrwz(TMP1, Src);
-  J->mtvsrd(VTMP1, TMP1);
-  PlaceElement0(J, Dst, VTMP1);
+  J->mtvsrd(VTMP1_VSX, TMP1);
+  PlaceElement0(J, Dst, VTMP1_VSX);
 }
 
 // Round to integral, ties to even, whatever the guest's FPCR.RMode is.
@@ -86,7 +90,7 @@ static void PlaceSingleFromDoubleword0(PPC64JITCore* J, VR Dst, VR Src) {
 //
 // The compare goes to CR1. CR0 and XER hold the guest NZCV and are untouched
 // here, as everywhere else in this file.
-void PPC64JITCore::EmitRoundNearestEven(VR Dst, VR Src, bool Wide) {
+void PPC64JITCore::EmitRoundNearestEven(VSXR Dst, VSXR Src, bool Wide) {
   static const int16_t FPCROff = static_cast<int16_t>(offsetof(FEXCore::Core::CpuStateFrame, State.fpcr));
   PPC64Emitter::Label Fast, Done;
 
@@ -113,40 +117,40 @@ void PPC64JITCore::EmitRoundNearestEven(VR Dst, VR Src, bool Wide) {
   Bind(&Done);
 }
 
-DEF_OP(A64FloatToGPR) {
+DEF_OP_VSX(A64FloatToGPR) {
   const auto Op = IROp->C<IR::IROp_A64FloatToGPR>();
   const auto Dst = GetReg(Node);
-  const auto Src = GetVReg(Op->Scalar);
+  const auto Src = GetVSXReg(Op->Scalar);
   const bool Is64 = IROp->Size == IR::OpSize::i64Bit;
 
-  PositionElement0AsDouble(this, VTMP1, Src, Op->SrcElementSize);
+  PositionElement0AsDouble(this, VTMP1_VSX, Src, Op->SrcElementSize);
 
   switch (Op->Rounding) {
-  case 0: EmitRoundNearestEven(VTMP1, VTMP1, false); break; // ties to even
-  case 1: xsrdpip(VTMP1, VTMP1); break;
-  case 2: xsrdpim(VTMP1, VTMP1); break;
+  case 0: EmitRoundNearestEven(VTMP1_VSX, VTMP1_VSX, false); break; // ties to even
+  case 1: xsrdpip(VTMP1_VSX, VTMP1_VSX); break;
+  case 2: xsrdpim(VTMP1_VSX, VTMP1_VSX); break;
   case 3: break; // The converts below truncate.
-  default: xsrdpi(VTMP1, VTMP1); break;
+  default: xsrdpi(VTMP1_VSX, VTMP1_VSX); break;
   }
 
   if (!Op->Signed) {
-    Is64 ? xscvdpuxds(VTMP2, VTMP1) : xscvdpuxws(VTMP2, VTMP1);
+    Is64 ? xscvdpuxds(VTMP2_VSX, VTMP1_VSX) : xscvdpuxws(VTMP2_VSX, VTMP1_VSX);
     if (Is64) {
-      mfvsrd(Dst, VTMP2);
+      mfvsrd(Dst, VTMP2_VSX);
     } else {
-      mfvsrwz(Dst, VTMP2);
+      mfvsrwz(Dst, VTMP2_VSX);
     }
     return;
   }
 
   // Signed converts saturate but give INT_MIN for NaN; A64 wants 0.
-  xscmpudp(1, VTMP1, VTMP1);
+  xscmpudp(1, VTMP1_VSX, VTMP1_VSX);
   if (Is64) {
-    xscvdpsxds(VTMP2, VTMP1);
-    mfvsrd(Dst, VTMP2);
+    xscvdpsxds(VTMP2_VSX, VTMP1_VSX);
+    mfvsrd(Dst, VTMP2_VSX);
   } else {
-    xscvdpsxws(VTMP2, VTMP1);
-    mfvsrwz(Dst, VTMP2);
+    xscvdpsxws(VTMP2_VSX, VTMP1_VSX);
+    mfvsrwz(Dst, VTMP2_VSX);
   }
   PPC64Emitter::Label Ordered;
   bc(PPC64Emitter::Cond {4, 7}, &Ordered); // CR1.SO clear: not NaN
@@ -154,31 +158,31 @@ DEF_OP(A64FloatToGPR) {
   Bind(&Ordered);
 }
 
-DEF_OP(A64FloatFromGPR) {
+DEF_OP_VSX(A64FloatFromGPR) {
   const auto Op = IROp->C<IR::IROp_A64FloatFromGPR>();
-  const auto Dst = GetVReg(Node);
+  const auto Dst = GetVSXReg(Node);
   GPR Src = GetReg(Op->Src);
 
   if (Op->SrcSize == IR::OpSize::i32Bit) {
     if (Op->Signed) {
-      mtvsrwa(VTMP1, Src);
+      mtvsrwa(VTMP1_VSX, Src);
     } else {
-      mtvsrwz(VTMP1, Src);
+      mtvsrwz(VTMP1_VSX, Src);
     }
   } else {
-    mtvsrd(VTMP1, Src);
+    mtvsrd(VTMP1_VSX, Src);
   }
 
   if (IROp->Size == IR::OpSize::i64Bit) {
-    Op->Signed ? xscvsxddp(VTMP1, VTMP1) : xscvuxddp(VTMP1, VTMP1);
-    PlaceElement0(this, Dst, VTMP1);
+    Op->Signed ? xscvsxddp(VTMP1_VSX, VTMP1_VSX) : xscvuxddp(VTMP1_VSX, VTMP1_VSX);
+    PlaceElement0(this, Dst, VTMP1_VSX);
     return;
   }
   // One rounding, straight to single precision (double format), then the
   // bit-preserving format change.
-  Op->Signed ? xscvsxdsp(VTMP1, VTMP1) : xscvuxdsp(VTMP1, VTMP1);
-  xscvdpspn(VTMP1, VTMP1);
-  PlaceSingleFromDoubleword0(this, Dst, VTMP1);
+  Op->Signed ? xscvsxdsp(VTMP1_VSX, VTMP1_VSX) : xscvuxdsp(VTMP1_VSX, VTMP1_VSX);
+  xscvdpspn(VTMP1_VSX, VTMP1_VSX);
+  PlaceSingleFromDoubleword0(this, Dst, VTMP1_VSX);
 }
 
 // ---------------------------------------------------------------------------
@@ -202,10 +206,10 @@ DEF_OP(A64FloatFromGPR) {
 // FPSR.QC).
 // ---------------------------------------------------------------------------
 
-DEF_OP(A64VecIntToFloat) {
+DEF_OP_VSX(A64VecIntToFloat) {
   const auto Op = IROp->C<IR::IROp_A64VecIntToFloat>();
-  const auto Dst = GetVReg(Node);
-  const auto Src = GetVReg(Op->Vector);
+  const auto Dst = GetVSXReg(Node);
+  const auto Src = GetVSXReg(Op->Vector);
 
   // One instruction; the rounding is FPSCR.RN, which F7 keeps equal to
   // FPCR.RMode, so SCVTF's "round with FPCR.RMode" costs nothing.
@@ -272,8 +276,8 @@ DEF_OP(A64VecFloatToInt) {
 // set. Those are the A64 FCVT rules. The POWER8 paths compute the same
 // results with GPR code that never writes XER (XER.CA holds the guest C
 // flag): no subfic/sradi/addic, compares only into CR1.
-static void EmitHalfToDouble(PPC64JITCore* J, VR Dst, VR Src, bool ISA30) {
-  J->xxpermdi(VTMP1, Src, Src, 0b11);
+static void EmitHalfToDouble(PPC64VSXView* J, VSXR Dst, VSXR Src, bool ISA30) {
+  J->xxpermdi(VTMP1_VSX, Src, Src, 0b11);
   if (ISA30) {
     J->xscvhpdp(VTMP1, VTMP1);
     PlaceElement0(J, Dst, VTMP1);
@@ -332,8 +336,8 @@ static void EmitHalfToDouble(PPC64JITCore* J, VR Dst, VR Src, bool ISA30) {
   PlaceElement0(J, Dst, VTMP1);
 }
 
-static void EmitDoubleToHalf(PPC64JITCore* J, VR Dst, VR Src, bool ISA30) {
-  J->xxpermdi(VTMP1, Src, Src, 0b11);
+static void EmitDoubleToHalf(PPC64VSXView* J, VSXR Dst, VSXR Src, bool ISA30) {
+  J->xxpermdi(VTMP1_VSX, Src, Src, 0b11);
   if (ISA30) {
     J->xscvdphp(VTMP1, VTMP1);
     J->mfvsrd(TMP1, VTMP1);
@@ -429,32 +433,32 @@ static void EmitDoubleToHalf(PPC64JITCore* J, VR Dst, VR Src, bool ISA30) {
   PlaceElement0(J, Dst, VTMP1);
 }
 
-DEF_OP(A64FToF) {
+DEF_OP_VSX(A64FToF) {
   const auto Op = IROp->C<IR::IROp_A64FToF>();
-  const auto Dst = GetVReg(Node);
-  const auto Src = GetVReg(Op->Scalar);
+  const auto Dst = GetVSXReg(Node);
+  const auto Src = GetVSXReg(Op->Scalar);
   const auto DstES = IROp->Size;
   const auto SrcES = Op->SrcElementSize;
 
   if (SrcES == IR::OpSize::i64Bit && DstES == IR::OpSize::i32Bit) {
-    xxpermdi(VTMP1, Src, Src, 0b11);
-    xscvdpsp(VTMP1, VTMP1); // rounds with RN, quiets a signalling NaN
-    PlaceSingleFromDoubleword0(this, Dst, VTMP1);
+    xxpermdi(VTMP1_VSX, Src, Src, 0b11);
+    xscvdpsp(VTMP1_VSX, VTMP1_VSX); // rounds with RN, quiets a signalling NaN
+    PlaceSingleFromDoubleword0(this, Dst, VTMP1_VSX);
     return;
   }
 
   if (SrcES == IR::OpSize::i32Bit && DstES == IR::OpSize::i64Bit) {
-    xxsldwi(VTMP1, Src, Src, 3);
-    xscvspdpn(VTMP1, VTMP1);
+    xxsldwi(VTMP1_VSX, Src, Src, 3);
+    xscvspdpn(VTMP1_VSX, VTMP1_VSX);
     // Quiet a signalling NaN: every NaN gets the quiet bit.
-    xscmpudp(1, VTMP1, VTMP1);
+    xscmpudp(1, VTMP1_VSX, VTMP1_VSX);
     PPC64Emitter::Label Ordered;
     bc(PPC64Emitter::Cond {4, 7}, &Ordered);
     LoadConstant(TMP1, 1ULL << 51);
-    mtvsrd(VTMP2, TMP1);
-    vor(VTMP1, VTMP1, VTMP2);
+    mtvsrd(VTMP2_VSX, TMP1);
+    xxlor(VTMP1_VSX, VTMP1_VSX, VTMP2_VSX);
     Bind(&Ordered);
-    PlaceElement0(this, Dst, VTMP1);
+    PlaceElement0(this, Dst, VTMP1_VSX);
     return;
   }
 
@@ -563,7 +567,7 @@ namespace {
   constexpr PPC64Emitter::Cond CondSomeLaneNaN {4, 24};
 } // namespace
 
-DEF_OP(A64FArith) {
+DEF_OP_VSX(A64FArith) {
   const auto Op = IROp->C<IR::IROp_A64FArith>();
   const auto ElemSz = IROp->ElementSize;
   if (ElemSz != IR::OpSize::i32Bit && ElemSz != IR::OpSize::i64Bit) {
@@ -571,9 +575,9 @@ DEF_OP(A64FArith) {
     return;
   }
   const bool Is64 = ElemSz == IR::OpSize::i64Bit;
-  const auto Dst = GetVReg(Node);
-  const auto V1 = GetVReg(Op->Vector1);
-  const auto V2 = GetVReg(Op->Vector2);
+  const auto Dst = GetVSXReg(Node);
+  const auto V1 = GetVSXReg(Op->Vector1);
+  const auto V2 = GetVSXReg(Op->Vector2);
 
   // The RA prefers the SRA register the result is next stored to
   // (RegisterAllocationPass.cpp:626-633), so accumulator shapes like
@@ -581,15 +585,15 @@ DEF_OP(A64FArith) {
   // destroys an operand the cold stub still needs, so stash it first. At most
   // one stash is ever needed: when Dst aliases BOTH sources the two sources
   // are the same register, and the one stash serves for both.
-  PPC64Emitter::VR A = V1, B = V2;
+  PPC64Emitter::VSXR A = V1, B = V2;
   if (Dst == V1 || Dst == V2) {
     const auto Aliased = (Dst == V1) ? V1 : V2;
-    xxlor(VTMP2, Aliased, Aliased);
+    xxlor(VTMP2_VSX, Aliased, Aliased);
     if (Dst == V1) {
-      A = VTMP2;
+      A = VTMP2_VSX;
     }
     if (Dst == V2) {
-      B = VTMP2;
+      B = VTMP2_VSX;
     }
   }
 
@@ -601,7 +605,7 @@ DEF_OP(A64FArith) {
   default: Op_Unhandled(IROp, Node); return;
   }
 
-  Is64 ? xvcmpeqdp_(VTMP1, Dst, Dst) : xvcmpeqsp_(VTMP1, Dst, Dst);
+  Is64 ? xvcmpeqdp_(VTMP1_VSX, Dst, Dst) : xvcmpeqsp_(VTMP1_VSX, Dst, Dst);
 
   if (!FPColdEnabled()) {
     // Positive control: the check is emitted, the branch is not. The goldens'
@@ -622,7 +626,7 @@ DEF_OP(A64FArith) {
   Bind(&Stub.Join);
 }
 
-DEF_OP(A64FMinMax) {
+DEF_OP_VSX(A64FMinMax) {
   const auto Op = IROp->C<IR::IROp_A64FMinMax>();
   const auto ElemSz = IROp->ElementSize;
   if (ElemSz != IR::OpSize::i32Bit && ElemSz != IR::OpSize::i64Bit) {
@@ -630,15 +634,15 @@ DEF_OP(A64FMinMax) {
     return;
   }
   const bool Is64 = ElemSz == IR::OpSize::i64Bit;
-  const auto Dst = GetVReg(Node);
-  const auto V1 = GetVReg(Op->Vector1);
-  const auto V2 = GetVReg(Op->Vector2);
+  const auto Dst = GetVSXReg(Node);
+  const auto V1 = GetVSXReg(Op->Vector1);
+  const auto V2 = GetVSXReg(Op->Vector2);
 
-  Is64 ? xvcmpeqdp_(VTMP1, V1, V1) : xvcmpeqsp_(VTMP1, V1, V1);
+  Is64 ? xvcmpeqdp_(VTMP1_VSX, V1, V1) : xvcmpeqsp_(VTMP1_VSX, V1, V1);
 
   if (!FPColdEnabled()) {
     if (V1 != V2) {
-      Is64 ? xvcmpeqdp_(VTMP1, V2, V2) : xvcmpeqsp_(VTMP1, V2, V2);
+      Is64 ? xvcmpeqdp_(VTMP1_VSX, V2, V2) : xvcmpeqsp_(VTMP1_VSX, V2, V2);
     }
     if (Op->IsMax) {
       Is64 ? xvmaxdp(Dst, V1, V2) : xvmaxsp(Dst, V1, V2);
@@ -664,7 +668,7 @@ DEF_OP(A64FMinMax) {
 
   bc(CondSomeLaneNaN, &Stub.Entry);
   if (V1 != V2) {
-    Is64 ? xvcmpeqdp_(VTMP1, V2, V2) : xvcmpeqsp_(VTMP1, V2, V2);
+    Is64 ? xvcmpeqdp_(VTMP1_VSX, V2, V2) : xvcmpeqsp_(VTMP1_VSX, V2, V2);
     bc(CondSomeLaneNaN, &Stub.Entry);
   }
   if (Op->IsMax) {
@@ -675,7 +679,7 @@ DEF_OP(A64FMinMax) {
   Bind(&Stub.Join);
 }
 
-DEF_OP(A64FMulAdd) {
+DEF_OP_VSX(A64FMulAdd) {
   const auto Op = IROp->C<IR::IROp_A64FMulAdd>();
   const auto ElemSz = IROp->ElementSize;
   if (ElemSz != IR::OpSize::i32Bit && ElemSz != IR::OpSize::i64Bit) {
@@ -683,33 +687,33 @@ DEF_OP(A64FMulAdd) {
     return;
   }
   const bool Is64 = ElemSz == IR::OpSize::i64Bit;
-  const auto Dst = GetVReg(Node);
-  const auto Add = GetVReg(Op->Addend);
-  const auto V1 = GetVReg(Op->Vector1);
-  const auto V2 = GetVReg(Op->Vector2);
+  const auto Dst = GetVSXReg(Node);
+  const auto Add = GetVSXReg(Op->Addend);
+  const auto V1 = GetVSXReg(Op->Vector1);
+  const auto V2 = GetVSXReg(Op->Vector2);
 
-  PPC64Emitter::VR S_Add = Add;
-  PPC64Emitter::VR S_V1 = V1;
-  PPC64Emitter::VR S_V2 = V2;
+  PPC64Emitter::VSXR S_Add = Add;
+  PPC64Emitter::VSXR S_V1 = V1;
+  PPC64Emitter::VSXR S_V2 = V2;
 
   if (Dst == Add) {
-    xxlor(VTMP2, Add, Add);
-    S_Add = VTMP2;
-    if (V1 == Add) S_V1 = VTMP2;
-    if (V2 == Add) S_V2 = VTMP2;
+    xxlor(VTMP2_VSX, Add, Add);
+    S_Add = VTMP2_VSX;
+    if (V1 == Add) S_V1 = VTMP2_VSX;
+    if (V2 == Add) S_V2 = VTMP2_VSX;
   } else {
     if (Dst == V1 || Dst == V2) {
       const auto Aliased = (Dst == V1) ? V1 : V2;
-      xxlor(VTMP2, Aliased, Aliased);
-      if (Dst == V1) S_V1 = VTMP2;
-      if (Dst == V2) S_V2 = VTMP2;
+      xxlor(VTMP2_VSX, Aliased, Aliased);
+      if (Dst == V1) S_V1 = VTMP2_VSX;
+      if (Dst == V2) S_V2 = VTMP2_VSX;
     }
     xxlor(Dst, Add, Add);
   }
 
   Is64 ? xvmaddadp(Dst, S_V1, S_V2) : xvmaddasp(Dst, S_V1, S_V2);
 
-  Is64 ? xvcmpeqdp_(VTMP1, Dst, Dst) : xvcmpeqsp_(VTMP1, Dst, Dst);
+  Is64 ? xvcmpeqdp_(VTMP1_VSX, Dst, Dst) : xvcmpeqsp_(VTMP1_VSX, Dst, Dst);
 
   if (!FPColdEnabled()) {
     return;
@@ -972,12 +976,12 @@ void PPC64JITCore::EmitFPColdStubs(bool BranchOver) {
     Bind(&S.Entry);
     switch (S.Kind) {
     case FPColdStub::Kind::Arith: {
-      xxlor(P0, AsVSX(S.A), AsVSX(S.A));
-      xxlor(P1, AsVSX(S.B), AsVSX(S.B));
+      xxlor(P0, S.A, S.A);
+      xxlor(P1, S.B, S.B);
       mflr(TMP4);
       bl(&FPNaNFixBody[S.Is64]);
       mtlr(TMP4);
-      const auto D = AsVSX(S.Dst);
+      const auto D = S.Dst;
       switch (S.Op) {
       case 0: S.Is64 ? xvadddp(D, P0, P1) : xvaddsp(D, P0, P1); break;
       case 1: S.Is64 ? xvsubdp(D, P0, P1) : xvsubsp(D, P0, P1); break;
@@ -988,8 +992,8 @@ void PPC64JITCore::EmitFPColdStubs(bool BranchOver) {
       break;
     }
     case FPColdStub::Kind::MinMax: {
-      xxlor(P0, AsVSX(S.A), AsVSX(S.A));
-      xxlor(P1, AsVSX(S.B), AsVSX(S.B));
+      xxlor(P0, S.A, S.A);
+      xxlor(P1, S.B, S.B);
       mflr(TMP4);
       if (S.IsNumber) {
         const uint64_t PosInf = S.Is64 ? 0x7FF0000000000000ULL : 0x7F8000007F800000ULL;
@@ -1006,18 +1010,18 @@ void PPC64JITCore::EmitFPColdStubs(bool BranchOver) {
       } else {
         S.Is64 ? xvmindp(AsVSX(VTMP1), P0, P1) : xvminsp(AsVSX(VTMP1), P0, P1);
       }
-      xxsel(AsVSX(S.Dst), AsVSX(VTMP1), P3, P2);
+      xxsel(S.Dst, VTMP1_VSX, P3, P2);
       break;
     }
     case FPColdStub::Kind::MulAdd: {
-      xxlor(P0, AsVSX(S.A), AsVSX(S.A));
-      xxlor(P1, AsVSX(S.B), AsVSX(S.B));
-      xxlor(P2, AsVSX(S.C), AsVSX(S.C));
-      xxlor(P3, AsVSX(S.Dst), AsVSX(S.Dst));
+      xxlor(P0, S.A, S.A);
+      xxlor(P1, S.B, S.B);
+      xxlor(P2, S.C, S.C);
+      xxlor(P3, S.Dst, S.Dst);
       mflr(TMP4);
       bl(&FPFMAFixBody[S.Is64]);
       mtlr(TMP4);
-      xxlor(AsVSX(S.Dst), P3, P3);
+      xxlor(S.Dst, P3, P3);
       break;
     }
     }

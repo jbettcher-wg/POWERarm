@@ -356,10 +356,14 @@ private:
     size_t SiteOffset {};              // offset of the site's `bc`, for the reach check
     PPC64Emitter::Label Entry {};      // the `bc` target; bound at the stub
     PPC64Emitter::Label Join {};       // bound at the site, right after the `bc`
-    PPC64Emitter::VR Dst {};
-    PPC64Emitter::VR A {};             // Vector1 / Addend, or VTMP2 when Dst aliased it
-    PPC64Emitter::VR B {};             // Vector2 / Vector1, or VTMP2 when Dst aliased it
-    PPC64Emitter::VR C {};             // Vector2 (MulAdd)
+    // VSXR, not VR: the sites are VSX-clean lowerings now, so an operand may
+    // be a guest V16-V31 in the low bank. The stub's own body was already
+    // VSX-form throughout -- it ran on vs3-vs10 -- and converted these by hand
+    // with AsVSX at every use.
+    PPC64Emitter::VSXR Dst {};
+    PPC64Emitter::VSXR A {};           // Vector1 / Addend, or VTMP2 when Dst aliased it
+    PPC64Emitter::VSXR B {};           // Vector2 / Vector1, or VTMP2 when Dst aliased it
+    PPC64Emitter::VSXR C {};           // Vector2 (MulAdd)
     uint8_t Op {};                     // IROp_A64FArith::Op
     bool IsMax {};                     // IROp_A64FMinMax::IsMax
     bool IsNumber {};                  // IROp_A64FMinMax::IsNumber
@@ -1526,7 +1530,7 @@ private:
   // A64VecFloatToInt and Vector_FToI's RoundMode::Nearest. Wide=false emits
   // xsrdpic, Wide=true xvrdpic. Reads TMP1 and CR1; never CR0 or XER, which
   // carry the guest NZCV.
-  void EmitRoundNearestEven(PPC64Emitter::VR Dst, PPC64Emitter::VR Src, bool Wide);
+  void EmitRoundNearestEven(PPC64Emitter::VSXR Dst, PPC64Emitter::VSXR Src, bool Wide);
 
   enum class Sha1Fn { Choose, Majority, Parity };
   void EmitSha1Rounds4(PPC64Emitter::VR Dst, PPC64Emitter::VR ABCD, PPC64Emitter::VR E,

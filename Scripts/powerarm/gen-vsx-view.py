@@ -19,7 +19,17 @@ VMX form however they are called.
 """
 import re, collections, sys
 
-RAW_EMIT_OK = {'EmitXX2VSX','EmitXX2VSXWithRA','EmitXX3VSX','EmitXX3BF'}
+# The raw form encoders, named rather than matched on an `Emit` prefix: each
+# one takes a primary opcode or raw field values, so it can splice a VMX
+# instruction however it is called. The four typed VSX encoders
+# (EmitXX2VSX, EmitXX2VSXWithRA, EmitXX3VSX, EmitXX3BF) are NOT here: they
+# hardcode primary opcode 60. Everything else called Emit* -- the lowering
+# helpers -- is judged by its signature like any other member.
+RAW_ENCODERS = {
+    'Emit32', 'EmitXO', 'EmitX', 'EmitD', 'EmitDQ', 'EmitM', 'EmitMD',
+    'EmitA63', 'EmitA59', 'EmitFX63', 'EmitFX59', 'EmitVX', 'EmitVA',
+    'EmitAtom', 'EmitSPR',
+}
 
 # Names the signature regex picks up that are not public members of the three
 # classes, so a using-declaration for them does not compile. They need no
@@ -35,9 +45,26 @@ NOT_A_PUBLIC_MEMBER = {
     'alignas',                                      # a declaration specifier, not a call
 }
 
-# Members the signature regex cannot see because they are declared through a
-# macro, but that a VSX-clean lowering genuinely needs.
-EXTRA = ['Op_Unhandled']
+# Members the signature regex cannot see, or that the rule above excludes too
+# strictly, and that a VSX-clean lowering genuinely needs. Each one is here for
+# a stated reason, and none of them can take an operand:
+#
+#  * Op_Unhandled is declared through the DEF_OP macro.
+#  * The FPSCR accessors take an FPR, but always the backend's fixed f0
+#    scratch. An operand cannot become one: operands arrive as VSXR and VSXR
+#    has no conversion to FPR, so the only way to name an FPR inside a view is
+#    to write a literal register number.
+#  * The data members are the A64 FP cold-block bookkeeping and the two
+#    context pointers (for HostFeatures.SupportsISA30). Data, not registers.
+EXTRA = [
+    'Op_Unhandled',
+    'mffs', 'mffsl', 'mtfsf', 'mffscrn', 'mffscrni', 'mffprd', 'mtfprd',
+    'CTX', 'EmitterCTX',
+    'FPColdEnabled', 'FPColdStubs', 'FPNaNFixBody', 'FPNaNFixBodyUsed',
+    'FPNMPrepBody', 'FPNMPrepBodyUsed', 'FPFMAFixBody', 'FPFMAFixBodyUsed',
+    'FPColdStub',
+    'FlagsFromFCmp',
+]
 FILES = [
   ('PPC64Emitter::Emitter', 'CodeEmitter/PPC64LE/Emitter.h'),
   ('PPC64EmitterBase', 'FEXCore/Source/Interface/Core/ArchHelpers/PPC64Emitter.h'),
@@ -66,7 +93,7 @@ for cls, path in FILES:
     for name, plist in sorted(scan(path).items()):
         if name in seen:
             continue
-        if name == 'Emit32' or (name.startswith('Emit') and name not in RAW_EMIT_OK):
+        if name in RAW_ENCODERS:
             continue
         if any(re.search(r'\b(VR|FPR)\b', p) for p in plist):
             continue
