@@ -6,9 +6,12 @@
 // this directory, 0BSD, see THIRD_PARTY.md). Each INST(name, description,
 // bitstring) entry becomes a mask/expect matcher; '0'/'1' are fixed bits and
 // every other character is an operand field or a don't-care. Matchers are
-// ordered the way dynarmic orders them (more fixed bits first, stable, then
-// the SIMD modified-immediate entries hoisted to the front) and
-// bucketed by dynarmic's fast-lookup index.
+// bucketed by dynarmic's fast-lookup index and, inside a bucket, ordered the
+// way dynarmic orders them (more fixed bits first, stable, then the SIMD
+// modified-immediate entries hoisted to the front), except that an entry the
+// reference binaries decode often is moved ahead of one they do not when no
+// word can match both. The buckets are built at build time by
+// FEXCore/Scripts/a64_decode_table_generator.py, not per process.
 //
 // A matcher's handler is the IRBuilder member function registered under the
 // same name (IRBuilder::HandlerTable). Entries with no registered handler, and

@@ -2,13 +2,9 @@
 #include "Interface/Core/A64Frontend/DecodeTable.h"
 #include "Interface/Core/A64Frontend/IRBuilder.h"
 
-#include <FEXCore/Utils/LogManager.h>
-
-#include <algorithm>
 #include <array>
-#include <bit>
+#include <cstdint>
 #include <string_view>
-#include <vector>
 
 namespace FEXCore::A64 {
 namespace {
@@ -24,102 +20,100 @@ namespace {
 #undef INST
   };
 
-  // dynarmic's fast-lookup index: op1 bits [31:22] and [13:10].
+  // The buckets, generated from a64.inc by
+  // FEXCore/Scripts/a64_decode_table_generator.py: A64DecodeSlot holds a64.inc
+  // entry indices in scan order and A64DecodeBucketStart says where each
+  // bucket begins. Parsing 774 bitstrings, sorting them by specificity,
+  // hoisting the SIMD modified-immediate entries and filling the buckets is
+  // the same work with the same answer in every process, so it happens once at
+  // build time and the result is .rodata every guest on the box shares.
+#include <FEXCore/A64Frontend/a64-decode-table.inc>
+
+  static_assert(std::size(RawTable) == A64_DECODE_ENTRY_COUNT, "a64-decode-table.inc was generated from a different a64.inc");
+
+  // dynarmic's fast-lookup index: op1 bits [31:22] and [13:10]. The arithmetic
+  // used to drop bits 31 (sf) and 30 (the opc bit that separates ADD from SUB,
+  // MOVN from MOVZ and ADR from ADRP) despite the comment, which left each of
+  // those pairs sharing a bucket.
   inline size_t FastLookupIndex(uint32_t Word) {
-    return ((Word >> 10) & 0x00F) | ((Word >> 18) & 0xFF0);
+    return ((Word >> 10) & 0x00F) | ((Word >> 18) & 0x3FF0);
   }
 
+  struct MaskExpect {
+    uint32_t Mask {};
+    uint32_t Expect {};
+  };
+
+  // '0' and '1' are fixed bits; every other character is an operand field or a
+  // don't-care.
+  constexpr MaskExpect ParseBits(std::string_view Bits) {
+    MaskExpect Out {};
+    for (size_t i = 0; i < Bits.size(); ++i) {
+      const uint32_t Bit = 1U << (31 - i);
+      if (Bits[i] == '0') {
+        Out.Mask |= Bit;
+      } else if (Bits[i] == '1') {
+        Out.Mask |= Bit;
+        Out.Expect |= Bit;
+      }
+    }
+    return Out;
+  }
+
+  constexpr bool EveryEntryIs32Bits() {
+    for (const auto& Entry : RawTable) {
+      if (std::string_view {Entry.Bits}.size() != 32) {
+        return false;
+      }
+    }
+    return true;
+  }
+  static_assert(EveryEntryIs32Bits(), "An a64.inc decode table entry is not 32 bits");
+
+  constexpr std::array<MaskExpect, A64_DECODE_ENTRY_COUNT> EntryBits = [] {
+    std::array<MaskExpect, A64_DECODE_ENTRY_COUNT> Out {};
+    for (size_t i = 0; i < Out.size(); ++i) {
+      Out[i] = ParseBits(RawTable[i].Bits);
+    }
+    return Out;
+  }();
+
+  // Mask and Expect are copied out of the matchers so a scan step loads one
+  // eight-byte slot and nothing else. They are a pair on their own rather than
+  // a triple with A64DecodeSlot's entry index because the stride has to be a
+  // power of two: at twelve bytes clang turns the bucket bounds into a
+  // magic-number division by 12, which is ~10 instructions on every decode and
+  // costs more than the shorter scan saves.
+  struct ScanSlot {
+    uint32_t Mask;
+    uint32_t Expect;
+  };
+
+  constexpr std::array<ScanSlot, A64_DECODE_SLOT_COUNT> ScanTable = [] {
+    std::array<ScanSlot, A64_DECODE_SLOT_COUNT> Out {};
+    for (size_t i = 0; i < Out.size(); ++i) {
+      const uint16_t Entry = A64DecodeSlot[i];
+      Out[i] = {EntryBits[Entry].Mask, EntryBits[Entry].Expect};
+    }
+    return Out;
+  }();
+
   struct Table {
-    std::vector<InstMatcher> Matchers;
-    // Buckets in CSR form: bucket i is BucketEntries[BucketStart[i] ..
-    // BucketStart[i + 1]), in matcher priority order.
-    std::array<uint32_t, 0x1001> BucketStart {};
-    // Mask and Expect are copied next to the matcher pointer so the bucket
-    // scan does not load each candidate matcher.
-    struct BucketEntry {
-      uint32_t Mask;
-      uint32_t Expect;
-      const InstMatcher* Matcher;
-    };
-    std::vector<BucketEntry> BucketEntries;
+    // In a64.inc order, so RawIndex is the position in the array. The one part
+    // that cannot be constant: Handler is a pointer-to-member on IRBuilder,
+    // which only IRBuilder can resolve from the a64.inc name.
+    std::array<InstMatcher, A64_DECODE_ENTRY_COUNT> Matchers {};
     size_t HandledEntries {};
   };
 
-  // Calls Visit(i) for every 12-bit fast-lookup index i with
-  // (i & FastLookupIndex(Mask)) == FastLookupIndex(Expect), i.e. every bucket
-  // the matcher can be reached from. Enumerating the free index bits visits
-  // exactly those buckets; testing all 4096 per matcher cost most of the table
-  // build, which runs at every process start.
-  template<typename F>
-  void ForEachBucket(const InstMatcher& M, F&& Visit) {
-    const uint32_t Fixed = FastLookupIndex(M.Mask);
-    const uint32_t Want = FastLookupIndex(M.Expect);
-    const uint32_t Free = ~Fixed & 0xFFF;
-    uint32_t Sub = Free;
-    while (true) {
-      Visit(Want | Sub);
-      if (Sub == 0) {
-        break;
-      }
-      Sub = (Sub - 1) & Free;
-    }
-  }
-
   Table BuildTable() {
     Table T;
-    T.Matchers.reserve(std::size(RawTable));
-
-    for (size_t Index = 0; Index < std::size(RawTable); ++Index) {
-      const auto& Entry = RawTable[Index];
-      std::string_view Bits {Entry.Bits};
-      LOGMAN_THROW_A_FMT(Bits.size() == 32, "A64 decode table entry {} is not 32 bits", Entry.Name);
-
-      uint32_t Mask {};
-      uint32_t Expect {};
-      for (size_t i = 0; i < 32; ++i) {
-        const uint32_t Bit = 1U << (31 - i);
-        if (Bits[i] == '0') {
-          Mask |= Bit;
-        } else if (Bits[i] == '1') {
-          Mask |= Bit;
-          Expect |= Bit;
-        }
-      }
-
-      auto Handler = IRBuilder::FindHandler(Entry.Name);
+    for (size_t Index = 0; Index < T.Matchers.size(); ++Index) {
+      auto Handler = IRBuilder::FindHandler(RawTable[Index].Name);
       if (Handler) {
         ++T.HandledEntries;
       }
-      T.Matchers.push_back({Entry.Name, Mask, Expect, Handler, static_cast<uint32_t>(Index)});
-    }
-
-    // More fixed bits is more specific, so it wins.
-    std::stable_sort(T.Matchers.begin(), T.Matchers.end(), [](const InstMatcher& A, const InstMatcher& B) {
-      return std::popcount(A.Mask) > std::popcount(B.Mask);
-    });
-
-    // dynarmic's exceptions, by description: the SIMD modified-immediate
-    // entries come before everything else. Without this MOVI/MVNI/BIC
-    // (vector) words decode as the shift-by-immediate entries whose
-    // immh=0000 space they occupy.
-    auto ComesFirst = [](const InstMatcher& M) {
-      const std::string_view D {RawTable[M.RawIndex].Description};
-      return D == "MOVI, MVNI, ORR, BIC (vector, immediate)" || D == "FMOV (vector, immediate)" || D == "Unallocated SIMD modified immediate";
-    };
-    std::stable_partition(T.Matchers.begin(), T.Matchers.end(), ComesFirst);
-
-    // Count, then fill in matcher order so each bucket keeps priority order.
-    for (const auto& M : T.Matchers) {
-      ForEachBucket(M, [&](uint32_t i) { ++T.BucketStart[i + 1]; });
-    }
-    for (size_t i = 1; i < T.BucketStart.size(); ++i) {
-      T.BucketStart[i] += T.BucketStart[i - 1];
-    }
-    T.BucketEntries.resize(T.BucketStart.back());
-    std::array<uint32_t, 0x1000> Cursor {};
-    std::copy_n(T.BucketStart.begin(), Cursor.size(), Cursor.begin());
-    for (const auto& M : T.Matchers) {
-      ForEachBucket(M, [&](uint32_t i) { T.BucketEntries[Cursor[i]++] = {M.Mask, M.Expect, &M}; });
+      T.Matchers[Index] = {RawTable[Index].Name, EntryBits[Index].Mask, EntryBits[Index].Expect, Handler, static_cast<uint32_t>(Index)};
     }
     return T;
   }
@@ -131,12 +125,11 @@ namespace {
 } // namespace
 
 const InstMatcher* DecodeInstruction(uint32_t Word) {
-  const auto& T = GetTable();
   const size_t Index = FastLookupIndex(Word);
-  const auto* const End = T.BucketEntries.data() + T.BucketStart[Index + 1];
-  for (auto* It = T.BucketEntries.data() + T.BucketStart[Index]; It != End; ++It) {
-    if ((Word & It->Mask) == It->Expect) {
-      return It->Matcher;
+  const size_t End = A64DecodeBucketStart[Index + 1];
+  for (size_t Slot = A64DecodeBucketStart[Index]; Slot != End; ++Slot) {
+    if ((Word & ScanTable[Slot].Mask) == ScanTable[Slot].Expect) {
+      return &GetTable().Matchers[A64DecodeSlot[Slot]];
     }
   }
   return nullptr;
@@ -148,10 +141,11 @@ DecodeTableStats GetDecodeTableStats() {
 }
 
 void ForEachTableEntry(void* Opaque, void (*Visit)(void*, const InstMatcher&)) {
-  // Priority order, i.e. the order DecodeInstruction resolves them in. Exists
-  // for the NZCV peek's table check (NZCVPeek.cpp), which has to synthesise
-  // words for every entry with a handler and compare the peek's classification
-  // with what the frontend actually translates the word into.
+  // a64.inc order. Exists for the NZCV peek's table check (NZCVPeek.cpp),
+  // which has to synthesise words for every entry with a handler and compare
+  // the peek's classification with what the frontend actually translates the
+  // word into; it re-decodes each word to find the entry that really wins, so
+  // the order it is handed them in does not matter.
   for (const auto& M : GetTable().Matchers) {
     Visit(Opaque, M);
   }

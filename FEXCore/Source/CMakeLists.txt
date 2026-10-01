@@ -178,6 +178,28 @@ add_custom_target(IR_INC
   DEPENDS "${OUTPUT_NAME}"
   DEPENDS "${OUTPUT_IR_DOC}")
 
+# Generate the A64 decode table's bucket arrays. Same work, same answer in
+# every process, so it happens here once instead.
+set(OUTPUT_A64_FOLDER "${CMAKE_BINARY_DIR}/include/FEXCore/A64Frontend")
+set(OUTPUT_A64_DECODE_NAME "${OUTPUT_A64_FOLDER}/a64-decode-table.inc")
+set(INPUT_A64_INC "${CMAKE_CURRENT_SOURCE_DIR}/Interface/Core/A64Frontend/a64.inc")
+set(INPUT_A64_WEIGHTS "${CMAKE_CURRENT_SOURCE_DIR}/Interface/Core/A64Frontend/a64-decode-weights.txt")
+
+file(MAKE_DIRECTORY "${OUTPUT_A64_FOLDER}")
+
+add_custom_command(
+  OUTPUT "${OUTPUT_A64_DECODE_NAME}"
+  DEPENDS "${INPUT_A64_INC}"
+  DEPENDS "${INPUT_A64_WEIGHTS}"
+  DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/../Scripts/a64_decode_table_generator.py"
+  COMMAND "python3" "${CMAKE_CURRENT_SOURCE_DIR}/../Scripts/a64_decode_table_generator.py"
+    "${INPUT_A64_INC}" "${INPUT_A64_WEIGHTS}" "${OUTPUT_A64_DECODE_NAME}")
+
+set_source_files_properties(${OUTPUT_A64_DECODE_NAME} PROPERTIES GENERATED TRUE)
+
+add_custom_target(A64_DECODE_INC
+  DEPENDS "${OUTPUT_A64_DECODE_NAME}")
+
 # Generate the configuration include file
 set(OUTPUT_CONFIG_FOLDER "${CMAKE_BINARY_DIR}/include/FEXCore/Config")
 set(OUTPUT_CONFIG_NAME "${OUTPUT_CONFIG_FOLDER}/ConfigValues.inl")
@@ -240,7 +262,7 @@ function(AddDefaultOptionsToTarget Name)
   target_include_directories(${Name} PUBLIC "${CMAKE_BINARY_DIR}/include/")
 
   target_compile_definitions(${Name} PRIVATE ${DEFINES})
-  add_dependencies(${Name} CONFIG_INC IR_INC)
+  add_dependencies(${Name} CONFIG_INC IR_INC A64_DECODE_INC)
 
   target_compile_options(${Name} PRIVATE
     -Wall
