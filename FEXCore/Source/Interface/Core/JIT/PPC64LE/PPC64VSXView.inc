@@ -31,6 +31,7 @@
 //
 // docs/powerarm/research/power-isa/VSX-REGISTER-CLASSES.md 7.2.
   // --- PPC64Emitter::Emitter
+  // --- PPC64Emitter::Emitter
   using PPC64JITCore::Bind;
   using PPC64JITCore::BindAt;
   using PPC64JITCore::ClearPendingBranches;
@@ -484,10 +485,9 @@
   using PPC64JITCore::GetZeroableReg;
   using PPC64JITCore::HostSupportsISA30;
   using PPC64JITCore::IdInVec;
-  using PPC64JITCore::InsertEntrypointRIPMove;
-  using PPC64JITCore::InsertExitRIPMove;
   using PPC64JITCore::InsertGuestRIPMove;
   using PPC64JITCore::InsertNamedThunkRelocation;
+  using PPC64JITCore::InsertRelocatableRIPMove;
   using PPC64JITCore::InvalidateAESCache;
   using PPC64JITCore::Is32Bit;
   using PPC64JITCore::IsFPR;
@@ -516,7 +516,6 @@
   using PPC64JITCore::SpinEdgeKey;
   using PPC64JITCore::TSOStoreLeadingBarrierElided;
   using PPC64JITCore::TakeRelocations;
-  using PPC64JITCore::TryInsertPatchableImmMove;
   using PPC64JITCore::XEROVBitIndex;
   using PPC64JITCore::ZExtTrapEnabled;
   // --- declared through DEF_OP
