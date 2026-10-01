@@ -318,6 +318,21 @@ public:
   // writes what it compiled itself.
   virtual void ResetAfterFork() = 0;
 
+  // Before a Final pass, when this process is the one that was created to run
+  // it and nothing outside it waits for the result: the child a guest exit
+  // forked for the save, or an ahead-of-time translation whose whole output is
+  // the cache. Such a pass folds a full namespace itself, however large, which
+  // is why the Final pass is exempt from CodeCacheInlinePublishMaxSize.
+  //
+  // Every other Final pass still has something waiting on this process -- the
+  // execve path, where the next image cannot start until the pass returns; a
+  // failed fork; POWERARM_CODECACHESTATS=1, which keeps the save in the
+  // exiting process so the counters are its own -- so by default a Final pass
+  // hands the fold to the writer process and leaves only the segment write
+  // behind. It still folds for itself if no writer will take it, so a full
+  // namespace is never left for nobody to fold.
+  virtual void NotifyExitSaveOffCriticalPath() = 0;
+
   // POWERARM_CODECACHESTATS=1: one line on stderr at exit with this process's
   // load/miss/reject/save counts.
   virtual void DumpStats() = 0;

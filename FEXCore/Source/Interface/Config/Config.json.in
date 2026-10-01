@@ -142,10 +142,10 @@
       },
       "CodeCacheInlinePublishMaxSize": {
         "Type": "int32",
-        "Default": "0",
+        "Default": "128",
         "Desc": [
           "Largest namespace, in MiB, that a GUEST thread may compact by itself;",
-          "0 (the default) means no limit, which is the behaviour this option was",
+          "0 means no limit, which is the behaviour this option was",
           "added to bound. A publish that finds all eight segment names taken folds",
           "the namespace whole and, with a hot tier, mirrors the result into the",
           "durable one: for Chrome that is over a gigabyte read, rewritten and",
@@ -164,8 +164,12 @@
           "process's own exit save compacts instead. The exit save is never bounded:",
           "it is the last pass this process runs, so there is nothing after it to do",
           "the fold, and with no writer process it is the only compactor left. It",
-          "runs in the child the exit forks for it, off the guest's critical path,",
-          "except on the execve path where it is on the guest thread.",
+          "it runs in the child the exit forks for it, and where there is no such",
+          "child -- the execve path, a fork that failed, CodeCacheStats=1 -- it",
+          "hands the fold to the writer process and keeps only the segment write,",
+          "so no short-lived process pays a deferred fold at its exit. It still",
+          "folds for itself when no writer will take it, which is what keeps a full",
+          "namespace from being left for nobody to fold.",
           "What bounding costs: a full namespace over the limit takes no new segment",
           "until something folds it, so this process's later blocks wait in memory",
           "(the record list and its relocations grow) and reach the cache at its",
@@ -182,10 +186,9 @@
           "itself on stderr with its size and duration, whatever this is set to, and",
           "POWERARM_CODECACHESTATS=1 counts both halves (inline-compactions,",
           "deferred-compactions).",
-          "POWERARM_CODECACHEINLINEPUBLISHMAXSIZE=128 is the recommended setting --",
-          "about 0.9 s at the 143 MiB/s the 9.8 s measurement implies, well under the",
-          "4 s in-process stall detector, and above every namespace that was never a",
-          "problem. 0 restores the unbounded behaviour."
+          "128 is the default -- about 0.9 s at the 143 MiB/s the 9.8 s measurement",
+          "implies, well under the 4 s in-process stall detector, and above every",
+          "namespace that was never a problem. 0 restores the unbounded behaviour."
         ]
       },
       "EnableCodeCacheValidation": {

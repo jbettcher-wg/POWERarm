@@ -35,10 +35,12 @@
 #   inlinecap  a save pass on a guest thread, with every segment name taken, is
 #              about to fold the whole namespace while the guest waits for it.
 #              Over CodeCacheInlinePublishMaxSize it must not: the namespace is
-#              left byte-identical and the pass is counted as deferred. Unbounded
-#              (the default) it folds, and the final pass folds whatever it is
-#              set to, because with no writer process that pass is the only
-#              compactor left.
+#              left byte-identical and the pass is counted as deferred. With no
+#              bound it folds. The final pass is exempt from the bound, so with
+#              no writer process it folds whatever it is set to -- it is the
+#              only compactor left -- but with a writer it must hand that fold
+#              over rather than pay it on the exiting thread, which is what
+#              keeps a deferred fold off a short-lived process's exit.
 #   evict      over the size cap, a namespace of another emulator build is
 #              evicted before any of this build's, however recently it was
 #              written.
@@ -628,14 +630,48 @@ if run - -- /usr/bin/gcc -O1 -shared -fPIC -o libbulk.so libbulk.c && run - -- /
       # it is the only compactor left, and a namespace nobody ever folds again
       # never takes another segment either. "keep" holds the library mapped to
       # the end, so the final pass is the one that publishes it.
+      #
+      # This is also the fold of last resort, and the reason the bound is safe
+      # to default on: every run here has CODECACHESTATS=1, which keeps the
+      # exit save in the exiting process instead of a child it forks, so this
+      # final pass is on the guest thread -- and with no writer to hand it to,
+      # it must still fold rather than leave the namespace full forever.
       out=$(run "$w/icd" POWERARM_CODECACHEFORKWRITER=0 POWERARM_CODECACHEINLINEPUBLISHMAXSIZE=1 -- ./bulkprog ./libbulk.so all keep 2> "$w/icd.log")
       ddir=$(working "$w/icd")
       [ "$out" = "$bulkall" ] || bad "inlinecap: the exit-pass run printed '$out', cache off '$bulkall'"
       if [ ! -e "$ddir/$icns.1" ] && [ "$(sha256sum < "$ddir/$icns")" != "$icsha" ]; then
-        ok "inlinecap: the final pass folds a namespace over the bound anyway"
+        ok "inlinecap: with no writer, the final pass folds a namespace over the bound anyway"
       else
         bad "inlinecap: the final pass left $(ls "$ddir" | grep -c "^$icns\(\.[1-7]\)\?$") names, name 0 $([ "$(sha256sum < "$ddir/$icns")" = "$icsha" ] && echo unchanged || echo rewritten)"
       fi
+
+      # And with a writer, that same final pass must not fold on the guest
+      # thread at all. This is the case that made the bound unsafe to default
+      # on: the bound keeps a namespace full all session, and then the one pass
+      # that is exempt runs somewhere the exit did not fork a process for -- the
+      # execve path, a failed fork, CODECACHESTATS=1 as here -- so a whole
+      # unbounded fold lands between a short-lived process and its exit. It is
+      # handed to the writer instead, which holds none of this process's locks
+      # and outlives it, so the namespace is folded after the guest is gone.
+      cp -a "$w/ic" "$w/ice"
+      out=$(run "$w/ice" POWERARM_CODECACHEINLINEPUBLISHMAXSIZE=1 -- ./bulkprog ./libbulk.so all keep 2> "$w/ice.log")
+      edir=$(working "$w/ice")
+      [ "$out" = "$bulkall" ] || bad "inlinecap: the handed-off run printed '$out', cache off '$bulkall'"
+      [ "$(counter inline-compactions "$w/ice.log")" = 0 ] ||
+        bad "inlinecap: the final pass folded on the exiting guest thread although a writer was available"
+      # The writer folds after the guest has exited, so wait for the names to
+      # collapse rather than reading the counters, which the guest printed
+      # before the writer was done.
+      if wait_gone 20 "$edir/$icns.1" && [ "$(sha256sum < "$edir/$icns")" != "$icsha" ]; then
+        ok "inlinecap: the final pass handed a namespace over the bound to the writer, which folded it"
+      else
+        bad "inlinecap: handed off, the namespace kept $(ls "$edir" | grep -c "^$icns\(\.[1-7]\)\?$") names, name 0 $([ "$(sha256sum < "$edir/$icns")" = "$icsha" ] && echo unchanged || echo rewritten)"
+      fi
+      # Nothing was lost on the way: a warm run finds those blocks.
+      warm=$(run "$w/ice" -- ./bulkprog ./libbulk.so all keep 2> "$w/ice2.log")
+      [ "$warm" = "$bulkall" ] && [ "$(counter loaded "$w/ice2.log")" -gt 0 ] &&
+        ok "inlinecap: what the writer folded for the final pass loads" ||
+        bad "inlinecap: the handed-off namespace did not load (printed '$warm')"
     fi
   fi
 else

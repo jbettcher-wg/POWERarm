@@ -947,6 +947,10 @@ int main(int argc, char** argv, char** const envp) {
   // POWERARM_AOTTRANSLATE: translate the program into the code cache and exit
   // without running it (Scripts/powerarm/aot-translate.sh drives this).
   if (const char* AOTMode = getenv("FEX_AOTTRANSLATE"); AOTMode && *AOTMode && *AOTMode != 0) {
+    // Producing the cache is this process's whole job and the caller waits for
+    // the process, not for a guest: the folds belong here, finished before it
+    // exits, not handed to a writer the caller would have to race.
+    CTX->GetCodeCache().NotifyExitSaveOffCriticalPath();
     const int Status = FEX::AOT::TranslateMainElf(CTX.get(), SyscallHandler.get(), ParentThread->Thread, Loader.GetMainElfFD(),
                                                   Loader.GetBaseOffset(), AOTMode);
     SyscallHandler->CodeCacheImageExit(ParentThread->Thread);
@@ -1008,6 +1012,10 @@ int main(int argc, char** argv, char** const envp) {
   if (!Stats && FEXCore::Config::Get_ENABLECODECACHINGWIP() && SyscallHandler->CodeCacheWriteEnabled()) {
     WriterPID = fork();
     if (WriterPID == 0) {
+      // As in exit_group: this child is here only for the save and nothing
+      // waits for it, so its final pass folds whatever it finds rather than
+      // handing the fold to a writer process.
+      CTX->GetCodeCache().NotifyExitSaveOffCriticalPath();
       SyscallHandler->CodeCacheImageExit(ParentThread->Thread);
       _exit(0);
     }

@@ -1824,6 +1824,14 @@ void CodeCache::ResetAfterFork() {
                         &Stats.RelocFailed, &Stats.SavedBlocks, &Stats.SavedSegments, &Stats.Compactions, &Stats.SaveNS, &Stats.LoadNS}) {
     Counter->store(0, std::memory_order_relaxed);
   }
+  // A guest fork is not an exit-save fork: the child goes on running guest
+  // code, so its own passes are on a critical path again. Only the exit paths
+  // that fork for the save say otherwise, and they say it after this runs.
+  ExitSaveOffCriticalPath = false;
+}
+
+void CodeCache::NotifyExitSaveOffCriticalPath() {
+  ExitSaveOffCriticalPath = true;
 }
 
 void CodeCache::DumpStats() {
@@ -3015,9 +3023,11 @@ namespace {
     // Only a guest-thread publish sets this; it is not sent to the writer, whose
     // whole purpose is to be the process that can afford the fold.
     uint64_t MaxCompactBytes {};
-    // Something is waiting on this publish: it is a periodic or unmap pass on a
-    // guest thread, so its duration is a stall of the whole guest. False in the
-    // writer process and on the final pass, which nothing waits for.
+    // Something is waiting on this publish, so its duration is a stall of
+    // whoever that is: a periodic or unmap pass on a guest thread, or a final
+    // pass on the execve path, where the next image cannot start until it
+    // returns. False in the writer process, and on a final pass the exit made
+    // a process of its own for.
     bool OnGuestThread {};
   };
 
@@ -3218,27 +3228,59 @@ uint64_t CodeCache::InlineCompactLimitBytes() {
   return MiB > 0 ? static_cast<uint64_t>(MiB) << 20 : 0;
 }
 
-// Publishes on the calling thread, which is a guest thread: it never waits for
-// a busy namespace lock, because everything in this process waits on it. Nor
-// does it fold a namespace bigger than CodeCacheInlinePublishMaxSize, for the
-// same reason: everything in this process waits on that too, and on Chrome's
-// namespace it is seconds of file I/O inside a memory-management syscall.
+// Is any of these publishes the one the bound exists for -- a namespace that
+// is full, so the only way in is a fold, and over the bound, so a guest thread
+// would have refused it? That is the only work worth an execve: every other
+// segment here goes in with a link(2), which costs the calling thread nothing
+// and must not pay for a writer process. Asks exactly what the bound asks, so
+// with no bound set the answer is always no and a final pass publishes for
+// itself exactly as it always did.
+bool CodeCache::AnyFoldOverBound(std::span<const PendingSegment> Pending) {
+  const uint64_t Limit = InlineCompactLimitBytes();
+  if (Limit == 0) {
+    return false;
+  }
+  for (const auto& P : Pending) {
+    if (P.Written) {
+      continue;
+    }
+    const auto Extent = MeasureNamespace(P.Base);
+    if (Extent.Full && Extent.Bytes > Limit) {
+      return true;
+    }
+  }
+  return false;
+}
+
+// Publishes on the calling thread, which outside the exit-save child is a
+// guest thread: it never waits for a busy namespace lock, because everything
+// in this process waits on it. Nor, on a periodic or unmap pass, does it fold
+// a namespace bigger than CodeCacheInlinePublishMaxSize, for the same reason:
+// everything in this process waits on that too, and on Chrome's namespace it
+// is seconds of file I/O inside a memory-management syscall. A final pass is
+// not bounded -- by then it is the fold of last resort; see below.
 // Segments a writer has taken (Written already set) are skipped.
 size_t CodeCache::PublishSegments(std::span<PendingSegment> Pending, uint64_t ConfigId, CodeCacheSaveKind Kind) {
-  // One question, and the bound and the reporting are both answers to it: is
-  // anything still waiting on this publish? A periodic or unmap pass, yes --
-  // the guest is stopped for it -- so its fold is bounded and a slow one
-  // reports itself. The final pass, no: the guest is over, and where the exit
-  // forked a child for it (Thread.cpp's exit_group, FEXInterpreter's return
-  // from ExecuteThread) there is nothing left to wait at all. The final pass
-  // also HAS to be the exempt one: it is this process's last, so nothing comes
-  // after it to do the fold instead, and with no writer process it is the only
-  // compactor there is -- bound it and a namespace that reached MaxSegments
-  // would never be folded again by anyone, and so would never take another
-  // segment either. On the execve path it is on the guest thread, and that is
-  // the price of that.
-  const bool Inline = Kind != CodeCacheSaveKind::Final;
-  const uint64_t MaxCompactBytes = Inline ? InlineCompactLimitBytes() : 0;
+  // Two questions, and they no longer have the same answer.
+  //
+  // May this pass refuse the fold? Only if something comes after it that will
+  // do the fold instead. A periodic or unmap pass, yes: there is a later pass,
+  // a writer process, a sibling process, and this process's own exit. The
+  // final pass, never -- it is this process's last, so bound it and a
+  // namespace that reached MaxSegments would never be folded again by anyone,
+  // and so would never take another segment either. That is why Final is
+  // exempt, and it stays exempt: this is the fold of last resort, after the
+  // writer has already declined the segment.
+  //
+  // Is anything waiting while it happens? A periodic or unmap pass, yes -- the
+  // guest is stopped for it. A final pass, only where the exit did not make a
+  // process of its own for it: the execve path, a fork that failed,
+  // POWERARM_CODECACHESTATS=1. Those used to be silent, because the final pass
+  // was assumed unobserved; they are the stall the bound has to be safe
+  // against, so they now name themselves on stderr exactly as a periodic pass
+  // does.
+  const uint64_t MaxCompactBytes = Kind != CodeCacheSaveKind::Final ? InlineCompactLimitBytes() : 0;
+  const bool Observed = Kind != CodeCacheSaveKind::Final || !ExitSaveOffCriticalPath;
   size_t Written = 0;
   for (auto& P : Pending) {
     if (P.Written) {
@@ -3270,11 +3312,11 @@ size_t CodeCache::PublishSegments(std::span<PendingSegment> Pending, uint64_t Co
     auto Temp = P.Temp.empty() ? WriteTempSegment(P.Base, [&](int FD) { return WriteSegment(FD, P.Builder, ConfigId, P.FileId); }) :
                                  std::move(P.Temp);
     P.Temp.clear();
-    const PublishJob Job {P.Base, P.DurableBase, Temp, ConfigId, P.FileId, P.Builder.Blocks.size(), 0, MaxCompactBytes, Inline};
+    const PublishJob Job {P.Base, P.DurableBase, Temp, ConfigId, P.FileId, P.Builder.Blocks.size(), 0, MaxCompactBytes, Observed};
     const auto Published = Temp.empty() ? PublishResult {} : RunPublish(Job);
     P.Written = Published.Written;
     Stats.Compactions.fetch_add(Published.Compacted ? 1 : 0, std::memory_order_relaxed);
-    Stats.InlineCompactions.fetch_add(Inline && Published.Compacted ? 1 : 0, std::memory_order_relaxed);
+    Stats.InlineCompactions.fetch_add(Observed && Published.Compacted ? 1 : 0, std::memory_order_relaxed);
     Stats.DeferredCompactions.fetch_add(Published.Deferred ? 1 : 0, std::memory_order_relaxed);
     if (P.Written) {
       Stats.SavedBlocks.fetch_add(P.Builder.Blocks.size(), std::memory_order_relaxed);
@@ -3686,11 +3728,28 @@ size_t CodeCache::SaveNewBlocks(Core::InternalThreadState&, std::span<const Code
 
   size_t SegmentsWritten = 0;
   if (!Pending.empty()) {
-    // The final pass publishes here: the image is ending, and where it has a
-    // writer at all that writer is the process it was itself forked into
-    // (cold G4). Every other pass is on a guest thread and hands the publish
-    // to the writer process.
-    const size_t Handed = Kind != CodeCacheSaveKind::Final && ForkWriter() ? HandSegmentsToWriter(Pending, ConfigId, Sweeps) : 0;
+    // Who carries the fold. A periodic or unmap pass always hands it to the
+    // writer process: it is on a guest thread, and the whole guest is stopped
+    // for whatever it does itself.
+    //
+    // A final pass publishes for itself, as it always has -- except for the one
+    // thing the bound makes it inherit. Where the exit made a process of its
+    // own for the pass (the child a guest exit forks, an ahead-of-time
+    // translation) nothing waits for it and there is nothing to inherit. But
+    // where it did not -- on the execve path the next image cannot start until
+    // the pass returns, a fork that failed leaves it on the exiting thread, and
+    // POWERARM_CODECACHESTATS=1 keeps it there on purpose so the counters are
+    // the guest's own -- the pass is on a critical path, and the bound has been
+    // sending every fold it refused all session to exactly this point. A whole
+    // unbounded fold, seconds of it, between a short-lived process and its exit.
+    //
+    // So that fold, and only that fold, goes to the writer: an execve'd process
+    // that holds none of this one's locks and outlives it, which leaves the
+    // exiting thread one segment write. A final pass with nothing full to fold
+    // still links its segments in itself and never starts a writer to do it.
+    const bool FoldHere = Kind == CodeCacheSaveKind::Final && ExitSaveOffCriticalPath;
+    const bool HandOff = ForkWriter() && !FoldHere && (Kind != CodeCacheSaveKind::Final || AnyFoldOverBound(Pending));
+    const size_t Handed = HandOff ? HandSegmentsToWriter(Pending, ConfigId, Sweeps) : 0;
     // Whatever the writer would not take -- there is none, it is busy with a
     // larger namespace, or the record did not fit -- is published here, without
     // waiting for a busy namespace lock.

@@ -244,7 +244,8 @@ rewrite (726 MB for VS Code's) per pass. The exit save has a writer of its own
 guest thread.
 
 **And a bound on the fold a guest thread will do** (C23,
-`CodeCacheInlinePublishMaxSize`, MiB, 0 = unlimited = the behaviour above).
+`CodeCacheInlinePublishMaxSize`, MiB, default 128, 0 = unlimited = the
+behaviour above).
 `CodeCacheForkWriter=0` is not the only way that whole-namespace rewrite lands on
 a guest thread: the writer's socket is non-blocking on purpose, so a writer
 already busy with a large namespace takes no request and the pass publishes for
@@ -258,7 +259,23 @@ the writer, a sibling process or this process's exit save folds it instead. The
 exit save is never bounded -- it is the process's last pass, so nothing comes
 after it, and with no writer process it is the only compactor there is; bound it
 and a namespace at eight segments would never be folded again by anyone, and so
-would never take another segment either. The cost of a bound is that a full
+would never take another segment either. Unbounded is not the same as free,
+though, and that is what made the bound unsafe to default on. The exit save is
+off the critical path only where the exit made a process of its own for it;
+where it did not -- the `execve` path, a fork that failed,
+`POWERARM_CODECACHESTATS=1` -- a whole unbounded fold landed between a
+short-lived process and its exit, on a namespace the bound had kept full all
+session. So a final pass now hands the fold to the writer process in exactly
+those cases and keeps only the segment write for itself: the writer is
+`execve`'d, holds none of this process's locks and outlives it, so it folds
+after the guest is gone (a `SOCK_SEQPACKET` request already queued is read even
+though the sender's end is closed by the exec). The fold of last resort is
+unchanged -- a final pass no writer will take still folds the namespace itself,
+unbounded -- which is what keeps a full namespace from being left for nobody to
+fold. A final pass that does fall back to folding on the exiting thread now
+reports itself on stderr like any other observed fold, so the one remaining
+case where a user can wait for a fold can no longer be silent.
+The cost of a bound is that a full
 namespace takes no new segment until something folds it, so later blocks land at
 the process's exit rather than mid-session, and a library dlclosed in the
 meantime loses its new blocks; for a browser its own renderers pay most of that
