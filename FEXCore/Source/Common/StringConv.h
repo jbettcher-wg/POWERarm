@@ -1,11 +1,26 @@
 // SPDX-License-Identifier: MIT
 #pragma once
+#include <FEXCore/Config/Config.h>
 #include <FEXCore/fextl/string.h>
 
 #include <concepts>
 #include <string_view>
 
 namespace FEXCore::StrConv {
+// bool satisfies std::integral, so without this overload every bool config
+// option was converted by the strtoull template below: "on" became 0, i.e.
+// OFF, and the conversion reported success. FEXCore::Config::ParseBool holds
+// the accepted spellings; anything else fails here so the caller can say which
+// option was given what rather than silently pick a value.
+inline bool Conv(std::string_view Value, bool* Result) {
+  const auto Parsed = FEXCore::Config::ParseBool(Value);
+  if (!Parsed.has_value()) {
+    return false;
+  }
+  *Result = *Parsed;
+  return true;
+}
+
 template<std::integral T>
 bool Conv(std::string_view Value, T* Result) {
   if constexpr (std::is_signed_v<T>) {

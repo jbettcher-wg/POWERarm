@@ -105,6 +105,49 @@ static constexpr std::pair<std::string_view, FEXCore::Config::ConfigOption> Conf
 #include <FEXCore/Config/ConfigValues.inl>
 };
 
+// Every bool-typed option. Both loaders store an option's value as a raw string
+// and leave the conversion to a later GetConv<bool>, which is far away from the
+// file or the environment variable that set it, so the check that can name the
+// source has to happen here.
+static constexpr FEXCore::Config::ConfigOption BoolConfigOptions[] {
+#define OPT_BOOL(group, enum, json, default) FEXCore::Config::ConfigOption::CONFIG_##enum,
+#include <FEXCore/Config/ConfigValues.inl>
+};
+
+static bool IsBoolOption(FEXCore::Config::ConfigOption Option) {
+  for (const auto BoolOption : BoolConfigOptions) {
+    if (BoolOption == Option) {
+      return true;
+    }
+  }
+  return false;
+}
+
+// Shared by the JSON loader and the environment loader. They do not share a
+// code path -- MapNameToOption walks a parsed JSON object, EnvLoader::Load walks
+// envp -- so both call this, and `Source` is whatever the user would have to go
+// and edit: a config file path or an environment variable name.
+static void ValidateOptionValue(FEXCore::Config::ConfigOption Option, std::string_view OptionName, std::string_view Value, std::string_view Source) {
+  if (!IsBoolOption(Option)) {
+    return;
+  }
+
+  if (FEXCore::Config::ParseBool(Value).has_value()) {
+    return;
+  }
+
+  // Not "warn and carry on with the default", for the same reason 19f05bc10
+  // gave for an unparseable file: a value that cannot be applied is a value the
+  // user asked for and is not getting, and a config that cannot be fully
+  // applied must not be partially applied in silence.
+  fextl::fmt::print(stderr, "POWERarm: '{}' is a boolean option and '{}' is not a boolean value, so it is not being applied.\n", OptionName, Value);
+  fextl::fmt::print(stderr, "          Set by: {}\n", Source);
+  fextl::fmt::print(stderr, "          Accepted values: {}.\n", FEXCore::Config::BoolAcceptedValues);
+  fextl::fmt::print(stderr, "          POWERarm will not start with a setting it cannot apply.\n");
+  fflush(stderr);
+  _exit(1);
+}
+
 static char* SaveLayerToJSON(char* JsonBuffer, const FEXCore::Config::Layer* Layer) {
   JsonBuffer = json_objOpen(JsonBuffer, "Config");
   for (auto& it : Layer->GetOptionMap()) {
@@ -252,6 +295,7 @@ void OptionMapper::MapNameToOption(const char* ConfigName, const char* ConfigStr
   const auto KeyOption = *KeyOptionValue;
   const auto KeyName = std::string_view(ConfigName);
   const auto Value_View = std::string_view(ConfigString);
+  ValidateOptionValue(KeyOption, KeyName, Value_View, CurrentConfigFile);
 #define JSONLOADER
 #include <FEXCore/Config/ConfigOptions.inl>
 }
@@ -344,9 +388,12 @@ void EnvLoader::Load() {
   std::optional<std::string_view> Value;
 
   // Walk all the environment options and corresponding config option.
-#define OPT_BASE(type, group, enum, json, default) \
-  Value = GetVar(EnvMap, POWERARM_ENV_PREFIX #enum);            \
-  if (Value.has_value()) Set(FEXCore::Config::ConfigOption::CONFIG_##enum, *Value);
+#define OPT_BASE(type, group, enum, json, default)                                                               \
+  Value = GetVar(EnvMap, POWERARM_ENV_PREFIX #enum);                                                             \
+  if (Value.has_value()) {                                                                                       \
+    ValidateOptionValue(FEXCore::Config::ConfigOption::CONFIG_##enum, #json, *Value, POWERARM_ENV_PREFIX #enum); \
+    Set(FEXCore::Config::ConfigOption::CONFIG_##enum, *Value);                                                   \
+  }
 #define OPT_STRARRAY(group, enum, json, default) \
   Value = GetVar(EnvMap, POWERARM_ENV_PREFIX #enum);          \
   if (Value.has_value()) AppendStrArrayValue(FEXCore::Config::ConfigOption::CONFIG_##enum, *Value);

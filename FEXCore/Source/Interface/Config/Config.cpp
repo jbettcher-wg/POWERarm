@@ -17,12 +17,14 @@
 #include <FEXHeaderUtils/Filesystem.h>
 
 #include <array>
+#include <cstdio>
 #include <cstdlib>
 #include <optional>
 #include <stddef.h>
 #include <stdint.h>
 #include <string_view>
 #include <type_traits>
+#include <unistd.h>
 #include <utility>
 
 namespace FEXCore::Context {
@@ -38,6 +40,22 @@ namespace detail {
 #define OPT_STRENUM(group, enum, json, default) const uint64_t P(enum) = FEXCore::ToUnderlying(P(default));
 #include <FEXCore/Config/ConfigValues.inl>
 } // namespace detail
+
+// The JSON key of every option, so a diagnostic can name the option the user
+// typed rather than the ConfigOption enumerator.
+static constexpr std::pair<ConfigOption, std::string_view> ConfigOptionNames[] {
+#define OPT_BASE(type, group, enum, json, default) {ConfigOption::CONFIG_##enum, #json},
+#include <FEXCore/Config/ConfigValues.inl>
+};
+
+static std::string_view GetConfigOptionName(ConfigOption Option) {
+  for (const auto& [Opt, Name] : ConfigOptionNames) {
+    if (Opt == Option) {
+      return Name;
+    }
+  }
+  return "<unknown>";
+}
 
 enum Paths {
   PATH_DATA_DIR_LOCAL = 0,
@@ -155,9 +173,22 @@ public:
         // Convert the value.
         OptionMap[Option].emplace<T>(ConvertedValue);
         return ConvertedValue;
-      } else {
-        LOGMAN_MSG_A_FMT("Couldn't Convert {} to specified type!", StrVal);
       }
+
+      // Back-stop for a value that reached the meta layer without passing a
+      // loader's validation. This used to be LOGMAN_MSG_A_FMT followed by
+      // FEX_UNREACHABLE, and LOGMAN_MSG_A_FMT compiles to nothing in a Release
+      // build with ENABLE_ASSERTIONS=OFF -- which is every build the owner
+      // runs -- so the only thing left was __builtin_unreachable() on a path
+      // that is plainly reachable. Say what happened and exit instead.
+      fextl::fmt::print(stderr, "POWERarm: config option '{}' holds the value '{}', which is not a valid {}.\n",
+                        GetConfigOptionName(Option), StrVal, std::is_same_v<T, bool> ? "boolean" : "number");
+      if constexpr (std::is_same_v<T, bool>) {
+        fextl::fmt::print(stderr, "          Accepted values: {}.\n", FEXCore::Config::BoolAcceptedValues);
+      }
+      fextl::fmt::print(stderr, "          POWERarm will not run with a setting it cannot apply.\n");
+      fflush(stderr);
+      _exit(1);
     }
 
     FEX_UNREACHABLE;
