@@ -20,6 +20,54 @@
 #include <variant>
 
 namespace FEXCore::Config {
+// POWERarm: the spellings a boolean option accepts, and the one place that
+// decides what they mean.
+//
+// The options use two conventions side by side. A bool option documents itself
+// as taking 1/0 ("POWERARM_VSXCLASSES=1 turns it ON"), while a string option
+// sitting next to it in the same Config.json takes words (NZCVExitDead takes
+// off/on/canary/strict). So a user writes `"VSXClasses": "on"` and reasonably
+// expects it to mean on.
+//
+// It used to mean OFF, silently. bool satisfies std::integral, so the value
+// went through the strtoull template in FEXCore::StrConv::Conv, which returned
+// 0 and reported success. No warning, no error -- and two Octane runs were
+// interpreted as evidence about a feature that was never enabled. It was only
+// caught by diffing emitted code with POWERARM_CODEHASHLOG.
+//
+// So: accept the spellings a person actually writes, and return nothing for
+// everything else, so the caller can name the option and the value and refuse
+// to start. Silently choosing a value the user did not ask for is the one
+// outcome that is not acceptable, because the settings that go missing that way
+// are the ones that decide which rootfs runs and which optimizations are on.
+inline constexpr std::string_view BoolAcceptedValues {"1, 0, true, false, on, off, yes, no (case-insensitive)"};
+
+inline std::optional<bool> ParseBool(std::string_view Value) {
+  // The longest accepted spelling is "false".
+  if (Value.empty() || Value.size() > 5) {
+    return std::nullopt;
+  }
+
+  char Lowered[5];
+  for (size_t i = 0; i < Value.size(); ++i) {
+    const char C = Value[i];
+    Lowered[i] = (C >= 'A' && C <= 'Z') ? static_cast<char>(C - 'A' + 'a') : C;
+  }
+  const std::string_view Normalized {Lowered, Value.size()};
+
+  for (const std::string_view True : {"1", "true", "on", "yes"}) {
+    if (Normalized == True) {
+      return true;
+    }
+  }
+  for (const std::string_view False : {"0", "false", "off", "no"}) {
+    if (Normalized == False) {
+      return false;
+    }
+  }
+  return std::nullopt;
+}
+
 namespace Handler {
   static inline std::optional<fextl::string> SMCCheckHandler(std::string_view Value) {
     if (Value == "none") {
