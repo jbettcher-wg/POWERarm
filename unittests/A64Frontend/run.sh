@@ -570,6 +570,51 @@ fi
 # is reaped only after every direct child has been waited for, so anything
 # still in it is one of those. Without setsid the loop still runs; it just
 # cannot clean up after the emulator.
+# Golden-free checks.
+#
+# Both of these test a property that needs no reference implementation, so
+# neither waits on the Pi, and their binaries may be built with any aarch64
+# toolchain. That matters: the differential corpus pins the whole suite to one
+# board being reachable, and when it is not, a test that needs no golden should
+# still run.
+#
+#  * sigfploop is self-checking -- it takes a signal with live FP state in
+#    D16-D31, reads and edits the frame's fpsimd_context, and prints its own
+#    counters. A reference would add nothing a wrong answer here would not
+#    already show as a FAIL line.
+#  * fp_lowbank's property is self-referential: guest V16-V31 must behave
+#    exactly as V0-V15 do, so the SAME binary run with POWERARM_VSXCLASSES off
+#    and on must produce identical output. For the register-class work that is
+#    a sharper gate than a golden, because a golden only says "matches the Pi"
+#    while this says "the switch changed nothing observable".
+if [ -f sigfploop ]; then
+  POWERARM_VSXCLASSES=on run_emu sigfploop 2> /dev/null || true
+  sfl_rc=$(cat sigfploop.powerarm.rc 2> /dev/null || echo 1)
+  # grep -c PRINTS 0 and EXITS 1 when it matches nothing, so '|| echo 0' would
+  # append a second line and every test below would compare against "0\n0".
+  sfl_fail=$(grep -c '^FAIL' sigfploop.powerarm 2> /dev/null)
+  sfl_bad=$(grep -c 'mismatches [1-9]' sigfploop.powerarm 2> /dev/null)
+  sfl_ok=$(grep -c 'frame mismatches 0' sigfploop.powerarm 2> /dev/null)
+  if [ "$sfl_rc" = 0 ] && [ "$sfl_fail" = 0 ] && [ "$sfl_bad" = 0 ] && [ "$sfl_ok" -ge 2 ]; then
+    report PASS sigfploop "signal in an FP loop: $sfl_ok frame checks clean, no mismatches"
+  else
+    report FAIL sigfploop "rc=$sfl_rc fails=$sfl_fail mismatched=$sfl_bad clean=$sfl_ok; see $out/sigfploop.powerarm"
+  fi
+fi
+
+if [ -f fp_lowbank ]; then
+  POWERARM_VSXCLASSES=off "$emu" ./fp_lowbank > fp_lowbank.vsxoff 2> /dev/null
+  lb_off=$?
+  POWERARM_VSXCLASSES=on "$emu" ./fp_lowbank > fp_lowbank.vsxon 2> /dev/null
+  lb_on=$?
+  lb_lines=$(wc -l < fp_lowbank.vsxoff)
+  if [ "$lb_off" = 0 ] && [ "$lb_on" = 0 ] && cmp -s fp_lowbank.vsxoff fp_lowbank.vsxon && [ "$lb_lines" -gt 0 ]; then
+    report PASS fp_lowbank "$lb_lines lines identical with VSXCLASSES off and on"
+  else
+    report FAIL fp_lowbank "rc off=$lb_off on=$lb_on; $(cmp fp_lowbank.vsxoff fp_lowbank.vsxon 2>&1 | head -1)"
+  fi
+fi
+
 if [ -f threadexit ]; then
   te_total=96
   te_batch=8
