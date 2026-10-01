@@ -183,7 +183,14 @@ public:
   bool WantsSave(bool IgnoreInterval) override;
   void NotifyCachesSaved() override;
   void ResetAfterFork() override;
+  void NotifyExitSaveOffCriticalPath() override;
   void DumpStats() override;
+
+  // Set by NotifyExitSaveOffCriticalPath: this process exists to run the exit
+  // save and nothing outside it is waiting, so its Final pass folds whatever
+  // it finds instead of handing the fold to a writer process. Plain bool: it
+  // is set once, before the pass, by the only thread that will read it.
+  bool ExitSaveOffCriticalPath = false;
 
   // Counters for DumpStats. Relaxed atomics: diagnostic only.
   // InlineCompactions and DeferredCompactions split Compactions by who paid for
@@ -242,6 +249,11 @@ private:
   // are skipped. Returns how many were written, and marks each PendingSegment
   // with its own result.
   size_t PublishSegments(std::span<PendingSegment> Pending, uint64_t ConfigId, CodeCacheSaveKind Kind);
+  // True when one of these namespaces is full and over the bound, so the only
+  // way in is a fold the bound would have refused. What makes a final pass on a
+  // critical path call for a writer process; everything else it publishes with
+  // a link(2) of its own.
+  bool AnyFoldOverBound(std::span<const PendingSegment> Pending);
   // CodeCacheInlinePublishMaxSize in bytes; 0 for no bound. Only a publish
   // running on a guest thread is bounded -- the writer process exists to be the
   // one that can take the time.

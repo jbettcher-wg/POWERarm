@@ -965,6 +965,12 @@ void RegisterThread(FEX::HLE::SyscallHandler* Handler) {
       FEX::HLE::_SyscallHandler->TM.Stop(true);
       WriterPID = fork();
       if (WriterPID == 0) {
+        // This child exists only to run the save, and the parent is already on
+        // its way out of exit_group without waiting for it. So the fold is off
+        // everything's critical path here and this pass does it itself; a
+        // final pass that did not get this child hands it to a writer process
+        // instead (see SaveNewBlocks).
+        Frame->Thread->CTX->GetCodeCache().NotifyExitSaveOffCriticalPath();
         FEX::HLE::_SyscallHandler->CodeCacheImageExit(Frame->Thread);
         _exit(0);
       }
