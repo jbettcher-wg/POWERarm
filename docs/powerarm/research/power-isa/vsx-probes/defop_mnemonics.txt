@@ -1,0 +1,344 @@
+/mnt/arch/home/jbettcher/Development/POWERarm/FEXCore/Source/Interface/Core/JIT/PPC64LE/VectorOps.cpp:VMov vsldoi xxpermdi vmr vspltisw
+/mnt/arch/home/jbettcher/Development/POWERarm/FEXCore/Source/Interface/Core/JIT/PPC64LE/VectorOps.cpp:VectorImm vsldoi xxpermdi vspltisb vsplth mtvsrd vspltw vspltish vspltisw vspltb
+/mnt/arch/home/jbettcher/Development/POWERarm/FEXCore/Source/Interface/Core/JIT/PPC64LE/VectorOps.cpp:LoadNamedVectorConstant ld xxpermdi vspltisb mtvsrd add lvx
+/mnt/arch/home/jbettcher/Development/POWERarm/FEXCore/Source/Interface/Core/JIT/PPC64LE/VectorOps.cpp:LoadNamedVectorIndexedConstant ld lwz xxpermdi vspltisb mtvsrd addi lbz ldx add lvx lhz
+/mnt/arch/home/jbettcher/Development/POWERarm/FEXCore/Source/Interface/Core/JIT/PPC64LE/VectorOps.cpp:VNot vnot
+/mnt/arch/home/jbettcher/Development/POWERarm/FEXCore/Source/Interface/Core/JIT/PPC64LE/VectorOps.cpp:VNeg vsubuwm vsububm vmr vsubudm vsubuhm vspltisw
+/mnt/arch/home/jbettcher/Development/POWERarm/FEXCore/Source/Interface/Core/JIT/PPC64LE/VectorOps.cpp:VAbs vsubuwm vmaxsb vmaxsd vsububm vmr vsubudm vmaxsh vmaxsw vsubuhm vspltisw
+/mnt/arch/home/jbettcher/Development/POWERarm/FEXCore/Source/Interface/Core/JIT/PPC64LE/VectorOps.cpp:VPopcount vpopcnth vpopcntw vpopcntb vpopcntd
+/mnt/arch/home/jbettcher/Development/POWERarm/FEXCore/Source/Interface/Core/JIT/PPC64LE/VectorOps.cpp:VCLZ vclzb vclzd vclzh vclzw
+/mnt/arch/home/jbettcher/Development/POWERarm/FEXCore/Source/Interface/Core/JIT/PPC64LE/VectorOps.cpp:VUDot vmsumubm
+/mnt/arch/home/jbettcher/Development/POWERarm/FEXCore/Source/Interface/Core/JIT/PPC64LE/VectorOps.cpp:VPMullB vpmsumb vmrghb vmrglb vspltisw
+/mnt/arch/home/jbettcher/Development/POWERarm/FEXCore/Source/Interface/Core/JIT/PPC64LE/VectorOps.cpp:VFAbs xvabsdp xvabssp
+/mnt/arch/home/jbettcher/Development/POWERarm/FEXCore/Source/Interface/Core/JIT/PPC64LE/VectorOps.cpp:VFNeg xvnegdp xvnegsp
+/mnt/arch/home/jbettcher/Development/POWERarm/FEXCore/Source/Interface/Core/JIT/PPC64LE/VectorOps.cpp:VFRecp vrefp xvdivdp
+/mnt/arch/home/jbettcher/Development/POWERarm/FEXCore/Source/Interface/Core/JIT/PPC64LE/VectorOps.cpp:VFRecpPrecision vcmpeqfp vcfsx vsubfp vrefp vnmsubfp vsel vmaddfp vspltisw
+/mnt/arch/home/jbettcher/Development/POWERarm/FEXCore/Source/Interface/Core/JIT/PPC64LE/VectorOps.cpp:VFSqrt xvsqrtdp xvsqrtsp
+/mnt/arch/home/jbettcher/Development/POWERarm/FEXCore/Source/Interface/Core/JIT/PPC64LE/VectorOps.cpp:VFRSqrt xvdivdp xvsqrtdp vrsqrtefp
+/mnt/arch/home/jbettcher/Development/POWERarm/FEXCore/Source/Interface/Core/JIT/PPC64LE/VectorOps.cpp:VFRSqrtPrecision vrsqrtefp
+/mnt/arch/home/jbettcher/Development/POWERarm/FEXCore/Source/Interface/Core/JIT/PPC64LE/VectorOps.cpp:VCMPEQZ vcmpequb vcmpequd vcmpequh vcmpequw vspltisw
+/mnt/arch/home/jbettcher/Development/POWERarm/FEXCore/Source/Interface/Core/JIT/PPC64LE/VectorOps.cpp:VCMPGTZ vcmpgtsh vcmpgtsw vcmpgtsb vcmpgtsd vspltisw
+/mnt/arch/home/jbettcher/Development/POWERarm/FEXCore/Source/Interface/Core/JIT/PPC64LE/VectorOps.cpp:VCMPLTZ vcmpgtsh vcmpgtsw vcmpgtsb vcmpgtsd vspltisw
+/mnt/arch/home/jbettcher/Development/POWERarm/FEXCore/Source/Interface/Core/JIT/PPC64LE/VectorOps.cpp:VCMPGTUZ vcmpgtud vcmpgtuh vcmpgtuw vcmpgtub vspltisw
+/mnt/arch/home/jbettcher/Development/POWERarm/FEXCore/Source/Interface/Core/JIT/PPC64LE/VectorOps.cpp:VAddV vsldoi vsum4shs vaddudm vsum4ubs vadduwm vspltisw
+/mnt/arch/home/jbettcher/Development/POWERarm/FEXCore/Source/Interface/Core/JIT/PPC64LE/VectorOps.cpp:VUMinV vminub vsldoi vminud vminuh vmr vminuw vspltisw
+/mnt/arch/home/jbettcher/Development/POWERarm/FEXCore/Source/Interface/Core/JIT/PPC64LE/VectorOps.cpp:VUMaxV vsldoi vmaxub vmaxud vmr vmaxuh vspltisw vmaxuw
+/mnt/arch/home/jbettcher/Development/POWERarm/FEXCore/Source/Interface/Core/JIT/PPC64LE/VectorOps.cpp:VFAddV vsldoi vmr xvadddp vspltisw
+/mnt/arch/home/jbettcher/Development/POWERarm/FEXCore/Source/Interface/Core/JIT/PPC64LE/VectorOps.cpp:VDupElement xxpermdi vspltisb
+/mnt/arch/home/jbettcher/Development/POWERarm/FEXCore/Source/Interface/Core/JIT/PPC64LE/VectorOps.cpp:VShlI vslh vslw vspltisb vmr vslb vspltish vsld vspltisw
+/mnt/arch/home/jbettcher/Development/POWERarm/FEXCore/Source/Interface/Core/JIT/PPC64LE/VectorOps.cpp:VUShrI vsrb vsrd vspltisb vmr vsrh vsrw vspltish vspltisw
+/mnt/arch/home/jbettcher/Development/POWERarm/FEXCore/Source/Interface/Core/JIT/PPC64LE/VectorOps.cpp:VSShrI vsrab vsrad vspltisb vsrah vmr vsraw vspltish vspltisw
+/mnt/arch/home/jbettcher/Development/POWERarm/FEXCore/Source/Interface/Core/JIT/PPC64LE/VectorOps.cpp:VUShraI vaddubm vsrb vaddudm vsrd vspltisb vadduhm vsrh vadduwm vsrw vspltish vspltisw
+/mnt/arch/home/jbettcher/Development/POWERarm/FEXCore/Source/Interface/Core/JIT/PPC64LE/VectorOps.cpp:VUShrNI vpkuhum xxpermdi vsrd mtvsrd vpkudum vsrh vspltish vpkuwum vsrw vspltisw
+/mnt/arch/home/jbettcher/Development/POWERarm/FEXCore/Source/Interface/Core/JIT/PPC64LE/VectorOps.cpp:VUShrNI2 vpkuhum xxpermdi vsrd vsplth mtvsrd vpkudum vspltw vsrh vpkuwum vsrw vspltisw
+/mnt/arch/home/jbettcher/Development/POWERarm/FEXCore/Source/Interface/Core/JIT/PPC64LE/VectorOps.cpp:VSXTL vupklsh vupklsw vupklsb
+/mnt/arch/home/jbettcher/Development/POWERarm/FEXCore/Source/Interface/Core/JIT/PPC64LE/VectorOps.cpp:VSXTL2 vupkhsb vupkhsh vupkhsw
+/mnt/arch/home/jbettcher/Development/POWERarm/FEXCore/Source/Interface/Core/JIT/PPC64LE/VectorOps.cpp:VSSHLL vupklsh vupklsw vslh vslw vupklsb vspltish vsld vspltisw
+/mnt/arch/home/jbettcher/Development/POWERarm/FEXCore/Source/Interface/Core/JIT/PPC64LE/VectorOps.cpp:VSSHLL2 vupkhsb vslh vslw vupkhsh vupkhsw vspltish vsld vspltisw
+/mnt/arch/home/jbettcher/Development/POWERarm/FEXCore/Source/Interface/Core/JIT/PPC64LE/VectorOps.cpp:VUXTL vmrglh vmrglw vmrglb vspltisw
+/mnt/arch/home/jbettcher/Development/POWERarm/FEXCore/Source/Interface/Core/JIT/PPC64LE/VectorOps.cpp:VUXTL2 vmrghb vmrghh vmrghw vspltisw
+/mnt/arch/home/jbettcher/Development/POWERarm/FEXCore/Source/Interface/Core/JIT/PPC64LE/VectorOps.cpp:VSQXTN vpkswss vpkshss vspltisw
+/mnt/arch/home/jbettcher/Development/POWERarm/FEXCore/Source/Interface/Core/JIT/PPC64LE/VectorOps.cpp:VSQXTN2 xxpermdi vpkswss vpkshss vspltisw
+/mnt/arch/home/jbettcher/Development/POWERarm/FEXCore/Source/Interface/Core/JIT/PPC64LE/VectorOps.cpp:VSQXTNPair xxpermdi vpkswss vpkshss vspltisw
+/mnt/arch/home/jbettcher/Development/POWERarm/FEXCore/Source/Interface/Core/JIT/PPC64LE/VectorOps.cpp:VSQXTUN vpkswus vpkshus vspltisw
+/mnt/arch/home/jbettcher/Development/POWERarm/FEXCore/Source/Interface/Core/JIT/PPC64LE/VectorOps.cpp:VSQXTUN2 xxpermdi vpkswus vpkshus vspltisw
+/mnt/arch/home/jbettcher/Development/POWERarm/FEXCore/Source/Interface/Core/JIT/PPC64LE/VectorOps.cpp:VSQXTUNPair xxpermdi vpkswus vpkshus vspltisw
+/mnt/arch/home/jbettcher/Development/POWERarm/FEXCore/Source/Interface/Core/JIT/PPC64LE/VectorOps.cpp:VSRSHR vsrab vand vaddubm vsrad vaddudm vspltisb vsrah vmr vadduhm vsraw vadduwm
+/mnt/arch/home/jbettcher/Development/POWERarm/FEXCore/Source/Interface/Core/JIT/PPC64LE/VectorOps.cpp:VSQSHL xxlor vsrab vcmpequb vxor vsrad vslh vcmpgtsh vcmpequd vslw vcmpgtsw vsrah vcmpequh vmr vsraw vslb vcmpequw vcmpgtsb vsld vcmpgtsd vsel vspltisw
+/mnt/arch/home/jbettcher/Development/POWERarm/FEXCore/Source/Interface/Core/JIT/PPC64LE/VectorOps.cpp:VRev32 vmr vrlh vspltish xxbrw vrlw vspltisw
+/mnt/arch/home/jbettcher/Development/POWERarm/FEXCore/Source/Interface/Core/JIT/PPC64LE/VectorOps.cpp:VRev64 xxbrd vrld vmr xxbrh vrlh vspltish vadduwm xxbrw vrlw vspltisw
+/mnt/arch/home/jbettcher/Development/POWERarm/FEXCore/Source/Interface/Core/JIT/PPC64LE/VectorOps.cpp:VAdd vaddubm vaddudm vadduhm vadduwm
+/mnt/arch/home/jbettcher/Development/POWERarm/FEXCore/Source/Interface/Core/JIT/PPC64LE/VectorOps.cpp:VSub vsubuwm vsububm vsubudm vsubuhm
+/mnt/arch/home/jbettcher/Development/POWERarm/FEXCore/Source/Interface/Core/JIT/PPC64LE/VectorOps.cpp:VAnd vand
+/mnt/arch/home/jbettcher/Development/POWERarm/FEXCore/Source/Interface/Core/JIT/PPC64LE/VectorOps.cpp:VAndn vandc
+/mnt/arch/home/jbettcher/Development/POWERarm/FEXCore/Source/Interface/Core/JIT/PPC64LE/VectorOps.cpp:VOrn vorc
+/mnt/arch/home/jbettcher/Development/POWERarm/FEXCore/Source/Interface/Core/JIT/PPC64LE/VectorOps.cpp:VOr xxpermdi vspltisb vor
+/mnt/arch/home/jbettcher/Development/POWERarm/FEXCore/Source/Interface/Core/JIT/PPC64LE/VectorOps.cpp:VXor vxor
+/mnt/arch/home/jbettcher/Development/POWERarm/FEXCore/Source/Interface/Core/JIT/PPC64LE/VectorOps.cpp:VUQAdd vadduhs vadduws vaddubs
+/mnt/arch/home/jbettcher/Development/POWERarm/FEXCore/Source/Interface/Core/JIT/PPC64LE/VectorOps.cpp:VUQSub vsubuhs vsubuws vsububs
+/mnt/arch/home/jbettcher/Development/POWERarm/FEXCore/Source/Interface/Core/JIT/PPC64LE/VectorOps.cpp:VSQAdd vaddshs vaddsws vaddsbs
+/mnt/arch/home/jbettcher/Development/POWERarm/FEXCore/Source/Interface/Core/JIT/PPC64LE/VectorOps.cpp:VSQSub vsubsbs vsubshs vsubsws
+/mnt/arch/home/jbettcher/Development/POWERarm/FEXCore/Source/Interface/Core/JIT/PPC64LE/VectorOps.cpp:VAddP vaddubm vperm vadduhm vadduwm
+/mnt/arch/home/jbettcher/Development/POWERarm/FEXCore/Source/Interface/Core/JIT/PPC64LE/VectorOps.cpp:VURAvg vavguw vavgub vavguh
+/mnt/arch/home/jbettcher/Development/POWERarm/FEXCore/Source/Interface/Core/JIT/PPC64LE/VectorOps.cpp:VUMin vminub vminud vminuh vminuw
+/mnt/arch/home/jbettcher/Development/POWERarm/FEXCore/Source/Interface/Core/JIT/PPC64LE/VectorOps.cpp:VUMax vmaxub vmaxud vmaxuh vmaxuw
+/mnt/arch/home/jbettcher/Development/POWERarm/FEXCore/Source/Interface/Core/JIT/PPC64LE/VectorOps.cpp:VSMin vminsd vminsh vminsw vminsb
+/mnt/arch/home/jbettcher/Development/POWERarm/FEXCore/Source/Interface/Core/JIT/PPC64LE/VectorOps.cpp:VSMax vmaxsb vmaxsd vmaxsh vmaxsw
+/mnt/arch/home/jbettcher/Development/POWERarm/FEXCore/Source/Interface/Core/JIT/PPC64LE/VectorOps.cpp:VZip vmrglh xxpermdi vmrglw vmrglb
+/mnt/arch/home/jbettcher/Development/POWERarm/FEXCore/Source/Interface/Core/JIT/PPC64LE/VectorOps.cpp:VZip2 vmrglh vsldoi xxpermdi vmrglw vmrghb vmrglb vmrghh vmrghw vspltisw
+/mnt/arch/home/jbettcher/Development/POWERarm/FEXCore/Source/Interface/Core/JIT/PPC64LE/VectorOps.cpp:VUnZip xxpermdi vperm
+/mnt/arch/home/jbettcher/Development/POWERarm/FEXCore/Source/Interface/Core/JIT/PPC64LE/VectorOps.cpp:VUnZip2 vpkuhum vsldoi xxpermdi vperm vpkudum vpkuwum
+/mnt/arch/home/jbettcher/Development/POWERarm/FEXCore/Source/Interface/Core/JIT/PPC64LE/VectorOps.cpp:VTrn xxpermdi vperm vmrgow
+/mnt/arch/home/jbettcher/Development/POWERarm/FEXCore/Source/Interface/Core/JIT/PPC64LE/VectorOps.cpp:VTrn2 xxpermdi vperm vmrgew
+/mnt/arch/home/jbettcher/Development/POWERarm/FEXCore/Source/Interface/Core/JIT/PPC64LE/VectorOps.cpp:VFAdd xvadddp xvaddsp
+/mnt/arch/home/jbettcher/Development/POWERarm/FEXCore/Source/Interface/Core/JIT/PPC64LE/VectorOps.cpp:VFAddP xxpermdi vspltisb vspltisw
+/mnt/arch/home/jbettcher/Development/POWERarm/FEXCore/Source/Interface/Core/JIT/PPC64LE/VectorOps.cpp:VFSub xvsubdp xvsubsp
+/mnt/arch/home/jbettcher/Development/POWERarm/FEXCore/Source/Interface/Core/JIT/PPC64LE/VectorOps.cpp:VFMul xvmuldp xvmulsp
+/mnt/arch/home/jbettcher/Development/POWERarm/FEXCore/Source/Interface/Core/JIT/PPC64LE/VectorOps.cpp:VFDiv xvdivdp xvdivsp
+/mnt/arch/home/jbettcher/Development/POWERarm/FEXCore/Source/Interface/Core/JIT/PPC64LE/VectorOps.cpp:VFMin vcmpgtfp xvcmpgtdp
+/mnt/arch/home/jbettcher/Development/POWERarm/FEXCore/Source/Interface/Core/JIT/PPC64LE/VectorOps.cpp:VFMax vcmpgtfp xvcmpgtdp
+/mnt/arch/home/jbettcher/Development/POWERarm/FEXCore/Source/Interface/Core/JIT/PPC64LE/VectorOps.cpp:VMul vxor stvx vmuluwm li addi mullw vmladduhm lvx
+/mnt/arch/home/jbettcher/Development/POWERarm/FEXCore/Source/Interface/Core/JIT/PPC64LE/VectorOps.cpp:VUMull xxpermdi vmrglw vmulouh vmulouw vmuleuh vmuleuw
+/mnt/arch/home/jbettcher/Development/POWERarm/FEXCore/Source/Interface/Core/JIT/PPC64LE/VectorOps.cpp:VSMull vmulosh xxpermdi vmrglw vmulosw vmulesh vmulesw
+/mnt/arch/home/jbettcher/Development/POWERarm/FEXCore/Source/Interface/Core/JIT/PPC64LE/VectorOps.cpp:VUMull2 xxpermdi vmulouh vmulouw vmuleuh vmuleuw vmrghw
+/mnt/arch/home/jbettcher/Development/POWERarm/FEXCore/Source/Interface/Core/JIT/PPC64LE/VectorOps.cpp:VSMull2 vmulosh xxpermdi vmulosw vmulesh vmulesw vmrghw
+/mnt/arch/home/jbettcher/Development/POWERarm/FEXCore/Source/Interface/Core/JIT/PPC64LE/VectorOps.cpp:VMaddPairwise16 xxpermdi vspltisb vmsumshm
+/mnt/arch/home/jbettcher/Development/POWERarm/FEXCore/Source/Interface/Core/JIT/PPC64LE/VectorOps.cpp:VExtractSignBits mfvsrd lvsl clrldi vspltisb li vbpermq vslb
+/mnt/arch/home/jbettcher/Development/POWERarm/FEXCore/Source/Interface/Core/JIT/PPC64LE/VectorOps.cpp:VAnyNonZero rlwinm mfocrf vspltisb xori vcmpequb_
+/mnt/arch/home/jbettcher/Development/POWERarm/FEXCore/Source/Interface/Core/JIT/PPC64LE/VectorOps.cpp:VUMulH vmulouh vperm vmuleuh
+/mnt/arch/home/jbettcher/Development/POWERarm/FEXCore/Source/Interface/Core/JIT/PPC64LE/VectorOps.cpp:VSMulH vmulosh vmulesh vperm
+/mnt/arch/home/jbettcher/Development/POWERarm/FEXCore/Source/Interface/Core/JIT/PPC64LE/VectorOps.cpp:VSQDMulH vmhaddshs vspltisw
+/mnt/arch/home/jbettcher/Development/POWERarm/FEXCore/Source/Interface/Core/JIT/PPC64LE/VectorOps.cpp:VSQRDMulH vmhraddshs vspltisw
+/mnt/arch/home/jbettcher/Development/POWERarm/FEXCore/Source/Interface/Core/JIT/PPC64LE/VectorOps.cpp:VUABD vminub vsubuwm vabsdub vmaxub vminuh vsububm vminuw vabsduh vmaxuh vabsduw vmaxuw vsubuhm
+/mnt/arch/home/jbettcher/Development/POWERarm/FEXCore/Source/Interface/Core/JIT/PPC64LE/VectorOps.cpp:VUABDL vminub vsubuwm vmrglh vmrglw vabsdub vmaxub vminuh vsububm vminuw vmrglb vabsduh vmaxuh vabsduw vmaxuw vsubuhm vspltisw
+/mnt/arch/home/jbettcher/Development/POWERarm/FEXCore/Source/Interface/Core/JIT/PPC64LE/VectorOps.cpp:VUABDL2 vminub vsubuwm vabsdub vmrghb vmaxub vminuh vsububm vminuw vabsduh vmrghh vmaxuh vabsduw vmrghw vmaxuw vsubuhm vspltisw
+/mnt/arch/home/jbettcher/Development/POWERarm/FEXCore/Source/Interface/Core/JIT/PPC64LE/VectorOps.cpp:VUShl vand vslh vslw vslb vsld
+/mnt/arch/home/jbettcher/Development/POWERarm/FEXCore/Source/Interface/Core/JIT/PPC64LE/VectorOps.cpp:VUShr vand vsrb vsrd vsrh vsrw
+/mnt/arch/home/jbettcher/Development/POWERarm/FEXCore/Source/Interface/Core/JIT/PPC64LE/VectorOps.cpp:VSShr vsrab vsrad vspltisb vsrah vsraw vspltisw vsel
+/mnt/arch/home/jbettcher/Development/POWERarm/FEXCore/Source/Interface/Core/JIT/PPC64LE/VectorOps.cpp:VUShlS vslh xxpermdi vslw vslb vsld
+/mnt/arch/home/jbettcher/Development/POWERarm/FEXCore/Source/Interface/Core/JIT/PPC64LE/VectorOps.cpp:VUShrS vsrb xxpermdi vsrd vsrh vsrw
+/mnt/arch/home/jbettcher/Development/POWERarm/FEXCore/Source/Interface/Core/JIT/PPC64LE/VectorOps.cpp:VSShrS vsrab vsrad xxpermdi vsrah vsraw
+/mnt/arch/home/jbettcher/Development/POWERarm/FEXCore/Source/Interface/Core/JIT/PPC64LE/VectorOps.cpp:VUShrSWide mfvsrd vsldoi bc b cmpld vspltisw
+/mnt/arch/home/jbettcher/Development/POWERarm/FEXCore/Source/Interface/Core/JIT/PPC64LE/VectorOps.cpp:VSShrSWide mfvsrd vsldoi bc b cmpld
+/mnt/arch/home/jbettcher/Development/POWERarm/FEXCore/Source/Interface/Core/JIT/PPC64LE/VectorOps.cpp:VUShlSWide mfvsrd vsldoi bc b cmpld vspltisw
+/mnt/arch/home/jbettcher/Development/POWERarm/FEXCore/Source/Interface/Core/JIT/PPC64LE/VectorOps.cpp:VInsElement xxsldwi vinserth vinsertw xxpermdi vperm vsplth vinsertb vmr vspltw vspltb
+/mnt/arch/home/jbettcher/Development/POWERarm/FEXCore/Source/Interface/Core/JIT/PPC64LE/VectorOps.cpp:VInsGPR vinserth vinsertw xxpermdi vperm addi mtvsrd vinsertb vmr lvx std
+/mnt/arch/home/jbettcher/Development/POWERarm/FEXCore/Source/Interface/Core/JIT/PPC64LE/VectorOps.cpp:VLoadVectorElement lhzx stvx sth mr stw li addi ldx stb lbzx lvx std lwzx
+/mnt/arch/home/jbettcher/Development/POWERarm/FEXCore/Source/Interface/Core/JIT/PPC64LE/VectorOps.cpp:VStoreVectorElement ld sthx lwz stvx stwx mr li addi lbz stbx stdx lhz
+/mnt/arch/home/jbettcher/Development/POWERarm/FEXCore/Source/Interface/Core/JIT/PPC64LE/VectorOps.cpp:VExtr vsldoi xxpermdi vspltisb vperm vmr
+/mnt/arch/home/jbettcher/Development/POWERarm/FEXCore/Source/Interface/Core/JIT/PPC64LE/VectorOps.cpp:VCMPEQ vcmpequb vcmpequd vcmpequh vcmpequw
+/mnt/arch/home/jbettcher/Development/POWERarm/FEXCore/Source/Interface/Core/JIT/PPC64LE/VectorOps.cpp:VCMPGT vcmpgtsh vcmpgtsw vcmpgtsb vcmpgtsd
+/mnt/arch/home/jbettcher/Development/POWERarm/FEXCore/Source/Interface/Core/JIT/PPC64LE/VectorOps.cpp:VCMPGTU vcmpgtud vcmpgtuh vcmpgtuw vcmpgtub
+/mnt/arch/home/jbettcher/Development/POWERarm/FEXCore/Source/Interface/Core/JIT/PPC64LE/VectorOps.cpp:VFCMPEQ vcmpeqfp xvcmpeqdp
+/mnt/arch/home/jbettcher/Development/POWERarm/FEXCore/Source/Interface/Core/JIT/PPC64LE/VectorOps.cpp:VFCMPNEQ vcmpeqfp xvcmpeqdp xxlnor vnot
+/mnt/arch/home/jbettcher/Development/POWERarm/FEXCore/Source/Interface/Core/JIT/PPC64LE/VectorOps.cpp:VFCMPLT vcmpgtfp xvcmpgtdp
+/mnt/arch/home/jbettcher/Development/POWERarm/FEXCore/Source/Interface/Core/JIT/PPC64LE/VectorOps.cpp:VFCMPGT vcmpgtfp xvcmpgtdp
+/mnt/arch/home/jbettcher/Development/POWERarm/FEXCore/Source/Interface/Core/JIT/PPC64LE/VectorOps.cpp:VFCMPLE vcmpgefp xvcmpgedp
+/mnt/arch/home/jbettcher/Development/POWERarm/FEXCore/Source/Interface/Core/JIT/PPC64LE/VectorOps.cpp:VFCMPORD vcmpeqfp xvcmpeqdp
+/mnt/arch/home/jbettcher/Development/POWERarm/FEXCore/Source/Interface/Core/JIT/PPC64LE/VectorOps.cpp:VFCMPUNO vcmpeqfp xvcmpeqdp
+/mnt/arch/home/jbettcher/Development/POWERarm/FEXCore/Source/Interface/Core/JIT/PPC64LE/VectorOps.cpp:VTBL1 vminub vspltisb vcmpgtub
+/mnt/arch/home/jbettcher/Development/POWERarm/FEXCore/Source/Interface/Core/JIT/PPC64LE/VectorOps.cpp:VTBL2 vcmpequb vandc vspltisb vcmpgtub vspltisw
+/mnt/arch/home/jbettcher/Development/POWERarm/FEXCore/Source/Interface/Core/JIT/PPC64LE/VectorOps.cpp:VTBX1 vxor vspltisb vperm vcmpgtub vsel
+/mnt/arch/home/jbettcher/Development/POWERarm/FEXCore/Source/Interface/Core/JIT/PPC64LE/VectorOps.cpp:VBSL vsel
+/mnt/arch/home/jbettcher/Development/POWERarm/FEXCore/Source/Interface/Core/JIT/PPC64LE/VectorOps.cpp:VFCADD
+/mnt/arch/home/jbettcher/Development/POWERarm/FEXCore/Source/Interface/Core/JIT/PPC64LE/VectorOps.cpp:VFMLA xvmaddasp vmr xvmaddadp
+/mnt/arch/home/jbettcher/Development/POWERarm/FEXCore/Source/Interface/Core/JIT/PPC64LE/VectorOps.cpp:VFMLS xvmsubadp vmr xvmsubasp
+/mnt/arch/home/jbettcher/Development/POWERarm/FEXCore/Source/Interface/Core/JIT/PPC64LE/VectorOps.cpp:VFNMLA xvmaddasp xvnegdp xvnegsp vmr xvmaddadp
+/mnt/arch/home/jbettcher/Development/POWERarm/FEXCore/Source/Interface/Core/JIT/PPC64LE/VectorOps.cpp:VFNMLS xvnegdp xvnegsp xvmsubadp vmr xvmsubasp
+/mnt/arch/home/jbettcher/Development/POWERarm/FEXCore/Source/Interface/Core/JIT/PPC64LE/VectorOps.cpp:NAME xxsldwi xxpermdi xxspltw
+/mnt/arch/home/jbettcher/Development/POWERarm/FEXCore/Source/Interface/Core/JIT/PPC64LE/VectorOps.cpp:VFMinScalarInsert vcmpgtfp xvcmpgtdp
+/mnt/arch/home/jbettcher/Development/POWERarm/FEXCore/Source/Interface/Core/JIT/PPC64LE/VectorOps.cpp:VFMaxScalarInsert vcmpgtfp xvcmpgtdp
+/mnt/arch/home/jbettcher/Development/POWERarm/FEXCore/Source/Interface/Core/JIT/PPC64LE/VectorOps.cpp:VFSqrtScalarInsert xxpermdi xvsqrtdp xvsqrtsp
+/mnt/arch/home/jbettcher/Development/POWERarm/FEXCore/Source/Interface/Core/JIT/PPC64LE/VectorOps.cpp:VFRSqrtScalarInsert lfd stvx stfd addi frsqrte lvx vrsqrtefp
+/mnt/arch/home/jbettcher/Development/POWERarm/FEXCore/Source/Interface/Core/JIT/PPC64LE/VectorOps.cpp:VFRecpScalarInsert xxsldwi lfd stvx stfd addi xxspltw lvx fdiv std
+/mnt/arch/home/jbettcher/Development/POWERarm/FEXCore/Source/Interface/Core/JIT/PPC64LE/VectorOps.cpp:VFToFScalarInsert xxsldwi xxpermdi xvcvdpsp xvcvspdp
+/mnt/arch/home/jbettcher/Development/POWERarm/FEXCore/Source/Interface/Core/JIT/PPC64LE/VectorOps.cpp:VSToFVectorInsert xxsldwi xvcvsxwsp xxpermdi xxspltw xvcvsxddp xvcvsxdsp xvcvsxwdp
+/mnt/arch/home/jbettcher/Development/POWERarm/FEXCore/Source/Interface/Core/JIT/PPC64LE/VectorOps.cpp:VSToFGPRInsert xxsldwi xxpermdi mtvsrd extsw xxspltw xvcvsxddp xvcvsxdsp
+/mnt/arch/home/jbettcher/Development/POWERarm/FEXCore/Source/Interface/Core/JIT/PPC64LE/VectorOps.cpp:VFToIScalarInsert xxsldwi xsrdpiz xsrdpim xsrdpi xscvspdpn xxpermdi xsrdpic xsrdpip xxspltw xscvdpspn
+/mnt/arch/home/jbettcher/Development/POWERarm/FEXCore/Source/Interface/Core/JIT/PPC64LE/VectorOps.cpp:VFCMPScalarInsert xxsldwi vcmpgefp vcmpeqfp xvcmpgedp xvcmpeqdp xxpermdi vcmpgtfp xvcmpgtdp
+/mnt/arch/home/jbettcher/Development/POWERarm/FEXCore/Source/Interface/Core/JIT/PPC64LE/VectorOps.cpp:NAME xxsldwi xxlor xvnegdp xxpermdi xvnegsp xxspltw
+/mnt/arch/home/jbettcher/Development/POWERarm/FEXCore/Source/Interface/Core/JIT/PPC64LE/VectorOps.cpp:VFCopySign xvcpsgnsp xvcpsgndp
+/mnt/arch/home/jbettcher/Development/POWERarm/FEXCore/Source/Interface/Core/JIT/PPC64LE/VectorOps.cpp:VCastFromGPR xxpermdi rldicl mtvsrd mtvsrdd vspltisw
+/mnt/arch/home/jbettcher/Development/POWERarm/FEXCore/Source/Interface/Core/JIT/PPC64LE/VectorOps.cpp:VDupFromGPR xxpermdi mtvsrd vsplth mtvsrws vmr vspltw mtvsrdd vspltb
+/mnt/arch/home/jbettcher/Development/POWERarm/FEXCore/Source/Interface/Core/JIT/PPC64LE/VectorOps.cpp:VLoadTwoGPRs xxpermdi mtvsrd
+/mnt/arch/home/jbettcher/Development/POWERarm/FEXCore/Source/Interface/Core/JIT/PPC64LE/VectorOps.cpp:Float_FromGPR_S vsldoi lwz lfd fcfid mr stfd mtvsrd addi stfs extsw vspltw lvx std vspltisw fcfids
+/mnt/arch/home/jbettcher/Development/POWERarm/FEXCore/Source/Interface/Core/JIT/PPC64LE/VectorOps.cpp:Float_FToF ld lwz lfd vsldoi stvx lfs stfd mtvsrd addi stfs vmr frsp vspltisw
+/mnt/arch/home/jbettcher/Development/POWERarm/FEXCore/Source/Interface/Core/JIT/PPC64LE/VectorOps.cpp:Vector_SToF ld lfd stvx vcfsx fcfid stfd addi lvx std
+/mnt/arch/home/jbettcher/Development/POWERarm/FEXCore/Source/Interface/Core/JIT/PPC64LE/VectorOps.cpp:Vector_FToS xvrspic xvrdpic xvcmpgedp xvcmpgesp xxsel xvcvspsxws xvcvdpsxds
+/mnt/arch/home/jbettcher/Development/POWERarm/FEXCore/Source/Interface/Core/JIT/PPC64LE/VectorOps.cpp:Vector_FToZS xvcmpgedp vctsxs xvcmpgesp xxsel vrfiz xvrdpiz xvcvdpsxds
+/mnt/arch/home/jbettcher/Development/POWERarm/FEXCore/Source/Interface/Core/JIT/PPC64LE/VectorOps.cpp:Vector_FToF ld xxsldwi stvx vmrglh xvcvsphp mflr xxpermdi vmrglw mtctr li addi stdu mtlr bctrl xvcvhpsp vpkuwum xvcvdpsp lvx std xvcvspdp vspltisw vmrghw
+/mnt/arch/home/jbettcher/Development/POWERarm/FEXCore/Source/Interface/Core/JIT/PPC64LE/VectorOps.cpp:VFCVTL2 ld stvx mflr mtctr li addi stdu mtlr bctrl xvcvhpsp vmrghh lvx std xvcvspdp vspltisw vmrghw
+/mnt/arch/home/jbettcher/Development/POWERarm/FEXCore/Source/Interface/Core/JIT/PPC64LE/VectorOps.cpp:VFCVTN2 ld xxsldwi stvx xvcvsphp mflr xxpermdi mtctr li addi stdu mtlr bctrl vpkuwum xvcvdpsp lvx std vspltisw vmrghw
+/mnt/arch/home/jbettcher/Development/POWERarm/FEXCore/Source/Interface/Core/JIT/PPC64LE/VectorOps.cpp:Vector_FToI xvrspic xvrdpic xvrdpip xvrspi vrfiz vrfim xvrdpi vrfin xvrdpiz xvrdpim vrfip
+/mnt/arch/home/jbettcher/Development/POWERarm/FEXCore/Source/Interface/Core/JIT/PPC64LE/VectorOps.cpp:Vector_FToISized xvrspic xvrdpic xvcmpgedp xvcmpgesp xxsel xvcvspsxws xvrspiz xvrdpiz xvcvdpsxds
+/mnt/arch/home/jbettcher/Development/POWERarm/FEXCore/Source/Interface/Core/JIT/PPC64LE/VectorOps.cpp:Vector_F64ToI32 xvrdpic xvrdpip xvcmpgedp vperm xvcvdpsxws xxsel xvrdpi xvrdpim xvrdpiz vspltisw
+/mnt/arch/home/jbettcher/Development/POWERarm/FEXCore/Source/Interface/Core/JIT/PPC64LE/VectorOps.cpp:VAESE vsldoi vxor vcipherlast
+/mnt/arch/home/jbettcher/Development/POWERarm/FEXCore/Source/Interface/Core/JIT/PPC64LE/VectorOps.cpp:VAESD vsldoi vxor vncipherlast
+/mnt/arch/home/jbettcher/Development/POWERarm/FEXCore/Source/Interface/Core/JIT/PPC64LE/VectorOps.cpp:VAESMC vxor vncipherlast vcipher vrlh vspltish xxbrw vrlw vspltisw
+/mnt/arch/home/jbettcher/Development/POWERarm/FEXCore/Source/Interface/Core/JIT/PPC64LE/VectorOps.cpp:VAESImc vxor vcipherlast vncipher vrlh vspltish xxbrw vrlw vspltisw
+/mnt/arch/home/jbettcher/Development/POWERarm/FEXCore/Source/Interface/Core/JIT/PPC64LE/VectorOps.cpp:VAESEnc xxlor xxbrq vperm vcipher
+/mnt/arch/home/jbettcher/Development/POWERarm/FEXCore/Source/Interface/Core/JIT/PPC64LE/VectorOps.cpp:VAESEncLast xxlor xxbrq vperm vcipherlast
+/mnt/arch/home/jbettcher/Development/POWERarm/FEXCore/Source/Interface/Core/JIT/PPC64LE/VectorOps.cpp:VAESDec xxlor vxor xxbrq vperm vncipher
+/mnt/arch/home/jbettcher/Development/POWERarm/FEXCore/Source/Interface/Core/JIT/PPC64LE/VectorOps.cpp:VAESDecLast xxlor vncipherlast xxbrq vperm
+/mnt/arch/home/jbettcher/Development/POWERarm/FEXCore/Source/Interface/Core/JIT/PPC64LE/VectorOps.cpp:VSha1H vand vadduwm vrlw vspltisw
+/mnt/arch/home/jbettcher/Development/POWERarm/FEXCore/Source/Interface/Core/JIT/PPC64LE/VectorOps.cpp:VSha1C
+/mnt/arch/home/jbettcher/Development/POWERarm/FEXCore/Source/Interface/Core/JIT/PPC64LE/VectorOps.cpp:VSha1M
+/mnt/arch/home/jbettcher/Development/POWERarm/FEXCore/Source/Interface/Core/JIT/PPC64LE/VectorOps.cpp:VSha1P
+/mnt/arch/home/jbettcher/Development/POWERarm/FEXCore/Source/Interface/Core/JIT/PPC64LE/VectorOps.cpp:VSha1SU1 vsldoi vxor vrlw vspltisw
+/mnt/arch/home/jbettcher/Development/POWERarm/FEXCore/Source/Interface/Core/JIT/PPC64LE/VectorOps.cpp:VSha256H
+/mnt/arch/home/jbettcher/Development/POWERarm/FEXCore/Source/Interface/Core/JIT/PPC64LE/VectorOps.cpp:VSha256H2
+/mnt/arch/home/jbettcher/Development/POWERarm/FEXCore/Source/Interface/Core/JIT/PPC64LE/VectorOps.cpp:VSha256U0 vsldoi vshasigmaw vadduwm
+/mnt/arch/home/jbettcher/Development/POWERarm/FEXCore/Source/Interface/Core/JIT/PPC64LE/VectorOps.cpp:VSha256U1 stvx vsldoi xxpermdi li addi vshasigmaw vadduwm lvx
+/mnt/arch/home/jbettcher/Development/POWERarm/FEXCore/Source/Interface/Core/JIT/PPC64LE/VectorOps.cpp:PCLMUL xxpermdi vpmsumd
+/mnt/arch/home/jbettcher/Development/POWERarm/FEXCore/Source/Interface/Core/JIT/PPC64LE/A64FPOps.cpp:A64FloatToGPR mfvsrd xsrdpim xsrdpi bc xsrdpip li xscvdpsxds xscmpudp mfvsrwz xscvdpsxws
+/mnt/arch/home/jbettcher/Development/POWERarm/FEXCore/Source/Interface/Core/JIT/PPC64LE/A64FPOps.cpp:A64FloatFromGPR mtvsrwz xscvsxdsp mtvsrwa xscvuxddp xscvuxdsp mtvsrd xscvdpspn xscvsxddp
+/mnt/arch/home/jbettcher/Development/POWERarm/FEXCore/Source/Interface/Core/JIT/PPC64LE/A64FPOps.cpp:A64VecIntToFloat xvcvsxwsp xvcvuxwsp xvcvsxddp xvcvuxddp
+/mnt/arch/home/jbettcher/Development/POWERarm/FEXCore/Source/Interface/Core/JIT/PPC64LE/A64FPOps.cpp:A64VecFloatToInt xvcvspuxws xvrspip xxland xvrdpip xvcmpeqdp xvcmpeqsp xvcvdpuxds xvrspi xvcvspsxws xvrdpi xvrspim vrfin xvrdpim xvcvdpsxds
+/mnt/arch/home/jbettcher/Development/POWERarm/FEXCore/Source/Interface/Core/JIT/PPC64LE/A64FPOps.cpp:A64FToF xxsldwi bc xscvspdpn xxpermdi xscvdpsp mtvsrd vor xscmpudp
+/mnt/arch/home/jbettcher/Development/POWERarm/FEXCore/Source/Interface/Core/JIT/PPC64LE/A64FPOps.cpp:A64FArith xxlor xvmuldp bc xvmulsp xvsubdp xvdivdp xvcmpeqsp_ xvsubsp xvdivsp xvcmpeqdp_ xvadddp xvaddsp
+/mnt/arch/home/jbettcher/Development/POWERarm/FEXCore/Source/Interface/Core/JIT/PPC64LE/A64FPOps.cpp:A64FMinMax xvmindp bc xvminsp xvmaxdp xvcmpeqsp_ xvmaxsp xvcmpeqdp_
+/mnt/arch/home/jbettcher/Development/POWERarm/FEXCore/Source/Interface/Core/JIT/PPC64LE/A64FPOps.cpp:A64FMulAdd xvmaddasp xxlor bc xvcmpeqsp_ xvcmpeqdp_ xvmaddadp
+/mnt/arch/home/jbettcher/Development/POWERarm/FEXCore/Source/Interface/Core/JIT/PPC64LE/ALUOps.cpp:Constant mr addi
+/mnt/arch/home/jbettcher/Development/POWERarm/FEXCore/Source/Interface/Core/JIT/PPC64LE/ALUOps.cpp:EntrypointOffset mr addi
+/mnt/arch/home/jbettcher/Development/POWERarm/FEXCore/Source/Interface/Core/JIT/PPC64LE/ALUOps.cpp:InlineConstant
+/mnt/arch/home/jbettcher/Development/POWERarm/FEXCore/Source/Interface/Core/JIT/PPC64LE/ALUOps.cpp:InlineEntrypointOffset
+/mnt/arch/home/jbettcher/Development/POWERarm/FEXCore/Source/Interface/Core/JIT/PPC64LE/ALUOps.cpp:CycleCounter isync mftb
+/mnt/arch/home/jbettcher/Development/POWERarm/FEXCore/Source/Interface/Core/JIT/PPC64LE/ALUOps.cpp:Add addis mr addi add
+/mnt/arch/home/jbettcher/Development/POWERarm/FEXCore/Source/Interface/Core/JIT/PPC64LE/ALUOps.cpp:Sub neg addis mr isel li addi cmpldi subf cmplwi
+/mnt/arch/home/jbettcher/Development/POWERarm/FEXCore/Source/Interface/Core/JIT/PPC64LE/ALUOps.cpp:Neg neg iselcc
+/mnt/arch/home/jbettcher/Development/POWERarm/FEXCore/Source/Interface/Core/JIT/PPC64LE/ALUOps.cpp:Not not_
+/mnt/arch/home/jbettcher/Development/POWERarm/FEXCore/Source/Interface/Core/JIT/PPC64LE/ALUOps.cpp:Mul mulld mulli mullw
+/mnt/arch/home/jbettcher/Development/POWERarm/FEXCore/Source/Interface/Core/JIT/PPC64LE/ALUOps.cpp:UMul mulld mullw
+/mnt/arch/home/jbettcher/Development/POWERarm/FEXCore/Source/Interface/Core/JIT/PPC64LE/ALUOps.cpp:UMull mulld rldicl
+/mnt/arch/home/jbettcher/Development/POWERarm/FEXCore/Source/Interface/Core/JIT/PPC64LE/ALUOps.cpp:SMull mullw
+/mnt/arch/home/jbettcher/Development/POWERarm/FEXCore/Source/Interface/Core/JIT/PPC64LE/ALUOps.cpp:MulAdd maddld mulld add mullw
+/mnt/arch/home/jbettcher/Development/POWERarm/FEXCore/Source/Interface/Core/JIT/PPC64LE/ALUOps.cpp:MulH rldicl mulld extsh mulhw extsb mulhd
+/mnt/arch/home/jbettcher/Development/POWERarm/FEXCore/Source/Interface/Core/JIT/PPC64LE/ALUOps.cpp:UMulH mulhdu mulld rldicl mulhwu
+/mnt/arch/home/jbettcher/Development/POWERarm/FEXCore/Source/Interface/Core/JIT/PPC64LE/ALUOps.cpp:Div ld xor_ divd mr bc divdu mulld rldicl divdeu extsh addi sradi subfic cmpdi extsw b subf divw cmpld add mullw std subfze
+/mnt/arch/home/jbettcher/Development/POWERarm/FEXCore/Source/Interface/Core/JIT/PPC64LE/ALUOps.cpp:UDiv mulhdu bc mulld divdu rldicl divdeu addi cmpldi subf cmpld add mullw divwu or_
+/mnt/arch/home/jbettcher/Development/POWERarm/FEXCore/Source/Interface/Core/JIT/PPC64LE/ALUOps.cpp:Or oris mr ori or_
+/mnt/arch/home/jbettcher/Development/POWERarm/FEXCore/Source/Interface/Core/JIT/PPC64LE/ALUOps.cpp:And and_
+/mnt/arch/home/jbettcher/Development/POWERarm/FEXCore/Source/Interface/Core/JIT/PPC64LE/ALUOps.cpp:Xor xor_ mr xoris xori
+/mnt/arch/home/jbettcher/Development/POWERarm/FEXCore/Source/Interface/Core/JIT/PPC64LE/ALUOps.cpp:Andn and_ andc
+/mnt/arch/home/jbettcher/Development/POWERarm/FEXCore/Source/Interface/Core/JIT/PPC64LE/ALUOps.cpp:Orlshl sldi or_
+/mnt/arch/home/jbettcher/Development/POWERarm/FEXCore/Source/Interface/Core/JIT/PPC64LE/ALUOps.cpp:Orlshr rlwinm srdi or_
+/mnt/arch/home/jbettcher/Development/POWERarm/FEXCore/Source/Interface/Core/JIT/PPC64LE/ALUOps.cpp:Ornror orc rldicl rlwinm
+/mnt/arch/home/jbettcher/Development/POWERarm/FEXCore/Source/Interface/Core/JIT/PPC64LE/ALUOps.cpp:XorShift xor_ neg mr rldicl rlwinm extsw sldi or_ srdi
+/mnt/arch/home/jbettcher/Development/POWERarm/FEXCore/Source/Interface/Core/JIT/PPC64LE/ALUOps.cpp:XornShift xor_ not_ neg mr rldicl rlwinm extsw sldi or_ srdi
+/mnt/arch/home/jbettcher/Development/POWERarm/FEXCore/Source/Interface/Core/JIT/PPC64LE/ALUOps.cpp:AndShift neg mr rldicl rlwinm and_ extsw sldi or_ srdi
+/mnt/arch/home/jbettcher/Development/POWERarm/FEXCore/Source/Interface/Core/JIT/PPC64LE/ALUOps.cpp:AndWithFlags rldicl addco andi_ and__ andis_
+/mnt/arch/home/jbettcher/Development/POWERarm/FEXCore/Source/Interface/Core/JIT/PPC64LE/ALUOps.cpp:Lshl sld rldicl rlwinm sldi slw
+/mnt/arch/home/jbettcher/Development/POWERarm/FEXCore/Source/Interface/Core/JIT/PPC64LE/ALUOps.cpp:Lshr srw rldicl rlwinm srd srdi
+/mnt/arch/home/jbettcher/Development/POWERarm/FEXCore/Source/Interface/Core/JIT/PPC64LE/ALUOps.cpp:Ashr neg mr sld rldicl li sldi extsw subf srd or_ srdi
+/mnt/arch/home/jbettcher/Development/POWERarm/FEXCore/Source/Interface/Core/JIT/PPC64LE/ALUOps.cpp:Ror rldcl neg rlwnm rldicl rlwinm
+/mnt/arch/home/jbettcher/Development/POWERarm/FEXCore/Source/Interface/Core/JIT/PPC64LE/ALUOps.cpp:Popcount popcntd rldicl popcntw
+/mnt/arch/home/jbettcher/Development/POWERarm/FEXCore/Source/Interface/Core/JIT/PPC64LE/ALUOps.cpp:FindLSB neg cntlzd li and_ subf cntlzw
+/mnt/arch/home/jbettcher/Development/POWERarm/FEXCore/Source/Interface/Core/JIT/PPC64LE/ALUOps.cpp:FindMSB cntlzd li subf cntlzw
+/mnt/arch/home/jbettcher/Development/POWERarm/FEXCore/Source/Interface/Core/JIT/PPC64LE/ALUOps.cpp:FindTrailingZeroes not_ oris popcntd rldicl cnttzd addi and_ ori cnttzw
+/mnt/arch/home/jbettcher/Development/POWERarm/FEXCore/Source/Interface/Core/JIT/PPC64LE/ALUOps.cpp:CountLeadingZeroes cntlzd rldicl addi
+/mnt/arch/home/jbettcher/Development/POWERarm/FEXCore/Source/Interface/Core/JIT/PPC64LE/ALUOps.cpp:Rev ld stdbrx mr rlwinm addi rlwimi
+/mnt/arch/home/jbettcher/Development/POWERarm/FEXCore/Source/Interface/Core/JIT/PPC64LE/ALUOps.cpp:Rbit ld mfvsrd lwz stdbrx mr xxbrd addi mtvsrd sldi and_ vgbbd or_ srdi stwbrx
+/mnt/arch/home/jbettcher/Development/POWERarm/FEXCore/Source/Interface/Core/JIT/PPC64LE/ALUOps.cpp:Bfe mr rldicl rlwinm
+/mnt/arch/home/jbettcher/Development/POWERarm/FEXCore/Source/Interface/Core/JIT/PPC64LE/ALUOps.cpp:Sbfe neg mr rldicl rlwinm extsh sldi extsw or_ extsb
+/mnt/arch/home/jbettcher/Development/POWERarm/FEXCore/Source/Interface/Core/JIT/PPC64LE/ALUOps.cpp:Bfi mr rldimi rlwimi
+/mnt/arch/home/jbettcher/Development/POWERarm/FEXCore/Source/Interface/Core/JIT/PPC64LE/ALUOps.cpp:Bfxil mr rldicl rlwinm rldimi rlwimi
+/mnt/arch/home/jbettcher/Development/POWERarm/FEXCore/Source/Interface/Core/JIT/PPC64LE/ALUOps.cpp:Extr mr rldicl rlwinm sldi srdi or_
+/mnt/arch/home/jbettcher/Development/POWERarm/FEXCore/Source/Interface/Core/JIT/PPC64LE/ALUOps.cpp:PDep ld neg mtocrf bc mr rldicl mfocrf li and_ cmpdi andc srdi or_ std
+/mnt/arch/home/jbettcher/Development/POWERarm/FEXCore/Source/Interface/Core/JIT/PPC64LE/ALUOps.cpp:PExt xor_ mr rldicl sldi and_ nor or_ srdi andc
+/mnt/arch/home/jbettcher/Development/POWERarm/FEXCore/Source/Interface/Core/JIT/PPC64LE/ALUOps.cpp:AddWithFlags sldi srdi addco_
+/mnt/arch/home/jbettcher/Development/POWERarm/FEXCore/Source/Interface/Core/JIT/PPC64LE/ALUOps.cpp:SubWithFlags sldi subfco_ srdi
+/mnt/arch/home/jbettcher/Development/POWERarm/FEXCore/Source/Interface/Core/JIT/PPC64LE/ALUOps.cpp:AddNZCV sldi addco_
+/mnt/arch/home/jbettcher/Development/POWERarm/FEXCore/Source/Interface/Core/JIT/PPC64LE/ALUOps.cpp:SubNZCV sldi subfco_
+/mnt/arch/home/jbettcher/Development/POWERarm/FEXCore/Source/Interface/Core/JIT/PPC64LE/ALUOps.cpp:TestNZ addco andi_ and__ andis_
+/mnt/arch/home/jbettcher/Development/POWERarm/FEXCore/Source/Interface/Core/JIT/PPC64LE/ALUOps.cpp:TestZ addco andi_ and__
+/mnt/arch/home/jbettcher/Development/POWERarm/FEXCore/Source/Interface/Core/JIT/PPC64LE/ALUOps.cpp:Adc subfe rldicl subf nor add
+/mnt/arch/home/jbettcher/Development/POWERarm/FEXCore/Source/Interface/Core/JIT/PPC64LE/ALUOps.cpp:Sbb subfe rldicl subf add
+/mnt/arch/home/jbettcher/Development/POWERarm/FEXCore/Source/Interface/Core/JIT/PPC64LE/ALUOps.cpp:AdcWithFlags xor_ adde rldicl addeo_ andc
+/mnt/arch/home/jbettcher/Development/POWERarm/FEXCore/Source/Interface/Core/JIT/PPC64LE/ALUOps.cpp:SbbWithFlags xor_ subfe rldicl subfeo_ and_ xori
+/mnt/arch/home/jbettcher/Development/POWERarm/FEXCore/Source/Interface/Core/JIT/PPC64LE/ALUOps.cpp:AdcZero subfe rldicl subf
+/mnt/arch/home/jbettcher/Development/POWERarm/FEXCore/Source/Interface/Core/JIT/PPC64LE/ALUOps.cpp:AdcZeroWithFlags neg subfe rldicl and_ add xori addco_
+/mnt/arch/home/jbettcher/Development/POWERarm/FEXCore/Source/Interface/Core/JIT/PPC64LE/ALUOps.cpp:AdcNZCV xor_ adde rldicl addeo_ andc
+/mnt/arch/home/jbettcher/Development/POWERarm/FEXCore/Source/Interface/Core/JIT/PPC64LE/ALUOps.cpp:SbbNZCV xor_ subfe rldicl subfeo_ and_ xori
+/mnt/arch/home/jbettcher/Development/POWERarm/FEXCore/Source/Interface/Core/JIT/PPC64LE/ALUOps.cpp:Select iselcc rldicl cmpldi
+/mnt/arch/home/jbettcher/Development/POWERarm/FEXCore/Source/Interface/Core/JIT/PPC64LE/ALUOps.cpp:NZCVSelect iselcc
+/mnt/arch/home/jbettcher/Development/POWERarm/FEXCore/Source/Interface/Core/JIT/PPC64LE/ALUOps.cpp:NZCVSelectV iselcc xxpermdi mtvsrd li xxsel mtvsrdd
+/mnt/arch/home/jbettcher/Development/POWERarm/FEXCore/Source/Interface/Core/JIT/PPC64LE/ALUOps.cpp:NZCVSelectIncrement iselcc addi
+/mnt/arch/home/jbettcher/Development/POWERarm/FEXCore/Source/Interface/Core/JIT/PPC64LE/ALUOps.cpp:MaskGenerateFromBitWidth neg rldicl li srd
+/mnt/arch/home/jbettcher/Development/POWERarm/FEXCore/Source/Interface/Core/JIT/PPC64LE/ALUOps.cpp:SetSmallNZV xor_ extsh_ rldicl sldi extsb_ srdi addo
+/mnt/arch/home/jbettcher/Development/POWERarm/FEXCore/Source/Interface/Core/JIT/PPC64LE/ALUOps.cpp:AXFlag mtocrf mfspr mfocrf rlwinm or_ andc
+/mnt/arch/home/jbettcher/Development/POWERarm/FEXCore/Source/Interface/Core/JIT/PPC64LE/ALUOps.cpp:Parity popcntd rldicl xori
+/mnt/arch/home/jbettcher/Development/POWERarm/FEXCore/Source/Interface/Core/JIT/PPC64LE/ALUOps.cpp:RmifNZCV mtocrf mr rldicl mfocrf and_ or_ andc
+/mnt/arch/home/jbettcher/Development/POWERarm/FEXCore/Source/Interface/Core/JIT/PPC64LE/ALUOps.cpp:CondAddNZCV bc sldi b addco_
+/mnt/arch/home/jbettcher/Development/POWERarm/FEXCore/Source/Interface/Core/JIT/PPC64LE/ALUOps.cpp:CondSubNZCV bc sldi b subfco_
+/mnt/arch/home/jbettcher/Development/POWERarm/FEXCore/Source/Interface/Core/JIT/PPC64LE/ALUOps.cpp:ShiftFlags mtocrf ld popcntd xor_ mr srw bc rldicl extsh mfocrf addi li andi_ cmpdi b subf srd srdi xori extsb std cmpwi
+/mnt/arch/home/jbettcher/Development/POWERarm/FEXCore/Source/Interface/Core/JIT/PPC64LE/ALUOps.cpp:RotateFlags ld xor_ mtocrf bc rldicl mfocrf andi_ xori srdi std
+/mnt/arch/home/jbettcher/Development/POWERarm/FEXCore/Source/Interface/Core/JIT/PPC64LE/ALUOps.cpp:CmpPairZ xor_ rldicl cmpdi crmove or_
+/mnt/arch/home/jbettcher/Development/POWERarm/FEXCore/Source/Interface/Core/JIT/PPC64LE/ALUOps.cpp:AddShift sldi add extsb
+/mnt/arch/home/jbettcher/Development/POWERarm/FEXCore/Source/Interface/Core/JIT/PPC64LE/ALUOps.cpp:SubShift sldi subf
+/mnt/arch/home/jbettcher/Development/POWERarm/FEXCore/Source/Interface/Core/JIT/PPC64LE/ALUOps.cpp:Copy mr
+/mnt/arch/home/jbettcher/Development/POWERarm/FEXCore/Source/Interface/Core/JIT/PPC64LE/ALUOps.cpp:ProcessorID li
+/mnt/arch/home/jbettcher/Development/POWERarm/FEXCore/Source/Interface/Core/JIT/PPC64LE/ALUOps.cpp:RDRAND ld mr bc mflr mtctr li addi stdu cmpdi darn mtlr bctrl crclr std
+/mnt/arch/home/jbettcher/Development/POWERarm/FEXCore/Source/Interface/Core/JIT/PPC64LE/ALUOps.cpp:TelemetrySetValue
+/mnt/arch/home/jbettcher/Development/POWERarm/FEXCore/Source/Interface/Core/JIT/PPC64LE/ALUOps.cpp:GetRoundingMode rldicl li sldi mffprd srd mffs mffsl
+/mnt/arch/home/jbettcher/Development/POWERarm/FEXCore/Source/Interface/Core/JIT/PPC64LE/ALUOps.cpp:SetRoundingMode mffscrn rldicl li mtfsf mffprd sldi rldicr srd or_ mffs mtfprd
+/mnt/arch/home/jbettcher/Development/POWERarm/FEXCore/Source/Interface/Core/JIT/PPC64LE/ALUOps.cpp:PushRoundingMode mffscrni mtfsf mffprd ori rldicr mtfprd mffs
+/mnt/arch/home/jbettcher/Development/POWERarm/FEXCore/Source/Interface/Core/JIT/PPC64LE/ALUOps.cpp:PopRoundingMode mffscrn mtfsf mtfprd
+/mnt/arch/home/jbettcher/Development/POWERarm/FEXCore/Source/Interface/Core/JIT/PPC64LE/ALUOps.cpp:Print ld mr mtctr bctrl
+/mnt/arch/home/jbettcher/Development/POWERarm/FEXCore/Source/Interface/Core/JIT/PPC64LE/ALUOps.cpp:PrintMsg ld mtctr bctrl
+/mnt/arch/home/jbettcher/Development/POWERarm/FEXCore/Source/Interface/Core/JIT/PPC64LE/ALUOps.cpp:Yield ld lwz bc mflr mtctr stw li addi stdu b mtlr bctrl std cmplwi
+/mnt/arch/home/jbettcher/Development/POWERarm/FEXCore/Source/Interface/Core/JIT/PPC64LE/ALUOps.cpp:WFET
+/mnt/arch/home/jbettcher/Development/POWERarm/FEXCore/Source/Interface/Core/JIT/PPC64LE/ALUOps.cpp:MonoBackpatcherWrite ld mr mflr mtctr addi li stdu mtlr bctrl std
+/mnt/arch/home/jbettcher/Development/POWERarm/FEXCore/Source/Interface/Core/JIT/PPC64LE/ALUOps.cpp:ValidateCode ld lwz bc lbz b cmpld lhz
+/mnt/arch/home/jbettcher/Development/POWERarm/FEXCore/Source/Interface/Core/JIT/PPC64LE/ALUOps.cpp:GuestOpcode
+/mnt/arch/home/jbettcher/Development/POWERarm/FEXCore/Source/Interface/Core/JIT/PPC64LE/ALUOps.cpp:ThreadRemoveCodeEntry ld mr mtctr bctrl std
+/mnt/arch/home/jbettcher/Development/POWERarm/FEXCore/Source/Interface/Core/JIT/PPC64LE/ALUOps.cpp:ICacheInvalidate ld mr mflr mtctr li addi stdu mtlr bctrl std
+/mnt/arch/home/jbettcher/Development/POWERarm/FEXCore/Source/Interface/Core/JIT/PPC64LE/ALUOps.cpp:LoadNZCV mfspr rlwinm mfocrf rlwimi
+/mnt/arch/home/jbettcher/Development/POWERarm/FEXCore/Source/Interface/Core/JIT/PPC64LE/ALUOps.cpp:StoreNZCV mtocrf rlwinm rlwimi
+/mnt/arch/home/jbettcher/Development/POWERarm/FEXCore/Source/Interface/Core/JIT/PPC64LE/ALUOps.cpp:LoadFPSR mfvsrd vsldoi lwz stw clrldi mfvsrld sldi or_ mfvscr
+/mnt/arch/home/jbettcher/Development/POWERarm/FEXCore/Source/Interface/Core/JIT/PPC64LE/ALUOps.cpp:StoreFPSR xxpermdi rldicl mtvscr stw mtvsrd and_
+/mnt/arch/home/jbettcher/Development/POWERarm/FEXCore/Source/Interface/Core/JIT/PPC64LE/ALUOps.cpp:CarryInvert subfe addic
+/mnt/arch/home/jbettcher/Development/POWERarm/FEXCore/Source/Interface/Core/JIT/PPC64LE/ALUOps.cpp:VExtractToGPR mfvsrd vsldoi vextubrx clrldi vextuwrx mfvsrld vsplth li vextuhrx srdi vspltb
+/mnt/arch/home/jbettcher/Development/POWERarm/FEXCore/Source/Interface/Core/JIT/PPC64LE/ALUOps.cpp:Float_ToGPR_ZS
+/mnt/arch/home/jbettcher/Development/POWERarm/FEXCore/Source/Interface/Core/JIT/PPC64LE/ALUOps.cpp:Float_ToGPR_S
+/mnt/arch/home/jbettcher/Development/POWERarm/FEXCore/Source/Interface/Core/JIT/PPC64LE/ALUOps.cpp:FCmp xxsldwi xxpermdi rlwinm mfocrf xscvspdp xori xscmpudp
+/mnt/arch/home/jbettcher/Development/POWERarm/FEXCore/Source/Interface/Core/JIT/PPC64LE/ALUOps.cpp:FCmpX86 mtocrf xxsldwi xxpermdi rlwinm mfocrf xscvspdp xori or_ xscmpudp
+/mnt/arch/home/jbettcher/Development/POWERarm/FEXCore/Source/Interface/Core/JIT/PPC64LE/ALUOps.cpp:CRC32 mfvsrd xor_ xxpermdi rldicl vpmsumd mtvsrd sldi
+/mnt/arch/home/jbettcher/Development/POWERarm/FEXCore/Source/Interface/Core/JIT/PPC64LE/MemoryOps.cpp:LoadContext ld xxlor lwz lhzx addi ldx lbz add lbzx lwzx lhz
+/mnt/arch/home/jbettcher/Development/POWERarm/FEXCore/Source/Interface/Core/JIT/PPC64LE/MemoryOps.cpp:LoadContextPair ld xxlor lwz addi ldx add lwzx
+/mnt/arch/home/jbettcher/Development/POWERarm/FEXCore/Source/Interface/Core/JIT/PPC64LE/MemoryOps.cpp:StoreContext sthx xxlor stwx sth stw addi stbx stdx stb add std
+/mnt/arch/home/jbettcher/Development/POWERarm/FEXCore/Source/Interface/Core/JIT/PPC64LE/MemoryOps.cpp:StoreContextPair xxlor xxlxor stwx stw addi stdx add std
+/mnt/arch/home/jbettcher/Development/POWERarm/FEXCore/Source/Interface/Core/JIT/PPC64LE/MemoryOps.cpp:LoadContextIndexed lhzx ldx add lbzx lwzx
+/mnt/arch/home/jbettcher/Development/POWERarm/FEXCore/Source/Interface/Core/JIT/PPC64LE/MemoryOps.cpp:StoreContextIndexed sthx stwx stbx stdx add
+/mnt/arch/home/jbettcher/Development/POWERarm/FEXCore/Source/Interface/Core/JIT/PPC64LE/MemoryOps.cpp:FormContextAddress sldi add
+/mnt/arch/home/jbettcher/Development/POWERarm/FEXCore/Source/Interface/Core/JIT/PPC64LE/MemoryOps.cpp:SpillRegister stvx sth stw stdx stb std
+/mnt/arch/home/jbettcher/Development/POWERarm/FEXCore/Source/Interface/Core/JIT/PPC64LE/MemoryOps.cpp:FillRegister ld lwz ldx lbz lvx lhz
+/mnt/arch/home/jbettcher/Development/POWERarm/FEXCore/Source/Interface/Core/JIT/PPC64LE/MemoryOps.cpp:LoadMemRev lhbrx lwbrx ldbrx lwsync
+/mnt/arch/home/jbettcher/Development/POWERarm/FEXCore/Source/Interface/Core/JIT/PPC64LE/MemoryOps.cpp:StoreMemRev stdbrx sthbrx lwsync stwbrx
+/mnt/arch/home/jbettcher/Development/POWERarm/FEXCore/Source/Interface/Core/JIT/PPC64LE/MemoryOps.cpp:LoadRegister xxlor mr
+/mnt/arch/home/jbettcher/Development/POWERarm/FEXCore/Source/Interface/Core/JIT/PPC64LE/MemoryOps.cpp:StoreRegister xxlor mr
+/mnt/arch/home/jbettcher/Development/POWERarm/FEXCore/Source/Interface/Core/JIT/PPC64LE/MemoryOps.cpp:LoadMem lxvdsx
+/mnt/arch/home/jbettcher/Development/POWERarm/FEXCore/Source/Interface/Core/JIT/PPC64LE/MemoryOps.cpp:LoadMemPair lwz lbz lhz
+/mnt/arch/home/jbettcher/Development/POWERarm/FEXCore/Source/Interface/Core/JIT/PPC64LE/MemoryOps.cpp:StoreMem stxsiwx xxpermdi stxsdx
+/mnt/arch/home/jbettcher/Development/POWERarm/FEXCore/Source/Interface/Core/JIT/PPC64LE/MemoryOps.cpp:StoreMemPair sth stw stb std
+/mnt/arch/home/jbettcher/Development/POWERarm/FEXCore/Source/Interface/Core/JIT/PPC64LE/MemoryOps.cpp:LoadMemTSO lwsync
+/mnt/arch/home/jbettcher/Development/POWERarm/FEXCore/Source/Interface/Core/JIT/PPC64LE/MemoryOps.cpp:StoreMemTSO stvx lwsync
+/mnt/arch/home/jbettcher/Development/POWERarm/FEXCore/Source/Interface/Core/JIT/PPC64LE/MemoryOps.cpp:Push sth mr stw addi stdx stb
+/mnt/arch/home/jbettcher/Development/POWERarm/FEXCore/Source/Interface/Core/JIT/PPC64LE/MemoryOps.cpp:PushTwo stw addi std
+/mnt/arch/home/jbettcher/Development/POWERarm/FEXCore/Source/Interface/Core/JIT/PPC64LE/MemoryOps.cpp:Pop lhzx mr addi lbzx lwzx
+/mnt/arch/home/jbettcher/Development/POWERarm/FEXCore/Source/Interface/Core/JIT/PPC64LE/MemoryOps.cpp:PopTwo ld lwz mr addi
+/mnt/arch/home/jbettcher/Development/POWERarm/FEXCore/Source/Interface/Core/JIT/PPC64LE/MemoryOps.cpp:RMWHandle mr
+/mnt/arch/home/jbettcher/Development/POWERarm/FEXCore/Source/Interface/Core/JIT/PPC64LE/MemoryOps.cpp:MemSet ld mtocrf sth mr bc mulld stw mtctr mfocrf addi andi_ stdu cmpldi cmpdi b stb add srdi extsb std bdnz dcbz
+/mnt/arch/home/jbettcher/Development/POWERarm/FEXCore/Source/Interface/Core/JIT/PPC64LE/MemoryOps.cpp:MemCpy ld mtocrf lwz sth mr bc ldu mulld stw mtctr mfocrf li andi_ addi stdu stxvd2x lbz cmpldi cmpdi lxvd2x b subf add stb srdi extsb std lhz bdnz dcbz
+/mnt/arch/home/jbettcher/Development/POWERarm/FEXCore/Source/Interface/Core/JIT/PPC64LE/MemoryOps.cpp:CacheLineClear dcbst sync
+/mnt/arch/home/jbettcher/Development/POWERarm/FEXCore/Source/Interface/Core/JIT/PPC64LE/MemoryOps.cpp:CacheLineClean dcbt
+/mnt/arch/home/jbettcher/Development/POWERarm/FEXCore/Source/Interface/Core/JIT/PPC64LE/MemoryOps.cpp:CacheLineZero clrrdi std dcbz
+/mnt/arch/home/jbettcher/Development/POWERarm/FEXCore/Source/Interface/Core/JIT/PPC64LE/MemoryOps.cpp:Fence hwsync isync lwsync
+/mnt/arch/home/jbettcher/Development/POWERarm/FEXCore/Source/Interface/Core/JIT/PPC64LE/MemoryOps.cpp:Prefetch dcbt dcbtst
+/mnt/arch/home/jbettcher/Development/POWERarm/FEXCore/Source/Interface/Core/JIT/PPC64LE/MemoryOps.cpp:VStoreNonTemporal li stvxl
+/mnt/arch/home/jbettcher/Development/POWERarm/FEXCore/Source/Interface/Core/JIT/PPC64LE/MemoryOps.cpp:VStoreNonTemporalPair li stvxl
+/mnt/arch/home/jbettcher/Development/POWERarm/FEXCore/Source/Interface/Core/JIT/PPC64LE/MemoryOps.cpp:VLoadNonTemporal lvxl li
+/mnt/arch/home/jbettcher/Development/POWERarm/FEXCore/Source/Interface/Core/JIT/PPC64LE/MemoryOps.cpp:ContextClear stvx stbx stb stdx std vspltisw
+/mnt/arch/home/jbettcher/Development/POWERarm/FEXCore/Source/Interface/Core/JIT/PPC64LE/MemoryOps.cpp:VLoadVectorMasked lhzx lwz stvx sth bc mr stw li addi lbz stb lbzx lvx lwzx std lhz
+/mnt/arch/home/jbettcher/Development/POWERarm/FEXCore/Source/Interface/Core/JIT/PPC64LE/MemoryOps.cpp:VStoreVectorMasked lwz stvx sth bc mr stw addi li lbz stb std lhz
+/mnt/arch/home/jbettcher/Development/POWERarm/FEXCore/Source/Interface/Core/JIT/PPC64LE/MemoryOps.cpp:VLoadVectorGatherMasked ld lhzx lwz stvx sth lwa bc rldicl stw sldi lbz stb add lbzx lvx std lwzx lhz
+/mnt/arch/home/jbettcher/Development/POWERarm/FEXCore/Source/Interface/Core/JIT/PPC64LE/MemoryOps.cpp:VLoadVectorGatherMaskedQPS ld lwz stvx bc rldicl stw sldi add lvx lwzx
+/mnt/arch/home/jbettcher/Development/POWERarm/FEXCore/Source/Interface/Core/JIT/PPC64LE/MemoryOps.cpp:VBroadcastFromMem lhzx xxpermdi vsplth mtvsrd lxvdsx vspltw lbzx lwzx vspltb
+/mnt/arch/home/jbettcher/Development/POWERarm/FEXCore/Source/Interface/Core/JIT/PPC64LE/BranchOps.cpp:CallbackReturn ld lwz stw li addi blr std
+/mnt/arch/home/jbettcher/Development/POWERarm/FEXCore/Source/Interface/Core/JIT/PPC64LE/BranchOps.cpp:ExitFunction xor_ oris cmpd ld bc rldicl mflr rlwinm mtctr lnia bctr li addi cmpldi ldx and_ sldi lis ori b mftb mtlr bcl bctrl add blr std
+/mnt/arch/home/jbettcher/Development/POWERarm/FEXCore/Source/Interface/Core/JIT/PPC64LE/BranchOps.cpp:Jump b
+/mnt/arch/home/jbettcher/Development/POWERarm/FEXCore/Source/Interface/Core/JIT/PPC64LE/BranchOps.cpp:CondJump bc rldicl vcmpequh_ vcmpequw_ cmpdi cmpldi b vcmpequb_ cmplwi cmpwi vcmpequd_
+/mnt/arch/home/jbettcher/Development/POWERarm/FEXCore/Source/Interface/Core/JIT/PPC64LE/BranchOps.cpp:Break ld mtctr bctr std
+/mnt/arch/home/jbettcher/Development/POWERarm/FEXCore/Source/Interface/Core/JIT/PPC64LE/BranchOps.cpp:Syscall rldicl_ ld bc mr mtctr li addi stdu bctrl std
+/mnt/arch/home/jbettcher/Development/POWERarm/FEXCore/Source/Interface/Core/JIT/PPC64LE/BranchOps.cpp:Thunk ld mr mtctr bctrl std
+/mnt/arch/home/jbettcher/Development/POWERarm/FEXCore/Source/Interface/Core/JIT/PPC64LE/AtomicOps.cpp:LoadReserved mcrf
+/mnt/arch/home/jbettcher/Development/POWERarm/FEXCore/Source/Interface/Core/JIT/PPC64LE/AtomicOps.cpp:StoreConditional bc mcrf
+/mnt/arch/home/jbettcher/Development/POWERarm/FEXCore/Source/Interface/Core/JIT/PPC64LE/AtomicOps.cpp:AtomicSwap ld hwsync mtocrf bc mr mfocrf andi_ isync b std
+/mnt/arch/home/jbettcher/Development/POWERarm/FEXCore/Source/Interface/Core/JIT/PPC64LE/AtomicOps.cpp:AtomicFetchAdd ld hwsync mtocrf bc mr mfocrf andi_ isync b mfcr add std
+/mnt/arch/home/jbettcher/Development/POWERarm/FEXCore/Source/Interface/Core/JIT/PPC64LE/AtomicOps.cpp:AtomicFetchSub ld hwsync mtocrf bc mr mfocrf andi_ isync subf b std
+/mnt/arch/home/jbettcher/Development/POWERarm/FEXCore/Source/Interface/Core/JIT/PPC64LE/AtomicOps.cpp:AtomicFetchAnd ld hwsync mtocrf bc mr mfocrf andi_ and_ isync b std
+/mnt/arch/home/jbettcher/Development/POWERarm/FEXCore/Source/Interface/Core/JIT/PPC64LE/AtomicOps.cpp:AtomicFetchCLR ld hwsync mtocrf bc mr mfocrf andi_ isync b andc std
+/mnt/arch/home/jbettcher/Development/POWERarm/FEXCore/Source/Interface/Core/JIT/PPC64LE/AtomicOps.cpp:AtomicFetchOr ld hwsync mtocrf bc mr mfocrf andi_ isync b or_ std
+/mnt/arch/home/jbettcher/Development/POWERarm/FEXCore/Source/Interface/Core/JIT/PPC64LE/AtomicOps.cpp:AtomicFetchXor ld xor_ hwsync mtocrf bc mr mfocrf andi_ isync b std
+/mnt/arch/home/jbettcher/Development/POWERarm/FEXCore/Source/Interface/Core/JIT/PPC64LE/AtomicOps.cpp:AtomicFetchNeg ld neg hwsync mtocrf bc mr mfocrf andi_ isync b std
+/mnt/arch/home/jbettcher/Development/POWERarm/FEXCore/Source/Interface/Core/JIT/PPC64LE/AtomicOps.cpp:CAS hwsync cmpd bc mr clrldi andi_ cmpw isync b
+/mnt/arch/home/jbettcher/Development/POWERarm/FEXCore/Source/Interface/Core/JIT/PPC64LE/AtomicOps.cpp:CASPair cmpd ld stdcx_ ldarx hwsync mtocrf mr bc rldicl mfocrf andi_ isync b crmove stqcx_ lqarx std

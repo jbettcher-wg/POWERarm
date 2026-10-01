@@ -1,0 +1,32 @@
+# Static host instructions per guest instruction, from FEX_CODEHASHLOG byte counts
+# (block bytes minus the empty block's 112 bytes, over 16 repetitions), stable POWERarm 83e554aa9.
+# lo = operands in V0-V15, hi = operands in V16-V31. fcmp omitted: 15 of its 16 flag writes are dead and elided.
+shape             ISA3.0 lo     hi  delta    POWER8 lo     hi  delta
+add_v4s                1.00   4.00  +3.00         1.00   4.00  +3.00
+and                    1.00   4.00  +3.00         1.00   4.00  +3.00
+bsl                    1.00   5.00  +4.00         1.00   5.00  +4.00
+cmeq_v4s               1.00   4.00  +3.00         1.00   4.00  +3.00
+dup_2d                 1.00   3.00  +2.00         1.00   3.00  +2.00
+eor                    1.00   4.00  +3.00         1.00   4.00  +3.00
+fabs_v2d               1.00   3.00  +2.00         1.00   3.00  +2.00
+fadd_d                12.00  16.00  +4.00        12.00  16.00  +4.00
+fadd_v2d              11.00  15.00  +4.00        11.00  15.00  +4.00
+faddacc_d             12.00  16.00  +4.00        12.00  16.00  +4.00
+fcmgt_v2d              2.25   5.50  +3.25         2.25   5.50  +3.25
+fcsel_d                9.00  12.00  +3.00        12.00  15.00  +3.00
+fcvt_sd                8.00  10.00  +2.00         8.00  10.00  +2.00
+fcvtzs_xd              6.00   7.00  +1.00         6.00   7.00  +1.00
+fmadd_d               17.25  22.25  +5.00        17.25  22.25  +5.00
+fmla_v2d              16.25  21.25  +5.00        16.25  21.25  +5.00
+fmov_dx                1.00   2.00  +1.00         2.00   3.00  +1.00
+fmov_v1                1.00   2.00  +1.00         3.00   4.00  +1.00
+fmov_xd                1.00   2.00  +1.00         2.00   3.00  +1.00
+fmul_d                12.00  16.00  +4.00        12.00  16.00  +4.00
+fneg_d                 2.00   4.00  +2.00         2.00   4.00  +2.00
+fsqrt_d                2.00   4.00  +2.00         2.00   4.00  +2.00
+ldr_d                  3.00   4.00  +1.00         3.00   4.00  +1.00
+ldr_q                  1.00   2.00  +1.00         3.00   4.00  +1.00
+movi0                  1.00   2.00  +1.00         1.00   2.00  +1.00
+scvtf_dx               3.00   4.00  +1.00         3.00   4.00  +1.00
+str_d                  3.00   4.00  +1.00         3.00   4.00  +1.00
+uzp1_v4s               1.00   4.00  +3.00         1.00   4.00  +3.00
