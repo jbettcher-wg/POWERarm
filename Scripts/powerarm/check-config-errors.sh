@@ -178,22 +178,33 @@ id_for() {
   local dir="$w/cc-$src-$val"
   rm -rf "$dir"
   mkdir -p "$dir"
-  # CodeCacheForkWriter=0 so the segment is published in-process before exit.
-  # With the writer on, the files land asynchronously and this helper raced it:
-  # a run would see no id at all, or catch a half-written
-  # '<name>-<hash>-<id>.tmp.<pid>.<n>' and compare that whole string.
   if [ "$src" = json ]; then
-    run "$(cfg VSXClasses "$val")" "$dir" POWERARM_CODECACHEFORKWRITER=0 -- > /dev/null
+    run "$(cfg VSXClasses "$val")" "$dir" -- > /dev/null
   else
-    run - "$dir" POWERARM_VSXCLASSES="$val" POWERARM_CODECACHEFORKWRITER=0 -- > /dev/null
+    run - "$dir" POWERARM_VSXCLASSES="$val" -- > /dev/null
   fi
   # Match the id as a 16-hex field at end of name, and drop .tmp/.lock outright.
   # The old pattern anchored '[0-9a-f]*$' with a star, so it matched the EMPTY
   # string at the end of any name it did not understand and passed the whole
   # filename through.
-  find "$dir" -type f 2> /dev/null | sed 's#.*/##' |
-    grep -v -e '\.lock$' -e '\.tmp\.' |
-    sed -n 's/.*-\([0-9a-f]\{16\}\)$/\1/p' | sort -u | tr '\n' ' '
+  # The cache publish is ASYNCHRONOUS -- the segment is written by a writer
+  # process or an exit child, so the files are not there the instant the guest
+  # returns. Looking once made this helper nondeterministic: some runs read an
+  # empty id and the caller then SKIPPED the whole bool-cacheid block, silently
+  # removing the only check that proves a bool reached the JIT. Poll instead.
+  local tries id
+  for tries in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do
+    id=$(find "$dir" -type f 2> /dev/null | sed 's#.*/##' |
+      grep -v -e '\.lock$' -e '\.tmp\.' |
+      sed -n 's/.*-\([0-9a-f]\{16\}\)$/\1/p' | sort -u | tr '\n' ' ')
+    case $id in
+    '') sleep 0.2 ;;
+    *) printf '%s' "$id"; return 0 ;;
+    esac
+  done
+  # Twenty tries and still nothing: report empty so the caller's own guard
+  # fires loudly rather than this returning a half-written set.
+  printf ''
 }
 
 on_id=$(id_for json 1)
