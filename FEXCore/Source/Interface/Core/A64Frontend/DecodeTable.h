@@ -14,8 +14,9 @@
 // FEXCore/Scripts/a64_decode_table_generator.py, not per process.
 //
 // A matcher's handler is the IRBuilder member function registered under the
-// same name (IRBuilder::HandlerTable). Entries with no registered handler, and
-// words that match no entry at all, are unimplemented and raise SIGILL.
+// same name in HandlerTable.h, resolved at compile time. Entries with no
+// registered handler, and words that match no entry at all, are unimplemented
+// and raise SIGILL.
 #pragma once
 
 #include <cstddef>

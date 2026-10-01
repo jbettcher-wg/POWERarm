@@ -8,7 +8,7 @@
 // A64 translators.
 //
 // Translators are member functions named after their dynarmic decode table
-// entry (a64.inc) and registered in HandlerTable (IRBuilder.cpp). A translator
+// entry (a64.inc) and registered in HandlerTable.h. A translator
 // returns false when the word is an unallocated or unsupported combination of
 // its fields; the instruction then raises SIGILL exactly like a word with no
 // translator at all.
@@ -35,7 +35,6 @@
 
 #include <array>
 #include <cstdint>
-#include <string_view>
 
 namespace FEXCore::Context {
 class ContextImpl;
@@ -119,9 +118,6 @@ public:
   bool NeedsBlockEnder() const {
     return false;
   }
-
-  // Translator lookup by decode table name; nullptr if none is registered.
-  static InstHandler FindHandler(std::string_view Name);
 
   // clang-format off
   // Translators, grouped as in a64.inc. Defined in Translate*.cpp.
@@ -656,12 +652,6 @@ private:
   private:
     fextl::vector<JumpTargetEntry> Storage;
   };
-
-  struct HandlerEntry {
-    std::string_view Name;
-    InstHandler Handler;
-  };
-  static const HandlerEntry HandlerTable[];
 
   [[maybe_unused]] FEXCore::Context::ContextImpl* CTX;
   JumpTargetsMap JumpTargets;
