@@ -187,7 +187,16 @@ static_assert(PPC64VConstSlotSize % 16 == 0 && PPC64VConstPoolOffset + PPC64VCon
 // PPC64BlockLinkRecord and PPC64LinkRecordFromThunkStart are defined in
 // Interface/Core/ArchHelpers/PPC64Emitter.h.
 
-class PPC64JITCore final : public CPUBackend, public PPC64EmitterBase {
+class PPC64VSXReexport;
+
+// Not `final`: PPC64VSXReexport derives from it privately so that a VSX-clean
+// lowering sees only a re-exported subset of this class. Nothing ever
+// constructs a derived object -- see the comment above PPC64VSXReexport.
+class PPC64JITCore : public CPUBackend, public PPC64EmitterBase {
+  // The view re-exports members of this class by name, including private ones
+  // (the FP cold-stub bookkeeping, the host-feature pointers).
+  friend class PPC64VSXReexport;
+
 public:
   explicit PPC64JITCore(FEXCore::Context::ContextImpl* ctx,
                         FEXCore::Core::InternalThreadState* Thread);
@@ -1525,6 +1534,11 @@ private:
 
   // -----------------------------------------------------------------------
   // Op handler declarations (filled in by the separate *.cpp files)
+  //
+  // Every op has exactly one handler named Op_<name> here, whatever its
+  // lowering is written against: an op flagged VSXClean in IR.json has a
+  // one-line Op_<name> that forwards to the view (DEF_OP_VSX below), so the
+  // dispatch table is unchanged and no op can have two handlers.
   // -----------------------------------------------------------------------
 #define DEF_OP(x) void Op_##x(IR::IROp_Header const* IROp, IR::Ref Node)
 
@@ -1554,7 +1568,85 @@ private:
 #undef DEF_OP
 };
 
-#define DEF_OP(x) void PPC64JITCore::Op_##x(IR::IROp_Header const* IROp, IR::Ref Node)
+// ===========================================================================
+// The VSX-clean lowering view (VSX-REGISTER-CLASSES.md §7.2)
+// ===========================================================================
+//
+// Guest V16-V31 live in the FPR-aliased low bank vs16-vs31. Only VSX-form
+// instructions can name that half of the register file; 67 of the 116 vector
+// ops the A64 frontend emits are VMX-form by semantics and physically cannot.
+// So the register allocator may hand a low-bank register to an op only if that
+// op's lowering is VSX-form throughout, and a lowering that breaks the rule
+// later is a SILENT wrong-register miscompile -- no crash, workload-dependent.
+//
+// The rule is therefore not written down for a future contributor to remember.
+// It is three interlocking compile-time facts plus one runtime one:
+//
+//  1. VSX-form emitter methods take VSXR, VMX-form ones take VR, and VR
+//     converts to VSXR but never back (CodeEmitter Registers.h). So a VMX
+//     mnemonic cannot be handed a low-bank register at all -- there is no
+//     overload.
+//  2. A VSX-clean lowering is defined with DEF_OP_VSX, which makes it a member
+//     of PPC64VSXView. PPC64JITCore is a PRIVATE base of PPC64VSXReexport,
+//     which re-exports only the VSX-safe surface (PPC64VSXView.inc), and the
+//     handlers live one level further down in PPC64VSXView -- where the
+//     private base is no longer accessible. `GetVReg`, `SRAFPR`, every `v*`
+//     mnemonic, `lvx`/`stvx`, every FPR-form instruction and every helper that
+//     carries a VR through are simply not names in that scope. Two levels are
+//     needed, not one: private inheritance restricts access by USERS of the
+//     derived class, not by the derived class's own members, so handlers
+//     defined directly in PPC64VSXReexport could still call GetVReg.
+//  3. Both macros static_assert against IR::VSXClean, so the IR.json flag the
+//     allocator reads and the class the handler is written in cannot disagree.
+//     An op is flagged clean iff its handler is in the view, and vice versa.
+//  4. What none of that can cover is an allocator bug -- a future change to
+//     coalescing or eviction that hands a low-bank register to a VMX-form
+//     consumer. RegisterAllocationPass's post-RA validator dies on that, at
+//     translation of the first block that makes the decision, in Release.
+//
+// The view adds no data members and is never constructed: PPC64JITCore's
+// forwarding handler downcasts `this`, which is address-identical because the
+// chain is single, non-virtual inheritance with nothing added. The
+// static_assert below pins that.
+class PPC64VSXReexport : private PPC64JITCore {
+  // Only PPC64JITCore may see the private base, because its DEF_OP_VSX
+  // forwarding handlers are what downcast to the view.
+  friend class PPC64JITCore;
+
+public:
+#include "Interface/Core/JIT/PPC64LE/PPC64VSXView.inc"
+};
+
+class PPC64VSXView final : public PPC64VSXReexport {
+public:
+  // The VSX-clean handlers, declared from the same IR.json flag that the
+  // allocator reads, so this list cannot drift from the table.
+#define DEF_OP_VSX_DECL(x) void VSXOp_##x(IR::IROp_Header const* IROp, IR::Ref Node)
+#define IROP_VSXCLEAN_DISPATCH_DEFS
+#include <FEXCore/IR/IRDefines_Dispatch.inc>
+#undef DEF_OP_VSX_DECL
+};
+
+static_assert(sizeof(PPC64VSXView) == sizeof(PPC64JITCore),
+              "PPC64VSXView must add nothing to PPC64JITCore: the DEF_OP_VSX thunk downcasts to it");
+
+#define DEF_OP(x)                                                                                  \
+  static_assert(!IR::VSXClean(IR::IROp_##x::OPCODE),                                               \
+                #x " is flagged VSXClean in IR.json but its lowering is written against the full " \
+                   "JIT core; define it with DEF_OP_VSX or clear the flag");                       \
+  void PPC64JITCore::Op_##x(IR::IROp_Header const* IROp, IR::Ref Node)
+
+// A VSX-clean lowering. Defines the dispatch-table handler as a one-line
+// forward and then opens the real body as a member of the view, where no
+// VMX-form name is in scope.
+#define DEF_OP_VSX(x)                                                                           \
+  static_assert(IR::VSXClean(IR::IROp_##x::OPCODE),                                             \
+                #x " is defined with DEF_OP_VSX but is not flagged VSXClean in IR.json; the "   \
+                   "allocator would never give it a low-bank operand");                         \
+  void PPC64JITCore::Op_##x(IR::IROp_Header const* IROp, IR::Ref Node) {                         \
+    static_cast<PPC64VSXView*>(this)->VSXOp_##x(IROp, Node);                                     \
+  }                                                                                              \
+  void PPC64VSXView::VSXOp_##x(IR::IROp_Header const* IROp, IR::Ref Node)
 
 [[nodiscard]]
 fextl::unique_ptr<CPUBackend> CreatePPC64JITCore(FEXCore::Context::ContextImpl* ctx,

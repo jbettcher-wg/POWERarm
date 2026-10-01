@@ -14,10 +14,23 @@ struct Reg {
   bool operator!=(Reg o) const { return idx != o.idx; }
 };
 
+struct VSXR;
+
 // Typed wrappers so callers can express r0 vs v0 distinctly
 struct GPR  : Reg {};
 struct FPR  : Reg {};  // FPR0-FPR31 (also VSR0-VSR31 low 64 bits)
-struct VR   : Reg {};  // VMX v0-v31 (VSR32-VSR63)
+// VMX v0-v31 (VSR32-VSR63).
+//
+// A VR converts IMPLICITLY to VSXR (v_n is vs_{32+n}) and a VSXR never
+// converts back. That one-way edge is the type system half of the VSX
+// register-class rule: a VSX-form emitter method takes VSXR, so every VMX
+// register is still a legal operand for it and the call emits the same bytes
+// it always did, while a VMX-form method takes VR, so handing it a low-bank
+// register has no overload and does not compile.
+// See docs/powerarm/research/power-isa/VSX-REGISTER-CLASSES.md §7.2.
+struct VR   : Reg {
+  constexpr operator VSXR() const;
+};
 
 // Full VSX register file, vs0-vs63.
 //
@@ -28,7 +41,18 @@ struct VR   : Reg {};  // VMX v0-v31 (VSR32-VSR63)
 //
 // This exists so the backend can use the otherwise-idle low bank for scratch
 // without taking a register away from the allocator's VMX pool.
-struct VSXR { uint32_t idx; };
+struct VSXR {
+  uint32_t idx;
+
+  // Lowerings compare operands for aliasing ("did the allocator tie the result
+  // to a source?"), which the VR forms got from Reg. VSXR is deliberately not a
+  // Reg -- it must not inherit Reg's comparisons with GPR/FPR/VR -- so it
+  // carries its own, over the full 6-bit VSR number. Two names for the same
+  // physical register always compare equal, which is the property the aliasing
+  // checks need.
+  bool operator==(VSXR o) const { return idx == o.idx; }
+  bool operator!=(VSXR o) const { return idx != o.idx; }
+};
 
 // Condition register fields CR0-CR7
 struct CRField { uint32_t idx; };
@@ -48,6 +72,10 @@ static constexpr CRField cr(uint32_t n) { return CRField{n}; }
 // vs0-vs63 by raw number, and the VMX-to-VSX mapping (v_n == vs_{32+n}).
 static constexpr VSXR vsx(uint32_t n) { return VSXR {n}; }
 static constexpr VSXR toVSX(VR r) { return VSXR {32u + r.idx}; }
+// The one-way VR -> VSXR edge declared above. Out of line because VSXR is an
+// aggregate declared after VR; keeping it an aggregate matters because the
+// backend initialises named low-bank registers with `VSXR{12}` throughout.
+constexpr VR::operator VSXR() const { return VSXR {32u + idx}; }
 
 // Named GPRs
 namespace GPRegs {

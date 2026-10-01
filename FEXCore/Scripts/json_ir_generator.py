@@ -57,6 +57,7 @@ class OpDefinition:
     JITDispatch: bool
     JITDispatchOverride: str
     TiedSource: int
+    VSXClean: bool
     Inline: list[str]
     Arguments: list[OpArgument]
     EmitValidation: list[str]
@@ -81,6 +82,7 @@ class OpDefinition:
         self.JITDispatch = True
         self.JITDispatchOverride = None
         self.TiedSource = -1
+        self.VSXClean = False
         self.Arguments = []
         self.EmitValidation = []
         self.Desc = []
@@ -261,6 +263,21 @@ def parse_ops(ops):
 
             if "TiedSource" in op_val:
                 OpDef.TiedSource = op_val["TiedSource"]
+
+            # VSXClean: every host instruction this op's lowering can emit onto
+            # one of the op's own operands or its result is a VSX-form
+            # instruction, i.e. one that can name all 64 VSRs. The PPC64LE
+            # register allocator reads this to decide whether a guest V16-V31
+            # value, which lives in the FPR-aliased low bank vs16-vs31, may be
+            # handed to the op directly instead of being copied into the VMX
+            # half first. A wrong `true` here is a silent wrong-register
+            # miscompile, which is why the backend ties the flag to the handler:
+            # a VSXClean op must be defined with DEF_OP_VSX inside PPC64VSXView,
+            # where no VMX-form emitter method and no GetVReg is in scope, and
+            # both DEF_OP macros static_assert against this table.
+            # docs/powerarm/research/power-isa/VSX-REGISTER-CLASSES.md 7.
+            if "VSXClean" in op_val:
+                OpDef.VSXClean = bool(op_val["VSXClean"])
 
             # Pad Inline out to the argument count
             OpDef.Inline = [''] * len(OpDef.Arguments)
@@ -475,6 +492,12 @@ def print_ir_property_tables():
 
         output_file.write("};\n\n")
         output_file.write(f"[[nodiscard]] inline {T} {prop}(IROps Op) {{ return {prop}_[Op]; }}\n\n")
+
+    output_file.write("inline constexpr std::array<bool, OP_LAST + 1> VSXClean_ = {\n")
+    for op in IROps:
+        output_file.write("\t{},\n".format("true" if op.VSXClean else "false"))
+    output_file.write("};\n\n")
+    output_file.write("[[nodiscard]] inline constexpr bool VSXClean(IROps Op) { return VSXClean_[Op]; }\n\n")
 
     output_file.write("inline constexpr std::array<bool, OP_LAST + 1> IRDest = {\n")
     for op in IROps:
@@ -800,6 +823,17 @@ def print_ir_dispatcher_defs():
             output_dispatch_file.write("DEF_OP({});\n".format(op.Name))
 
     output_dispatch_file.write("#undef IROP_DISPATCH_DEFS\n")
+    output_dispatch_file.write("#endif\n")
+
+    # The VSXClean subset again, as the handler declarations of the PPC64LE
+    # backend's VSX-only view class. Generated from the same flag the register
+    # allocator reads, so the view and the table cannot drift.
+    output_dispatch_file.write("#ifdef IROP_VSXCLEAN_DISPATCH_DEFS\n")
+    for op in IROps:
+        if op.Name != "Last" and op.VSXClean:
+            output_dispatch_file.write("DEF_OP_VSX_DECL({});\n".format(op.Name))
+
+    output_dispatch_file.write("#undef IROP_VSXCLEAN_DISPATCH_DEFS\n")
     output_dispatch_file.write("#endif\n")
 
 def print_ir_dispatcher_dispatch():

@@ -173,6 +173,57 @@ private:
 
   bool AnySpilled {};
 
+  // VSX register classes (docs/powerarm/research/power-isa/VSX-REGISTER-CLASSES.md).
+  //
+  // On ppc64le the FPRFixed class has 32 entries: 0-15 are the VMX registers
+  // v0-v15 and 16-31 are the FPR-aliased low bank vs16-vs31, which only
+  // VSX-form host instructions can name. kLowBankFPRFirst is 16 there and 32
+  // (i.e. "no low bank") on a backend whose FPRFixed class is smaller, which
+  // is what makes everything below free on every other target.
+  uint32_t LowBankFPRFirst {32};
+  // Set when this region actually coalesces a low-bank static register onto a
+  // value. Nothing to validate otherwise, which is the common case: most units
+  // never touch guest V16-V31.
+  bool AnyLowBankCoalesced {};
+
+  bool IsLowBankFPR(PhysicalRegister Reg) const {
+    return Reg.AsRegClass() == RegClass::FPRFixed && Reg.Reg >= LowBankFPRFirst;
+  }
+
+  // The allocator half of the VSX register-class guard (§7.4).
+  //
+  // The lowering half is a compile error: a VSX-clean handler is a member of
+  // PPC64VSXView, where no VMX-form emitter method and no GetVReg exist, and
+  // both DEF_OP macros static_assert the IR.json flag against the class the
+  // handler is written in. That cannot catch a mistake on THIS side -- a change
+  // to coalescing or eviction that hands a low-bank register to an op whose
+  // lowering is not VSX-clean. So check it where the assignment is finished,
+  // and die rather than assert: assertions are compiled out of this tree's
+  // Release build, and the failure mode is a wrong register with no crash.
+  //
+  // LoadRegister/StoreRegister move the bank by xxlor and VMov is VSX-clean by
+  // construction (the evict copy the forward pass inserts below is a VMov with
+  // a low-bank source); every other op must carry the flag.
+  void ValidateLowBankOperands(Ref Node, const IROp_Header* IROp) {
+    if (IR::VSXClean(IROp->Op) || IROp->Op == OP_LOADREGISTER || IROp->Op == OP_STOREREGISTER ||
+        IROp->Op == OP_VMOV) {
+      return;
+    }
+
+    if (GetHasDest(IROp->Op) && IsLowBankFPR(PhysicalRegister(Node))) {
+      ERROR_AND_DIE_FMT("RA gave {} a low-bank FPRFixed destination ({}), but it is not VSXClean",
+                        IR::GetName(IROp->Op), PhysicalRegister(Node).Reg);
+    }
+
+    const int NumArgs = IR::GetRAArgs(IROp->Op);
+    for (int s = 0; s < NumArgs; ++s) {
+      if (IROp->Args[s].IsImmediate() && IsLowBankFPR(PhysicalRegister(IROp->Args[s]))) {
+        ERROR_AND_DIE_FMT("RA gave {} a low-bank FPRFixed source {} ({}), but it is not VSXClean",
+                          IR::GetName(IROp->Op), s, PhysicalRegister(IROp->Args[s]).Reg);
+      }
+    }
+  }
+
   // Phase 1: monotonically increasing per-instruction counter for the forward
   // pass.  Used to stamp DefIP on SpillRange entries.  Reset per block.
   // Phase 2 will use this (together with LastUseIP) to time slot release.
@@ -240,18 +291,19 @@ private:
   Ref DecodeSRANode(const IROp_Header* IROp, Ref Node) {
     if (IROp->Op == OP_LOADREGISTER) {
       const auto* Op = IROp->C<IR::IROp_LoadRegister>();
-      if (Op->Class == RegClass::FPR && Op->Reg >= 16) {
+      if (Op->Class == RegClass::FPR && Op->Reg >= LowBankFPRFirst) {
         return nullptr;
       }
       return Node;
     } else if (IROp->Op == OP_STOREREGISTER) {
       const auto Reg = PhysicalRegister(Node);
-      if (Reg.AsRegClass() == RegClass::FPRFixed && Reg.Reg >= 16) {
-        return nullptr;
-      }
       auto V = IROp->C<IR::IROp_StoreRegister>()->Value;
       V.ClearKill();
-      return IR->GetNode(V);
+      Ref Value = IR->GetNode(V);
+      if (Reg.AsRegClass() == RegClass::FPRFixed && Reg.Reg >= LowBankFPRFirst) {
+        return nullptr;
+      }
+      return Value;
     }
 
     return nullptr;
@@ -633,6 +685,10 @@ void ConstrainedRAPass::Run(IREmitter* IREmit_) {
   SSAToReg.resize(IR->GetSSACount(), PhysicalRegister::Invalid());
   Seen.resize(IR->GetSSACount(), false);
 
+  // 16 static FPRs means one bank and nothing to police; 32 means the ppc64le
+  // split file, where 16-31 are the low bank.
+  LowBankFPRFirst = Classes[FEXCore::ToUnderlying(RegClass::FPRFixed)].Count > 16 ? 16u : 32u;
+
   // Region prepass. RegionPred is 0 on every block unless the frontend asked
   // for a continuation, so an ordinary unit pays one walk of the block list
   // and allocates nothing.
@@ -681,6 +737,8 @@ void ConstrainedRAPass::Run(IREmitter* IREmit_) {
 
     // Spilling is region-local, so reset this per-region
     AnySpilled = false;
+    AnyLowBankCoalesced = false;
+
 
     // Phase 1 of spill-slot reuse: reset per-region bookkeeping.  Slots do not
     // cross region boundaries (spilling is strictly region-local), so the
@@ -884,6 +942,10 @@ void ConstrainedRAPass::Run(IREmitter* IREmit_) {
         // Assign destinations.
         if (GetHasDest(IROp->Op) && PhysicalRegister(CodeNode).IsInvalid()) {
           AssignReg(IROp, CodeNode, IROp);
+        }
+
+        if (AnyLowBankCoalesced) {
+          ValidateLowBankOperands(CodeNode, IROp);
         }
 
         if (IsTrivial(CodeNode, IROp)) {

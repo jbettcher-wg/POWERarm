@@ -33,20 +33,10 @@ namespace FEXCore::CPU {
 using namespace PPC64Emitter::FPRegs;
 
 namespace {
-  // Encodings the shared emitter does not provide, checked against the
-  // POWER9 assembler: xscvdpuxds vs34,vs35 = f0401d23, xscvdpuxws = f0401923,
-  // xsrdpi = f0401927, mfvsrwz r7,v2 = 7c4700e7, mtfsb0 30 = ffc0008c.
-  constexpr uint32_t XO_XSCVDPUXDS = 328;
-  constexpr uint32_t XO_XSCVDPUXWS = 72;
-  constexpr uint32_t XO_XSRDPI = 73;
-  // ISA 3.0: xscvhpdp vs34,vs35 = f0501d6f and xscvdphp = f0511d6f (XO 347,
-  // told apart by 16/17 in the RA field).
-  constexpr uint32_t XO_XSCVHPDP = 347;
-  constexpr uint32_t XO_XSCVDPHP = 347;
-
-  void EmitXX2WithRA(PPC64JITCore* J, VR T, VR B, uint32_t XO, uint32_t RA) {
-    J->Emit32((60u << 26) | (T.idx << 21) | (RA << 16) | (B.idx << 11) | ((XO & 0x1FFu) << 2) | (1u << 1) | 1u);
-  }
+  // xscvdpuxds/xscvdpuxws and the ISA 3.0 xscvhpdp/xscvdphp pair used to be
+  // emitted here by hand with the XX2 extension bits hardcoded. They are
+  // derived-bit emitter methods now (CodeEmitter Emitter.h), because a
+  // hardcoded TX is a wrong register the moment an operand can be low-bank.
 
   // FPSCR bits 62:63 (32-bit numbering 30:31) are RN.
   constexpr uint32_t FPSCR_RN_HI = 30;
@@ -140,7 +130,7 @@ DEF_OP(A64FloatToGPR) {
   }
 
   if (!Op->Signed) {
-    EmitXX2(VTMP2.idx, VTMP1.idx, Is64 ? XO_XSCVDPUXDS : XO_XSCVDPUXWS);
+    Is64 ? xscvdpuxds(VTMP2, VTMP1) : xscvdpuxws(VTMP2, VTMP1);
     if (Is64) {
       mfvsrd(Dst, VTMP2);
     } else {
@@ -285,7 +275,7 @@ DEF_OP(A64VecFloatToInt) {
 static void EmitHalfToDouble(PPC64JITCore* J, VR Dst, VR Src, bool ISA30) {
   J->xxpermdi(VTMP1, Src, Src, 0b11);
   if (ISA30) {
-    EmitXX2WithRA(J, VTMP1, VTMP1, XO_XSCVHPDP, 16);
+    J->xscvhpdp(VTMP1, VTMP1);
     PlaceElement0(J, Dst, VTMP1);
     return;
   }
@@ -345,7 +335,7 @@ static void EmitHalfToDouble(PPC64JITCore* J, VR Dst, VR Src, bool ISA30) {
 static void EmitDoubleToHalf(PPC64JITCore* J, VR Dst, VR Src, bool ISA30) {
   J->xxpermdi(VTMP1, Src, Src, 0b11);
   if (ISA30) {
-    EmitXX2WithRA(J, VTMP1, VTMP1, XO_XSCVDPHP, 17);
+    J->xscvdphp(VTMP1, VTMP1);
     J->mfvsrd(TMP1, VTMP1);
     J->clrldi(TMP1, TMP1, 48);
     J->mtvsrd(VTMP1, TMP1);

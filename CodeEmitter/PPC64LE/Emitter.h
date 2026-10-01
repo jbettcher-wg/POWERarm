@@ -896,45 +896,50 @@ public:
     Emit32((31u << 26) | (frt.idx << 21) | (rs.idx << 16) | (179u << 1));
   }
 
-  // mtvsrd VRT, RS — MTVSRD with TX=1: targets AltiVec register (VR), not FPR
-  // Encoding: op=31, VRT[4:0] in bits[25:21], RS in bits[20:16], XO=179, TX=1
-  void mtvsrd(VR vrt, GPR rs) {
-    Emit32((31u << 26) | (vrt.idx << 21) | (rs.idx << 16) | (179u << 1) | 1u);
+  // The GPR<->VSR moves, X-form opcode 31 with the TX/SX extension bit in the
+  // Rc slot. The bit is DERIVED from bit 5 of the register number, so one
+  // method reaches both halves of the file: a VR argument converts to VSXR and
+  // produces TX=1, which is the byte-identical encoding these emitted when the
+  // bit was hardcoded, and a low-bank register produces TX=0.
+  //
+  // mtvsrd XT, RS — XO=179.
+  void mtvsrd(VSXR t, GPR rs) {
+    Emit32((31u << 26) | ((t.idx & 31u) << 21) | (rs.idx << 16) | (179u << 1) | ((t.idx >> 5) & 1u));
   }
 
-  // mfvsrd RT, VRS — MFVSRD with TX=1: sources AltiVec register (VR)
-  void mfvsrd(GPR rt, VR vrs) {
-    Emit32((31u << 26) | (vrs.idx << 21) | (rt.idx << 16) | (51u << 1) | 1u);
+  // mfvsrd RT, XS — XO=51.
+  void mfvsrd(GPR rt, VSXR s) {
+    Emit32((31u << 26) | ((s.idx & 31u) << 21) | (rt.idx << 16) | (51u << 1) | ((s.idx >> 5) & 1u));
   }
 
-  // mfvsrld RT, VRS (ISA 3.0) — MFVSRLD with TX=1: move lower doubleword from VR
-  void mfvsrld(GPR rt, VR vrs) {
-    Emit32((31u << 26) | (vrs.idx << 21) | (rt.idx << 16) | (307u << 1) | 1u);
+  // mfvsrld RT, XS (ISA 3.0) — move the LOWER doubleword to a GPR. XO=307.
+  void mfvsrld(GPR rt, VSXR s) {
+    Emit32((31u << 26) | ((s.idx & 31u) << 21) | (rt.idx << 16) | (307u << 1) | ((s.idx >> 5) & 1u));
   }
 
-  // mtvsrwa VRT, RS (ISA 2.07) — MTVSRWA with TX=1: move word and sign-extend to doubleword 0
-  void mtvsrwa(VR vrt, GPR rs) {
-    Emit32((31u << 26) | (vrt.idx << 21) | (rs.idx << 16) | (211u << 1) | 1u);
+  // mtvsrwa XT, RS (ISA 2.07) — word, sign-extended into doubleword 0. XO=211.
+  void mtvsrwa(VSXR t, GPR rs) {
+    Emit32((31u << 26) | ((t.idx & 31u) << 21) | (rs.idx << 16) | (211u << 1) | ((t.idx >> 5) & 1u));
   }
 
-  // mtvsrwz VRT, RS (ISA 2.07) — MTVSRWZ with TX=1: move word and zero-extend to doubleword 0
-  void mtvsrwz(VR vrt, GPR rs) {
-    Emit32((31u << 26) | (vrt.idx << 21) | (rs.idx << 16) | (243u << 1) | 1u);
+  // mtvsrwz XT, RS (ISA 2.07) — word, zero-extended into doubleword 0. XO=243.
+  void mtvsrwz(VSXR t, GPR rs) {
+    Emit32((31u << 26) | ((t.idx & 31u) << 21) | (rs.idx << 16) | (243u << 1) | ((t.idx >> 5) & 1u));
   }
 
-  // mfvsrwz RT, VRS (ISA 2.07) — MFVSRWZ with TX=1: move word and zero-extend to GPR
-  void mfvsrwz(GPR rt, VR vrs) {
-    Emit32((31u << 26) | (vrs.idx << 21) | (rt.idx << 16) | (115u << 1) | 1u);
+  // mfvsrwz RT, XS (ISA 2.07) — word, zero-extended into a GPR. XO=115.
+  void mfvsrwz(GPR rt, VSXR s) {
+    Emit32((31u << 26) | ((s.idx & 31u) << 21) | (rt.idx << 16) | (115u << 1) | ((s.idx >> 5) & 1u));
   }
 
-  // mtvsrdd VRT, RA, RB (ISA 3.0) — MTVSRDD with TX=1: move RA to dw0, RB to dw1
-  void mtvsrdd(VR vrt, GPR ra, GPR rb) {
-    Emit32((31u << 26) | (vrt.idx << 21) | (ra.idx << 16) | (rb.idx << 11) | (435u << 1) | 1u);
+  // mtvsrdd XT, RA, RB (ISA 3.0) — RA to dw0, RB to dw1. XO=435.
+  void mtvsrdd(VSXR t, GPR ra, GPR rb) {
+    Emit32((31u << 26) | ((t.idx & 31u) << 21) | (ra.idx << 16) | (rb.idx << 11) | (435u << 1) | ((t.idx >> 5) & 1u));
   }
 
-  // mtvsrws VRT, RA (ISA 3.0) — MTVSRWS with TX=1: move word and splat across all 4 words
-  void mtvsrws(VR vrt, GPR ra) {
-    Emit32((31u << 26) | (vrt.idx << 21) | (ra.idx << 16) | (403u << 1) | 1u);
+  // mtvsrws XT, RA (ISA 3.0) — word splatted across all four words. XO=403.
+  void mtvsrws(VSXR t, GPR ra) {
+    Emit32((31u << 26) | ((t.idx & 31u) << 21) | (ra.idx << 16) | (403u << 1) | ((t.idx >> 5) & 1u));
   }
 
   // ===== VSX XX3-form (Power ISA 2.07 §1.6.10) =====
@@ -963,77 +968,51 @@ public:
            (((a >> 5) & 1u) << 2) /*AX*/ | (((b >> 5) & 1u) << 1) /*BX*/);
   }
 
-  // VR n is vs(32+n), so every extension bit comes out 1 and this is
-  // bit-identical to the previous hardcoded 0x7.
-  void EmitXX3(uint32_t vrt, uint32_t vra, uint32_t vrb, uint32_t xo) {
-    EmitXX3VSX(32u + vrt, 32u + vra, 32u + vrb, xo);
-  }
-
-  // xxpermdi VRT, VRA, VRB, DM (POWER7+).  XO=10; DM goes in the XO field's bits 5:6.
-  void xxpermdi(VR vrt, VR vra, VR vrb, uint32_t dm) {
-    assert(dm < 4);
-    EmitXX3(vrt.idx, vra.idx, vrb.idx, 10u | ((dm & 3u) << 5));
-  }
-  // xxsldwi VRT, VRA, VRB, SHW (POWER7+).  XO=2; SHW (shift in words) at XO bits 5:6.
-  void xxsldwi(VR vrt, VR vra, VR vrb, uint32_t shw) {
+  // xxsldwi XT, XA, XB, SHW (POWER7+).  XO=2; SHW (shift in words) at XO bits 5:6.
+  void xxsldwi(VSXR t, VSXR a, VSXR b, uint32_t shw) {
     assert(shw < 4);
-    EmitXX3(vrt.idx, vra.idx, vrb.idx, 2u | ((shw & 3u) << 5));
-  }
-  // xxsel VRT, VRA, VRB, VRC — bitwise vec_sel, POWER7+ VSX (XX4-form).
-  // Layout adds VRC at bits 10:6 (overlapping with XO field), with CX bit at bit 3.
-  void xxsel(VR vrt, VR vra, VR vrb, VR vrc) {
-    Emit32((60u << 26) | (vrt.idx << 21) | (vra.idx << 16) | (vrb.idx << 11) |
-           (vrc.idx << 6) | (3u << 4) /*XO=3 in XX4-form*/ |
-           (1u << 3) /*CX*/ | 0x7u /*AX|BX|TX*/);
+    EmitXX3VSX(t.idx, a.idx, b.idx, 2u | ((shw & 3u) << 5));
   }
 
   // ===== VSX scalar & vector FP arithmetic (XX3-form, primary 60) =====
   // Scalar single-precision (POWER8+)
-  void xsaddsp(VR t, VR a, VR b) { EmitXX3(t.idx, a.idx, b.idx,   0); }
-  void xssubsp(VR t, VR a, VR b) { EmitXX3(t.idx, a.idx, b.idx,   8); }
-  void xsmulsp(VR t, VR a, VR b) { EmitXX3(t.idx, a.idx, b.idx,  16); }
-  void xsdivsp(VR t, VR a, VR b) { EmitXX3(t.idx, a.idx, b.idx,  24); }
+  void xsaddsp(VSXR t, VSXR a, VSXR b) { EmitXX3VSX(t.idx, a.idx, b.idx,   0); }
+  void xssubsp(VSXR t, VSXR a, VSXR b) { EmitXX3VSX(t.idx, a.idx, b.idx,   8); }
+  void xsmulsp(VSXR t, VSXR a, VSXR b) { EmitXX3VSX(t.idx, a.idx, b.idx,  16); }
+  void xsdivsp(VSXR t, VSXR a, VSXR b) { EmitXX3VSX(t.idx, a.idx, b.idx,  24); }
   // Scalar double-precision
-  void xsadddp(VR t, VR a, VR b) { EmitXX3(t.idx, a.idx, b.idx,  32); }
-  void xssubdp(VR t, VR a, VR b) { EmitXX3(t.idx, a.idx, b.idx,  40); }
-  void xsmuldp(VR t, VR a, VR b) { EmitXX3(t.idx, a.idx, b.idx,  48); }
-  void xsdivdp(VR t, VR a, VR b) { EmitXX3(t.idx, a.idx, b.idx,  56); }
-  void xsmaxdp(VR t, VR a, VR b) { EmitXX3(t.idx, a.idx, b.idx, 160); }
-  void xsmindp(VR t, VR a, VR b) { EmitXX3(t.idx, a.idx, b.idx, 168); }
+  void xsadddp(VSXR t, VSXR a, VSXR b) { EmitXX3VSX(t.idx, a.idx, b.idx,  32); }
+  void xssubdp(VSXR t, VSXR a, VSXR b) { EmitXX3VSX(t.idx, a.idx, b.idx,  40); }
+  void xsmuldp(VSXR t, VSXR a, VSXR b) { EmitXX3VSX(t.idx, a.idx, b.idx,  48); }
+  void xsdivdp(VSXR t, VSXR a, VSXR b) { EmitXX3VSX(t.idx, a.idx, b.idx,  56); }
+  void xsmaxdp(VSXR t, VSXR a, VSXR b) { EmitXX3VSX(t.idx, a.idx, b.idx, 160); }
+  void xsmindp(VSXR t, VSXR a, VSXR b) { EmitXX3VSX(t.idx, a.idx, b.idx, 168); }
   // Vector single-precision (XO = scalar+64)
-  void xvaddsp(VR t, VR a, VR b) { EmitXX3(t.idx, a.idx, b.idx,  64); }
-  void xvsubsp(VR t, VR a, VR b) { EmitXX3(t.idx, a.idx, b.idx,  72); }
-  void xvmulsp(VR t, VR a, VR b) { EmitXX3(t.idx, a.idx, b.idx,  80); }
-  void xvdivsp(VR t, VR a, VR b) { EmitXX3(t.idx, a.idx, b.idx,  88); }
+  void xvaddsp(VSXR t, VSXR a, VSXR b) { EmitXX3VSX(t.idx, a.idx, b.idx,  64); }
+  void xvsubsp(VSXR t, VSXR a, VSXR b) { EmitXX3VSX(t.idx, a.idx, b.idx,  72); }
+  void xvmulsp(VSXR t, VSXR a, VSXR b) { EmitXX3VSX(t.idx, a.idx, b.idx,  80); }
+  void xvdivsp(VSXR t, VSXR a, VSXR b) { EmitXX3VSX(t.idx, a.idx, b.idx,  88); }
   // Vector double-precision (XO = scalar+96)
-  void xvadddp(VR t, VR a, VR b) { EmitXX3(t.idx, a.idx, b.idx,  96); }
-  void xvsubdp(VR t, VR a, VR b) { EmitXX3(t.idx, a.idx, b.idx, 104); }
-  void xvmuldp(VR t, VR a, VR b) { EmitXX3(t.idx, a.idx, b.idx, 112); }
-  void xvdivdp(VR t, VR a, VR b) { EmitXX3(t.idx, a.idx, b.idx, 120); }
+  void xvadddp(VSXR t, VSXR a, VSXR b) { EmitXX3VSX(t.idx, a.idx, b.idx,  96); }
+  void xvsubdp(VSXR t, VSXR a, VSXR b) { EmitXX3VSX(t.idx, a.idx, b.idx, 104); }
+  void xvmuldp(VSXR t, VSXR a, VSXR b) { EmitXX3VSX(t.idx, a.idx, b.idx, 112); }
+  void xvdivdp(VSXR t, VSXR a, VSXR b) { EmitXX3VSX(t.idx, a.idx, b.idx, 120); }
   // FMA family — XO is the base op's XO + 1.  T = T*A + B (a-form) or T*B + A (m-form, +2).
   // a-form: T = ±(T*A) ± B (T is multiplicand and accumulator)
-  void xvmaddasp (VR t, VR a, VR b) { EmitXX3(t.idx, a.idx, b.idx,  65); }
-  void xvmsubasp (VR t, VR a, VR b) { EmitXX3(t.idx, a.idx, b.idx,  81); }
-  void xvnmaddasp(VR t, VR a, VR b) { EmitXX3(t.idx, a.idx, b.idx, 193); }
-  void xvnmsubasp(VR t, VR a, VR b) { EmitXX3(t.idx, a.idx, b.idx, 209); }
-  void xvmaddadp (VR t, VR a, VR b) { EmitXX3(t.idx, a.idx, b.idx,  97); }
-  void xvmsubadp (VR t, VR a, VR b) { EmitXX3(t.idx, a.idx, b.idx, 113); }
-  void xvnmaddadp(VR t, VR a, VR b) { EmitXX3(t.idx, a.idx, b.idx, 225); }
-  void xvnmsubadp(VR t, VR a, VR b) { EmitXX3(t.idx, a.idx, b.idx, 241); }
+  void xvmaddasp(VSXR t, VSXR a, VSXR b) { EmitXX3VSX(t.idx, a.idx, b.idx,  65); }
+  void xvmsubasp(VSXR t, VSXR a, VSXR b) { EmitXX3VSX(t.idx, a.idx, b.idx,  81); }
+  void xvnmaddasp(VSXR t, VSXR a, VSXR b) { EmitXX3VSX(t.idx, a.idx, b.idx, 193); }
+  void xvnmsubasp(VSXR t, VSXR a, VSXR b) { EmitXX3VSX(t.idx, a.idx, b.idx, 209); }
+  void xvmaddadp(VSXR t, VSXR a, VSXR b) { EmitXX3VSX(t.idx, a.idx, b.idx,  97); }
+  void xvmsubadp(VSXR t, VSXR a, VSXR b) { EmitXX3VSX(t.idx, a.idx, b.idx, 113); }
+  void xvnmaddadp(VSXR t, VSXR a, VSXR b) { EmitXX3VSX(t.idx, a.idx, b.idx, 225); }
+  void xvnmsubadp(VSXR t, VSXR a, VSXR b) { EmitXX3VSX(t.idx, a.idx, b.idx, 241); }
 
   // ---- VSX-form overloads reaching the full vs0-vs63 file --------------------
   // Only the ops the scalar-insert lowerings need. Anything taking a VSXR is
   // usable with a low-bank (FPR-aliased) register; anything taking a VR is not.
   // Deliberately NOT provided for VMX-form ops - they cannot encode vs0-vs31,
   // so the absence of an overload is the compile-time guard against misuse.
-  void xvmaddasp (VSXR t, VSXR a, VSXR b) { EmitXX3VSX(t.idx, a.idx, b.idx,  65); }
-  void xvmsubasp (VSXR t, VSXR a, VSXR b) { EmitXX3VSX(t.idx, a.idx, b.idx,  81); }
-  void xvnmaddasp(VSXR t, VSXR a, VSXR b) { EmitXX3VSX(t.idx, a.idx, b.idx, 193); }
-  void xvnmsubasp(VSXR t, VSXR a, VSXR b) { EmitXX3VSX(t.idx, a.idx, b.idx, 209); }
-  void xvmaddadp (VSXR t, VSXR a, VSXR b) { EmitXX3VSX(t.idx, a.idx, b.idx,  97); }
-  void xvmsubadp (VSXR t, VSXR a, VSXR b) { EmitXX3VSX(t.idx, a.idx, b.idx, 113); }
-  void xvnmaddadp(VSXR t, VSXR a, VSXR b) { EmitXX3VSX(t.idx, a.idx, b.idx, 225); }
-  void xvnmsubadp(VSXR t, VSXR a, VSXR b) { EmitXX3VSX(t.idx, a.idx, b.idx, 241); }
 
   // XX2-form over the full vs0-vs63 file: TX is bit 0, BX bit 1.
   void EmitXX2VSX(uint32_t t, uint32_t b, uint32_t xo) {
@@ -1043,13 +1022,16 @@ public:
   void xvnegsp (VSXR t, VSXR b) { EmitXX2VSX(t.idx, b.idx, 441); }
   void xvnegdp (VSXR t, VSXR b) { EmitXX2VSX(t.idx, b.idx, 505); }
 
+  // xxpermdi XT, XA, XB, DM (POWER7+). XO=10; DM goes in the XO field's bits 5:6.
   void xxpermdi(VSXR t, VSXR a, VSXR b, uint32_t dm) {
     assert(dm < 4);
     EmitXX3VSX(t.idx, a.idx, b.idx, 10u | ((dm & 3u) << 5));
   }
 
-  void xxlxor(VSXR t, VSXR a, VSXR b) { EmitXX3VSX(t.idx, a.idx, b.idx, 154); }
-
+  // xxspltw XT,XB,UIM — splat BE word UIM of XB across XT (XX2-form with the
+  // 2-bit UIM in the low bits of the RA field). Encoding verified against gas
+  // on op4k: `xxspltw vs34,vs35,2` == f0 42 1a 93 (LE), matching op=60,
+  // T=2/TX, UIM=2, B=3/BX, XO=164.
   void xxspltw(VSXR t, VSXR b, uint32_t uim) {
     assert(uim < 4);
     Emit32((60u << 26) | ((t.idx & 31u) << 21) | ((uim & 3u) << 16) | ((b.idx & 31u) << 11) |
@@ -1069,14 +1051,6 @@ public:
   // live vector values while only two VMX temporaries exist, so they run on the
   // RA-invisible low bank vs3-vs8. Same XO values as the VR forms above; only
   // the AX/BX/TX derivation differs, which EmitXX3VSX already handles.
-  void xvaddsp(VSXR t, VSXR a, VSXR b) { EmitXX3VSX(t.idx, a.idx, b.idx,  64); }
-  void xvsubsp(VSXR t, VSXR a, VSXR b) { EmitXX3VSX(t.idx, a.idx, b.idx,  72); }
-  void xvmulsp(VSXR t, VSXR a, VSXR b) { EmitXX3VSX(t.idx, a.idx, b.idx,  80); }
-  void xvdivsp(VSXR t, VSXR a, VSXR b) { EmitXX3VSX(t.idx, a.idx, b.idx,  88); }
-  void xvadddp(VSXR t, VSXR a, VSXR b) { EmitXX3VSX(t.idx, a.idx, b.idx,  96); }
-  void xvsubdp(VSXR t, VSXR a, VSXR b) { EmitXX3VSX(t.idx, a.idx, b.idx, 104); }
-  void xvmuldp(VSXR t, VSXR a, VSXR b) { EmitXX3VSX(t.idx, a.idx, b.idx, 112); }
-  void xvdivdp(VSXR t, VSXR a, VSXR b) { EmitXX3VSX(t.idx, a.idx, b.idx, 120); }
   // Rc=0 (no CR write): the bodies are branch-free and read the lane mask, not
   // a CR field. The record forms are VR-only on purpose — only the hot-path
   // site wants CR6, and its operands are always allocator registers.
@@ -1094,63 +1068,53 @@ public:
   void xvabsdp(VSXR t, VSXR b) { EmitXX2VSX(t.idx, b.idx, 473); }
 
   // m-form: T = ±(T*B) ± A (T is multiplicand, A is addend)
-  void xvmaddmsp (VR t, VR a, VR b) { EmitXX3(t.idx, a.idx, b.idx,  73); }
-  void xvmsubmsp (VR t, VR a, VR b) { EmitXX3(t.idx, a.idx, b.idx,  89); }
-  void xvnmaddmsp(VR t, VR a, VR b) { EmitXX3(t.idx, a.idx, b.idx, 201); }
-  void xvnmsubmsp(VR t, VR a, VR b) { EmitXX3(t.idx, a.idx, b.idx, 217); }
-  void xvmaddmdp (VR t, VR a, VR b) { EmitXX3(t.idx, a.idx, b.idx, 105); }
-  void xvmsubmdp (VR t, VR a, VR b) { EmitXX3(t.idx, a.idx, b.idx, 121); }
-  void xvnmaddmdp(VR t, VR a, VR b) { EmitXX3(t.idx, a.idx, b.idx, 233); }
-  void xvnmsubmdp(VR t, VR a, VR b) { EmitXX3(t.idx, a.idx, b.idx, 249); }
+  void xvmaddmsp(VSXR t, VSXR a, VSXR b) { EmitXX3VSX(t.idx, a.idx, b.idx,  73); }
+  void xvmsubmsp(VSXR t, VSXR a, VSXR b) { EmitXX3VSX(t.idx, a.idx, b.idx,  89); }
+  void xvnmaddmsp(VSXR t, VSXR a, VSXR b) { EmitXX3VSX(t.idx, a.idx, b.idx, 201); }
+  void xvnmsubmsp(VSXR t, VSXR a, VSXR b) { EmitXX3VSX(t.idx, a.idx, b.idx, 217); }
+  void xvmaddmdp(VSXR t, VSXR a, VSXR b) { EmitXX3VSX(t.idx, a.idx, b.idx, 105); }
+  void xvmsubmdp(VSXR t, VSXR a, VSXR b) { EmitXX3VSX(t.idx, a.idx, b.idx, 121); }
+  void xvnmaddmdp(VSXR t, VSXR a, VSXR b) { EmitXX3VSX(t.idx, a.idx, b.idx, 233); }
+  void xvnmsubmdp(VSXR t, VSXR a, VSXR b) { EmitXX3VSX(t.idx, a.idx, b.idx, 249); }
   // Bitwise VSX (XO = 144..168).  These overlap with vand/vxor but operate on 128-bit
   // VSX values directly without going through AltiVec.
-  void xxlor  (VR t, VR a, VR b) { EmitXX3(t.idx, a.idx, b.idx, 146); }
+  void xxlor(VSXR t, VSXR a, VSXR b) { EmitXX3VSX(t.idx, a.idx, b.idx, 146); }
   // Full-VSX xxlor: the register move that crosses the vs0-31 / vs32-63
   // boundary (VMX-form vmr cannot address the low bank at all).
-  void xxlor  (VSXR t, VSXR a, VSXR b) { EmitXX3VSX(t.idx, a.idx, b.idx, 146); }
-  void xxlxor (VR t, VR a, VR b) { EmitXX3(t.idx, a.idx, b.idx, 154); }
-  void xxland (VR t, VR a, VR b) { EmitXX3(t.idx, a.idx, b.idx, 130); }
-  void xxlandc(VR t, VR a, VR b) { EmitXX3(t.idx, a.idx, b.idx, 138); }
-  void xxlnor (VR t, VR a, VR b) { EmitXX3(t.idx, a.idx, b.idx, 162); }
+  void xxlxor(VSXR t, VSXR a, VSXR b) { EmitXX3VSX(t.idx, a.idx, b.idx, 154); }
   // The three ISA 2.07 (POWER8) complementing forms, each folding a
   // two-instruction pattern into one: ~(a|b) already had xxlnor above, and
   //   xxlorc  T = a | ~b      xxlnand T = ~(a & b)      xxleqv T = ~(a ^ b)
   // cover the rest. Valid on ISA 3.0 too, so no feature gate. XO values
   // continue the 8-step run 130/138/146/154/162 and were checked against
   // `llvm-mc -triple=powerpc64le` (xxlorc 170, xxlnand 178, xxleqv 186).
-  void xxlorc (VR t, VR a, VR b) { EmitXX3(t.idx, a.idx, b.idx, 170); }
-  void xxlnand(VR t, VR a, VR b) { EmitXX3(t.idx, a.idx, b.idx, 178); }
-  void xxleqv (VR t, VR a, VR b) { EmitXX3(t.idx, a.idx, b.idx, 186); }
-  // xxspltw XT,XB,UIM — splat BE word UIM of XB across XT (XX2-form with the
-  // 2-bit UIM in the low bits of the RA field). Encoding verified against gas
-  // on op4k: `xxspltw vs34,vs35,2` == f0 42 1a 93 (LE), matching op=60,
-  // T=2/TX, UIM=2, B=3/BX, XO=164.
-  void xxspltw(VR t, VR b, uint32_t uim) {
-    assert(uim < 4);
-    Emit32((60u << 26) | (t.idx << 21) | ((uim & 3u) << 16) | (b.idx << 11) |
-           ((164u & 0x1FFu) << 2) | (1u << 1) /*BX*/ | 1u /*TX*/);
-  }
-  // Convert (XX2-form, single operand).  TX bit at LE bit 0; AX bit unused; BX at bit 1.
-  void EmitXX2(uint32_t vrt, uint32_t vrb, uint32_t xo) {
-    Emit32((60u << 26) | (vrt << 21) | (vrb << 11) | ((xo & 0x1FFu) << 2) |
-           (1u << 1) /*BX*/ | 1u /*TX*/);
+  void xxlorc(VSXR t, VSXR a, VSXR b) { EmitXX3VSX(t.idx, a.idx, b.idx, 170); }
+  void xxleqv(VSXR t, VSXR a, VSXR b) { EmitXX3VSX(t.idx, a.idx, b.idx, 186); }
+  // Typed entry point for the XX2 form, and the variant that also writes the
+  // RA field — which in XX2 is not part of the opcode but a sub-selector (the
+  // byte-reverse width, the half-precision converts' direction, xxspltw's UIM),
+  // so EmitXX2VSX, which zeroes it, cannot serve those.
+  void EmitXX2VSX(VSXR t, VSXR b, uint32_t xo) { EmitXX2VSX(t.idx, b.idx, xo); }
+  void EmitXX2VSXWithRA(VSXR t, VSXR b, uint32_t ra, uint32_t xo) {
+    Emit32((60u << 26) | ((t.idx & 31u) << 21) | ((ra & 31u) << 16) | ((b.idx & 31u) << 11) |
+           ((xo & 0x1FFu) << 2) | (((b.idx >> 5) & 1u) << 1) /*BX*/ | ((t.idx >> 5) & 1u) /*TX*/);
   }
   // xxbrh XT, XB — vector byte-reverse halfwords (ISA 3.0).
-  void xxbrh(VR t, VR b) {
-    Emit32((60u << 26) | (t.idx << 21) | (7u << 16) | (b.idx << 11) |
-           ((475u & 0x1FFu) << 2) | (1u << 1) /*BX*/ | 1u /*TX*/);
+  void xxbrh(VSXR t, VSXR b) {
+    Emit32((60u << 26) | ((t.idx & 31u) << 21) | (7u << 16) | ((b.idx & 31u) << 11) |
+           ((475u & 0x1FFu) << 2) | (((b.idx >> 5) & 1u) << 1) /*BX*/ | ((t.idx >> 5) & 1u) /*TX*/);
   }
 
   // xxbrw XT, XB — vector byte-reverse words (ISA 3.0).
-  void xxbrw(VR t, VR b) {
-    Emit32((60u << 26) | (t.idx << 21) | (15u << 16) | (b.idx << 11) |
-           ((475u & 0x1FFu) << 2) | (1u << 1) /*BX*/ | 1u /*TX*/);
+  void xxbrw(VSXR t, VSXR b) {
+    Emit32((60u << 26) | ((t.idx & 31u) << 21) | (15u << 16) | ((b.idx & 31u) << 11) |
+           ((475u & 0x1FFu) << 2) | (((b.idx >> 5) & 1u) << 1) /*BX*/ | ((t.idx >> 5) & 1u) /*TX*/);
   }
 
   // xxbrd XT, XB — vector byte-reverse doublewords (ISA 3.0).
-  void xxbrd(VR t, VR b) {
-    Emit32((60u << 26) | (t.idx << 21) | (23u << 16) | (b.idx << 11) |
-           ((475u & 0x1FFu) << 2) | (1u << 1) /*BX*/ | 1u /*TX*/);
+  void xxbrd(VSXR t, VSXR b) {
+    Emit32((60u << 26) | ((t.idx & 31u) << 21) | (23u << 16) | ((b.idx & 31u) << 11) |
+           ((475u & 0x1FFu) << 2) | (((b.idx >> 5) & 1u) << 1) /*BX*/ | ((t.idx >> 5) & 1u) /*TX*/);
   }
 
   // xxbrq XT, XB — vector byte-reverse quadword. ISA 3.0 (POWER9) ONLY:
@@ -1172,18 +1136,14 @@ public:
   //   xxbrq 32, 33  ->  0xf01f0f6f   (xxbrq v0, v1)
   //   xxbrq 34, 35  ->  0xf05f1f6f   (xxbrq v2, v3)
   //   xxbrq 63, 63  ->  0xf3ffff6f   (xxbrq v31, v31)
-  void xxbrq(VR t, VR b) {
-    Emit32((60u << 26) | (t.idx << 21) | (31u << 16) | (b.idx << 11) |
-           ((475u & 0x1FFu) << 2) | (1u << 1) /*BX*/ | 1u /*TX*/);
+  void xxbrq(VSXR t, VSXR b) {
+    Emit32((60u << 26) | ((t.idx & 31u) << 21) | (31u << 16) | ((b.idx & 31u) << 11) |
+           ((475u & 0x1FFu) << 2) | (((b.idx >> 5) & 1u) << 1) /*BX*/ | ((t.idx >> 5) & 1u) /*TX*/);
   }
 
   // xvcvhpsp XT, XB — vector convert half-precision to single-precision (ISA 3.0).
   // XX2-form with RA=24, XO=475. Promotes 4 halfwords (one from each 32-bit word of XB)
   // to 4 singles in XT.
-  void xvcvhpsp(VR t, VR b) {
-    Emit32((60u << 26) | (t.idx << 21) | (24u << 16) | (b.idx << 11) |
-           ((475u & 0x1FFu) << 2) | (1u << 1) /*BX*/ | 1u /*TX*/);
-  }
   void xvcvhpsp(VSXR t, VSXR b) {
     Emit32((60u << 26) | ((t.idx & 31u) << 21) | (24u << 16) | ((b.idx & 31u) << 11) |
            ((475u & 0x1FFu) << 2) | (((b.idx >> 5) & 1u) << 1) /*BX*/ | ((t.idx >> 5) & 1u) /*TX*/);
@@ -1192,10 +1152,6 @@ public:
   // xvcvsphp XT, XB — vector convert single-precision to half-precision (ISA 3.0).
   // XX2-form with RA=25, XO=475. Converts 4 singles in XB to 4 halfwords in XT
   // (one in each 32-bit word).
-  void xvcvsphp(VR t, VR b) {
-    Emit32((60u << 26) | (t.idx << 21) | (25u << 16) | (b.idx << 11) |
-           ((475u & 0x1FFu) << 2) | (1u << 1) /*BX*/ | 1u /*TX*/);
-  }
   void xvcvsphp(VSXR t, VSXR b) {
     Emit32((60u << 26) | ((t.idx & 31u) << 21) | (25u << 16) | ((b.idx & 31u) << 11) |
            ((475u & 0x1FFu) << 2) | (((b.idx >> 5) & 1u) << 1) /*BX*/ | ((t.idx >> 5) & 1u) /*TX*/);
@@ -1205,95 +1161,95 @@ public:
   // ISA-listed numbers in some books include extra bits and don't match the
   // 9-bit XO field at BE 21..29 directly).
   // f32→int truncate / int→f32 (vector single)
-  void xvcvspsxws(VR t, VR b) { EmitXX2(t.idx, b.idx, 152); }
-  void xvcvspuxws(VR t, VR b) { EmitXX2(t.idx, b.idx, 136); }
-  void xvcvsxwsp (VR t, VR b) { EmitXX2(t.idx, b.idx, 184); }
-  void xvcvuxwsp (VR t, VR b) { EmitXX2(t.idx, b.idx, 168); }
+  void xvcvspsxws(VSXR t, VSXR b) { EmitXX2VSX(t.idx, b.idx, 152); }
+  void xvcvspuxws(VSXR t, VSXR b) { EmitXX2VSX(t.idx, b.idx, 136); }
+  void xvcvsxwsp(VSXR t, VSXR b) { EmitXX2VSX(t.idx, b.idx, 184); }
+  void xvcvuxwsp(VSXR t, VSXR b) { EmitXX2VSX(t.idx, b.idx, 168); }
   // Scalar conversions
-  void xscvdpsxws(VR t, VR b) { EmitXX2(t.idx, b.idx,  88); } // f64→i32 trunc signed
-  void xscvdpsxds(VR t, VR b) { EmitXX2(t.idx, b.idx, 344); } // f64→i64 trunc signed
-  void xscvsxdsp (VR t, VR b) { EmitXX2(t.idx, b.idx, 312); } // i64→f32
-  void xscvuxdsp (VR t, VR b) { EmitXX2(t.idx, b.idx, 296); } // u64→f32
-  void xscvsxddp (VR t, VR b) { EmitXX2(t.idx, b.idx, 376); } // i64→f64
-  void xscvuxddp (VR t, VR b) { EmitXX2(t.idx, b.idx, 360); } // u64→f64
-  void xscvspdp  (VR t, VR b) { EmitXX2(t.idx, b.idx, 329); } // f32→f64 scalar
+  void xscvdpsxws(VSXR t, VSXR b) { EmitXX2VSX(t.idx, b.idx,  88); } // f64→i32 trunc signed
+  void xscvdpsxds(VSXR t, VSXR b) { EmitXX2VSX(t.idx, b.idx, 344); } // f64→i64 trunc signed
+  // The unsigned twin sits 16 below the signed one in the XO field, the same
+  // relationship five other pairs in this file have. Checked against the
+  // POWER9 assembler: xscvdpuxds vs34,vs35 = f0401d23, xscvdpuxws = f0401923.
+  void xscvdpuxds(VSXR t, VSXR b) { EmitXX2VSX(t.idx, b.idx, 328); } // f64→u64 trunc
+  void xscvdpuxws(VSXR t, VSXR b) { EmitXX2VSX(t.idx, b.idx,  72); } // f64→u32 trunc
+  void xscvsxdsp(VSXR t, VSXR b) { EmitXX2VSX(t.idx, b.idx, 312); } // i64→f32
+  void xscvuxdsp(VSXR t, VSXR b) { EmitXX2VSX(t.idx, b.idx, 296); } // u64→f32
+  void xscvsxddp(VSXR t, VSXR b) { EmitXX2VSX(t.idx, b.idx, 376); } // i64→f64
+  void xscvuxddp(VSXR t, VSXR b) { EmitXX2VSX(t.idx, b.idx, 360); } // u64→f64
+  void xscvspdp(VSXR t, VSXR b) { EmitXX2VSX(t.idx, b.idx, 329); } // f32→f64 scalar
+  // Half precision <-> double, element 0, ISA 3.0 (POWER9) ONLY. Both are XO
+  // 347 and told apart by the RA sub-selector: xscvhpdp vs34,vs35 = f0501d6f
+  // (RA=16), xscvdphp = f0511d6f (RA=17).
+  void xscvhpdp(VSXR t, VSXR b) { EmitXX2VSXWithRA(t, b, 16, 347); }
+  void xscvdphp(VSXR t, VSXR b) { EmitXX2VSXWithRA(t, b, 17, 347); }
 
   // VSX scalar FP compare, unordered/ordered, targeting a CR field (XX3-form
   // with BF instead of a T register; opcode 60, XO 35/43, ISA 2.06). Compares
   // doubleword 0 of each operand. Encoding verified against llvm-mc:
   // xscmpudp 7,34,35 == 0xf382191e; xscmpodp XO=43.
-  void xscmpudp(uint32_t bf, VR a, VR b) { EmitXX3BF(bf, a.idx + 32, b.idx + 32, 35); }
-  void xscmpodp(uint32_t bf, VR a, VR b) { EmitXX3BF(bf, a.idx + 32, b.idx + 32, 43); }
-  void xscvdpsp  (VR t, VR b) { EmitXX2(t.idx, b.idx, 265); } // f64→f32 scalar
+  void xscmpudp(uint32_t bf, VSXR a, VSXR b) { EmitXX3BF(bf, a.idx, b.idx, 35); }
+  void xscmpodp(uint32_t bf, VSXR a, VSXR b) { EmitXX3BF(bf, a.idx, b.idx, 43); }
+  void xscvdpsp(VSXR t, VSXR b) { EmitXX2VSX(t.idx, b.idx, 265); } // f64→f32 scalar
   // Scalar / vector unary FP (sqrt / abs / neg)
-  void xssqrtsp(VR t, VR b)  { EmitXX2(t.idx, b.idx,  11); }
-  void xssqrtdp(VR t, VR b)  { EmitXX2(t.idx, b.idx,  75); }
-  void xsabsdp (VR t, VR b)  { EmitXX2(t.idx, b.idx, 345); }
-  void xsnegdp (VR t, VR b)  { EmitXX2(t.idx, b.idx, 377); }
-  void xvabssp (VR t, VR b)  { EmitXX2(t.idx, b.idx, 409); }
-  void xvabsdp (VR t, VR b)  { EmitXX2(t.idx, b.idx, 473); }
-  void xvnegsp (VR t, VR b)  { EmitXX2(t.idx, b.idx, 441); }
-  void xvnegdp (VR t, VR b)  { EmitXX2(t.idx, b.idx, 505); }
-  void xvsqrtsp(VR t, VR b)  { EmitXX2(t.idx, b.idx, 139); }
-  void xvsqrtdp(VR t, VR b)  { EmitXX2(t.idx, b.idx, 203); }
+  void xssqrtsp(VSXR t, VSXR b)  { EmitXX2VSX(t.idx, b.idx,  11); }
+  void xssqrtdp(VSXR t, VSXR b)  { EmitXX2VSX(t.idx, b.idx,  75); }
+  void xsabsdp(VSXR t, VSXR b)  { EmitXX2VSX(t.idx, b.idx, 345); }
+  void xsnegdp(VSXR t, VSXR b)  { EmitXX2VSX(t.idx, b.idx, 377); }
+  void xvsqrtsp(VSXR t, VSXR b)  { EmitXX2VSX(t.idx, b.idx, 139); }
+  void xvsqrtdp(VSXR t, VSXR b)  { EmitXX2VSX(t.idx, b.idx, 203); }
   // Vector FP round-to-integer (still floating-point output)
-  void xvrspi (VR t, VR b)   { EmitXX2(t.idx, b.idx, 137); }  // round to nearest
-  void xvrspip(VR t, VR b)   { EmitXX2(t.idx, b.idx, 169); }  // round toward +inf
-  void xvrspim(VR t, VR b)   { EmitXX2(t.idx, b.idx, 185); }  // round toward -inf
-  void xvrspiz(VR t, VR b)   { EmitXX2(t.idx, b.idx, 153); }  // round toward 0
-  void xvrspic(VR t, VR b)   { EmitXX2(t.idx, b.idx, 171); }  // round using FPSCR.RN
+  void xvrspi(VSXR t, VSXR b)   { EmitXX2VSX(t.idx, b.idx, 137); }  // round to nearest
+  void xvrspip(VSXR t, VSXR b)   { EmitXX2VSX(t.idx, b.idx, 169); }  // round toward +inf
+  void xvrspim(VSXR t, VSXR b)   { EmitXX2VSX(t.idx, b.idx, 185); }  // round toward -inf
+  void xvrspiz(VSXR t, VSXR b)   { EmitXX2VSX(t.idx, b.idx, 153); }  // round toward 0
+  void xvrspic(VSXR t, VSXR b)   { EmitXX2VSX(t.idx, b.idx, 171); }  // round using FPSCR.RN
   // Scalar DP round-to-integer using current FPSCR.RN rounding mode (banker's by default).
-  void xsrdpic(VR t, VR b)   { EmitXX2(t.idx, b.idx, 107); }
+  void xsrdpic(VSXR t, VSXR b)   { EmitXX2VSX(t.idx, b.idx, 107); }
   // Scalar round-to-integral, fixed modes (gas-verified on op4k:
   // xsrdpim/p/z vs34,vs35 = f04019e7/f04019a7/f0401967). NaN-quiet,
   // identity for |x| >= 2^52, unlike the fctid/fcfid round trip.
-  void xsrdpi (VR t, VR b)   { EmitXX2(t.idx, b.idx,  73); }  // round half away
-  void xsrdpim(VR t, VR b)   { EmitXX2(t.idx, b.idx, 121); }  // floor
-  void xsrdpip(VR t, VR b)   { EmitXX2(t.idx, b.idx, 105); }  // ceil
-  void xsrdpiz(VR t, VR b)   { EmitXX2(t.idx, b.idx,  89); }  // trunc
+  void xsrdpi(VSXR t, VSXR b)   { EmitXX2VSX(t.idx, b.idx,  73); }  // round half away
+  void xsrdpim(VSXR t, VSXR b)   { EmitXX2VSX(t.idx, b.idx, 121); }  // floor
+  void xsrdpip(VSXR t, VSXR b)   { EmitXX2VSX(t.idx, b.idx, 105); }  // ceil
+  void xsrdpiz(VSXR t, VSXR b)   { EmitXX2VSX(t.idx, b.idx,  89); }  // trunc
   // Scalar single<->double converts, non-signalling (bit-preserving for NaN,
   // ISA 2.07). Operate on dw0 / word 0. gas: xscvspdpn = f0401d2f (XO 331),
   // xscvdpspn = f0401c2f (XO 267).
-  void xscvspdpn(VR t, VR b) { EmitXX2(t.idx, b.idx, 331); }
-  void xscvdpspn(VR t, VR b) { EmitXX2(t.idx, b.idx, 267); }
-  void xvrdpi (VR t, VR b)   { EmitXX2(t.idx, b.idx, 201); }
-  void xvrdpip(VR t, VR b)   { EmitXX2(t.idx, b.idx, 233); }
-  void xvrdpim(VR t, VR b)   { EmitXX2(t.idx, b.idx, 249); }
-  void xvrdpiz(VR t, VR b)   { EmitXX2(t.idx, b.idx, 217); }
-  void xvrdpic(VR t, VR b)   { EmitXX2(t.idx, b.idx, 235); }  // round using FPSCR.RN
+  void xscvspdpn(VSXR t, VSXR b) { EmitXX2VSX(t.idx, b.idx, 331); }
+  void xscvdpspn(VSXR t, VSXR b) { EmitXX2VSX(t.idx, b.idx, 267); }
+  void xvrdpi(VSXR t, VSXR b)   { EmitXX2VSX(t.idx, b.idx, 201); }
+  void xvrdpip(VSXR t, VSXR b)   { EmitXX2VSX(t.idx, b.idx, 233); }
+  void xvrdpim(VSXR t, VSXR b)   { EmitXX2VSX(t.idx, b.idx, 249); }
+  void xvrdpiz(VSXR t, VSXR b)   { EmitXX2VSX(t.idx, b.idx, 217); }
+  void xvrdpic(VSXR t, VSXR b)   { EmitXX2VSX(t.idx, b.idx, 235); }  // round using FPSCR.RN
   // Additional vector convert ops
-  void xvcvdpsxws(VR t, VR b) { EmitXX2(t.idx, b.idx, 216); }
-  void xvcvdpuxws(VR t, VR b) { EmitXX2(t.idx, b.idx, 200); }
-  void xvcvdpsxds(VR t, VR b) { EmitXX2(t.idx, b.idx, 472); }
+  void xvcvdpsxws(VSXR t, VSXR b) { EmitXX2VSX(t.idx, b.idx, 216); }
+  void xvcvdpuxws(VSXR t, VSXR b) { EmitXX2VSX(t.idx, b.idx, 200); }
+  void xvcvdpsxds(VSXR t, VSXR b) { EmitXX2VSX(t.idx, b.idx, 472); }
   // The unsigned twin of every convert sits 16 below the signed one in the XO
   // field (xscvdpsxds 344 / xscvdpuxds 328, xscvsxddp 376 / xscvuxddp 360,
   // xvcvspsxws 152 / xvcvspuxws 136, xvcvsxwsp 184 / xvcvuxwsp 168,
   // xvcvdpsxws 216 / xvcvdpuxws 200 -- five pairs already in this file), which
   // is how these two were derived from xvcvdpsxds (472) and xvcvsxddp (504).
-  void xvcvdpuxds(VR t, VR b) { EmitXX2(t.idx, b.idx, 456); } // f64 -> u64 trunc
-  void xvcvspdp  (VR t, VR b) { EmitXX2(t.idx, b.idx, 457); }
-  void xvcvdpsp  (VR t, VR b) { EmitXX2(t.idx, b.idx, 393); }
+  void xvcvdpuxds(VSXR t, VSXR b) { EmitXX2VSX(t.idx, b.idx, 456); } // f64 -> u64 trunc
+  void xvcvspdp(VSXR t, VSXR b) { EmitXX2VSX(t.idx, b.idx, 457); }
+  void xvcvdpsp(VSXR t, VSXR b) { EmitXX2VSX(t.idx, b.idx, 393); }
   // Signed integer -> float. XO fields cross-checked against llvm-mc, using
   // xvcvspdp (457) as the control that the extraction method is right.
-  void xvcvsxddp (VR t, VR b) { EmitXX2(t.idx, b.idx, 504); } // i64 -> f64
-  void xvcvuxddp (VR t, VR b) { EmitXX2(t.idx, b.idx, 488); } // u64 -> f64
-  void xvcvsxdsp (VR t, VR b) { EmitXX2(t.idx, b.idx, 440); } // i64 -> f32, single rounding
-  void xvcvsxwdp (VR t, VR b) { EmitXX2(t.idx, b.idx, 248); } // i32 -> f64
+  void xvcvsxddp(VSXR t, VSXR b) { EmitXX2VSX(t.idx, b.idx, 504); } // i64 -> f64
+  void xvcvuxddp(VSXR t, VSXR b) { EmitXX2VSX(t.idx, b.idx, 488); } // u64 -> f64
+  void xvcvsxdsp(VSXR t, VSXR b) { EmitXX2VSX(t.idx, b.idx, 440); } // i64 -> f32, single rounding
+  void xvcvsxwdp(VSXR t, VSXR b) { EmitXX2VSX(t.idx, b.idx, 248); } // i32 -> f64
   // Copy-sign (per element)
-  void xvcpsgnsp(VR t, VR a, VR b) { EmitXX3(t.idx, a.idx, b.idx, 208); }
-  void xvcpsgndp(VR t, VR a, VR b) { EmitXX3(t.idx, a.idx, b.idx, 240); }
+  void xvcpsgnsp(VSXR t, VSXR a, VSXR b) { EmitXX3VSX(t.idx, a.idx, b.idx, 208); }
+  void xvcpsgndp(VSXR t, VSXR a, VSXR b) { EmitXX3VSX(t.idx, a.idx, b.idx, 240); }
   // Vector FP min/max
-  void xvmaxsp(VR t, VR a, VR b) { EmitXX3(t.idx, a.idx, b.idx, 192); }
-  void xvminsp(VR t, VR a, VR b) { EmitXX3(t.idx, a.idx, b.idx, 200); }
-  void xvmaxdp(VR t, VR a, VR b) { EmitXX3(t.idx, a.idx, b.idx, 224); }
-  void xvmindp(VR t, VR a, VR b) { EmitXX3(t.idx, a.idx, b.idx, 232); }
   // Vector FP compare (Rc=0; results are all-ones for true lanes, all-zeros for false)
-  void xvcmpeqsp(VR t, VR a, VR b) { EmitXX3(t.idx, a.idx, b.idx,  67); }
-  void xvcmpeqdp(VR t, VR a, VR b) { EmitXX3(t.idx, a.idx, b.idx,  99); }
-  void xvcmpgtsp(VR t, VR a, VR b) { EmitXX3(t.idx, a.idx, b.idx,  75); }
-  void xvcmpgtdp(VR t, VR a, VR b) { EmitXX3(t.idx, a.idx, b.idx, 107); }
-  void xvcmpgesp(VR t, VR a, VR b) { EmitXX3(t.idx, a.idx, b.idx,  83); }
-  void xvcmpgedp(VR t, VR a, VR b) { EmitXX3(t.idx, a.idx, b.idx, 115); }
+  void xvcmpgtsp(VSXR t, VSXR a, VSXR b) { EmitXX3VSX(t.idx, a.idx, b.idx,  75); }
+  void xvcmpgtdp(VSXR t, VSXR a, VSXR b) { EmitXX3VSX(t.idx, a.idx, b.idx, 107); }
+  void xvcmpgesp(VSXR t, VSXR a, VSXR b) { EmitXX3VSX(t.idx, a.idx, b.idx,  83); }
+  void xvcmpgedp(VSXR t, VSXR a, VSXR b) { EmitXX3VSX(t.idx, a.idx, b.idx, 115); }
 
   // Record-form (Rc=1) twins of the FP vector compares.
   //
@@ -1314,8 +1270,8 @@ public:
   // a `bc Cond{4, 24}` (branch when CR6[0] is CLEAR). That is the fast-path
   // check of the A64 FP cold-block mechanism (COLD-BLOCK-DESIGN.md §3);
   // VRT absorbs the unwanted lane mask.
-  void xvcmpeqsp_(VR t, VR a, VR b) { EmitXX3(t.idx, a.idx, b.idx,  67 | 0x80); }
-  void xvcmpeqdp_(VR t, VR a, VR b) { EmitXX3(t.idx, a.idx, b.idx,  99 | 0x80); }
+  void xvcmpeqsp_(VSXR t, VSXR a, VSXR b) { EmitXX3VSX(t.idx, a.idx, b.idx,  67 | 0x80); }
+  void xvcmpeqdp_(VSXR t, VSXR a, VSXR b) { EmitXX3VSX(t.idx, a.idx, b.idx,  99 | 0x80); }
 
   // =========================================================================
   // Floating-point arithmetic (opcode 63 = double; opcode 59 = single)
@@ -1436,24 +1392,20 @@ public:
 
   // lxvx XT,RA,RB — **ISA 3.0 (POWER9)** — p.496, XO=268. 16-byte load, any
   // alignment (no lvx-style EA masking). LE: mem[EA+i] → BE byte elem 15-i.
-  void lxvx(VR vrt, GPR ra, GPR rb)    { EmitX(31, vrt.idx, ra.idx, rb.idx, 268, 1); }
   // stxvx XS,RA,RB — **ISA 3.0 (POWER9)** — p.514, XO=396. Store form.
-  void stxvx(VR vrs, GPR ra, GPR rb)   { EmitX(31, vrs.idx, ra.idx, rb.idx, 396, 1); }
 
   // lxvd2x XT,RA,RB — ISA 2.06 (POWER7+) — p.492, XO=844. Two doubleword
   // elements, any alignment. LE: dword[0] = the 8-byte LE integer at EA,
   // dword[1] = the 8-byte LE integer at EA+8 — i.e. the DOUBLEWORD-SWAPPED
   // image of what lxvx produces; follow with xxpermdi(v,v,v,2) to fix up.
-  void lxvd2x(VR vrt, GPR ra, GPR rb)  { EmitX(31, vrt.idx, ra.idx, rb.idx, 844, 1); }
   // lxvdsx XT, RA, RB (ISA 2.06): load one doubleword from (RA|0)+RB and splat
   // it into both doublewords of XT. XO 332, TX=1 for the VMX half of the VSR
   // file -- checked against GAS: `lxvdsx 32,0,3` assembles to 0x7c001a99 and
   // `lxvdsx 45,4,5` to 0x7da42a99, both of which this reproduces.
-  void lxvdsx(VR vrt, GPR ra, GPR rb)  { EmitX(31, vrt.idx, ra.idx, rb.idx, 332, 1); }
+  void lxvdsx(VSXR t, GPR ra, GPR rb)  { EmitX(31, t.idx & 31u, ra.idx, rb.idx, 332, (t.idx >> 5) & 1u); }
   // stxvd2x XS,RA,RB — ISA 2.06 (POWER7+) — p.508, XO=972. Store form: writes
   // dword[0] as an 8-byte LE integer at EA and dword[1] at EA+8 (so the value
   // must be doubleword-swapped BEFORE the store to match stxvx/stvx layout).
-  void stxvd2x(VR vrs, GPR ra, GPR rb) { EmitX(31, vrs.idx, ra.idx, rb.idx, 972, 1); }
   // VSXR overloads of the indexed loads/stores: the TX/SX bit (the slot EmitX
   // calls `rc`) is DERIVED from bit 5 of the register number instead of
   // hardcoded, which is what makes the FPR-aliased low half (vs0-vs31)
@@ -1483,8 +1435,6 @@ public:
   //
   // RA=0 encodes the literal value zero here exactly as it does in the
   // X-forms above, so never pass a base that lives in r0.
-  void lxv (VR vrt, int16_t dq, GPR ra) { EmitDQ(vrt.idx + 32u, ra.idx, dq, 1); }
-  void stxv(VR vrs, int16_t dq, GPR ra) { EmitDQ(vrs.idx + 32u, ra.idx, dq, 5); }
   // VSXR overloads: the TX/SX bit comes from bit 5 of the register number, so
   // the FPR-aliased low half (vs0-vs31 — where guest V16-V31 live) is
   // reachable. Both forms define the whole register, so this is safe for the
@@ -1496,10 +1446,10 @@ public:
   // all four, but on ISA 2.06/2.07 hardware (POWER7/POWER8) lxsdx/lxsiwzx
   // leave dword[1] UNDEFINED — never rely on the zeroing in an ungated path.
   // lxsdx XT,RA,RB — ISA 2.06 — p.484, XO=588. dword[0] = 8-byte LE int at EA.
-  void lxsdx(VR vrt, GPR ra, GPR rb)   { EmitX(31, vrt.idx, ra.idx, rb.idx, 588, 1); }
+  void lxsdx(VSXR t, GPR ra, GPR rb)   { EmitX(31, t.idx & 31u, ra.idx, rb.idx, 588, (t.idx >> 5) & 1u); }
   // lxsiwzx XT,RA,RB — ISA 2.07 (POWER8+) — p.488, XO=12. dword[0] =
   // zero-extended 4-byte LE int at EA.
-  void lxsiwzx(VR vrt, GPR ra, GPR rb) { EmitX(31, vrt.idx, ra.idx, rb.idx,  12, 1); }
+  void lxsiwzx(VSXR t, GPR ra, GPR rb) { EmitX(31, t.idx & 31u, ra.idx, rb.idx,  12, (t.idx >> 5) & 1u); }
   // Scalar stores out of dword[0] — the duals of lxsdx/lxsiwzx above.  Each
   // store's XO is its load's XO + 128, the same relationship lxvd2x(844) /
   // stxvd2x(972) has; that pairing is the cross-check that these numbers are
@@ -1507,21 +1457,19 @@ public:
   // VMX register index r encodes VSR 32+r exactly as on the load side.
   // stxsdx XS,RA,RB — ISA 2.06 — p.504, XO=716. Stores dword[0] as an 8-byte
   // LE integer at EA.  dword[1] is not read.
-  void stxsdx(VR vrs, GPR ra, GPR rb)   { EmitX(31, vrs.idx, ra.idx, rb.idx, 716, 1); }
   void stxsdx(VSXR vss, GPR ra, GPR rb) { EmitX(31, vss.idx & 31u, ra.idx, rb.idx, 716, (vss.idx >> 5) & 1u); }
   // stxsiwx XS,RA,RB — ISA 2.07 (POWER8+) — p.506, XO=140. Stores word
   // element 1 of VSR[XS] (bits 32:63, i.e. the LOW word of dword[0]) as a
   // 4-byte LE integer at EA.  This is the half lxsiwzx fills, so a value
   // round-trips through lxsiwzx/stxsiwx unchanged.
-  void stxsiwx(VR vrs, GPR ra, GPR rb)  { EmitX(31, vrs.idx, ra.idx, rb.idx, 140, 1); }
   void stxsiwx(VSXR vss, GPR ra, GPR rb) { EmitX(31, vss.idx & 31u, ra.idx, rb.idx, 140, (vss.idx >> 5) & 1u); }
 
   // lxsibzx XT,RA,RB — **ISA 3.0 (POWER9)** — p.486, XO=781. dword[0] =
   // zero-extended byte at EA; dword[1] = 0 (architectural, v3.0 instruction).
-  void lxsibzx(VR vrt, GPR ra, GPR rb) { EmitX(31, vrt.idx, ra.idx, rb.idx, 781, 1); }
+  void lxsibzx(VSXR t, GPR ra, GPR rb) { EmitX(31, t.idx & 31u, ra.idx, rb.idx, 781, (t.idx >> 5) & 1u); }
   // lxsihzx XT,RA,RB — **ISA 3.0 (POWER9)** — p.486, XO=813. dword[0] =
   // zero-extended 2-byte LE int at EA; dword[1] = 0.
-  void lxsihzx(VR vrt, GPR ra, GPR rb) { EmitX(31, vrt.idx, ra.idx, rb.idx, 813, 1); }
+  void lxsihzx(VSXR t, GPR ra, GPR rb) { EmitX(31, t.idx & 31u, ra.idx, rb.idx, 813, (t.idx >> 5) & 1u); }
 
   // Vector arithmetic (VX-form: op=4, VRT, VRA, VRB, XO)
   void vaddubm(VR vrt, VR vra, VR vrb)  { EmitVX(vrt.idx, vra.idx, vrb.idx, 0);   }

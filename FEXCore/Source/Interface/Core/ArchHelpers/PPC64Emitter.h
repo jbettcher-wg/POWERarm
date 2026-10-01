@@ -231,10 +231,19 @@ constexpr VSXR AVXHighBankReg(size_t i) {
 }
 
 // A VMX register's name in the full 64-entry VSX file (VR n == vs(32+n)),
-// for the VSX-form ops that move values between the banks.
+// for the VSX-form ops that move values between the banks. Redundant since VR
+// gained an implicit conversion to VSXR (CodeEmitter Registers.h) and kept
+// because hundreds of call sites spell it.
 constexpr VSXR AsVSX(VR v) {
   return VSXR{32u + v.idx};
 }
+
+// The two VMX vector temporaries under their VSX names. A VSX-clean lowering
+// (PPC64VSXView) has no VR in scope at all, so this is how it names them; both
+// halves of the file can reach v30/v31, so using them in a VSX-form
+// instruction is not a reach question.
+constexpr auto VTMP1_VSX = AsVSX(VTMP1);
+constexpr auto VTMP2_VSX = AsVSX(VTMP2);
 
 // -------------------------------------------------------------------------
 // ELFv2 volatility boundaries, plus the compile-time checks that keep each
