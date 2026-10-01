@@ -18,11 +18,23 @@ set -u
 # runs the whole loop through `setsid` so the runs -- and anything the
 # emulator forks off them -- land in a process group of their own, which the
 # caller then reaps. Nothing else uses this; cwd is already OUTDIR.
+#
+# $5 is a scratch directory of this run's own, and it has to be: OUTDIR is the
+# golden directory, which is shared, and two suites running at once there used
+# to write one another's exit codes into one file. Each truncates it and each
+# appends 96 lines, so the count this loop checks became whatever the two runs
+# happened to interleave -- 53 of 96 when the other run truncated mid-flight,
+# 149 of 96 when its codes landed here -- with every recorded exit still 0.
+# Both were read as a regression in process exit, and one of them cost a day
+# (open item 51). The pgid file was shared the same way, so one run's reap
+# killed the other's process group, or missed its own and left the hung
+# emulators that then wrote into the next run's file.
 if [ "${1:-}" = --threadexit-loop ]; then
   te_emu=$2
   te_total=$3
   te_batch=$4
-  echo $$ > threadexit_loop.pgid
+  te_work=$5
+  echo $$ > "$te_work/pgid"
   te_runs=0
   while [ "$te_runs" -lt "$te_total" ]; do
     te_i=0
@@ -31,7 +43,7 @@ if [ "${1:-}" = --threadexit-loop ]; then
       { (
         ulimit -c 0 2> /dev/null
         "$te_emu" ./threadexit > /dev/null 2>&1
-        echo $? >> threadexit_loop.codes
+        echo $? >> "$te_work/codes"
       ) & } 2> /dev/null
       te_i=$((te_i + 1))
       te_runs=$((te_runs + 1))
@@ -561,27 +573,29 @@ fi
 if [ -f threadexit ]; then
   te_total=96
   te_batch=8
-  : > threadexit_loop.codes
-  rm -f threadexit_loop.pgid
+  # Not in OUTDIR: see the re-entry comment at the top of this file. OUTDIR is
+  # the shared golden directory, and the count below only means anything if
+  # this run is the only one writing the file it counts.
+  te_work=$(mktemp -d "${TMPDIR:-/tmp}/threadexit-loop.XXXXXX") || exit 2
+  : > "$te_work/codes"
   if command -v setsid > /dev/null 2>&1 && setsid --wait true > /dev/null 2>&1; then
-    setsid --wait sh "$me" --threadexit-loop "$emu" "$te_total" "$te_batch" > /dev/null 2>&1
-    te_pg=$(cat threadexit_loop.pgid 2> /dev/null || echo)
+    setsid --wait sh "$me" --threadexit-loop "$emu" "$te_total" "$te_batch" "$te_work" > /dev/null 2>&1
+    te_pg=$(cat "$te_work/pgid" 2> /dev/null || echo)
     case $te_pg in
     '' | *[!0-9]*) ;;
     *) kill -KILL -- -"$te_pg" 2> /dev/null ;;
     esac
-    rm -f threadexit_loop.pgid
   else
-    sh "$me" --threadexit-loop "$emu" "$te_total" "$te_batch" > /dev/null 2>&1
-    rm -f threadexit_loop.pgid
+    sh "$me" --threadexit-loop "$emu" "$te_total" "$te_batch" "$te_work" > /dev/null 2>&1
   fi
-  te_bad=$(awk '$1 != 0' threadexit_loop.codes | wc -l)
-  te_ran=$(wc -l < threadexit_loop.codes)
+  te_bad=$(awk '$1 != 0' "$te_work/codes" | wc -l)
+  te_ran=$(wc -l < "$te_work/codes")
   if [ "$te_bad" = 0 ] && [ "$te_ran" = "$te_total" ]; then
     report PASS threadexit_loop "$te_total exits with threads mid-teardown, all clean"
   else
-    report FAIL threadexit_loop "$te_bad of $te_ran (of $te_total) did not exit 0: $(sort -n threadexit_loop.codes | uniq -c | tr '\n' ' ')"
+    report FAIL threadexit_loop "$te_bad of $te_ran (of $te_total) did not exit 0: $(sort -n "$te_work/codes" | uniq -c | tr '\n' ' ')"
   fi
+  rm -rf "$te_work"
 fi
 
 if [ "$skip" -gt 0 ]; then
