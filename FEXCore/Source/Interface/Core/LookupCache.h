@@ -800,7 +800,7 @@ public:
   // GuestRangeStart/GuestRangeLength: SMC Idea 3, the block's decoded guest
   // extent. Zero length => the granule bitmap conservatively marks the whole
   // page. See GuestToHostMap::AddBlockExecutableRange.
-  bool AddBlockExecutableRange(FEXCore::Core::InternalThreadState* Thread, const fextl::set<uint64_t>& Addresses, uint64_t Start,
+  bool AddBlockExecutableRange(FEXCore::Core::InternalThreadState* Thread, const std::ranges::input_range auto& Addresses, uint64_t Start,
                                uint64_t Length, uint64_t GuestRangeStart = 0, uint64_t GuestRangeLength = 0) {
     std::optional<FEXCore::SHMStats::AccumulationBlock<uint64_t>> LockTime(
       Thread->ThreadStats ? &Thread->ThreadStats->AccumulatedCacheWriteLockTime : nullptr);

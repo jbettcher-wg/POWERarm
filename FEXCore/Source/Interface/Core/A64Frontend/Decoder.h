@@ -104,8 +104,32 @@ public:
   struct DecodedBlockInformation final {
     uint64_t TotalInstructionCount {};
     fextl::vector<DecodedBlocks> Blocks;
-    fextl::set<uint64_t> EntryPoints;
-    fextl::set<uint64_t> CodePages; // Start addresses of all pages touching the block
+
+    // L4: sorted and unique, as the fextl::sets these replaced. Both are
+    // cleared per unit rather than reassigned, so they keep their capacity and
+    // stop allocating after the first few compiles -- where a set allocated a
+    // node per element per unit, and these hold one element each for nearly
+    // every unit (the entry, and the page the entry is on).
+    //
+    // Sorted order is load-bearing, not cosmetic: SMCSoftInvalidate's
+    // HashGuestBlock folds CodePages in iteration order, and a block's hash has
+    // to come out the same on the compile that records it and the revalidation
+    // that checks it.
+    fextl::vector<uint64_t> EntryPoints;
+    fextl::vector<uint64_t> CodePages; // Start addresses of all pages touching the block
+
+    // Linear rather than lower_bound: these are one or two elements long, and
+    // the branchy binary search loses to a scan at that size.
+    static void InsertSorted(fextl::vector<uint64_t>& V, uint64_t Value) {
+      auto It = V.begin();
+      while (It != V.end() && *It < Value) {
+        ++It;
+      }
+      if (It != V.end() && *It == Value) {
+        return;
+      }
+      V.insert(It, Value);
+    }
   };
 
   explicit Decoder(FEXCore::Core::InternalThreadState* Thread);
@@ -140,7 +164,7 @@ public:
     DecodedMinAddress = std::min(DecodedMinAddress, Start);
     DecodedMaxAddress = std::max(DecodedMaxAddress, End);
     for (uint64_t Page = Start & FEXCore::Utils::FEX_GUEST_PAGE_MASK; Page < End; Page += FEXCore::Utils::FEX_GUEST_PAGE_SIZE) {
-      BlockInfo.CodePages.insert(Page);
+      DecodedBlockInformation::InsertSorted(BlockInfo.CodePages, Page);
     }
   }
 

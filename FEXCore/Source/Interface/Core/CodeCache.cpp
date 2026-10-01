@@ -2057,7 +2057,8 @@ std::optional<CodeCache::LoadedBlock> CodeCache::TryLoadBlock(Core::InternalThre
   // tracked either. (This is registration CompileBlock does after compiling;
   // for a block that then fails to load it only costs a spurious SMC fault.)
   {
-    const fextl::set<uint64_t> EntryPoints {GuestRIP};
+    // L4: one entry point, so a std::array rather than a set node per install.
+    const std::array<uint64_t, 1> EntryPoints {GuestRIP};
     for (uint64_t Page = GuestRIP & FEXCore::Utils::FEX_GUEST_PAGE_MASK; Page < GuestRIP + Length; Page += FEXCore::Utils::FEX_GUEST_PAGE_SIZE) {
       if (Thread->LookupCache->AddBlockExecutableRange(Thread, EntryPoints, Page, FEXCore::Utils::FEX_GUEST_PAGE_SIZE, GuestRIP, Length)) {
         SyscallHandler->MarkGuestExecutableRange(Thread, Page, FEXCore::Utils::FEX_GUEST_PAGE_SIZE);
