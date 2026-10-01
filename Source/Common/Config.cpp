@@ -30,12 +30,417 @@
 #include <range/v3/view/transform.hpp>
 
 namespace FEX::Config {
+static constexpr std::pair<std::string_view, FEXCore::Config::ConfigOption> ConfigLookup[] {
+#define OPT_BASE(type, group, enum, json, default) {#json, FEXCore::Config::ConfigOption::CONFIG_##enum},
+#include <FEXCore/Config/ConfigValues.inl>
+};
+
+// The string-array options. These are encoded in a config file as a REPEATED
+// key -- SaveLayerToJSON writes one json_str per element -- so a duplicate key
+// is load-bearing for exactly these three and a mistake for everything else.
+static constexpr std::string_view StrArrayOptionNames[] {
+#define OPT_STRARRAY(group, enum, json, default) #json,
+#include <FEXCore/Config/ConfigValues.inl>
+};
+
 namespace JSON {
+  // Strict JSON validation, run on the file's bytes before tiny-json gets them.
+  //
+  // 19f05bc10 made an unparseable config print the path and exit 1 instead of
+  // dumping core, and left a note: tiny-json is lenient, so that only covered
+  // the case where the parser gives up. It does not give up on the cases that
+  // actually lose settings. Measured against the vendored parser:
+  //
+  //   {"Config":{"RootFS":"m2" "VSXClasses":"1"}}   missing comma   accepted
+  //   {"Config":{"RootFS":"m2","VSXClasses":"1",}}  trailing comma  accepted
+  //   {"Config":{"RootFS":"m2",,"VSXClasses":"1"}}  doubled comma   accepted
+  //   {"Config":{"RootFS":"m2"}} and more text      trailing junk   accepted
+  //   {"Config":{"RootFS":"m2"}},"VSXClasses":"1"}  stray brace     VSXClasses GONE
+  //
+  // objValue() treats a comma as a pure separator (`if (*ptr == ',') { ++ptr;
+  // continue; }`), which is the first four. The fifth is the dangerous one: the
+  // parser returns the moment the top-level object closes, so everything after
+  // a brace in the wrong place is discarded without a word. That is the same
+  // failure as the trailing comma that dropped RootFS, recorded in HANDOVER.md.
+  //
+  // Nothing in the tree needs the leniency. The only config file POWERarm ships
+  // is the one packaging/archpower/PKGBUILD writes; SaveLayerToJSON's writer
+  // strips its own trailing commas (json_objClose and json_end both do);
+  // README.md, docs/ENV_REFERENCE.md and docs/powerarm/APPS-TUI-DESIGN.md show
+  // strict JSON; and CMakeLists.txt already reads this very file with CMake's
+  // strict string(JSON) parser to find GUEST_ROOTFS.
+  struct SyntaxError {
+    size_t Offset {};
+    std::string_view Expected {};
+  };
+
+  struct StrictJSON {
+    std::string_view Text;
+    size_t Pos {};
+
+    // Config files are two or three levels deep. The cap is here so a hand-held
+    // file of nothing but '[' cannot run this recursion off the stack.
+    static constexpr size_t MaxDepth = 32;
+
+    std::optional<SyntaxError> Validate() {
+      if (Text.starts_with("\xEF\xBB\xBF")) {
+        return SyntaxError {0, "no UTF-8 byte order mark (JSON does not allow one)"};
+      }
+
+      SkipBlank();
+      // tiny-json only accepts an object at the top level, so say that here
+      // rather than report something confusing from further in.
+      if (Peek() != '{') {
+        return SyntaxError {Pos, "'{': a config file has to be a JSON object"};
+      }
+      if (auto Error = Value(0)) {
+        return Error;
+      }
+      SkipBlank();
+      if (Pos != Text.size()) {
+        return SyntaxError {Pos, "end of file: there is more text after the closing '}'"};
+      }
+      return std::nullopt;
+    }
+
+  private:
+    char Peek() const {
+      return Pos < Text.size() ? Text[Pos] : '\0';
+    }
+
+    void SkipBlank() {
+      while (Pos < Text.size()) {
+        const char C = Text[Pos];
+        if (C == ' ' || C == '\t' || C == '\n' || C == '\r') {
+          ++Pos;
+        } else {
+          break;
+        }
+      }
+    }
+
+    bool Literal(std::string_view Word) {
+      if (Text.substr(Pos).starts_with(Word)) {
+        Pos += Word.size();
+        return true;
+      }
+      return false;
+    }
+
+    std::optional<SyntaxError> String() {
+      // Caller has checked for the opening quote.
+      ++Pos;
+      for (;;) {
+        if (Pos >= Text.size()) {
+          return SyntaxError {Pos, "a closing '\"': the string is never terminated"};
+        }
+        const unsigned char C = static_cast<unsigned char>(Text[Pos]);
+        if (C == '"') {
+          ++Pos;
+          return std::nullopt;
+        }
+        if (C < 0x20) {
+          return SyntaxError {Pos, "a printable character: a raw control character inside a string has to be escaped"};
+        }
+        if (C != '\\') {
+          ++Pos;
+          continue;
+        }
+        ++Pos;
+        if (Pos >= Text.size()) {
+          return SyntaxError {Pos, "an escape character after '\\'"};
+        }
+        const char Escape = Text[Pos];
+        if (Escape == 'u') {
+          ++Pos;
+          for (int i = 0; i < 4; ++i) {
+            if (Pos >= Text.size() || !std::isxdigit(static_cast<unsigned char>(Text[Pos]))) {
+              return SyntaxError {Pos, "four hexadecimal digits after '\\u'"};
+            }
+            ++Pos;
+          }
+          continue;
+        }
+        if (Escape != '"' && Escape != '\\' && Escape != '/' && Escape != 'b' && Escape != 'f' && Escape != 'n' && Escape != 'r' && Escape != 't') {
+          return SyntaxError {Pos, "one of \" \\ / b f n r t u after a backslash"};
+        }
+        ++Pos;
+      }
+    }
+
+    std::optional<SyntaxError> Number() {
+      const size_t Start = Pos;
+      if (Peek() == '-') {
+        ++Pos;
+      }
+      if (Peek() == '0') {
+        ++Pos;
+      } else if (Peek() >= '1' && Peek() <= '9') {
+        while (Peek() >= '0' && Peek() <= '9') {
+          ++Pos;
+        }
+      } else {
+        return SyntaxError {Start, "a value: a string, number, object, array, true, false or null"};
+      }
+      if (Peek() == '.') {
+        ++Pos;
+        if (!(Peek() >= '0' && Peek() <= '9')) {
+          return SyntaxError {Pos, "a digit after the decimal point"};
+        }
+        while (Peek() >= '0' && Peek() <= '9') {
+          ++Pos;
+        }
+      }
+      if (Peek() == 'e' || Peek() == 'E') {
+        ++Pos;
+        if (Peek() == '+' || Peek() == '-') {
+          ++Pos;
+        }
+        if (!(Peek() >= '0' && Peek() <= '9')) {
+          return SyntaxError {Pos, "a digit in the exponent"};
+        }
+        while (Peek() >= '0' && Peek() <= '9') {
+          ++Pos;
+        }
+      }
+      return std::nullopt;
+    }
+
+    std::optional<SyntaxError> Object(size_t Depth) {
+      ++Pos; // '{'
+      SkipBlank();
+      if (Peek() == '}') {
+        ++Pos;
+        return std::nullopt;
+      }
+      for (;;) {
+        SkipBlank();
+        // This is where a trailing comma lands: the separator was accepted and
+        // a key has to follow it.
+        if (Peek() != '"') {
+          return SyntaxError {Pos, "a quoted key"};
+        }
+        if (auto Error = String()) {
+          return Error;
+        }
+        SkipBlank();
+        if (Peek() != ':') {
+          return SyntaxError {Pos, "':' after the key"};
+        }
+        ++Pos;
+        SkipBlank();
+        if (auto Error = Value(Depth + 1)) {
+          return Error;
+        }
+        SkipBlank();
+        if (Peek() == ',') {
+          ++Pos;
+          continue;
+        }
+        if (Peek() == '}') {
+          ++Pos;
+          return std::nullopt;
+        }
+        // A missing comma lands here, and so does a stray '}' earlier in the
+        // file having closed this object too soon.
+        return SyntaxError {Pos, "',' or '}'"};
+      }
+    }
+
+    std::optional<SyntaxError> Array(size_t Depth) {
+      ++Pos; // '['
+      SkipBlank();
+      if (Peek() == ']') {
+        ++Pos;
+        return std::nullopt;
+      }
+      for (;;) {
+        SkipBlank();
+        if (auto Error = Value(Depth + 1)) {
+          return Error;
+        }
+        SkipBlank();
+        if (Peek() == ',') {
+          ++Pos;
+          continue;
+        }
+        if (Peek() == ']') {
+          ++Pos;
+          return std::nullopt;
+        }
+        return SyntaxError {Pos, "',' or ']'"};
+      }
+    }
+
+    std::optional<SyntaxError> Value(size_t Depth) {
+      if (Depth >= MaxDepth) {
+        return SyntaxError {Pos, "fewer than 32 levels of nesting"};
+      }
+      switch (Peek()) {
+      case '{': return Object(Depth);
+      case '[': return Array(Depth);
+      case '"': return String();
+      case 't': return Literal("true") ? std::nullopt : std::optional<SyntaxError> {SyntaxError {Pos, "'true'"}};
+      case 'f': return Literal("false") ? std::nullopt : std::optional<SyntaxError> {SyntaxError {Pos, "'false'"}};
+      case 'n': return Literal("null") ? std::nullopt : std::optional<SyntaxError> {SyntaxError {Pos, "'null'"}};
+      default: return Number();
+      }
+    }
+  };
+
+  // Everything below reports against the file and stops. Partially applying a
+  // config is the failure being fixed, so there is no "carry on with the rest".
+  static void PrintRejection(const fextl::string& File, std::string_view Detail) {
+    fextl::fmt::print(stderr, "POWERarm: config file '{}' cannot be applied, so none of it is being applied.\n", File);
+    fextl::fmt::print(stderr, "          {}\n", Detail);
+    fextl::fmt::print(stderr, "          Fix the file or move it aside; POWERarm will not start until it is right.\n");
+    fflush(stderr);
+    _exit(1);
+  }
+
+  // Point at the offending byte the way a compiler does: line, column, the line
+  // itself and a caret. A byte offset alone is useless for finding a stray
+  // brace by eye.
+  static void PrintSyntaxRejection(const fextl::string& File, std::string_view Text, const SyntaxError& Error) {
+    const size_t Offset = std::min(Error.Offset, Text.size());
+    const size_t PrecedingNewline = Offset ? Text.rfind('\n', Offset - 1) : std::string_view::npos;
+    const size_t LineStart = PrecedingNewline == std::string_view::npos ? 0 : PrecedingNewline + 1;
+    const size_t FollowingNewline = Text.find('\n', Offset);
+    const size_t LineEnd = FollowingNewline == std::string_view::npos ? Text.size() : FollowingNewline;
+    const size_t Line = std::count(Text.begin(), Text.begin() + Offset, '\n') + 1;
+    const size_t Column = Offset - LineStart + 1;
+
+    fextl::fmt::print(stderr, "POWERarm: config file '{}' is not valid JSON, so none of it is being applied.\n", File);
+    fextl::fmt::print(stderr, "          Line {}, column {}: expected {}\n", Line, Column, Error.Expected);
+    if (LineEnd > LineStart) {
+      fextl::fmt::print(stderr, "            {}\n", Text.substr(LineStart, LineEnd - LineStart));
+      fextl::fmt::print(stderr, "            {}^\n", fextl::string(Column - 1, ' '));
+    }
+    fextl::fmt::print(stderr, "          Fix the file or move it aside; POWERarm will not start until it parses.\n");
+    fflush(stderr);
+    _exit(1);
+  }
+
+  static bool IsKnownOption(std::string_view Name) {
+    for (const auto& [OptionName, Option] : ConfigLookup) {
+      if (OptionName == Name) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  static bool IsStrArrayOption(std::string_view Name) {
+    for (const auto OptionName : StrArrayOptionNames) {
+      if (OptionName == Name) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  static std::string_view TypeName(jsonType_t Type) {
+    switch (Type) {
+    case JSON_OBJ: return "an object";
+    case JSON_ARRAY: return "an array";
+    case JSON_TEXT: return "a string";
+    case JSON_BOOLEAN: return "a bare true/false";
+    case JSON_INTEGER:
+    case JSON_REAL: return "a bare number";
+    case JSON_NULL: return "null";
+    }
+    return "an unknown kind of value";
+  }
+
+  // Every key in an option block has to name an option and carry a string
+  // value. A strict parse cannot catch either of these: `{"Config":{...},
+  // "VSXClasses":"1"}` and `{"Config":{"MaxInst":50000}}` are both valid JSON
+  // and both silently drop the setting -- the first because the option is not
+  // in the "Config" block at all, the second because json_getValue returns
+  // nullptr for a non-string and the loader used to log once and `return`,
+  // abandoning every option after it in the block.
+  static void ValidateOptionBlock(const fextl::string& File, std::string_view BlockName, const json_t* Block) {
+    if (json_getType(Block) != JSON_OBJ) {
+      PrintRejection(File, fextl::fmt::format("{} has to be a JSON object, but it is {}.", BlockName, TypeName(json_getType(Block))));
+    }
+
+    for (const json_t* Item = json_getChild(Block); Item != nullptr; Item = json_getSibling(Item)) {
+      const std::string_view Name {json_getName(Item) ?: ""};
+
+      if (!IsKnownOption(Name)) {
+        PrintRejection(File, fextl::fmt::format("'{}' in {} is not a POWERarm config option, so it would never be applied.", Name, BlockName));
+      }
+
+      if (json_getType(Item) != JSON_TEXT) {
+        PrintRejection(File, fextl::fmt::format("'{}' in {} is {}; an option value has to be a JSON string, e.g. \"1\" and not 1.", Name,
+                                                BlockName, TypeName(json_getType(Item))));
+      }
+
+      // A repeated key is how a string-array option carries more than one
+      // element, and a mistake anywhere else -- tiny-json keeps both and the
+      // loader applies both, so the last one silently wins.
+      if (IsStrArrayOption(Name)) {
+        continue;
+      }
+      for (const json_t* Earlier = json_getChild(Block); Earlier != Item; Earlier = json_getSibling(Earlier)) {
+        if (Name == std::string_view {json_getName(Earlier) ?: ""}) {
+          PrintRejection(File, fextl::fmt::format("'{}' is set more than once in {}; only the last one would take effect.", Name, BlockName));
+        }
+      }
+    }
+  }
+
+  static void ValidateConfigDocument(const fextl::string& File, const json_t* Document) {
+    for (const json_t* Section = json_getChild(Document); Section != nullptr; Section = json_getSibling(Section)) {
+      const std::string_view Name {json_getName(Section) ?: ""};
+
+      if (Name != "Config" && Name != "AppOverrides" && Name != "ThunksDB") {
+        // The overwhelmingly likely cause is a brace in the wrong place that
+        // left an option outside the "Config" block, so say so.
+        PrintRejection(File, fextl::fmt::format("'{}' is at the top level, where the only keys are \"Config\", \"AppOverrides\" and "
+                                                "\"ThunksDB\". An option has to be inside the \"Config\" block to be applied.",
+                                                Name));
+      }
+
+      for (const json_t* Earlier = json_getChild(Document); Earlier != Section; Earlier = json_getSibling(Earlier)) {
+        if (Name == std::string_view {json_getName(Earlier) ?: ""}) {
+          PrintRejection(File, fextl::fmt::format("'{}' appears more than once at the top level.", Name));
+        }
+      }
+
+      if (Name == "Config") {
+        ValidateOptionBlock(File, "the \"Config\" block", Section);
+      } else if (Name == "AppOverrides") {
+        if (json_getType(Section) != JSON_OBJ) {
+          PrintRejection(File, fextl::fmt::format("\"AppOverrides\" has to be a JSON object, but it is {}.", TypeName(json_getType(Section))));
+        }
+        // Every block, not just the one matching this program: a typo in a
+        // block for some other binary is still a setting that will never apply,
+        // and it is better found now than the next time that binary is run.
+        for (const json_t* App = json_getChild(Section); App != nullptr; App = json_getSibling(App)) {
+          ValidateOptionBlock(File, fextl::fmt::format("the \"AppOverrides\" block for '{}'", json_getName(App) ?: ""), App);
+        }
+      }
+      // "ThunksDB" is a different schema -- library names with integer values,
+      // read by json_getInteger -- so only the syntax check above applies to it.
+    }
+  }
+
   static void LoadJSonConfig(const fextl::string& Config, std::optional<fextl::string> AppName,
                              std::function<void(const char* Name, const char* ConfigString)> Func) {
     fextl::vector<char> Data;
     if (!FEXCore::FileLoading::LoadFile(Data, Config)) {
       return;
+    }
+
+    // Before tiny-json, which mutates the buffer as it parses. An empty file
+    // falls through to the !json branch below, which already handles it.
+    if (!Data.empty()) {
+      const std::string_view Text {Data.data(), Data.size()};
+      StrictJSON Strict {Text};
+      if (auto Error = Strict.Validate()) {
+        PrintSyntaxRejection(Config, Text, *Error);
+      }
     }
 
     FEX::JSON::JsonAllocator Pool {};
@@ -59,6 +464,10 @@ namespace JSON {
       fflush(stderr);
       _exit(1);
     }
+
+    // Valid JSON is not the same as an applicable config: an option one brace
+    // out of place is still valid JSON and is still silently ignored.
+    ValidateConfigDocument(Config, json);
 
     const json_t* ConfigList = json_getProperty(json, "Config");
 
@@ -91,19 +500,16 @@ namespace JSON {
         const char* ConfigString = json_getValue(ConfigItem);
 
         if (!ConfigString) {
-          LogMan::Msg::EFmt("JSON file '{}': Couldn't get value for config item '{}'", Config, ConfigName);
-          return;
+          // ValidateConfigDocument rejects every non-string value before this
+          // point, so reaching here means the two disagree. It used to log once
+          // and `return`, abandoning every option after it in the block.
+          PrintRejection(Config, fextl::fmt::format("'{}' has no string value.", ConfigName ?: ""));
         }
         Func(ConfigName, ConfigString);
       }
     }
   }
 } // namespace JSON
-
-static constexpr std::pair<std::string_view, FEXCore::Config::ConfigOption> ConfigLookup[] {
-#define OPT_BASE(type, group, enum, json, default) {#json, FEXCore::Config::ConfigOption::CONFIG_##enum},
-#include <FEXCore/Config/ConfigValues.inl>
-};
 
 // Every bool-typed option. Both loaders store an option's value as a raw string
 // and leave the conversion to a later GetConv<bool>, which is far away from the

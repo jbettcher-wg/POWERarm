@@ -210,13 +210,153 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# The normal path still works: a config of the shape the owner actually runs.
+# json: a config that cannot be fully applied must not be partially applied.
+#
+# 19f05bc10 made an unparseable file exit 1 instead of dumping core, and noted
+# that tiny-json is lenient so it only covered the case where the parser gives
+# up. These are the cases where it does not give up. The last two in the first
+# group are the ones that silently lose a setting outright, because tiny-json
+# returns the moment the top-level object closes and discards the rest.
+
+# rejected CASE TEXT EXPECT : the file is refused, nothing is applied, and the
+# message contains EXPECT.
+rejected() {
+  local what=$1 text=$2 expect=$3 out rc
+  out=$(run "$text" - --)
+  rc=$?
+  local why=
+  [ "$rc" = 1 ] || why="$why rc=$rc(want 1)"
+  case $out in *"$expect"*) ;; *) why="$why want:$expect" ;; esac
+  case $out in *aarch64*) why="$why guest-ran" ;; *) ;; esac
+  [ -z "$why" ] &&
+    ok "json: $what is refused" ||
+    bad "json: $what should be refused ($why): $(echo "$out" | tr '\n' '|')"
+}
+
+# applied CASE TEXT : the file is good and must keep working. Everything the
+# project ships, generates or documents goes through here, because a stricter
+# parse is only safe if it still accepts all of it.
+applied() {
+  local what=$1 text=$2 out rc
+  out=$(run "$text" - --)
+  rc=$?
+  { [ "$rc" = 0 ] && [ "$out" = aarch64 ]; } &&
+    ok "json: $what is accepted" ||
+    bad "json: $what should be accepted, got rc=$rc out='$(echo "$out" | tr '\n' '|')'"
+}
+
+rejected "a missing comma" \
+  '{"Config":{"RootFS":"r","VSXClasses":"1"
+   "Multiblock":"1"}}' "expected ',' or '}'"
+rejected "a trailing comma" \
+  '{"Config":{"RootFS":"r","VSXClasses":"1",}}' "expected a quoted key"
+rejected "a doubled comma" \
+  '{"Config":{"RootFS":"r",,"VSXClasses":"1"}}' "expected a quoted key"
+rejected "text after the closing brace" \
+  '{"Config":{"RootFS":"r"}} and more' "more text after the closing '}'"
+rejected "a brace in the wrong place dropping an option" \
+  '{"Config":{"RootFS":"r"}},"VSXClasses":"1"}' "more text after the closing '}'"
+rejected "a missing colon" \
+  '{"Config":{"RootFS" "r"}}' "expected ':' after the key"
+rejected "an unterminated string" \
+  '{"Config":{"RootFS":"r}}' "the string is never terminated"
+rejected "a JSON comment" \
+  '{"Config":{ /* nope */ "RootFS":"r"}}' "expected a quoted key"
+rejected "a single-quoted key" \
+  "{'Config':{'RootFS':'r'}}" "expected a quoted key"
+rejected "a UTF-8 byte order mark" \
+  "$(printf '\xEF\xBB\xBF{"Config":{"RootFS":"r"}}')" "byte order mark"
+rejected "a bad escape" \
+  '{"Config":{"RootFS":"a\qb"}}' 'after a backslash'
+
+# json: valid JSON that still cannot be applied. A strict parse cannot catch
+# any of these -- every one of them is well-formed and every one of them is a
+# setting that silently never takes effect.
+rejected "a duplicate option key" \
+  '{"Config":{"RootFS":"r","VSXClasses":"1","VSXClasses":"0"}}' 'set more than once'
+rejected "an unknown option key" \
+  '{"Config":{"RootFS":"r","Banana":"1"}}' 'is not a POWERarm config option'
+rejected "a misspelled option key" \
+  '{"Config":{"RootFS":"r","VSXClases":"1"}}' 'is not a POWERarm config option'
+rejected "an option outside the Config block" \
+  '{"Config":{"RootFS":"r"},"VSXClasses":"1"}' 'is at the top level'
+rejected "a duplicate top-level key" \
+  '{"Config":{"RootFS":"r"},"Config":{"VSXClasses":"1"}}' 'more than once at the top level'
+rejected "a bare number value" \
+  '{"Config":{"MaxInst":50000,"RootFS":"r"}}' 'has to be a JSON string'
+rejected "a bare true value" \
+  '{"Config":{"VSXClasses":true}}' 'has to be a JSON string'
+rejected "a null value" \
+  '{"Config":{"VSXClasses":null}}' 'has to be a JSON string'
+rejected "an array value" \
+  '{"Config":{"Env":["A=1"]}}' 'has to be a JSON string'
+rejected "a Config block that is not an object" \
+  '{"Config":"RootFS"}' 'has to be a JSON object'
+rejected "an unknown key in an AppOverrides block" \
+  '{"Config":{"RootFS":"r"},"AppOverrides":{"someotherprogram":{"Banana":"1"}}}' 'is not a POWERarm config option'
+
+# json: and everything that must keep working.
+applied "the config shape the owner runs" \
+  '{"Config":{"RootFS":"r","CodeCacheForkWriter":"0","VSXClasses":"1","NZCVExitDead":"canary"}}'
+# packaging/archpower/PKGBUILD writes this as the global layer, so it is read on
+# every launch of an installed POWERarm. Its ThunksDB values are bare integers,
+# which json_getInteger wants -- the string rule is for option blocks only.
+applied "the global config the package ships" \
+  '{
+  "Config": {},
+  "ThunksDB": {
+    "Vulkan": 1,
+    "GL": 1,
+    "EGL": 1,
+    "WaylandClient": 1,
+    "drm": 1,
+    "xshmfence": 1,
+    "asound": 0
+  }
+}'
+# A repeated key is how SaveLayerToJSON encodes a string-array option (one
+# json_str per element), so Env/HostEnv/AdditionalArguments must be exempt from
+# the duplicate-key rule or POWERarmConfig and POWERarmRootFSFetcher would
+# write files their own loader refuses.
+applied "repeated keys for a string-array option" \
+  '{"Config":{"RootFS":"r","Env":"A=1","Env":"B=2","HostEnv":"C=3"},"ThunksDB":{"GL":1}}'
+applied "the README example" '{ "Config": { "RootFS": "ArchLinuxARM-m2" } }'
+applied "the ENV_REFERENCE example" '{ "Config": { "SMCChecks": "mtrack", "MaxInst": "50000" } }'
+applied "the APPS-TUI-DESIGN example" \
+  '{
+  "Config": {
+    "RootFS": "r",
+    "EnableCodeCachingWIP": "1",
+    "CodeCacheScope": "home",
+    "DisableCmpBranchFusion": "0",
+    "ProfileStats": "0"
+  }
+}'
+applied "an AppOverrides block" \
+  '{"Config":{"RootFS":"r"},"AppOverrides":{"*uname*":{"MaxInst":"500"},"chrome":{"TSOEnabled":"1"}}}'
+applied "an empty Config block" '{"Config":{}}'
+applied "an empty document" '{}'
+applied "a file with no Config section" '{"ThunksDB":{"GL":1}}'
+applied "odd but legal whitespace" '{
+   "Config"  :  {
+       "RootFS" : "r"
+   }
+}'
+applied "escapes in a value" '{"Config":{"RootFS":"r","OutputLog":"stderr","ThunkHostLibs":"/a\/bA"}}'
+
+# An empty file was already covered by 19f05bc10 and must stay covered.
+rejected "an empty file" '' 'not valid JSON'
+
+# ---------------------------------------------------------------------------
+# The normal path still works.
 out=$(run '{"Config":{"CodeCacheForkWriter":"0","VSXClasses":"1","NZCVExitDead":"canary"}}' - --)
-{ [ "$?" = 0 ] && [ "$out" = aarch64 ]; } &&
-  ok "normal: a valid config runs the guest" || bad "normal: a valid config failed, rc=$? out='$out'"
+rc=$?
+{ [ "$rc" = 0 ] && [ "$out" = aarch64 ]; } &&
+  ok "normal: a valid config runs the guest" || bad "normal: a valid config failed, rc=$rc out='$out'"
 
 out=$(run - - --)
-{ [ "$?" = 0 ] && [ "$out" = aarch64 ]; } &&
-  ok "normal: no config file at all runs the guest" || bad "normal: no config file failed, rc=$? out='$out'"
+rc=$?
+{ [ "$rc" = 0 ] && [ "$out" = aarch64 ]; } &&
+  ok "normal: no config file at all runs the guest" || bad "normal: no config file failed, rc=$rc out='$out'"
 
 exit $fail
