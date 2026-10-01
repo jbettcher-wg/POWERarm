@@ -1090,6 +1090,10 @@ bool PPC64JITCore::ProjectXERUsesMcrxrx() const {
   return EmitterCTX->HostFeatures.SupportsISA30;
 }
 
+bool PPC64JITCore::HostSupportsISA30() const {
+  return EmitterCTX->HostFeatures.SupportsISA30;
+}
+
 uint32_t PPC64JITCore::XEROVBitIndex() const {
   // CR1.LT on the mcrxrx layout, CR1.GT on the pre-3.0 layout.
   return ProjectXERUsesMcrxrx() ? 4u : 5u;

@@ -162,6 +162,12 @@ static constexpr int16_t PPC64VConstSlotSize = 16;
 static_assert(PPC64VConstPoolOffset % 16 == 0, "lvx truncates the low 4 EA bits; pool must be 16-byte aligned");
 static_assert(PPC64VConstPoolOffset + PPC64VConstSlotSize * (PPC64_VCONST_MAX - 1) <= INT16_MAX,
               "constant pool displacement must fit li's signed 16-bit immediate");
+// ISA 3.0's lxv holds the displacement itself, in a DQ field covering EA bits
+// 4:15. Both conditions above together give that for free -- a multiple of 16
+// that fits a signed 16-bit field is at most 32752 -- but the DQ arm of
+// EmitLoadPPC64VConst depends on it, so say so here rather than inferring it.
+static_assert(PPC64VConstSlotSize % 16 == 0 && PPC64VConstPoolOffset + PPC64VConstSlotSize * (PPC64_VCONST_MAX - 1) <= 32752,
+              "constant pool displacement must also fit lxv's DQ field");
 
 // -------------------------------------------------------------------------
 // Block linking (constant-target JUMP exits only)
@@ -1061,6 +1067,11 @@ private:
   // the sequence and the index can drift apart silently.
   [[nodiscard]] bool ProjectXERUsesMcrxrx() const;
 
+  // HostFeatures.SupportsISA30, for the inline emitters in this header.
+  // ContextImpl is incomplete here, so CTX cannot be dereferenced inline;
+  // defined beside ProjectXERUsesMcrxrx in JIT.cpp.
+  [[nodiscard]] bool HostSupportsISA30() const;
+
   // PPC CR-bit index holding XER.OV after ProjectXERToCR1(): 4 (CR1.LT) on the
   // mcrxrx layout, 5 (CR1.GT) on the pre-3.0 layout. XER.CA is CR1.EQ (bit 6)
   // in both, so C-consuming conditions need no equivalent accessor.
@@ -1275,17 +1286,33 @@ private:
 
   // Load 128-bit constant `idx` from the pool into `dst`:
   //   ld  base, PPC64_HelperTable_off(STATE)   ; base = table/pool allocation
-  //   li  off,  PoolOffset + idx*16
-  //   lvx dst,  base, off
-  // Three instructions and no store queue traffic, versus LoadConstant + two
-  // stds + addi + lvx per constant. `base` and `off` are caller-supplied
-  // scratch GPRs; base must not be r0 (lvx would read it as literal zero).
+  //   li  off,  PoolOffset + idx*16            ; POWER8 only
+  //   lvx dst,  base, off                      ; POWER8
+  //   lxv dst,  PoolOffset + idx*16(base)      ; ISA 3.0 — the displacement
+  //                                            ; rides in the instruction
+  // Versus LoadConstant + two stds + addi + lvx per constant, and no store
+  // queue traffic either way. `base` and `off` are caller-supplied scratch
+  // GPRs; base must not be r0 (every form here reads RA=0 as literal zero).
+  // `off` is unused on the ISA 3.0 arm, but callers must keep assuming it is
+  // clobbered: which arm is emitted is a run-time property of the host.
+  //
+  // ISA 3.0's DQ field holds EA bits 4:15, and every pool displacement is a
+  // multiple of 16 within a signed 16-bit field (asserted beside
+  // PPC64VConstPoolOffset), so it always fits. Alignment is not a difference
+  // here: PPC64RuntimeTables is alignas(16) and Constants is 16-byte aligned
+  // inside it, so lvx's EA masking was already a no-op and lxv reads the same
+  // bytes. Nothing about the pool's layout changes.
   void EmitLoadPPC64VConst(PPC64Emitter::VR dst, FEXCore::CPU::PPC64VConstIndex idx, PPC64Emitter::GPR base,
                            PPC64Emitter::GPR off) {
     static_assert(offsetof(FEXCore::Core::CpuStateFrame, PPC64_HelperTable) <= INT16_MAX,
                   "PPC64_HelperTable offset must fit int16_t for d-form ld");
+    const int16_t Disp = static_cast<int16_t>(FEXCore::CPU::PPC64VConstPoolOffset + idx * FEXCore::CPU::PPC64VConstSlotSize);
     ld(base, static_cast<int16_t>(offsetof(FEXCore::Core::CpuStateFrame, PPC64_HelperTable)), STATE);
-    li(off, static_cast<int16_t>(FEXCore::CPU::PPC64VConstPoolOffset + idx * FEXCore::CPU::PPC64VConstSlotSize));
+    if (HostSupportsISA30()) {
+      lxv(dst, Disp, base);
+      return;
+    }
+    li(off, Disp);
     lvx(dst, base, off);
   }
 
