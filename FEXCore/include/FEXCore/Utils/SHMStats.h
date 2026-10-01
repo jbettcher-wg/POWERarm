@@ -74,6 +74,15 @@ struct ThreadStats {
   uint64_t AccumulatedCacheWriteLockTime;
 
   uint64_t AccumulatedJITCount;
+
+  // M-C: the VMA map descents the compile path makes.  Time covers taking
+  // VMATracking.Mutex shared *and* the std::map lower_bound under it, because
+  // the descent is the cost the lookup-per-unit change would remove -- the
+  // lock itself is uncontended most of the time.  Count is one per descent, so
+  // time/count is the mean descent and count/jit_count the descents per
+  // compile unit.
+  uint64_t AccumulatedVMALockTime;
+  uint64_t AccumulatedVMAQueryCount;
 };
 
 // Ensure 16-byte alignment to take advantage of ARM single-copy atomicity.

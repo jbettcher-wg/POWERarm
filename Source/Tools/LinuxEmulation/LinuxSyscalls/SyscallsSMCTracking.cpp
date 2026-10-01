@@ -71,6 +71,7 @@ $end_info$
 #include <string_view>
 #include <unistd.h>
 #include <FEXCore/Utils/MathUtils.h>
+#include <FEXCore/Utils/SHMStats.h>
 #include <FEXCore/Utils/SignalScopeGuards.h>
 #include <FEXCore/Utils/THP.h>
 #include <FEXCore/Utils/TypeDefines.h>
@@ -1045,6 +1046,53 @@ bool GranuleRangeDemoted(uint64_t Start, uint64_t Length) {
   }
   return true;
 }
+
+// M-C (LATENCY-ROUND3 §6): what one trip into the VMA map costs the compile
+// path.  Scoped over taking VMATracking.Mutex shared *and* the std::map
+// descent under it, because L3 would remove both -- and because the lock is
+// uncontended most of the time, so timing the acquisition alone (what
+// AccumulatedCacheReadLockTime does for the lookup cache) would report nearly
+// zero and say nothing about the descent, which is the part that scales with
+// the process's VMA count.
+//
+// Null-safe twice over: Thread is null on a few non-guest callers, and
+// ThreadStats is null unless POWERARM_PROFILESTATS=1, which leaves one
+// predictable branch and no timebase read on the default path.
+struct VMADescentTimer final {
+  explicit VMADescentTimer(FEXCore::Core::InternalThreadState* Thread)
+    : Stats {Thread ? Thread->ThreadStats : nullptr}
+    , Begin {Stats ? FEXCore::SHMStats::GetCycleCounter() : 0} {}
+
+  // For a caller that does work under the lock beyond the descent itself
+  // (MarkGuestExecutableRange mprotects as it walks): charge the descent and
+  // disarm, so the syscalls it makes afterwards are not counted as map time.
+  void Stop() {
+    if (!Stats) {
+      return;
+    }
+    Record();
+    Stats = nullptr;
+  }
+
+  ~VMADescentTimer() {
+    if (Stats) {
+      Record();
+    }
+  }
+
+  VMADescentTimer(const VMADescentTimer&) = delete;
+  VMADescentTimer& operator=(const VMADescentTimer&) = delete;
+
+private:
+  void Record() {
+    const auto Duration = FEXCore::SHMStats::GetCycleCounter() - Begin;
+    std::atomic_ref<uint64_t>(Stats->AccumulatedVMALockTime).fetch_add(Duration, std::memory_order_relaxed);
+    std::atomic_ref<uint64_t>(Stats->AccumulatedVMAQueryCount).fetch_add(1, std::memory_order_relaxed);
+  }
+
+  FEXCore::SHMStats::ThreadStats* Stats;
+  uint64_t Begin;
+};
 } // namespace
 
 bool SyscallHandler::GuestCodePageValidateOnly(uint64_t Page) {
@@ -1091,6 +1139,9 @@ void SyscallHandler::MarkGuestExecutableRange(FEXCore::Core::InternalThreadState
   }
 
   {
+    // The FASTSKIP memo above returns without touching the map, so only the
+    // descents that really happen are counted.
+    VMADescentTimer Timer {Thread};
     auto lk = FEXCore::GuardSignalDeferringSection<std::shared_lock>(VMATracking.Mutex, Thread);
 
     // Cleared as soon as the walk finds anything actionable for this range;
@@ -1100,6 +1151,7 @@ void SyscallHandler::MarkGuestExecutableRange(FEXCore::Core::InternalThreadState
     // Find the first mapping at or after the range ends, or ::end().
     // Top points to the address after the end of the range
     auto Mapping = VMATracking.VMAs.lower_bound(Top);
+    Timer.Stop();
 
     if (SMCAuditFD() >= 0) {
       if (Mapping == VMATracking.VMAs.begin()) {
@@ -1729,6 +1781,7 @@ static FEXCore::ExecutableFileSectionInfo BuildSectionInfo(const VMATracking::Ma
 
 std::optional<FEXCore::ExecutableFileSectionInfo>
 SyscallHandler::LookupExecutableFileSection(FEXCore::Core::InternalThreadState* Thread, uint64_t GuestAddr) {
+  VMADescentTimer Timer {Thread};
   auto lk = FEXCore::GuardSignalDeferringSection<std::shared_lock>(VMATracking.Mutex, Thread);
 
   auto EntryIt = VMATracking.FindVMAEntry(GuestAddr);
@@ -1909,6 +1962,9 @@ const char* SyscallHandler::LookupAnonymousExecImageName(FEXCore::Core::Internal
 }
 
 FEXCore::HLE::ExecutableRangeInfo SyscallHandler::QueryGuestExecutableRange(FEXCore::Core::InternalThreadState* Thread, uint64_t Address) {
+  // Declared before the lock so it is destroyed after it: the scope covers the
+  // acquisition, the descent and the release.
+  VMADescentTimer Timer {Thread};
   auto lk = FEXCore::GuardSignalDeferringSection<std::shared_lock>(VMATracking.Mutex, Thread);
   auto ThreadObject = FEX::HLE::ThreadManager::GetStateObjectFromFEXCoreThread(Thread);
 

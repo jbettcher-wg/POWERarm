@@ -148,9 +148,13 @@ void ThreadManager::StatAlloc::CleanupForExit() {
   if (ProfileStats() && Base) {
     uint64_t TotalJITTime = 0;
     uint64_t TotalJITCount = 0;
+    uint64_t TotalVMATime = 0;
+    uint64_t TotalVMACount = 0;
     for (size_t i = 0; i < TotalSlotsFromSize(); ++i) {
       TotalJITTime += Stats[i].AccumulatedJITTime;
       TotalJITCount += Stats[i].AccumulatedJITCount;
+      TotalVMATime += Stats[i].AccumulatedVMALockTime;
+      TotalVMACount += Stats[i].AccumulatedVMAQueryCount;
     }
 
     // Timebase frequency via the GCC builtin — reads auxv AT_TIMEBASE_FREQUENCY.
@@ -170,6 +174,15 @@ void ThreadManager::StatAlloc::CleanupForExit() {
     std::fprintf(stderr, "[POWERarm JIT] blocks=%lu ticks=%lu seconds=%.6f wall=%.6f pct=%.3f freq=%luHz\n",
                  static_cast<unsigned long>(TotalJITCount), static_cast<unsigned long>(TotalJITTime), Seconds, Wall, Pct,
                  static_cast<unsigned long>(Freq));
+
+    // M-C: the same totals for the compile path's VMA map descents. Per process
+    // rather than only the one shmstats.py samples, because the interesting
+    // guests (gcc's cc1, Chromium's renderers) are children.
+    const double VMASeconds = Freq ? static_cast<double>(TotalVMATime) / static_cast<double>(Freq) : 0.0;
+    std::fprintf(stderr, "[POWERarm VMA] descents=%lu ticks=%lu seconds=%.6f per_unit=%.2f ns_each=%.0f pct_of_jit=%.2f\n",
+                 static_cast<unsigned long>(TotalVMACount), static_cast<unsigned long>(TotalVMATime), VMASeconds,
+                 TotalJITCount ? static_cast<double>(TotalVMACount) / static_cast<double>(TotalJITCount) : 0.0,
+                 TotalVMACount ? VMASeconds / static_cast<double>(TotalVMACount) * 1e9 : 0.0, Seconds > 0.0 ? VMASeconds / Seconds * 100.0 : 0.0);
   }
 
   shm_unlink(fextl::fmt::format(POWERARM_DIR_NAME "-{}-stats", ::getpid()).c_str());
