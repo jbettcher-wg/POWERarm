@@ -48,6 +48,8 @@ struct ThreadStats;
 
 namespace FEXCore::Core {
 
+struct DebugData;
+
 // Special-purpose replacement for std::unique_ptr to allow InternalThreadState to be standard layout.
 // Since a NonMovableUniquePtr is neither copyable nor movable, its only function is to own and release the contained object.
 template<typename T>
@@ -128,6 +130,19 @@ struct InternalThreadState : public FEXCore::Allocator::FEXAllocOperators {
 
   // This pointer is owned by the frontend.
   FEXCore::SHMStats::ThreadStats* ThreadStats {};
+
+  // L4: scratch DebugData for the compile unit in flight, allocated once with
+  // the thread and cleared per unit rather than allocated and freed by every
+  // CompileCode -- which also kept its two vectors from reallocating as they
+  // refilled. Like the decoder, the IR builder and the staging buffer beside
+  // it, it assumes one compile at a time on this thread; a nested compile
+  // would already have corrupted those.
+  //
+  // Raw rather than NonMovableUniquePtr because DebugData is an internal type
+  // (Interface/Core/JIT/DebugData.h) that this public header cannot complete.
+  // Created in ContextImpl::CreateThread, destroyed in
+  // ContextImpl::ReleaseDeadThreadResources, both of which can.
+  FEXCore::Core::DebugData* PerUnitDebugData {};
 
   UnalignedExclusiveStore ExclusiveStore;
 

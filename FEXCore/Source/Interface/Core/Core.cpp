@@ -728,6 +728,9 @@ void ContextImpl::InitializeCompiler(FEXCore::Core::InternalThreadState* Thread)
   Thread->LookupCache = fextl::make_unique<FEXCore::LookupCache>(this);
   Thread->FrontendDecoder = fextl::make_unique<FEXCore::A64::Decoder>(Thread);
   Thread->PassManager = fextl::make_unique<FEXCore::IR::PassManager>();
+  // L4: see InternalThreadState::PerUnitDebugData. Value-initialised, so the
+  // unused Relocations pointer starts null and stays that way.
+  Thread->PerUnitDebugData = new FEXCore::Core::DebugData();
 
   Thread->CurrentFrame->State.L1Pointer = Thread->LookupCache->GetL1Pointer();
   Thread->CurrentFrame->State.L1Mask = Thread->LookupCache->GetScaledL1PointerMask();
@@ -833,6 +836,9 @@ void ContextImpl::ReleaseDeadThreadResources(FEXCore::Core::InternalThreadState*
   Thread->FrontendDecoder.reset();
   Thread->OpDispatcher.reset();
   Thread->SymbolBuffer.reset();
+  // Idempotent like the resets above: this path can be reached twice.
+  delete Thread->PerUnitDebugData;
+  Thread->PerUnitDebugData = nullptr;
 
   // Dropping the backend drops this thread's shared_ptr references to the
   // current code buffer and to any rotated-away buffers it had pinned for
@@ -1247,19 +1253,25 @@ ContextImpl::CompileCodeResult ContextImpl::CompileCode(FEXCore::Core::InternalT
     }
   }
 
-  auto DebugData = fextl::make_unique<FEXCore::Core::DebugData>();
+  // L4: the thread's own DebugData, emptied rather than allocated. clear()
+  // keeps both vectors' capacity, so after the first few units GuestOpcodes
+  // stops reallocating as it refills one entry per guest instruction.
+  auto* DebugData = Thread->PerUnitDebugData;
+  DebugData->HostCodeSize = 0;
+  DebugData->Subblocks.clear();
+  DebugData->GuestOpcodes.clear();
 
   // POWERARM-M0-TODO(backend): the x86 trap-flag single-step check is gone; A64 EL0 has no TF equivalent (software step comes via ptrace/gdbserver).
   const bool TFSet = false;
 
-  auto CompiledCode = Thread->CPUBackend->CompileCode(GuestRIP, Length, TotalInstructions == 1, &*IRView, DebugData.get(), TFSet);
+  auto CompiledCode = Thread->CPUBackend->CompileCode(GuestRIP, Length, TotalInstructions == 1, &*IRView, DebugData, TFSet);
 
   // Release the IR
   Thread->OpDispatcher->DelayedDisownBuffer();
 
   return {
     .CompiledCode = std::move(CompiledCode),
-    .DebugData = std::move(DebugData),
+    .DebugData = DebugData,
     .StartAddr = StartAddr,
     .Length = Length,
     .NeedsAddGuestCodeRanges = NeedsAddGuestCodeRanges,
@@ -1406,14 +1418,23 @@ uintptr_t ContextImpl::CompileBlock(FEXCore::Core::CpuStateFrame* Frame, uint64_
     CodeCache.BlocksSinceSave.fetch_add(1, std::memory_order_relaxed);
   }
 
-  fextl::vector<uint64_t> CodePages;
+  // L4: the decoder's own list, not a copy of it. It is the decoder's reusable
+  // storage (DecodedBlockInformation::CodePages) and stays valid until the next
+  // decode on this thread, which is after everything below has read it.
+  // NeedsAddGuestCodeRanges false means custom IR, which has no guest pages.
+  //
+  // Function-local rather than file-scope on purpose: moving it to namespace
+  // scope (no per-call initialisation guard, which looks strictly cheaper)
+  // measured +0.49% instructions:u on cold `gcc -c empty.c`. LTO's inlining
+  // moved; the guard is two predicted instructions and is not the cost.
+  static const fextl::vector<uint64_t> NoCodePages;
+  const fextl::vector<uint64_t>& CodePages =
+    NeedsAddGuestCodeRanges ? Thread->FrontendDecoder->GetDecodedBlockInfo()->CodePages : NoCodePages;
 
   if (NeedsAddGuestCodeRanges) {
     // Track in the guest to host map all entrypoints for all pages the compiled block touches, if any page didn't previously
     // contain code, inform the frontend so it can setup SMC detection.
     auto BlockInfo = Thread->FrontendDecoder->GetDecodedBlockInfo();
-    CodePages.reserve(BlockInfo->CodePages.size());
-    CodePages.insert(CodePages.end(), BlockInfo->CodePages.begin(), BlockInfo->CodePages.end());
     for (auto CodePage : BlockInfo->CodePages) {
       // SMC Idea 3: [StartAddr, StartAddr+Length) is the frontend's decoded
       // guest span; passing it gives the granule bitmap 64-byte precision for
@@ -1682,7 +1703,8 @@ uintptr_t ContextImpl::TryRelinkSoftInvalidatedBlock(FEXCore::Core::InternalThre
   // Unchanged: re-publish. Registering the code pages again re-arms mtrack's
   // write protection through the same path a fresh compile uses, so the page
   // becomes protected exactly when live code reappears on it.
-  fextl::set<uint64_t> Entrypoints {GuestRIP};
+  // L4: one entry point, so a std::array rather than a set node per relink.
+  const std::array<uint64_t, 1> Entrypoints {GuestRIP};
   for (auto CodePage : Retained->CodePages) {
     // SMC Idea 3: re-set the granule bits the soft-invalidation cleared. The
     // retained entry always carries a non-zero extent (SoftEraseBlock refuses

@@ -6072,13 +6072,17 @@ CPUBackend::CompiledCode PPC64JITCore::CompileCode(
   // Encode vl64pair RIP entries. Staging-independent (it only walks
   // DebugData->GuestOpcodes), so it stays outside the publication lock:
   uint8_t StackEntries[2048];
-  fextl::vector<uint8_t> HeapEntries;
   uint8_t* EntryLoc = StackEntries;
   uint8_t* EntryBase = EntryLoc;
   const size_t MaxEntriesSize = DebugData->GuestOpcodes.size() * 17;
   if (MaxEntriesSize > sizeof(StackEntries)) {
-    HeapEntries.resize(MaxEntriesSize);
-    EntryLoc = HeapEntries.data();
+    // L4: a member, so the grow happens once per thread rather than per unit.
+    // resize() never shrinks the allocation, and the contents are overwritten
+    // by the encoder below before anything reads them.
+    if (RIPEntryHeapScratch.size() < MaxEntriesSize) {
+      RIPEntryHeapScratch.resize(MaxEntriesSize);
+    }
+    EntryLoc = RIPEntryHeapScratch.data();
     EntryBase = EntryLoc;
   }
   uintptr_t PrevPCOffset = 0;

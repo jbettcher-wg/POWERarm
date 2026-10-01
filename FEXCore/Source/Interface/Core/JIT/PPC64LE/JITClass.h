@@ -752,6 +752,13 @@ private:
   };
   fextl::list<PendingJumpThunk> PendingJumpThunks;
 
+  // L4: scratch for the vl64pair RIP table of the unit in flight, used only
+  // when the table does not fit the 2 KiB stack buffer beside it (roughly 120
+  // guest instructions). A member rather than a local so that a thread
+  // compiling a run of large units resizes once instead of allocating and
+  // freeing per unit.
+  fextl::vector<uint8_t> RIPEntryHeapScratch;
+
   // G1(a): the miss-leg spill stubs are no longer per unit. Both live once in
   // the context's spill island (PPC64Dispatcher::EmitSpillIsland) and every
   // miss leg reaches its stub through a per-thread Pointers.SpillIsland{Exit,

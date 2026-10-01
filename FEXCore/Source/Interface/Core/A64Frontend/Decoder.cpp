@@ -148,8 +148,11 @@ void Decoder::DecodeInstructionsAtEntry(FEXCore::Core::InternalThreadState*, uin
 
   BlockInfo.TotalInstructionCount = 0;
   BlockInfo.Blocks.clear();
-  BlockInfo.EntryPoints = {PC};
-  BlockInfo.CodePages = {PC & FEXCore::Utils::FEX_GUEST_PAGE_MASK};
+  // L4: cleared, not reassigned -- both keep the storage the last unit used.
+  BlockInfo.EntryPoints.clear();
+  BlockInfo.EntryPoints.push_back(PC);
+  BlockInfo.CodePages.clear();
+  BlockInfo.CodePages.push_back(PC & FEXCore::Utils::FEX_GUEST_PAGE_MASK);
 
   DecodedMinAddress = PC;
   DecodedMaxAddress = PC;
@@ -343,11 +346,11 @@ void Decoder::DecodeInstructionsAtEntry(FEXCore::Core::InternalThreadState*, uin
       DecodedBuffer[Used++] = {.PC = InstPC, .Word = SlotWord[Slot], .Matcher = SlotMatcher[Slot]};
       ++Block.NumInstructions;
       Block.Size += INSTRUCTION_SIZE;
-      // CodePages is a set: insert only on a page change (the set already
-      // holds the entry page and every page an earlier block touched).
+      // CodePages is sorted and unique: insert only on a page change (it
+      // already holds the entry page and every page an earlier block touched).
       const uint64_t Page = InstPC & FEXCore::Utils::FEX_GUEST_PAGE_MASK;
       if (Page != LastPage) {
-        BlockInfo.CodePages.insert(Page);
+        DecodedBlockInformation::InsertSorted(BlockInfo.CodePages, Page);
         LastPage = Page;
       }
       InstPC += INSTRUCTION_SIZE;
@@ -358,7 +361,7 @@ void Decoder::DecodeInstructionsAtEntry(FEXCore::Core::InternalThreadState*, uin
         DecodedEnd = InstPC + THUNK_HASH_SIZE;
         const uint64_t HashPage = (DecodedEnd - 1) & FEXCore::Utils::FEX_GUEST_PAGE_MASK;
         if (HashPage != LastPage) {
-          BlockInfo.CodePages.insert(HashPage);
+          DecodedBlockInformation::InsertSorted(BlockInfo.CodePages, HashPage);
           LastPage = HashPage;
         }
       }

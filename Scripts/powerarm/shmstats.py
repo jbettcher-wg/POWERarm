@@ -27,9 +27,11 @@ import time
 
 HEADER = struct.Struct("<BBH48sIII")  # Version, app_type, ThreadStatsSize, fex_version, Head, Size, Pad
 FIELDS = ("jit_time", "signal_time", "sigbus", "smc", "softfloat",
-          "cache_miss", "cache_rlock_time", "cache_wlock_time", "jit_count")
+          "cache_miss", "cache_rlock_time", "cache_wlock_time", "jit_count",
+          "vma_lock_time", "vma_queries")
 SLOT = struct.Struct("<II" + "Q" * len(FIELDS))  # Next, TID, counters
-TIMES = {"jit_time", "signal_time", "cache_rlock_time", "cache_wlock_time"}
+TIMES = {"jit_time", "signal_time", "cache_rlock_time", "cache_wlock_time",
+         "vma_lock_time"}
 
 
 def timebase_hz():
@@ -125,6 +127,14 @@ def main():
               f"signal {float(named['signal_time']):.2f}s | SIGBUS {named['sigbus']} SMC {named['smc']} "
               f"softfloat {named['softfloat']} cache-miss {named['cache_miss']} (last sample, "
               f"{a.interval}s before exit at most)", file=sys.stderr)
+        # M-C: the compile path's VMA map descents (lock + std::map lower_bound).
+        vma_s, vma_n = float(named["vma_lock_time"]), int(named["vma_queries"])
+        jit_s, jit_n = float(named["jit_time"]), int(named["jit_count"])
+        per = f"{vma_n / jit_n:.2f}/unit" if jit_n else "n/a"
+        mean_ns = f"{vma_s / vma_n * 1e9:.0f} ns" if vma_n else "n/a"
+        share = f"{vma_s / jit_s * 100:.2f}% of JIT" if jit_s else "n/a"
+        print(f"shmstats: VMA descents {vma_n} ({per}), {vma_s:.3f}s total, {mean_ns} each, {share}",
+              file=sys.stderr)
     return proc.returncode if proc is not None else 0
 
 

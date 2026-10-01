@@ -592,7 +592,10 @@ public:
 
   struct CompileCodeResult {
     CPU::CPUBackend::CompiledCode CompiledCode;
-    fextl::unique_ptr<FEXCore::Core::DebugData> DebugData;
+    // L4: borrowed from InternalThreadState::PerUnitDebugData, valid until the
+    // next compile on this thread. Null means "another thread raced us for this
+    // block", which is what every caller tests it for.
+    FEXCore::Core::DebugData* DebugData;
     uint64_t StartAddr;
     uint64_t Length;
     bool NeedsAddGuestCodeRanges;
