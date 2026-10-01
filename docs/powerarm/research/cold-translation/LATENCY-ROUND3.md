@@ -498,27 +498,77 @@ of a compile. **Confidence:** medium. **Size:** small. **Gate:** G3's:
 `perf stat -e instructions:u` on cold `gcc -c empty.c` (1,295 M today), the
 three modes.
 
-### L5. One IR node per guest instruction that every pass walks -- CHANGE, medium
+### L5. One IR node per guest instruction that every pass walks -- MEASURED AND DECLINED
 
-`Core.cpp:978` emits `_GuestOpcode` before every instruction. It is a real
-IR node: DFCE, `CompareBranchFusion` (`:231`), the RA (`:777`) and six
-backend loops (`JIT.cpp:3070`, `:3772`, `:4236`, `:4292`, `:4506`, `:4828`,
-`:5339`) each test and skip it, and the vl64pair encoder re-walks the list
-it produced. At three to six IR ops per AArch64 instruction the markers
-are 15-20% of the nodes in every walk. On a fixed-length guest the marker
-carries one bit of information -- "an instruction boundary starts here";
-the guest delta is +4 inside a block and only changes at block edges,
-which the block header already records.
+`Core.cpp:1067` (not `:978`) emits `_GuestOpcode` before every instruction.
+It is a real IR node: DFCE, `CompareBranchFusion` (`:230`), the RA (`:947`)
+and seven backend loops (`JIT.cpp:3100`, `:3804`, `:4279`, `:4335`, `:4547`,
+`:4869`, `:5392`) each test and skip it, and the vl64pair encoder re-walks
+the list it produced. On a fixed-length guest the marker carries one bit of
+information -- "an instruction boundary starts here"; the guest delta is +4
+inside a block and only changes at block edges, which the block header
+already records.
 
-**Becomes:** the boundary as a flag on the first IR op of each instruction
-(or a per-unit side vector of `(first SSA id, guest offset)` the backend
-consults as it emits); the RIP table format and `RestoreRIPFromHostPC`
-(`Core.cpp:609-652`) unchanged. **Effect:** 2-4% of compile (round 1 measured
-`Op_GuestOpcode` plus its re-walk at ~1.2% before counting the passes'
-skips). **Confidence:** medium-low. **Size:** medium (IR.json, frontend,
-every pass's skip case, the backend). **Gate:** `sigpreempt`, `sigedit`,
-`sigqueued` (signal-resume PC must stay instruction-granular), the three
-modes, `instructions:u`.
+**Was to become:** the boundary as a flag on the first IR op of each
+instruction (or a per-unit side vector of `(first SSA id, guest offset)` the
+backend consults as it emits); the RIP table format and
+`RestoreRIPFromHostPC` unchanged. **Estimated effect:** 2-4% of compile.
+**Confidence:** medium-low.
+
+**Measured: the markers cost 0.81% of a cold compile, not 2-4%, and that is
+a ceiling the change cannot even collect in full.** Three probes on
+`af9700535`, `instructions:u` on `gcc -c empty.c` with
+`POWERARM_ENABLECODECACHINGWIP=0` (cold translation), median of 100
+processes each; the p25-p75 spread is 0.016%, so these separate cleanly.
+
+| build | median | delta |
+|---|---|---|
+| baseline | 1343.89 M | -- |
+| probe A: a second identical marker per guest instruction | 1357.03 M | +13.14 M (+0.98%) |
+| probe C: a second identical RIP-table entry per marker, no extra IR node | 1346.16 M | +2.27 M (+0.17%) |
+| baseline + node census instrumentation | 1344.03 M | +0.14 M |
+| probe R: markers emitted only at block starts (unsound, 71.2% of markers removed) | 1334.47 M | -9.56 M (-0.71%) |
+
+The IR-node half of a marker -- everything L5 removes, with the RIP table
+held constant -- comes out the same from both directions: `A - C` gives
+10.87 M (**0.81%**), and `R` corrected for the RIP entries it also removed
+gives `(9.56 - 0.712 x 2.27) / 0.712` = 11.15 M (**0.83%**). Adding markers
+and removing them agree within 3%.
+
+The node accounting above holds. A census of `GetSSACount()` against
+`DebugData->GuestOpcodes.size()` over `cc1` reports markers at **17.4% of
+all SSA nodes**, 5.76 SSA nodes per marker -- inside the predicted 15-20%.
+They are 17.4% of the nodes and 0.8% of the work, because every walk rejects
+them in its first switch arm: a marker costs about a twenty-fourth of what
+an average node costs. Node share is not a proxy for cost here.
+
+**And 0.81% is the ceiling, not the gain.** L5 has to put the boundary
+somewhere, and both forms charge the nodes that remain:
+
+- *The side vector keyed by SSA id does not work as described.* The RA
+  inserts `_SpillRegister`, `_FillRegister` and `_Copy` nodes mid-list via
+  `SetWriteCursorBefore` (`RegisterAllocationPass.cpp:582`, `:675`, `:738`,
+  `:968`, `:977`, `:1011`). They take fresh ids at the top of the id space
+  while sitting in the middle of the list, so the backend's walk order is
+  **not** monotonic in SSA id after RA, and an `id >=` test against the
+  side vector would fire every remaining boundary at once the first time a
+  spill appeared. Keying on node identity instead means a lookup per node,
+  which costs more than the marker it replaces.
+- *The flag on the first IR op has nowhere free to live.* `IROp_Header` is
+  `static_assert`ed at exactly 32 bits -- `IROps Op` (`uint16_t`, 360 ops),
+  `OpSize Size`, `OpSize ElementSize`. `OpSize` spends its top bit on
+  `iInvalid = 0xFF`, so the only spare bit is bit 15 of `Op`, and taking it
+  puts a mask on every `IROp->Op` read in the tree, including the backend's
+  360-entry dispatch. That is an AND on 100% of nodes to avoid a skip on
+  17% of them -- the shape that measured +1.8% in HANDOVER item 52 and
+  +0.49% in the file-scope-constant attempt.
+
+So the realistic net is well under the 0.81% ceiling, for a change touching
+IR.json, the frontend, three passes and seven backend loops, whose failure
+mode is the one gate that cannot be relaxed: instruction-granular signal
+resume. Not worth it. The three signal tests, the three modes, the code
+cache (41 ok) and MemoryModel (6 unsound) were all run at baseline to
+confirm the measuring build was a sound one.
 
 ### L6. Not levers, and why
 
@@ -710,7 +760,7 @@ the tier ever had.
 | 4 | Section 3 (1)+(2): constant decode table, 14-bit index, frequency order | change | ~100 us and ~150 KiB per exec; decode one compare 95% of the time; <= 0.5% of translation | small | high (static), low on wall time |
 | 5 | L3: one `VMATracking` descent per unit | change | 1-5% of a compile, more under `mmap` churn | small-medium | low-medium; needs the lock-time counter |
 | 6 | X3: delete SMC Idea 4 residue | delete | 96 B per block, a few branches per constant; hygiene | small-medium | high |
-| 7 | L5: `GuestOpcode` markers out of the IR | change | 2-4% of a compile | medium | medium-low |
+| -- | L5: `GuestOpcode` markers out of the IR | no | measured at 0.81% of a compile as a ceiling, not the estimated 2-4%; declined | medium | -- |
 | 8 | X4, X5, the option zoo, the suspect walk | leave / delete later | none measurable | -- | -- |
 | -- | Section 3 (3): decode memo | no | none | -- | high |
 | -- | L6 items | no | none | -- | -- |
