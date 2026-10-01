@@ -654,13 +654,45 @@ DEF_OP(ExitFunction) {
   // ---------------------------------------------------------------------
   PPC64Emitter::Label ShadowRetReprobe{};
   // ---------------------------------------------------------------------
-  // Link-stack pairing [2026-09-06]. On the POWER8 this port targets the
-  // count cache predicts NOTHING: a bcctr/bcctrl to a target that never
-  // changes mispredicts on every execution (native microbench, CTR written
-  // once outside the loop: 1.000 pm_br_mpred_ccache per iteration, ~20
-  // cycles), while direct branches and the link stack predict perfectly
-  // (bl/blr pair: 0.000). So every indirect exit this backend emits costs
-  // a mispredict, and the one exit class that CAN be made predictable is
+  // Link-stack pairing [2026-09-06]. This comment used to open with "on the
+  // POWER8 this port targets the count cache predicts NOTHING: a bcctr/bcctrl
+  // to a target that never changes mispredicts on every execution (1.000
+  // pm_br_mpred_ccache per iteration, ~20 cycles)", and concluded that "every
+  // indirect exit this backend emits costs a mispredict". That is wrong on the
+  // POWER9 this runs on, and it is not what the project's own research says
+  // (POWER9-VS-A76-PIPELINE.md §4.4 row B_bctr_next: 0 mispredicts). The 1.000
+  // figure is §4.4's B_bctr2_sameblock -- TWO bctr sites inside one aligned
+  // 32-byte block, i.e. the branch-DENSITY case of rule 4, not the
+  // monomorphic one.
+  //
+  // Re-measured natively on this AC922 [2026-10-01, native ppc64le microbench,
+  // 64 exit sites each with one stable target, PERF_COUNT_HW_BRANCH_MISSES]:
+  //
+  //   block spacing   cyc/exit   bctr mispredicts/exit
+  //   12 bytes          18.65            0.722          <- rule-4 density
+  //   32 / 64 / 128 B    3.05            0.000          <- monomorphic bctr
+  //   direct `b`, 64 B   3.00            0.000
+  //
+  // So a MONOMORPHIC bctr is predicted perfectly here and costs what a direct
+  // branch costs; the ~25-cycle mispredict is real only for a POLYMORPHIC site,
+  // where the count cache predicts the LAST target and therefore misses on
+  // every change (§4.5: 0.75-0.94 mispredicts per execution over 4-16 targets).
+  //
+  // The pairing below is still right, for the narrower reason §4.4 actually
+  // gives: a RET site is polymorphic BY CONSTRUCTION -- its target is whichever
+  // caller is on top -- so it is exactly the class the count cache cannot
+  // learn. B_r2_bl_bctr mispredicts 0.50 (a return through the count cache,
+  // +24 cycles whenever the caller changes) and B_r2_b_mtlr_blr 1.00 (an
+  // unpaired blr, +25.5 every time), while bl/blr and bctrl/blr pair at 0.000.
+  // Measured here on the full emitted shapes, 64-byte aligned: the call/return
+  // round trip costs 12.04 cycles through mtlr/blr against 13.38 through
+  // mtctr/bctr, so the pairing is worth ~1.3 cycles per guest call/return on
+  // top of never risking the +24.
+  //
+  // Do not re-derive an exit's cost from "indirect means a mispredict". The
+  // question is always whether the SITE is monomorphic.
+  //
+  // The one exit class that can be made predictable is
   // the return: if the CALL ends in an LK=1 branch (bctrl, or the linked
   // bl), the hardware pushes the word after it on the link stack, and a
   // RET that restores exactly that word into LR and ends in `blr` is
@@ -833,10 +865,36 @@ DEF_OP(ExitFunction) {
   }
 
   // ---------------------------------------------------------------------
-  // Inline cache for an INDIRECT shadow call [2026-09-06]: on this POWER8
-  // the count cache never predicts the probe's bctrl (see the pairing
-  // comment above), so a monomorphic `call [reg]` / vtable call pays ~20
-  // cycles per execution for nothing. The exit therefore carries a guarded
+  // Inline cache for an INDIRECT shadow call [2026-09-06]. The original
+  // rationale here -- "the count cache never predicts the probe's bctrl, so a
+  // monomorphic call [reg] / vtable call pays ~20 cycles per execution for
+  // nothing" -- is not the reason this pays on a POWER9; see the corrected
+  // pairing comment above, where a monomorphic bctr mispredicts 0.000.
+  //
+  // What it actually buys [2026-10-01, native microbench of the emitted shapes,
+  // 64-byte aligned, one stable target per site]: the guard replaces the
+  // probe's two dependent loads through the 2 MiB lookup table with an
+  // immediate compare. Priced against each other,
+  //
+  //   guard hit, then direct `b`         4.05 cyc   12 words
+  //   L1 probe hit, then bctr            4.93 cyc   13 words
+  //
+  // and the probe's figure is the optimistic one: it rises with the number of
+  // hot guest blocks, because the table access is the whole cost. Measured
+  // separately over a 128K-entry table, random slots, random visit order:
+  // 3.78 cyc/probe at 64 hot blocks, 4.9 at 1K, 6.0 at 4K, 7.2 at 16K. So the
+  // guard is worth ~1 cycle on a small working set and ~3 on a large one, and
+  // its value comes from touching no data at all -- not from avoiding a
+  // mispredict that a monomorphic site does not suffer.
+  //
+  // The corollary is the cost side: a guard that does NOT match is pure loss.
+  // Each extra chained slot costs 3.9 cycles when walked (see the BR cache
+  // below), against a probe that costs 4-7 in total, so the second and later
+  // slots only pay where the probe's LATENCY is exposed rather than its
+  // throughput -- a serial dispatch loop, which is what §4.5 measured and what
+  // A64Bench vm is. One slot is the right number for a call site.
+  //
+  // The exit therefore carries a guarded
   // direct call that the block linker fills on the first miss, keyed on the
   // target it observed (record.GuestRIP == 0 marks the record indirect):
   //
@@ -932,6 +990,39 @@ DEF_OP(ExitFunction) {
   // nothing past the first; filled non-matching slots cost two issue slots
   // each for the compare and branch (the constants have no dependency).
   // POWERARM_BRCACHESLOTS=N (0-8, default 8) sets the chain length.
+  //
+  // WHAT A FILLED NON-MATCHING SLOT ACTUALLY COSTS [2026-10-01, native
+  // microbench of this exact emitted shape, 64 sites, 64-byte aligned, every
+  // slot filled and the match forced into slot k]:
+  //
+  //   k = 0        4.05 cyc    12 words      (L1 probe, for comparison: 4.93)
+  //   k = 3       15.97 cyc    36 words
+  //   k = 7       31.30 cyc    68 words
+  //
+  // i.e. 3.9 cycles per walked slot, with 0.000 branch mispredicts throughout
+  // -- the chain is issue-bandwidth bound, not prediction bound. Set against a
+  // probe that costs 4-7 cycles end to end, ANY walk past slot 0 loses in a
+  // throughput-bound regime. The chain wins where the probe's dependent-load
+  // LATENCY is exposed instead (§5.2 puts that at ~21 cycles for vm's serial
+  // dispatch, which is where the measured vm 3303 -> 2149 ms came from), and
+  // where the site is polymorphic enough that the count cache mispredicts.
+  // Rule 2 asked for 2-4 entries for this reason; 8 came from a vm-only sweep.
+  //
+  // Two things to know before re-tuning the default:
+  //   - Slot count barely moves CODE SIZE on a real workload. Measured over an
+  //     Octane pdf.js/gbemu/box2d/navier-stokes run (1.08 M compile units,
+  //     caching off so every unit is fresh): 231 bytes/unit at 0 slots, 232 at
+  //     2, 238 at 8 -- 238.5 MiB total against 248.6 MiB, +4.2%. The per-site
+  //     cost is real (8 words of chain + 6-word miss leg + a 112-byte cold
+  //     thunk record per slot, ~1.3 KB/site at 8 slots) but indirect-BR sites
+  //     are only ~0.7% of compile units in that workload.
+  //   - Which is the point: a JS engine's hot indirect exits are indirect-Call
+  //     (guest BLR -> the single-slot inline cache above) and indirect-Return
+  //     (-> the shadow stack), not indirect-None. This chain is the one class
+  //     that barely fires there. An Octane subset sweep of 0/1/2/4/8 moved
+  //     Gameboy and Box2D by 5-20% in favour of 1-2 slots and PdfJS not at all,
+  //     but with 20-60% run-to-run spread and a non-monotone curve, so it did
+  //     not establish a better default. Do not change it on that evidence.
   // ---------------------------------------------------------------------
   static const uint32_t BRCacheSlots = [] {
     const char* Env = getenv("POWERARM_BRCACHESLOTS");
