@@ -66,10 +66,31 @@ bool IRBuilder::STR_LDR_imm_fpsimd_2(uint32_t Word) {
   if (Scale < 0) {
     return false;
   }
+  // The offset rides on the memory op as a displacement instead of an Add into
+  // a scratch register -- the same choice the GPR forms already made
+  // (TranslateLoadStore.cpp STRx_LDRx_imm_2). It was worth less here while the
+  // backend's vector helpers took a single address register; now that the
+  // 128-bit access carries its own addressing mode, an ISA 3.0 host folds a
+  // multiple-of-16 displacement into lxv/stxv and emits nothing for it at all.
+  // Scale >= 4 for a Q register, so every displacement this form produces IS a
+  // multiple of 16.
   const uint64_t Offset = Bits(Word, 21, 10) << Scale;
   Ref Base = LoadXSP(Bits(Word, 9, 5));
-  Ref Address = Offset ? _Add(OpSize::i64Bit, Base, Constant(Offset)) : Base;
-  LoadStoreV(Bit(Word, 22), IR::SizeToOpSize(1U << Scale), Bits(Word, 4, 0), Address);
+  // imm12 is scaled by the access size, so a Q access reaches 65520 -- wider
+  // than any host displacement field. Riding one of those would make EVERY
+  // access re-materialize the constant into a scratch register, where an Add
+  // against a Constant node materializes it once for the whole block and then
+  // costs one `add` per access [MEASURED: riding a 32768 displacement is +1
+  // host instruction per access on both ISA levels]. So the Add stays for
+  // those, and only displacements a field can hold ride the memory op.
+  // Everything a Q access can encode up to 32752 is a multiple of 16, which is
+  // exactly ISA 3.0's DQ field, so nothing in between is left on the table.
+  if (Offset > 32767) {
+    Ref Address = _Add(OpSize::i64Bit, Base, Constant(Offset));
+    LoadStoreV(Bit(Word, 22), IR::SizeToOpSize(1U << Scale), Bits(Word, 4, 0), Address);
+    return true;
+  }
+  LoadStoreV(Bit(Word, 22), IR::SizeToOpSize(1U << Scale), Bits(Word, 4, 0), Base, Offset ? _InlineConstant(Offset) : nullptr);
   return true;
 }
 
@@ -78,10 +99,13 @@ bool IRBuilder::STUR_LDUR_fpsimd(uint32_t Word) {
   if (Scale < 0) {
     return false;
   }
+  // Unscaled simm9: the displacement rides on the memory op as above, but it
+  // is not necessarily a multiple of 16, so the host may still have to fold it
+  // with an addi. One instruction either way; this just moves it off the
+  // register allocator's books and onto TMP3.
   const int64_t Offset = SignExtend(Bits(Word, 20, 12), 9);
   Ref Base = LoadXSP(Bits(Word, 9, 5));
-  Ref Address = Offset ? _Add(OpSize::i64Bit, Base, Constant(Offset)) : Base;
-  LoadStoreV(Bit(Word, 22), IR::SizeToOpSize(1U << Scale), Bits(Word, 4, 0), Address);
+  LoadStoreV(Bit(Word, 22), IR::SizeToOpSize(1U << Scale), Bits(Word, 4, 0), Base, Offset ? _InlineConstant(Offset) : nullptr);
   return true;
 }
 
@@ -119,9 +143,11 @@ bool IRBuilder::STR_LDR_reg_fpsimd(uint32_t Word) {
     return false;
   }
   // Same as the GPR form (TranslateLoadStore.cpp LoadStoreRegOffset): the
-  // extend and the scale ride on the memory op. The vector load/store helpers
-  // want a single address register, so this one does not save the add -- it
-  // saves the separate extend-then-shift pair.
+  // extend, the scale AND the add ride on the memory op. This used only to
+  // save the separate extend-then-shift pair, because the backend's vector
+  // load/store helpers took a single address register and collapsed base+index
+  // with an `add`; they now take the X-form's RA+RB directly, so the add is
+  // gone too (see ArchHelpers/PPC64Emitter.h V128AddrForm).
   const uint32_t Rm = Bits(Word, 20, 16);
   Ref Base = LoadXSP(Bits(Word, 9, 5));
   const auto Size = IR::SizeToOpSize(1U << Scale);
@@ -158,22 +184,41 @@ bool IRBuilder::STP_LDP_fpsimd(uint32_t Word) {
   const auto Size = IR::SizeToOpSize(ElementSize);
   const int64_t Offset = SignExtend(Bits(Word, 21, 15), 7) * ElementSize;
 
+  // Both halves address off ONE register with a displacement the memory op
+  // carries, rather than off two Adds into scratch registers. imm7 is scaled
+  // by the element size, so for a Q pair every displacement here is a multiple
+  // of 16 and an ISA 3.0 host spends nothing on either of them (lxv/stxv
+  // DQ-form).
+  //
+  // Which register depends on the form, and the choice is what keeps a
+  // pre-ISA-3.0 host at exactly the instruction count it had:
+  //  * pre-index: the writeback value Rn+Offset has to exist in a register
+  //    anyway, so it IS the access base and the displacements are 0 and
+  //    ElementSize. Re-folding Offset into each half instead would have cost
+  //    a POWER8 host one extra addi.
+  //  * signed offset (no writeback): no register is needed, so both halves
+  //    take Offset and Offset+ElementSize off Rn directly.
+  //  * post-index: the accesses are at Rn, and the writeback Add is the only
+  //    address arithmetic.
   Ref Base = LoadXSP(Rn);
-  Ref Offsetted = _Add(OpSize::i64Bit, Base, Constant(Offset));
-  Ref Address = PreOrOffset ? Offsetted : Base;
-  Ref Address2 = _Add(OpSize::i64Bit, Address, Constant(ElementSize));
+  Ref Offsetted = WriteBack ? _Add(OpSize::i64Bit, Base, Constant(Offset)).Node : nullptr;
+  const bool PreIndex = PreOrOffset && WriteBack;
+  Ref AccessBase = PreIndex ? Offsetted : Base;
+  const int64_t AccessOffset = (PreOrOffset && !WriteBack) ? Offset : 0;
+  Ref Offset1 = AccessOffset ? _InlineConstant(AccessOffset).Node : Invalid();
+  Ref Offset2 = _InlineConstant(AccessOffset + ElementSize);
 
   if (!IsLoad) {
-    _StoreMem(RegClass::FPR, Size, LoadV(Rt), Address, Invalid(), OpSize::i8Bit, MemOffsetType::SXTX, 1);
-    _StoreMem(RegClass::FPR, Size, LoadV(Rt2), Address2, Invalid(), OpSize::i8Bit, MemOffsetType::SXTX, 1);
+    _StoreMem(RegClass::FPR, Size, LoadV(Rt), AccessBase, Offset1, OpSize::i8Bit, MemOffsetType::SXTX, 1);
+    _StoreMem(RegClass::FPR, Size, LoadV(Rt2), AccessBase, Offset2, OpSize::i8Bit, MemOffsetType::SXTX, 1);
     if (WriteBack) {
       StoreXSP(Rn, Offsetted);
     }
     return true;
   }
 
-  Ref Value1 = _LoadMem(RegClass::FPR, Size, Address, Invalid(), OpSize::i8Bit, MemOffsetType::SXTX, 1);
-  Ref Value2 = _LoadMem(RegClass::FPR, Size, Address2, Invalid(), OpSize::i8Bit, MemOffsetType::SXTX, 1);
+  Ref Value1 = _LoadMem(RegClass::FPR, Size, AccessBase, Offset1, OpSize::i8Bit, MemOffsetType::SXTX, 1);
+  Ref Value2 = _LoadMem(RegClass::FPR, Size, AccessBase, Offset2, OpSize::i8Bit, MemOffsetType::SXTX, 1);
   if (WriteBack) {
     StoreXSP(Rn, Offsetted);
   }
@@ -249,13 +294,20 @@ bool IRBuilder::LDx_STx_mult(uint32_t Word) {
     }
   };
 
+  // Each register's slot rides on its own memory op as a displacement rather
+  // than an Add into a scratch (see STR_LDR_imm_fpsimd_2). For the Q forms
+  // RegBytes is 16, so every displacement is a multiple of 16 and an ISA 3.0
+  // host spends nothing on it.
+  auto Slot = [&](uint64_t ByteOffset) -> Ref {
+    return ByteOffset ? _InlineConstant(ByteOffset).Node : Invalid();
+  };
+
   if (Interleave == 1) {
     const auto MemSize = Q ? OpSize::i128Bit : OpSize::i64Bit;
     if (IsLoad) {
       Ref Values[4] {};
       for (uint32_t i = 0; i < Registers; ++i) {
-        Ref Address = i ? _Add(OpSize::i64Bit, Base, Constant(i * RegBytes)) : Base;
-        Values[i] = _LoadMem(RegClass::FPR, MemSize, Address, Invalid(), OpSize::i8Bit, MemOffsetType::SXTX, 1);
+        Values[i] = _LoadMem(RegClass::FPR, MemSize, Base, Slot(i * RegBytes), OpSize::i8Bit, MemOffsetType::SXTX, 1);
       }
       WriteBack();
       for (uint32_t i = 0; i < Registers; ++i) {
@@ -264,8 +316,7 @@ bool IRBuilder::LDx_STx_mult(uint32_t Word) {
       return true;
     }
     for (uint32_t i = 0; i < Registers; ++i) {
-      Ref Address = i ? _Add(OpSize::i64Bit, Base, Constant(i * RegBytes)) : Base;
-      _StoreMem(RegClass::FPR, MemSize, LoadV((Rt + i) % 32), Address, Invalid(), OpSize::i8Bit, MemOffsetType::SXTX, 1);
+      _StoreMem(RegClass::FPR, MemSize, LoadV((Rt + i) % 32), Base, Slot(i * RegBytes), OpSize::i8Bit, MemOffsetType::SXTX, 1);
     }
     WriteBack();
     return true;
@@ -279,8 +330,7 @@ bool IRBuilder::LDx_STx_mult(uint32_t Word) {
     std::array<Ref, 4> Chunk {};
     for (uint32_t c = 0; c < Chunks; ++c) {
       const uint64_t Bytes = std::min<uint64_t>(16, TotalBytes - 16 * c);
-      Ref Address = c ? _Add(OpSize::i64Bit, Base, Constant(16 * c)).Node : Base;
-      Chunk[c] = _LoadMem(RegClass::FPR, IR::SizeToOpSize(Bytes), Address, Invalid(), OpSize::i8Bit, MemOffsetType::SXTX, 1);
+      Chunk[c] = _LoadMem(RegClass::FPR, IR::SizeToOpSize(Bytes), Base, Slot(16 * c), OpSize::i8Bit, MemOffsetType::SXTX, 1);
     }
     std::array<Ref, 4> Values {};
     for (uint32_t s = 0; s < Interleave; ++s) {
@@ -327,8 +377,7 @@ bool IRBuilder::LDx_STx_mult(uint32_t Word) {
       }
       Image = PermuteBytes(Regs, Interleave, Map);
     }
-    Ref Address = c ? _Add(OpSize::i64Bit, Base, Constant(16 * c)).Node : Base;
-    _StoreMem(RegClass::FPR, IR::SizeToOpSize(Bytes), Image, Address, Invalid(), OpSize::i8Bit, MemOffsetType::SXTX, 1);
+    _StoreMem(RegClass::FPR, IR::SizeToOpSize(Bytes), Image, Base, Slot(16 * c), OpSize::i8Bit, MemOffsetType::SXTX, 1);
   }
   WriteBack();
   return true;
