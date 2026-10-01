@@ -92,6 +92,13 @@ echo THUNK_CALLBACK_REQUIRE_HOST=1 > thunk_callback.env
 # fixture (OVT_ROOT); run.sh runs it under POWERarm with that fixture as the
 # base rootfs.
 gcc -static -O2 -o rootfs_overlay "$here/rootfs_overlay.c"
+# readlink(2)/readlinkat(2) errno and target fidelity over a fixture tree.
+# Natively it runs against its own fixture under OUTDIR (RLFIX_ROOT); run.sh
+# runs it twice under POWERarm, once with the fixture as the rootfs so
+# FileManager::Readlink{,at}'s openat2(RESOLVE_IN_ROOT) trampoline answers it
+# and once against a host path, and requires the two to agree. Every answer is
+# architecturally forced, so the golden is also all-PASS.
+gcc -static -O2 -o readlinkerr "$here/readlinkerr.c"
 
 run_golden() {
   set +e
@@ -120,6 +127,11 @@ rm -rf "$out/ovt-native"
 ./rootfs_overlay --make-fixture "$out/ovt-native"
 run_golden env OVT_ROOT="$out/ovt-native" ./rootfs_overlay
 rm -rf "$out/ovt-native"
+t=readlinkerr
+rm -rf "$out/rlfix-native"
+./readlinkerr --make-fixture "$out/rlfix-native"
+run_golden env RLFIX_ROOT="$out/rlfix-native" ./readlinkerr
+rm -rf "$out/rlfix-native"
 
 # Busybox applets on a fixed input. <test>.bin names the binary and
 # <test>.args its arguments for run.sh.

@@ -1,8 +1,10 @@
 # The rootfs path cache: what the syscalls really are, and why not to cache them
 
-Measured 2026-10-01 on the POWER9 AC922, at `0caae5503`. Nothing merged but this
-document; the measurement probe is reproduced in §7 so the numbers can be
-re-derived without it living in the tree.
+Measured 2026-10-01 on the POWER9 AC922, at `0caae5503`. The cache is declined;
+the only thing that landed is §6's `O_DIRECTORY` fast path, measured at
+`2c9542104` and written up in §6 with its own cost on the paths it does not
+help. The unsound measurement probe behind §2 is reproduced in §7 so those
+numbers can be re-derived without it living in the tree.
 
 HANDOVER item 56 closed the kernel-mitigation question and left behind one
 actionable finding: POWERarm issues 2.9 host syscalls per guest syscall, and
@@ -31,9 +33,9 @@ Three things turned out to be true, in this order:
 So: **declined.** Item 56's own arithmetic already predicted this (4,383
 syscalls/s × ~250 ns = 0.029% of the compile's CPU); the error was calling the
 largest *syscall-count* cut "the largest cut available" in a workload where
-syscall count had just been shown not to be a cost. §6 records the one sound
-improvement that does exist, and its measured value of zero, so it is not
-re-derived.
+syscall count had just been shown not to be a cost. §6 is the one sound
+improvement that does exist; it has since landed, and it too measures at zero,
+on one compile and on a 32-way parallel build.
 
 ---
 
@@ -327,7 +329,7 @@ Recorded for whoever revisits this with a workload where the syscalls do cost:
   host fallback is part of the answer, and the host's view is §3.2's problem
   twice over.
 
-## 6. The one sound improvement, and its measured value
+## 6. The one sound improvement — done
 
 There is a sound way to take one syscall off the common case, with no cache, no
 staleness and no invalidation. **91.7%** of the 799 trampolines ask about a
@@ -341,15 +343,189 @@ openat2(RootFSFD, rel, {O_PATH|O_NOFOLLOW|O_CLOEXEC|O_DIRECTORY,
 
 succeeds only if the leaf is a directory — hence not a symlink, hence
 `readlink` is `EINVAL` — so the `readlinkat` is skipped and only the `close`
-remains: **2 syscalls instead of 3**, with the scoping intact. `ENOTDIR` falls
-back to today's path.
+remains: **2 syscalls instead of 3**, with the scoping intact.
 
-Expected: 733 of ~4 280 traced syscalls per compile, **−17%**.
-Measured value: **0.00%** of the compile, by §2 — a −34% cut of every syscall
-in the run bought 0.020 s, so a −17% cut of one syscall family buys about
-0.007 s. Ten lines of churn in the most correctness-sensitive file in the tree,
-for a gain two orders of magnitude below the quiet-box noise floor, fails the
-project's own bar. Recorded, not done.
+This section originally read "recorded, not done", on the grounds that §2
+values it at zero. It has since been **done**, in `Readlink` and `Readlinkat`,
+because "we removed a third of the system calls and then kept them because the
+removal did not move a compile time" is not a defensible place to end up: the
+syscalls go whether or not they were costing anything. §6.1 is what it costs on
+the paths that are *not* directories, §6.2 is why nothing cheaper exists, §6.3
+is what it bought (approximately nothing, as predicted), and §6.4 is where it
+does not apply. All measured on the same box at the same settings as §1 and §2.
+
+### 6.1 `ENOTDIR` is the only errno that has to re-ask
+
+`O_DIRECTORY` adds exactly one failure to the open: the `d_can_lookup()` test
+at the end of `path_lookupat()`, reported as `ENOTDIR`. It changes nothing
+about the resolution, so every other errno is the one the probe would have
+produced without the flag, is final, and costs nothing extra. `ENOENT` is the
+important member of that set — a guest path the rootfs does not have, which the
+host fallback then answers, 2 735 of the slice's 13 537 `openat2`s.
+
+Only `ENOTDIR` is ambiguous, because it conflates "the leaf exists and is not a
+directory" with "an intermediate component is not a directory", so it re-probes
+without the flag and the original three syscalls follow. Classified from a
+trace of one `gcc -c lapi.c` against the built change:
+
+| the `O_DIRECTORY` probe | count | syscalls before | after |
+|---|---|---|---|
+| succeeded — the leaf is a directory | 733 | 3 | **2** |
+| `-1 ENOTDIR` — re-probed, and that second open then succeeded 66/66 | 66 | 3 | **4** |
+| `-1 ENOENT` — not in the rootfs; the host fallback follows, as before | 116 | 1 | 1 |
+| *total probes* | **915** | | |
+
+**So a non-directory costs one extra syscall**: 733 saved against 66 added,
+**−667** per compile, and a path that fails `ENOTDIR` at an intermediate
+component likewise pays 2 where it paid 1. By name, one compile's traced path
+syscalls: `readlinkat` 1 100 → 367, `openat2` 1 153 → 1 219, `close` 1 156 →
+1 146, total **4 267 → 3 598 (−15.7%)**.
+
+This is a bet on the shape §1 measured, not a universal improvement. A guest
+whose readlinks were mostly of *files* would lose by the same arithmetic, up to
++33% of the trampoline's syscalls in the limit. The shape holds for the reason
+§1 gives — the guests that readlink at all are walking a path one component at
+a time, and all but the last component of a path is a directory by
+construction — so the ratio is a property of `realpath(3)`, not of gcc.
+
+A **symlink to a directory** is in the `ENOTDIR` group and not in the success
+group, which is the property the whole thing rests on: `O_NOFOLLOW` with
+`O_PATH` opens the symlink *itself*, which cannot be looked up, so the open
+fails and the full probe runs and returns the target. Confirmed in the trace
+rather than assumed — `openat2(..., "rlfix/to_dir", O_PATH|O_NOFOLLOW|
+O_DIRECTORY, RESOLVE_IN_ROOT) = -1 ENOTDIR`, followed by the probe without the
+flag and a `readlinkat` returning `"dir"` — and pinned by
+`unittests/A64Frontend/readlinkerr.c`, 26 checks over the errno matrix
+(§6.5).
+
+One semantic difference, for completeness: the `ENOTDIR` path now resolves the
+guest path **twice**, so a concurrent rename between the two can make the
+second resolution land on a different inode, where before the `openat2` pinned
+one inode and the `readlinkat` asked about that. The answer is still one a
+single correctly-timed resolution could have produced — `readlink(2)` offers no
+atomicity against a concurrent rename — and `RESOLVE_IN_ROOT` is in force on
+both probes, so the containment property is never weakened. It is a wider
+window on a race that was already there, not a new class of answer.
+
+### 6.2 Nothing cheaper exists
+
+The question worth asking before accepting the extra probe is whether the
+`O_PATH` fd the code already has can answer "is this a symlink" without a
+second syscall. **It cannot.** `openat2` hands back a descriptor and nothing
+else; an `O_PATH` fd yields no attribute to userspace without a syscall on it,
+and the candidates are `readlinkat(fd, "")`, which is what is already there and
+also produces the target, or `fstatat(fd, "", AT_EMPTY_PATH)`, which gives the
+type but not the target and so would need a third syscall for a symlink. The
+existing code is therefore already using the best available second syscall, and
+the only way to remove it is to fold the test into the open — which is what
+`O_DIRECTORY` does.
+
+The one alternative fold is `RESOLVE_NO_SYMLINKS` (with `O_NOFOLLOW` dropped,
+so a leaf symlink is `ELOOP` rather than silently opened): it succeeds when *no
+component* of the path is a symlink, so it would answer regular files as well
+as directories. On this workload it is strictly better on paper — all 799 of
+the trampoline paths are symlink-free end to end, so it would save 799 rather
+than 667 — and it was **not** taken:
+
+* It is worth 132 syscalls out of 80 601, 0.16% of the run, against §6.3's
+  measurement of zero. There is nothing to buy.
+* It makes the fast path's success depend on the **whole prefix** again, which
+  is the exact coupling §4 identifies as what defeats caching here. `ENOTDIR`
+  comes out of a check performed *after* resolution, so `O_DIRECTORY` leaves
+  the resolution bit-identical to today's; `RESOLVE_NO_SYMLINKS` changes what
+  resolution is attempted, in the most correctness-sensitive file in the tree.
+* The rootfs's own top level has `bin`, `lib` and `sbin` as symlinks, so every
+  guest path through them — `/lib/ld-linux-aarch64.so.1`, `/bin/sh` — would
+  take the slow path and pay the extra syscall. gcc's include paths are all
+  under `/usr`, which is why they are clean; nothing guarantees that for the
+  next guest.
+
+### 6.3 What it bought: nothing, as predicted
+
+Whole slice, `strace -c -f`, warm, `POWERARM_PORTABLE=1`, two independent
+interleaved pairs:
+
+| syscall | before | after | Δ | second pair |
+|---|---|---|---|---|
+| `readlinkat` | 12 864 | 4 358 | **−8 506** | **−8 506** |
+| `openat2` | 13 537 | 14 299 | **+762** | **+762** |
+| `close` | 13 543 | 13 613 | +70 | +150 |
+| `newfstatat` | 3 513 | 3 638 | +125 | +165 |
+| `openat` | 4 975 | 5 052 | +77 | +123 |
+| **total** | **80 601** | **73 383** | **−7 218 (−9.0%)** | −6 849 (−8.4%) |
+| *of which errors* | 22 424 | 14 726 | −7 698 | −7 781 |
+
+The two deltas that are the change are **exact and reproduce to the call**:
+`openat2` +762 (the 66-per-compile `ENOTDIR` re-probes, ten compiles plus `ar`
+and `gcc -r`) and `readlinkat` −8 506. The rest is a common-mode block of
++70…+165 that also moves between two runs of the *same* build — baseline
+`close` came back 13 543, 13 658 and 13 657 on three runs, and baseline `mmap`
+23 712 and 5 985 on two — so it is not attributable to this. `openat2` and
+`readlinkat` themselves were identical to the call on every baseline run, which
+is why the −8 506 can be believed.
+
+Kernel CPU, the sharper instrument. Single compile, medians of 7 interleaved,
+quiet box (load average ~2.3, `TIMEFORMAT='%R %U %S'`, CPU 100):
+
+| | wall | user | sys |
+|---|---|---|---|
+| before | 16.840 s | 16.310 s | 0.486 s |
+| after | 16.795 s | 16.260 s | 0.475 s |
+| Δ | −0.27% | −0.31% | −0.011 s, −2.3% |
+
+The direction is consistent — the patched run was lower in 6 of the 7
+interleaved pairs on wall and on user — and the magnitude is **not resolved**:
+the `sys` spread is 9% (0.465–0.509 s before) and 7 218 syscalls at ~250 ns is
+1.8 ms, an order of magnitude below the 11 ms the medians moved. A −9% syscall
+cut cannot beat the −34% cut of §2, which bought 0.020 s; this is the same
+answer, which is 0.0%.
+
+The aggregate case, which is the one worth caring about: a **32-way parallel
+build**, 136 `gcc -c` jobs, each its own POWERarm process, on CPUs 0-87.
+`%S` on the waiting pipeline is the whole reaped descendant tree, so it is the
+job's total kernel CPU. Two independent series, 5 and 8 reps, interleaved:
+
+| series | before `sys` | after `sys` | Δ |
+|---|---|---|---|
+| 1 (5 reps) | 8.126 s | 8.248 s | **+1.5%** |
+| 2 (8 reps) | 8.244 s | 8.160 s | **−1.0%** |
+| pooled (13) | 8.242 s | 8.172 s | −0.85% |
+
+**The two series disagree in sign**, both inside their own 2–7% spread, against
+199 s of user CPU for the job. So: **it does not move there either.** Fewer
+syscalls each did not become less kernel time or less contention across the box
+at 32-way concurrency, and the honest reading is that 100 000 fewer syscalls
+spread over 136 processes is 0.025 s of kernel work in a job that spends 8 s in
+the kernel and 199 s in userspace. §2's conclusion stands at every scale
+measured: **the path-resolution syscalls are not a cost on this workload.**
+
+### 6.4 Where it does not apply
+
+With the overlay active, `RootFSOverlay::Readlinkat` answers from its own
+`Lookup` before `FileManager`'s trampoline is reached (§1), so this never runs
+for a configuration with an overlay — the vk rootfs. It is also bypassed for
+`/proc/self/exe` and friends, which `Readlink` answers directly, and for the
+`EXDEV`/`ENOSYS` fallback, where the plain `openat` carries `O_DIRECTORY` too
+and a magic link therefore fails it and takes the full probe.
+
+### 6.5 The test
+
+`unittests/A64Frontend/readlinkerr.c` is the errno matrix, 26 checks: a
+directory, a regular file, a nested file, a dangling symlink, a symlink to a
+directory, a symlink to a file, a symlink to a symlink, a self-referential
+symlink, a missing path, intermediate components that are each of a symlink,
+two symlinks, a regular file, a dangling symlink and a self-referential one,
+in-tree `..` through both a real directory and a symlink, the dirfd and
+empty-pathname forms of `readlinkat`, and the degenerate `bufsiz` cases the
+shortcut must not change (`bufsiz == 0` on a directory is `EINVAL` for a second
+reason, and the shortcut answers `EINVAL` without reaching the kernel's check).
+
+`run.sh` runs it twice: once with its fixture as `POWERARM_ROOTFS`, so the
+trampoline answers every path, and once against a host path the rootfs lacks,
+so the host fallback does. Requiring those two to be byte-identical is the real
+check, because it compares POWERarm's reconstruction of `readlink` against the
+kernel's own answer for the same tree. They were identical before the change
+and identical after it, and identical to each other in both.
 
 ## 7. Reproducing
 
@@ -415,7 +591,13 @@ change it is never the right code.
 * A sound cache cannot do better than one `openat2` per lookup, which is the
   syscall it exists to avoid; an unsound one is wrong in all five guest-write
   cases and permanently wrong under a host write.
+* §6's `O_DIRECTORY` fast path **landed**: 2 syscalls instead of 3 for the
+  91.7% whose leaf is a directory, 4 instead of 3 for the 8.3% whose leaf
+  exists and is not, −9.0% of every host syscall in the slice, and — measured
+  both on one compile and on a 32-way parallel build — **no resolvable change
+  in kernel time at either scale**. It is there because the work is smaller,
+  not because it is faster.
 * **Closed.** Do not revisit for the compile or the browser. Revisit only with
   a workload whose kernel CPU share is an order of magnitude higher than the
-  2.8% measured here, and when it is, §6 is the sound 17% and §4 is the reason
-  there is no 55%.
+  2.8% measured here, and when it is, §4 is the reason there is no 55% left
+  and §6.2 is the reason there is nothing cheaper than what is now there.
