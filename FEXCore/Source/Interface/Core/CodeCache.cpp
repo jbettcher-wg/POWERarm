@@ -590,6 +590,45 @@ uint64_t ComputeCodeCacheConfigId() {
       // moves the destination-RIP constant and its `std State.rip` from below
       // the block-link patch site back to above it, so the emitted exit differs.
       Hasher.Add(static_cast<uint64_t>(getenv("FEX_NOSINKEXITRIP") != nullptr));
+      // The remaining DEF_OP(ExitFunction) shape switches. Every one of these
+      // changes the bytes an exit site emits, none was hashed, and
+      // EnableCodeCachingWIP is ON by default -- so flipping any of them and
+      // re-running served exits compiled under the previous setting. Not a
+      // correctness bug (each shape is self-contained and exact on its own),
+      // but it silently invalidates any A/B taken across them, which is the
+      // only reason anyone touches these knobs. Found while sweeping
+      // POWERARM_BRCACHESLOTS on an Octane subset, where the arms have to be
+      // given separate cache directories to work around it.
+      //
+      // BRCACHESLOTS is a VALUE, not a presence flag: it sets the guest-BR
+      // compare-chain length, and 0..8 are eight different emitted shapes (each
+      // slot is 8 words of chain plus a 6-word miss leg plus a 112-byte cold
+      // thunk record). Hash the clamped value exactly as BranchOps.cpp parses
+      // it -- including the narrowing to uint32_t BEFORE the clamp, which is
+      // what makes a 2^32-sized value mean 0 rather than 8 -- so that an unset
+      // env and an explicit "8" share a namespace and no accepted value can
+      // alias a different emitted shape.
+      {
+        const char* SlotsEnv = getenv("POWERARM_BRCACHESLOTS");
+        const uint32_t Slots =
+          SlotsEnv ? std::min<uint32_t>(static_cast<uint32_t>(strtoul(SlotsEnv, nullptr, 10)), 8u) : 8u;
+        Hasher.Add(static_cast<uint64_t>(Slots));
+      }
+      // Presence-DISABLED, all three. FEX_NO_INLINECACHE drops the indirect
+      // shadow call's guarded direct `bl` (7 words plus its own push and
+      // trampoline); FEX_NO_LINKSTACKPAIR turns the call's `bctrl` back into
+      // `bctr` and the RET's `mtlr`/`blr` back into `mtctr`/`bctr`;
+      // POWERARM_NOLINKFIRST restores the probe-first lowering for unlinked
+      // constant exits, which is a different instruction sequence at the patch
+      // site rather than a different value in it.
+      Hasher.Add(static_cast<uint64_t>(getenv("FEX_NO_INLINECACHE") != nullptr));
+      Hasher.Add(static_cast<uint64_t>(getenv("FEX_NO_LINKSTACKPAIR") != nullptr));
+      Hasher.Add(static_cast<uint64_t>(getenv("POWERARM_NOLINKFIRST") != nullptr));
+      // The two CondJump shape switches, same file, same argument: NOSHORTCOND
+      // drops the short conditional-branch form and NOEXITSHAPE the
+      // fall-into-true exit shaping.
+      Hasher.Add(static_cast<uint64_t>(getenv("POWERARM_NOSHORTCOND") != nullptr));
+      Hasher.Add(static_cast<uint64_t>(getenv("POWERARM_NOEXITSHAPE") != nullptr));
       // A64 FP cold blocks (JITClass.h FPColdEnabled, DEF_OP(A64FArith)).
       // Value-DISABLED with "0", mirroring JITClass.h's parse. It is a
       // diagnostic control that deliberately emits WRONG code — the NaN check
