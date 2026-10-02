@@ -10,6 +10,10 @@ Subcommands (see README.md next to this file):
   extract  extract the pinned packages into a sysroot directory
   hash     content hash of a tree (sorted paths, sha256, modes, symlink targets)
   align    PT_LOAD p_align distribution of every ELF file in a tree
+  publish  upload this manifest's pinned files from the cache to the snapshot
+           mirror, after checking each one's sha256 against the pin ('resolve'
+           rewrites pins, and upstream keeps only the current version, so a
+           re-pin that is not published breaks every fresh install)
   overlay-init  prepare a per-user rootfs overlay for guest pacman: a local package
            database describing the pinned base, and (--with-pacman) pacman, its
            missing dependencies and the Arch Linux ARM keyring extracted into it
@@ -910,6 +914,85 @@ def adjust_pacman_conf(dest):
         f.write("\n".join(out))
 
 
+# --------------------------------------------------------------------------- publish
+
+# Where the snapshot lives, as an rclone destination. Must address the same
+# objects SNAPSHOT_MIRROR serves over HTTPS: SNAPSHOT_MIRROR/<repo>/<file> is
+# PUBLISH_REMOTE/<repo>/<file>.
+PUBLISH_REMOTE = "r2:omarchyppc64le/archrootfs"
+
+
+def do_publish(a, m):
+    """Upload the manifest's own pinned files from the cache to the snapshot.
+
+    This exists because 'resolve' rewrites the pins against today's upstream
+    databases, and the upstream mirrors keep only the current version of a
+    package. So the moment a re-pin is committed, the snapshot is still serving
+    the OLD pins and every fresh install breaks -- which is exactly the failure
+    this was added after. Re-pinning and publishing have to happen together.
+
+    Only files this manifest names are uploaded, and only after their sha256 is
+    checked against the pin, so a corrupt or stale cache entry cannot be
+    published. Nothing is deleted: the snapshot keeps older pins, which is the
+    whole reason it exists.
+    """
+    if not shutil.which("rclone"):
+        die("rclone not found; it is what talks to the snapshot bucket")
+
+    wanted = ([m.keyring] if m.keyring else []) + list(m.pkgs)
+    by_repo = collections.defaultdict(list)
+    missing, bad = [], []
+    for d in wanted:
+        path = os.path.join(a.cache, d["filename"])
+        if not os.path.exists(path):
+            missing.append(d["filename"])
+            continue
+        got = sha256_file(path)
+        if got != d["sha256"]:
+            bad.append(f"{d['filename']}: manifest {d['sha256']}, cache {got}")
+            continue
+        by_repo[d["repo"]].append(d["filename"])
+        sig = path + ".sig"
+        if os.path.exists(sig):
+            by_repo[d["repo"]].append(d["filename"] + ".sig")
+        elif not a.allow_unsigned:
+            bad.append(f"{d['filename']}.sig: not in the cache")
+
+    if missing:
+        die(f"{len(missing)} pinned file(s) are not in {a.cache} "
+            f"(run 'fetch' first): {', '.join(missing[:4])}"
+            + (" ..." if len(missing) > 4 else ""))
+    if bad:
+        die("refusing to publish; the cache does not match the manifest:\n  "
+            + "\n  ".join(bad[:8]) + ("\n  ..." if len(bad) > 8 else ""))
+
+    total = sum(len(v) for v in by_repo.values())
+    log(f"publish {total} file(s) from {a.cache} to {a.remote}"
+        + (" (dry run)" if a.dry_run else ""))
+    for repo in sorted(by_repo):
+        names = sorted(by_repo[repo])
+        lst = os.path.join(a.cache, f".publish-{repo}.files")
+        with open(lst, "w") as f:
+            f.write("\n".join(names) + "\n")
+        cmd = ["rclone", "copy", "--s3-no-check-bucket", "--files-from", lst,
+               a.cache, f"{a.remote}/{repo}/"]
+        if a.dry_run:
+            cmd.append("--dry-run")
+        log(f"  {repo}: {len(names)} file(s)")
+        try:
+            subprocess.run(cmd, check=True)
+        finally:
+            os.unlink(lst)
+    if a.dry_run:
+        log("dry run: nothing was uploaded")
+    else:
+        log(f"published; verify with  curl -sI {SNAPSHOT_MIRROR}/<repo>/<file>")
+
+
+def cmd_publish(a):
+    do_publish(a, Manifest.load(a.manifest))
+
+
 def cmd_overlay_init(a):
     m = Manifest.load(a.manifest)
     dest = os.path.abspath(a.dest)
@@ -1001,6 +1084,16 @@ def main():
     p.add_argument("--exclude", action="append", help="dependency to leave uninstalled (repeatable)")
     p.add_argument("--repos", default="core,extra,alarm")
     p.set_defaults(fn=cmd_overlay_init)
+
+    p = sub.add_parser("publish")
+    common(p, fetch=False)
+    p.add_argument("--cache", default=os.path.join(xdg_cache, "powerarm", "alarm-pkgs"))
+    p.add_argument("--remote", default=PUBLISH_REMOTE,
+                   help=f"rclone destination for the snapshot (default {PUBLISH_REMOTE})")
+    p.add_argument("--dry-run", action="store_true")
+    p.add_argument("--allow-unsigned", action="store_true",
+                   help="publish a package whose .sig is not in the cache")
+    p.set_defaults(fn=cmd_publish)
 
     a = ap.parse_args()
     if a.cmd == "resolve" and a.mirror:

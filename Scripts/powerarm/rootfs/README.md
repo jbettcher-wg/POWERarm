@@ -74,7 +74,7 @@ run, because nothing degrades to the host tree in that case.
 
 | File | Purpose |
 |---|---|
-| `alarm_sysroot.py` | the engine: `resolve`, `fetch`, `extract`, `hash`, `align`, and `overlay-init` for guest pacman |
+| `alarm_sysroot.py` | the engine: `resolve`, `fetch`, `publish`, `extract`, `hash`, `align`, and `overlay-init` for guest pacman |
 | `alarm-vk.manifest` | the default pins: the M2 roots plus Vulkan/RADV and the desktop libraries |
 | `build-alarm-sysroot.sh` | the M2 wrapper: builds the pinned Arch Linux ARM GCC sysroot |
 | `alarm-m2.manifest` | the M2 pins: packages, keyring, source tarballs, optional base tarball |
@@ -180,15 +180,32 @@ providers, the first one in repo order wins, and each such choice is logged. Use
 ```sh
 build-alarm-sysroot.sh --resolve     # rewrites alarm-m2.manifest from today's core/extra/alarm dbs
 git diff Scripts/powerarm/rootfs/alarm-m2.manifest
+alarm_sysroot.py publish --manifest alarm-m2.manifest   # <-- REQUIRED, see below
 ```
 
 Arch Linux ARM mirrors keep **only the current version** of each package, and the community
-archive (tardis.tiny-vps.com/aarm) shut down in June 2026. There's no snapshot mirror to pin
-against. The manifest therefore pins exact filenames plus sha256, and it records the sha256
-and `Last-Modified` time of each repo database the pins were resolved from, for information.
-**Keep the package cache:** once upstream moves on, `fetch` can only succeed from a cache that
-already holds the files. Copy `~/.cache/powerarm/alarm-pkgs/` between machines to share it
-(for example with `rsync`). `--mirror URL` can also point at any `http://` or `file://` tree laid out as `<repo>/<file>`.
+archive (tardis.tiny-vps.com/aarm) shut down in June 2026. POWERarm therefore keeps its own
+snapshot, `https://omappc64le.download/archrootfs`, laid out `<repo>/<file>`; it holds the
+pinned packages, their signatures and the repo databases, and it is the first mirror both
+`POWERarmRootFSFetcher` and this script try, with upstream behind it. The manifest pins exact
+filenames plus sha256, and records the sha256 and `Last-Modified` of each repo database the
+pins were resolved from, for information.
+
+**A re-pin is not finished until it is published.** `resolve` rewrites the pins from today's
+upstream databases, but the files behind the new pins exist only in your local cache — the
+snapshot is still serving the *old* ones. Commit a re-pin without publishing and every fresh
+install breaks at the first rolled package, with a 404 from upstream and nothing on the
+snapshot to fall back to. That is a real failure, not a hypothetical: as of 2026-10-01, 11 of
+the m2 manifest's 90 pins and 14 of the vk manifest's 140 were already gone from upstream.
+
+`publish` uploads only the files the manifest names, and only after checking each one's sha256
+against the pin, so a stale or corrupt cache entry cannot reach the bucket. It deletes nothing —
+older pins stay, which is the point of a snapshot. `--dry-run` shows what would go.
+
+**Keep the package cache** as well: it is what `publish` uploads from, and what lets `fetch`
+succeed with no network at all. Copy `~/.cache/powerarm/alarm-pkgs/` between machines to share
+it (for example with `rsync`). `--mirror URL` can point at any `http://` or `file://` tree laid
+out as `<repo>/<file>`, and replaces the snapshot and upstream both.
 
 ## Manifest format (`alarm-m2.manifest`)
 
