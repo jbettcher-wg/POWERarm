@@ -323,8 +323,30 @@ class Verifier:
         shutil.rmtree(self.home, ignore_errors=True)
 
 
+# Where the pinned packages are kept. Must match POWERARM_ROOTFS_SNAPSHOT_MIRROR
+# in Source/Tools/FEXRootFSFetcher/Main.cpp.
+SNAPSHOT_MIRROR = "https://omappc64le.download/archrootfs"
+
+
 def mirrors_of(a, m):
-    return a.mirror or [m.header["mirror"]]
+    # Snapshot first, the manifest's own mirror behind it -- the same order
+    # POWERarmRootFSFetcher uses, and for the same reason: a manifest pins exact
+    # package versions, and the upstream Arch Linux ARM mirrors keep only the
+    # current one, so a pin 404s upstream the moment anything rolls. A machine
+    # with a warm package cache never notices; a fresh install fails on the first
+    # rolled package, which is exactly when this runs.
+    #
+    # This used to default to the manifest header alone, which is upstream, so
+    # running this script directly -- or through build-alarm-sysroot.sh, which
+    # passes --mirror through but injects no default -- reached upstream only
+    # while the C++ tool reached the snapshot first. The two entry points
+    # disagreed, and only the script's path could fail on a rolled pin.
+    #
+    # --mirror still replaces the whole list.
+    if a.mirror:
+        return a.mirror
+    header = m.header["mirror"]
+    return [SNAPSHOT_MIRROR] + ([header] if header != SNAPSHOT_MIRROR else [])
 
 
 def do_fetch(a, m):
