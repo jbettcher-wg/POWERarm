@@ -1471,6 +1471,22 @@ public:
   // zero-extended 2-byte LE int at EA; dword[1] = 0.
   void lxsihzx(VSXR t, GPR ra, GPR rb) { EmitX(31, t.idx & 31u, ra.idx, rb.idx, 813, (t.idx >> 5) & 1u); }
 
+  // The store twins of the two above — **ISA 3.0 (POWER9)** — each XO its
+  // load's + 128, the same relationship lxsdx(588)/stxsdx(716),
+  // lxsiwzx(12)/stxsiwx(140) and lxvd2x(844)/stxvd2x(972) have. Both store out
+  // of the LOW end of dword[0]: stxsibx bits 56:63 (byte element 7), stxsihx
+  // bits 48:63 (halfword element 3) — exactly the halves lxsibzx/lxsihzx fill,
+  // so a value round-trips through either pair unchanged. Nothing outside
+  // those 1 or 2 bytes is written, which is what lets StoreFPRSized use them
+  // for a guest `str b`/`str h` instead of a 16-byte stvx bounce.
+  // Verified against llvm-mc -triple=powerpc64le -mcpu=pwr9 over both halves
+  // of the register file (vsx-probes/vsx_encoding_sweep.py picks them up from
+  // their signature).
+  // stxsibx XS,RA,RB — p.508, XO=909.
+  void stxsibx(VSXR vss, GPR ra, GPR rb) { EmitX(31, vss.idx & 31u, ra.idx, rb.idx, 909, (vss.idx >> 5) & 1u); }
+  // stxsihx XS,RA,RB — p.508, XO=941.
+  void stxsihx(VSXR vss, GPR ra, GPR rb) { EmitX(31, vss.idx & 31u, ra.idx, rb.idx, 941, (vss.idx >> 5) & 1u); }
+
   // Vector arithmetic (VX-form: op=4, VRT, VRA, VRB, XO)
   void vaddubm(VR vrt, VR vra, VR vrb)  { EmitVX(vrt.idx, vra.idx, vrb.idx, 0);   }
   void vadduhm(VR vrt, VR vra, VR vrb)  { EmitVX(vrt.idx, vra.idx, vrb.idx, 64);  }

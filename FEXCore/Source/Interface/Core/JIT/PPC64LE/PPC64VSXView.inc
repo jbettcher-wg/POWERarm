@@ -26,11 +26,10 @@
 // StaticFPRegisters, GeneralFPRegisters, every `v*` mnemonic, lvx/stvx/lvsl/
 // lvsr/lve*x/stve*x, every FPR-form (opcode 59/63) instruction, and every
 // helper that carries a VR through (LoadFPRSized, StoreFPRSized,
-// TryEmitAlignedV128Load/Store, EmitRoundNearestEven, EmitSha*Rounds4, ...).
-// A VSX-clean lowering that names any of them does not compile.
+// EmitSha1Rounds4, ...). A VSX-clean lowering that names any of them does not
+// compile.
 //
 // docs/powerarm/research/power-isa/VSX-REGISTER-CLASSES.md 7.2.
-  // --- PPC64Emitter::Emitter
   // --- PPC64Emitter::Emitter
   using PPC64JITCore::Bind;
   using PPC64JITCore::BindAt;
@@ -272,6 +271,8 @@
   using PPC64JITCore::stwcx_;
   using PPC64JITCore::stwx;
   using PPC64JITCore::stxsdx;
+  using PPC64JITCore::stxsibx;
+  using PPC64JITCore::stxsihx;
   using PPC64JITCore::stxsiwx;
   using PPC64JITCore::stxv;
   using PPC64JITCore::stxvd2x;
