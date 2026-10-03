@@ -177,6 +177,7 @@
   using PPC64JITCore::lxv;
   using PPC64JITCore::lxvd2x;
   using PPC64JITCore::lxvdsx;
+  using PPC64JITCore::lxvwsx;
   using PPC64JITCore::lxvx;
   using PPC64JITCore::maddld;
   using PPC64JITCore::mcrf;

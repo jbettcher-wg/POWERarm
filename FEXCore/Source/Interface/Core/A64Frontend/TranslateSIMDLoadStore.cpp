@@ -439,7 +439,22 @@ bool IRBuilder::SIMDSingleStructure(uint32_t Word) {
   std::array<Ref, 4> Loaded {};
   for (uint32_t s = 0; s < Structures; ++s) {
     Ref Address = s ? _Add(OpSize::i64Bit, Base, Constant(s * ElementBytes)).Node : Base;
-    if (IsLoad) {
+    if (IsLoad && Replicate && ElementBytes >= 4) {
+      // LD1R-LD4R with a 4 or 8-byte element: one IR op, not a GPR load plus
+      // a dup. The backend has a real load-and-splat for these widths (lxvdsx
+      // on both ISA levels, lxvwsx on 3.0) and cannot use either if the value
+      // has to arrive in a GPR first -- that round-trip was the whole cost of
+      // an `ld1r`, and on POWER8 it was four host instructions for one guest
+      // one. A 1 or 2-byte element keeps the dup path below: no load-and-splat
+      // exists for those widths, and VBroadcastFromMem is VSXClean, which it
+      // can only be while every arm of it is VSX-form.
+      //
+      // Emitted HERE, in the same position as the load it replaces, rather
+      // than beside the StoreVQ below: it is a memory access, and moving it
+      // past the post-index StoreXSP would put it after a write to the very
+      // register its address came from.
+      Loaded[s] = _VBroadcastFromMem(OpSize::i128Bit, ES, Address);
+    } else if (IsLoad) {
       Loaded[s] = _LoadMem(RegClass::GPR, ES, Address, Invalid(), OpSize::i8Bit, MemOffsetType::SXTX, 1);
     } else {
       Ref Element = _VExtractToGPR(OpSize::i128Bit, ES, LoadV((Rt + s) % 32), Index);
@@ -454,7 +469,9 @@ bool IRBuilder::SIMDSingleStructure(uint32_t Word) {
     for (uint32_t s = 0; s < Structures; ++s) {
       const uint32_t Reg = (Rt + s) % 32;
       if (Replicate) {
-        StoreVQ(Reg, Q, _VDupFromGPR(OpSize::i128Bit, ES, Loaded[s]));
+        // Already a vector for a 4/8-byte element (VBroadcastFromMem above);
+        // a 1/2-byte element still needs the dup off the GPR load.
+        StoreVQ(Reg, Q, ElementBytes >= 4 ? Loaded[s] : _VDupFromGPR(OpSize::i128Bit, ES, Loaded[s]).Node);
       } else {
         StoreV(Reg, _VInsGPR(OpSize::i128Bit, ES, Index, LoadV(Reg), Loaded[s]));
       }
