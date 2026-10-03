@@ -58,6 +58,10 @@ gcc -static -O2 -o sigedit "$here/sigedit.c"
 # in the host's FPR-aliased low bank, so this is the frame test for the VSX
 # register-class work (VSX-REGISTER-CLASSES.md).
 gcc -static -O2 -o sigfploop "$here/sigfploop.c"
+
+# ld1r is self-checking, so no golden is captured for it -- it is built here
+# only so the Pi runs the same binary the POWER host does.
+gcc -static -O2 -o ld1r "$here/ld1r.c"
 # Threaded: a guest signal handler returning through rt_sigreturn while its
 # thread is torn down.
 gcc -static -O2 -pthread -o sigteardown "$here/sigteardown.c"

@@ -630,6 +630,10 @@ fi
 #    and on must produce identical output. For the register-class work that is
 #    a sharper gate than a golden, because a golden only says "matches the Pi"
 #    while this says "the switch changed nothing observable".
+#  * ld1r knows what a replicate must produce without being told, so it checks
+#    its own 487 cases -- every element size, both register banks, all 16
+#    offsets from an aligned base, LD2R-LD4R, post-index, and each element
+#    flush against an unmapped page. It carries its own comparator control.
 if [ -f sigfploop ]; then
   POWERARM_VSXCLASSES=on run_emu sigfploop 2> /dev/null || true
   sfl_rc=$(cat sigfploop.powerarm.rc 2> /dev/null || echo 1)
@@ -655,6 +659,36 @@ if [ -f fp_lowbank ]; then
     report PASS fp_lowbank "$lb_lines lines identical with VSXCLASSES off and on"
   else
     report FAIL fp_lowbank "rc off=$lb_off on=$lb_on; $(cmp fp_lowbank.vsxoff fp_lowbank.vsxon 2>&1 | head -1)"
+  fi
+fi
+
+# ld1r runs in both switch states, because the lowering it exercises is the
+# one the register classes change: a 4 or 8-byte LD1R into V16-V31 is a single
+# VSX load only while VBroadcastFromMem is VSXClean, and the same instruction
+# with the switch off goes through a copy out of the low bank. Both must give
+# the same 487 clean checks. The negative control for this test is not in the
+# file: widening the 4-byte arm to lxvdsx takes it to 82 value failures and a
+# SIGSEGV on the at-page-end case.
+if [ -f ld1r ]; then
+  lr_fail=0
+  lr_detail=""
+  for lr_mode in on off; do
+    POWERARM_VSXCLASSES=$lr_mode "$emu" ./ld1r > "ld1r.vsx$lr_mode" 2> /dev/null
+    lr_rc=$?
+    lr_bad=$(grep -c '^FAIL' "ld1r.vsx$lr_mode" 2> /dev/null)
+    lr_checks=$(sed -n 's/^checks \([0-9]*\) failures 0$/\1/p' "ld1r.vsx$lr_mode")
+    lr_ctl=$(grep -c '^PASS control-detects-corruption$' "ld1r.vsx$lr_mode" 2> /dev/null)
+    # A missing summary line means it died before printing one, which an rc
+    # check alone would miss if it died with status 0.
+    if [ "$lr_rc" != 0 ] || [ "$lr_bad" != 0 ] || [ "$lr_ctl" != 1 ] || [ -z "$lr_checks" ] || [ "$lr_checks" -lt 400 ]; then
+      lr_fail=1
+      lr_detail="$lr_detail switch=$lr_mode rc=$lr_rc fails=$lr_bad checks=${lr_checks:-none} control=$lr_ctl;"
+    fi
+  done
+  if [ "$lr_fail" = 0 ]; then
+    report PASS ld1r "$lr_checks replicate checks clean with VSXCLASSES off and on"
+  else
+    report FAIL ld1r "$lr_detail see $out/ld1r.vsxon"
   fi
 fi
 

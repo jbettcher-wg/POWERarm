@@ -673,7 +673,12 @@
         "ElementSize": "ElementSize"
       },
       "FPR = VBroadcastFromMem OpSize:#RegisterSize, OpSize:#ElementSize, GPR:$Address": {
-        "Desc": ["Broadcasts an ElementSize value from memory into each element of a vector."],
+        "Desc": [ "Broadcasts an ElementSize value from memory into each element of a vector.",
+                  "ElementSize must be 4, 8 or 16 bytes. A 1 or 2-byte broadcast is a LoadMem",
+                  "plus VDupFromGPR instead, because the only byte/halfword splats on this host",
+                  "are VMX-form and this op is VSXClean -- see the PPC64LE handler."
+                ],
+        "VSXClean": true,
         "DestSize": "RegisterSize",
         "ElementSize": "ElementSize"
       },

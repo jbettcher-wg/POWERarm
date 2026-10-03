@@ -1403,6 +1403,15 @@ public:
   // file -- checked against GAS: `lxvdsx 32,0,3` assembles to 0x7c001a99 and
   // `lxvdsx 45,4,5` to 0x7da42a99, both of which this reproduces.
   void lxvdsx(VSXR t, GPR ra, GPR rb)  { EmitX(31, t.idx & 31u, ra.idx, rb.idx, 332, (t.idx >> 5) & 1u); }
+  // lxvwsx XT, RA, RB — **ISA 3.0 (POWER9)** — load one WORD from (RA|0)+RB and
+  // splat it into all four words of XT. XO 364. The word twin of lxvdsx above,
+  // and the same single-instruction answer for a guest `ld1r {v.4s}`: it reads
+  // exactly 4 bytes, so unlike widening to lxvdsx it cannot touch a page the
+  // guest instruction does not, and it does not truncate the EA the way lvx
+  // does. Verified against llvm-mc -triple=powerpc64le -mcpu=pwr9:
+  // `lxvwsx 1,3,4` -> 0x7c2322d8 and `lxvwsx 63,2,5` -> 0x7fe22ad9 (TX=1),
+  // both of which this reproduces.
+  void lxvwsx(VSXR t, GPR ra, GPR rb)  { EmitX(31, t.idx & 31u, ra.idx, rb.idx, 364, (t.idx >> 5) & 1u); }
   // stxvd2x XS,RA,RB — ISA 2.06 (POWER7+) — p.508, XO=972. Store form: writes
   // dword[0] as an 8-byte LE integer at EA and dword[1] at EA+8 (so the value
   // must be doubleword-swapped BEFORE the store to match stxvx/stvx layout).

@@ -2719,55 +2719,66 @@ DEF_OP(VLoadVectorGatherMaskedQPS) {
 // observed to corrupt main_arena.bins[] during glibc-static startup
 // (hello_static SIGSEGV in _int_malloc / tcache_init), since glibc uses
 // memory-source vpbroadcastq heavily for arena initialization. Implement.
-DEF_OP(VBroadcastFromMem) {
+DEF_OP_VSX(VBroadcastFromMem) {
   const auto Op = IROp->C<IR::IROp_VBroadcastFromMem>();
-  const auto Dst = GetVReg(Node);
+  const auto Dst = GetVSXReg(Node);
   GPR MemReg = GetReg(Op->Address);
   const auto ElementSize = Op->Header.ElementSize;
 
-  // mtvsrd defines BE dword 0 (phys[0..7]); BE dword 1 (phys[8..15]) is
-  // undefined per ISA. The splat indices 15/7/3 read from phys[15]/phys[14..15]/
-  // phys[12..15] — all in the undefined half. Use xxpermdi DM=0 to duplicate
-  // the defined dword into both halves before splatting (same pattern as
-  // VShlI i64 — invariant 0a).
+  // 4, 8 and 16-byte elements ONLY -- see IR.json. The A64 frontend's
+  // LD1R-LD4R routes a 1 or 2-byte element through LoadMem + VDupFromGPR
+  // instead (TranslateSIMDLoadStore.cpp), because a byte or halfword splat
+  // exists only as vspltb/vsplth, which are VMX-form and so cannot name a
+  // pinned low-bank register. Keeping them out of this op is what lets every
+  // arm below be VSX-form, which is what makes the op VSXClean -- a guest
+  // `ld1r` into V16-V31 then costs exactly what the same `ld1r` into V0-V15
+  // costs, with no copy out of the low bank.
+  //
+  // The wide sizes have a real load-and-splat, so the whole operation is ONE
+  // instruction and no GPR is touched at all. That is the point of routing
+  // LD1R here rather than through a GPR load plus a dup: the round-trip
+  // through the GPR was the cost, not the splat.
   switch (ElementSize) {
-  case IR::OpSize::i8Bit:
-    lbzx(TMP1, MemReg, r0);
-    mtvsrd(VTMP1, TMP1);
-    xxpermdi(VTMP1, VTMP1, VTMP1, 0);
-    vspltb(Dst, VTMP1, 15);
-    break;
-  case IR::OpSize::i16Bit:
-    lhzx(TMP1, MemReg, r0);
-    mtvsrd(VTMP1, TMP1);
-    xxpermdi(VTMP1, VTMP1, VTMP1, 0);
-    vsplth(Dst, VTMP1, 7);
-    break;
   case IR::OpSize::i32Bit:
+    if (CTX->HostFeatures.SupportsISA30) {
+      // Reads exactly the 4 bytes the guest asked for. Widening to lxvdsx
+      // would be one instruction too, but it would fault on a 4-byte access
+      // whose next 4 bytes are unmapped.
+      lxvwsx(Dst, MemReg, r0);
+      return;
+    }
+    // Pre-3.0 has no word load-and-splat. mtvsrd defines BE dword 0
+    // (phys[0..7]) and leaves BE dword 1 UNDEFINED per ISA, and word index 3
+    // reads phys[12..15] -- in the undefined half -- so duplicate the defined
+    // doubleword into both halves first (same pattern as VShlI i64,
+    // invariant 0a). xxspltw rather than vspltw: identical semantics at the
+    // same index, VSX-form, so it can write the low bank.
     lwzx(TMP1, MemReg, r0);
     mtvsrd(VTMP1, TMP1);
     xxpermdi(VTMP1, VTMP1, VTMP1, 0);
-    vspltw(Dst, VTMP1, 3);
-    break;
+    xxspltw(Dst, VTMP1, 3);
+    return;
   case IR::OpSize::i64Bit:
     // lxvdsx is exactly this operation in one instruction: load a doubleword
-    // and splat it into both halves. It replaces a GPR load, two stores, an
-    // addi and a vector load whose data comes straight from those stores --
-    // a store-hit-load on the path glibc takes through memory-source
-    // vpbroadcastq during arena init. Byte-identical to the old sequence on
-    // POWER8, checked with an asymmetric value at a non-16-byte-aligned
-    // address (lxvdsx does not truncate the EA the way lvx does, and does
-    // not byte-reverse). Still no vsldoi-after-mtvsrd: that would read the
-    // ISA-undefined doubleword.
+    // and splat it into both halves. ISA 2.06, so it is the lowering on BOTH
+    // levels -- on POWER8 it replaces a four-instruction GPR round-trip
+    // (ld, mtvsrd, xxpermdi, vmr) that a guest `ld1r {v.2d}` used to cost.
+    // Byte-identical to that sequence, checked with an asymmetric value at a
+    // non-16-byte-aligned address (lxvdsx does not truncate the EA the way lvx
+    // does, and does not byte-reverse). Still no vsldoi-after-mtvsrd: that
+    // would read the ISA-undefined doubleword.
     lxvdsx(Dst, r(0), MemReg);
-    break;
+    return;
   case IR::OpSize::i128Bit:
     // 128-bit "broadcast" is just a 128-bit load.
     LoadUnalignedV128(Dst, MemReg);
-    break;
+    return;
   default:
-    Op_Unhandled(IROp, Node);
-    break;
+    // Not Op_Unhandled: that logs through the assert family, which is compiled
+    // out of a Release build, and this has to be a hard stop in every build --
+    // a silently skipped broadcast leaves the destination holding whatever was
+    // in the register and the guest reads it as the loaded value.
+    ERROR_AND_DIE_FMT("VBroadcastFromMem: element size {} is not one of 4/8/16", static_cast<uint32_t>(ElementSize));
   }
 }
 
