@@ -593,9 +593,12 @@ void PPC64EmitterBase::StoreFPRSized(VSXR src, GPR ea, uint32_t size) {
   // NOTHING, silently. f80 stores do not exist (x86's FSTP tword is the only
   // producer and there is no x86 frontend in this tree); if one appears, it
   // needs a lowering, not a no-op.
+  // ERROR_AND_DIE_FMT, not LOGMAN_MSG_A_FMT: the A-family macros compile to
+  // nothing unless ASSERTIONS_ENABLED, which only a DEBUG build sets
+  // (CMakeLists.txt:199) -- so in the Release binary that actually ships, an
+  // assert-and-return here IS the silent no-op this guard exists to replace.
   if (size != 1 && size != 2 && size != 4 && size != 8) {
-    LOGMAN_MSG_A_FMT("StoreFPRSized: no scalar store for size {}", size);
-    return;
+    ERROR_AND_DIE_FMT("StoreFPRSized: no scalar store for size {}", size);
   }
   xxpermdi(VTMP3_VSX, src, src, 2);
   if (size == 8) {
@@ -710,9 +713,12 @@ void PPC64EmitterBase::LoadFPRSized(VSXR dst, GPR ea, uint32_t size) {
   // this tree, so nothing below is reachable today -- it is kept because it is
   // the IR contract for OpSize::f80Bit and a silent mis-load is worse than a
   // cold path.
+  // ERROR_AND_DIE_FMT for the same reason as StoreFPRSized's guard: an
+  // assert-and-return is compiled out of the Release binary, and here that
+  // leaves `dst` UNWRITTEN -- a load that silently yields whatever was in the
+  // register, which is worse than the no-op on the store side.
   if (size != 10) {
-    LOGMAN_MSG_A_FMT("LoadFPRSized: no scalar load for size {}", size);
-    return;
+    ERROR_AND_DIE_FMT("LoadFPRSized: no scalar load for size {}", size);
   }
   GPR EaSafe = ea;
   if (ea == TMP1 || ea == TMP2 || ea == TMP3) {
