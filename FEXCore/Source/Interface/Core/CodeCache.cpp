@@ -692,7 +692,7 @@ uint64_t ComputeCodeCacheConfigId() {
       // FEX_NO_ABI_LIVEMASK reverts the syscall mini-frame FPR saves to the
       // full set; presence-DISABLED.
       Hasher.Add(static_cast<uint64_t>(getenv("FEX_NO_ABI_LIVEMASK") != nullptr));
-      // These four also change emitted code and were simply missing from this
+      // These also change emitted code and were simply missing from this
       // list. Unlike BlockLinking below — which is excluded deliberately and
       // says so — nothing documented their absence, so a cache built with any
       // of them flipped would have been reused by a session with it unflipped.
@@ -700,11 +700,6 @@ uint64_t ComputeCodeCacheConfigId() {
       // but it is exactly the shape of bug that costs a week when it does bite.
       HASH_OPT(DISABLECMPBRANCHFUSION);
       HASH_OPT(DISABLESCALARSPLATCHAIN);
-      // Aligned 128-bit vector lowering: with it on, an $Align-certified
-      // LoadMem/StoreMem is one lvx/stvx; with it off it is the two-instruction
-      // lxvd2x+xxpermdi / xxpermdi+stxvd2x pair. Different bytes for the same
-      // guest instruction, so the two are not interchangeable in a cache.
-      HASH_OPT(DISABLEALIGNEDVECTORLDST);
       // VSX register classes: with it on, an operation on guest V16-V31 reads
       // and writes the pinned low-bank register directly; with it off the same
       // guest instruction is bracketed by xxlor moves into the VMX pool.

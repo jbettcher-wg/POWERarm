@@ -507,10 +507,12 @@
   using PPC64JITCore::IsSpinCollapseBranch;
   using PPC64JITCore::IsSpinCollapseBranchSigned;
   using PPC64JITCore::IsSpinCollapseSub;
+  using PPC64JITCore::IsSplatCandidateLoad;
   using PPC64JITCore::IsSplatFormValue;
   using PPC64JITCore::JumpTarget;
   using PPC64JITCore::MapCC;
   using PPC64JITCore::MapNZCVCC;
+  using PPC64JITCore::MarkSplatFormLoad;
   using PPC64JITCore::Mask32Tail;
   using PPC64JITCore::MaskForSize;
   using PPC64JITCore::ProjectXERToCR1;

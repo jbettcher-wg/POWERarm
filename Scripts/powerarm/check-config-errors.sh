@@ -17,7 +17,7 @@
 #             success. Now the obvious spellings are accepted and everything
 #             else is refused by name. Checked through both loaders -- the JSON
 #             file and the environment variable do not share a code path -- and
-#             on more than one option, since the handler is shared by all 66.
+#             on more than one option, since the handler is shared by all 65.
 #
 #             "on" being accepted is not enough; it has to reach the feature.
 #             VSXCLASSES is hashed into the code-cache config id, so a run with
@@ -153,7 +153,7 @@ for v in banana "" " 1" 2 onn; do
 done
 
 # bool: not just VSXClasses. The check is driven off the generated OPT_BOOL
-# list, so it has to hold for any of the 66 -- including ones whose default is
+# list, so it has to hold for any of the 65 -- including ones whose default is
 # true, where a rejected value would silently have meant "false" rather than
 # "leave it alone".
 for opt in TSOEnabled Multiblock SilentLog CodeCacheForkWriter DisableTelemetry; do

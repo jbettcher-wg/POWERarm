@@ -532,23 +532,33 @@
       },
 
       "SSA = LoadMem RegisterClass:$Class, OpSize:#Size, GPR:$Addr, GPR:$Offset, OpSize:$Align, MemOffsetType:$OffsetType, u8:$OffsetScale": {
+        "Desc": [ "Loads a value from memory.",
+                  "$Align is NOT read by any backend in this tree. It certified a 16-byte",
+                  "boundary for the x86 aligned lvx/stvx tier; the A64 frontend passes i8Bit",
+                  "at every site (AArch64 has no alignment requirement to certify) and the",
+                  "tier is gone, so the field is vestigial IR surface, not a contract."
+                ],
         "Inline": ["", "Mem"],
+        "VSXClean": true,
         "DestSize": "Size"
       },
 
       "SSA:$Value1, SSA:$Value2 = LoadMemPair RegisterClass:$Class, OpSize:#Size, GPR:$Addr, u32:$Offset": {
         "Desc": ["Load a pair of values from memory."],
         "DestSize": "Size",
+        "VSXClean": true,
         "HasSideEffects": true
       },
 
       "StoreMem RegisterClass:$Class, OpSize:#Size, SSA:$Value, GPR:$Addr, GPR:$Offset, OpSize:$Align, MemOffsetType:$OffsetType, u8:$OffsetScale": {
         "Desc": [ "Stores a value to memory.",
                   "Zero Extends if value's type is too small",
-                  "Truncates if value's type is too large"
+                  "Truncates if value's type is too large",
+                  "$Align is NOT read by any backend in this tree -- see LoadMem."
                 ],
         "Inline": ["Zero", "", "Mem"],
         "HasSideEffects": true,
+        "VSXClean": true,
         "DestSize": "Size"
       },
 
@@ -559,6 +569,7 @@
                 ],
         "Inline": ["Zero", "Zero"],
         "HasSideEffects": true,
+        "VSXClean": true,
         "DestSize": "Size"
       },
 

@@ -1480,6 +1480,19 @@ private:
     return std::find(V.begin(), V.end(), Id) != V.end();
   }
 
+  // The two halves of that protocol as functions, because DEF_OP_VSX(LoadMem)
+  // is where they are used and a view cannot reach a private data member of
+  // the core (that is what the private base is for). The generator's signature
+  // rule re-exports these -- they take an IR::Ref and hand back a bool or
+  // nothing -- without the raw `IR` pointer or either vector joining the view's
+  // surface, which is the narrower thing to expose.
+  bool IsSplatCandidateLoad(IR::Ref Node) const {
+    return IdInVec(SplatCandidateLoads, IR->GetID(Node).Value);
+  }
+  void MarkSplatFormLoad(IR::Ref Node) {
+    SplatFormLoadNodes.push_back(IR->GetID(Node).Value);
+  }
+
   // Shared SHA-256 four-round emitter for VSha256H (returns ABCD half) and
   // VSha256H2 (returns EFGH half). Fully inline: vshasigmaw ST=1 for both
   // big-Sigma functions, vsel-form Ch/Maj, vsldoi lane rotations. Borrows two
