@@ -22,10 +22,15 @@
 // EmitXX3BF survive that cut on purpose: they hardcode primary opcode 60, so
 // however they are called they cannot reach a VMX form.
 //
+// The rule is also why this list GROWS when a helper is made VSX-form: the
+// memory helpers (Load/StoreFPRSized, Load/StoreUnalignedV128) took VR and
+// were absent; every arm of each is now a VSX-form instruction, they take
+// VSXR, and the rule re-exports them. Nothing about the rule changed.
+//
 // What is therefore ABSENT, and must stay absent: GetVReg, SRAFPR,
 // StaticFPRegisters, GeneralFPRegisters, every `v*` mnemonic, lvx/stvx/lvsl/
 // lvsr/lve*x/stve*x, every FPR-form (opcode 59/63) instruction, and every
-// helper that carries a VR through (LoadFPRSized, StoreFPRSized,
+// helper that carries a VR through (EmitRoundNearestEven's VR twin,
 // EmitSha1Rounds4, ...). A VSX-clean lowering that names any of them does not
 // compile.
 //
@@ -428,6 +433,8 @@
   using PPC64JITCore::FillStaticRegs;
   using PPC64JITCore::LoadConstant;
   using PPC64JITCore::LoadConstantFixed;
+  using PPC64JITCore::LoadFPRSized;
+  using PPC64JITCore::LoadUnalignedV128;
   using PPC64JITCore::PopCalleeSavedRegisters;
   using PPC64JITCore::PopDynamicRegs;
   using PPC64JITCore::PrepareV128Addr;
@@ -441,6 +448,8 @@
   using PPC64JITCore::SetOVFromBit;
   using PPC64JITCore::SpillForABICall;
   using PPC64JITCore::SpillStaticRegs;
+  using PPC64JITCore::StoreFPRSized;
+  using PPC64JITCore::StoreUnalignedV128;
   using PPC64JITCore::XERArithDisabled;
   using PPC64JITCore::ZeroCAOV;
   // --- PPC64JITCore

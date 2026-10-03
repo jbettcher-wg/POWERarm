@@ -723,8 +723,8 @@ public:
   // VTMP3_VSX (vs12, RA-invisible low bank) on the pre-3.0 store path. No
   // VMX register (VTMP1/VTMP2 included) is clobbered on any path. `ea` must
   // not be r0 (RA=0 encodes literal zero).
-  void LoadUnalignedV128(VR dst, GPR ea);
-  void StoreUnalignedV128(VR src, GPR ea);
+  void LoadUnalignedV128(VSXR dst, GPR ea);
+  void StoreUnalignedV128(VSXR src, GPR ea);
 
   // A guest 128-bit effective address in the form the ACCESS INSTRUCTION can
   // consume, rather than collapsed into one register:
@@ -756,19 +756,23 @@ public:
   // Same instruction selection and the same clobber contract as the
   // single-`ea` forms above; these just let the access absorb the addressing
   // mode. A non-zero Disp is only ever produced for ISA 3.0.
-  void LoadUnalignedV128(VR dst, const V128AddrForm& A);
-  void StoreUnalignedV128(VR src, const V128AddrForm& A);
+  void LoadUnalignedV128(VSXR dst, const V128AddrForm& A);
+  void StoreUnalignedV128(VSXR src, const V128AddrForm& A);
 
-  // Size-correct FPR memory ops (x86 movd/movq/movdqu semantics): for size <16
-  // the load zero-extends the upper bits of dst, and the store writes only the
-  // low `size` bytes to *ea. Sizes accepted: 1, 2, 4, 8, 16 (load also 10).
+  // Size-correct FPR memory ops (guest `ldr`/`str` b/h/s/d, x86
+  // movd/movq/movdqu semantics): for size <16 the load zero-extends the upper
+  // bits of dst, and the store writes only the low `size` bytes to *ea. Sizes
+  // accepted: 1, 2, 4, 8, 16 (load also 10, the x86-only f80). Anything else
+  // is a hard error rather than a silent no-op, which is what the previous
+  // `default: break` made a store of an unexpected size.
   // Same superset clobber contract as above: TMP1..TMP3 plus VTMP3_VSX; no
-  // VMX register is clobbered on any path (the pre-3.0 scalar/V128 store swap
-  // goes through VTMP3_VSX, the pre-3.0 scalar load merges against VZERO_VSX).
-  // Sizes 4/8 take a register-only path on both load and store and clobber no
-  // TMP GPR at all, but callers must keep assuming the superset.
-  void LoadFPRSized(VR dst, GPR ea, uint32_t size);
-  void StoreFPRSized(VR src, GPR ea, uint32_t size);
+  // VMX register is clobbered on any path (the store's staging swap goes
+  // through VTMP3_VSX, the pre-3.0 scalar load merges against VZERO_VSX).
+  // Sizes 4/8 clobber no TMP GPR at all on either side, and so do sizes 1/2 on
+  // ISA 3.0; the pre-3.0 1/2 arms write one TMP. Callers must keep assuming
+  // the superset.
+  void LoadFPRSized(VSXR dst, GPR ea, uint32_t size);
+  void StoreFPRSized(VSXR src, GPR ea, uint32_t size);
 
 protected:
   FEXCore::Context::ContextImpl* EmitterCTX {};

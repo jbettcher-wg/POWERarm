@@ -465,11 +465,11 @@ void PPC64EmitterBase::RestoreDynVRsFromFrame(int32_t BaseOffset) {
 // first/second/both-page patterns — see docs/POWER9_PORT_PLAN.md §2.1.
 // NOTE: `ea` must not be r0 — RA=0 in the encoding reads literal zero (the
 // same constraint the old D-form ld/std bounce had).
-void PPC64EmitterBase::LoadUnalignedV128(VR dst, GPR ea) {
+void PPC64EmitterBase::LoadUnalignedV128(VSXR dst, GPR ea) {
   LoadUnalignedV128(dst, V128AddrForm {ea, GPRegs::r0, 0});
 }
 
-void PPC64EmitterBase::StoreUnalignedV128(VR src, GPR ea) {
+void PPC64EmitterBase::StoreUnalignedV128(VSXR src, GPR ea) {
   StoreUnalignedV128(src, V128AddrForm {ea, GPRegs::r0, 0});
 }
 
@@ -504,7 +504,7 @@ PPC64EmitterBase::V128AddrForm PPC64EmitterBase::PrepareV128Addr(GPR base, GPR i
   return {base, TMP3, 0};
 }
 
-void PPC64EmitterBase::LoadUnalignedV128(VR dst, const V128AddrForm& A) {
+void PPC64EmitterBase::LoadUnalignedV128(VSXR dst, const V128AddrForm& A) {
   if (EmitterCTX->HostFeatures.SupportsISA30) {
     if (A.Disp != 0) {
       lxv(dst, A.Disp, A.RA);           // DQ-form: EA = GPR[RA] + Disp
@@ -520,7 +520,7 @@ void PPC64EmitterBase::LoadUnalignedV128(VR dst, const V128AddrForm& A) {
   xxpermdi(dst, dst, dst, 2);           // swap dword[0] <-> dword[1]
 }
 
-void PPC64EmitterBase::StoreUnalignedV128(VR src, const V128AddrForm& A) {
+void PPC64EmitterBase::StoreUnalignedV128(VSXR src, const V128AddrForm& A) {
   if (EmitterCTX->HostFeatures.SupportsISA30) {
     if (A.Disp != 0) {
       stxv(src, A.Disp, A.RA);
@@ -535,100 +535,112 @@ void PPC64EmitterBase::StoreUnalignedV128(VR src, const V128AddrForm& A) {
   // (xxpermdi, stxvd2x) are VSX-form so they can encode it, and using it
   // instead of VTMP1/VTMP2 means this path clobbers NO VMX register at all.
   LOGMAN_THROW_A_FMT(A.Disp == 0, "pre-ISA-3.0 has no DQ-form vector store");
-  xxpermdi(VTMP3_VSX, toVSX(src), toVSX(src), 2);
+  xxpermdi(VTMP3_VSX, src, src, 2);
   stxvd2x(VTMP3_VSX, A.RA, A.RB);
 }
 
-// x86 sub-128-bit FPR memory ops (vmovd/vmovq/vmov{ss,sd}) write/read only
-// `size` bytes and the load form zero-extends the upper bits. Naively using
-// stvx/lvx writes/reads 16 bytes and corrupts adjacent stack/structure slots
-// (root cause of hello_static SEGV at __tls_init_tp). The store bounces
-// through STATE+JITScratch (16 bytes, alignas(16) in CpuStateFrame -- ELFv2
-// nominally has a 288B red zone below r1, but an r1-relative slot faulted
-// on tight clone-allocated stacks where the mapping ended before the ABI
-// red zone did): spill the V128 there with stvx, then
-// emit a size-correct GPR store from the slot to *ea. The load form has
-// scalar-VSX fast paths (see LoadFPRSized) and falls back to the mirrored
-// bounce. CRITICAL: the bounce paths clobber TMP1/TMP2/TMP3, so capture
-// `ea` into TMP4 first if it aliases.
-void PPC64EmitterBase::StoreFPRSized(VR src, GPR ea, uint32_t size) {
+// Sub-128-bit FPR memory ops (guest `ldr`/`str` b/h/s/d, and x86
+// vmovd/vmovq/vmov{ss,sd}) write/read only `size` bytes, and the load form
+// zero-extends the upper bits. Naively using stvx/lvx writes/reads 16 bytes
+// and corrupts adjacent stack/structure slots (root cause of hello_static
+// SEGV at __tls_init_tp), so every arm below is size-exact.
+//
+// Both helpers take VSXR, not VR: every arm is a VSX-form instruction, which
+// is what lets a low-bank (vs16-vs31) register reach them at all, and what
+// makes them re-exportable into PPC64VSXView. VR converts to VSXR, so the
+// VMX-side callers are unaffected.
+//
+// The historical shape for the sizes with no scalar VSX instruction was a
+// bounce through STATE+JITScratch (16 bytes, alignas(16) in CpuStateFrame --
+// ELFv2 nominally has a 288B red zone below r1, but an r1-relative slot
+// faulted on tight clone-allocated stacks where the mapping ended before the
+// ABI red zone did). The store side no longer has any such size, and the load
+// side only f80. CRITICAL for the one that remains: the bounce clobbers
+// TMP1/TMP2/TMP3, so capture `ea` into TMP4 first if it aliases.
+void PPC64EmitterBase::StoreFPRSized(VSXR src, GPR ea, uint32_t size) {
   if (size == 16) {
     StoreUnalignedV128(src, ea);
     return;
   }
 
-  // Scalar VSX fast path for the two sizes the guest actually hits in bulk
-  // (movss/movd = 4, movsd/movq = 8). The bounce below costs 5 instructions
-  // plus a store-to-load-forwarding stall through JITScratch; this is 2.
+  // Every remaining size is a staging permute plus one scalar VSX store, and
+  // the permute is shared because all of them read out of dword[0].
   //
   // Register image convention (see the LoadFPRSized block comment): the guest
   // value lives in the LOW bits of dword[1] — BE bytes (16-size)..15 — as an
-  // LE integer. Both stxsdx and stxsiwx read out of dword[0] instead
-  // (stxsdx the whole doubleword, stxsiwx word element 1 = the low word of
-  // dword[0]), so one xxpermdi with DM=2 moves dword[1] into dword[0]:
+  // LE integer. The scalar stores read dword[0] instead (stxsdx the whole
+  // doubleword, stxsiwx word element 1 = its low word, stxsibx/stxsihx its low
+  // byte/halfword), so one xxpermdi with DM=2 moves dword[1] into dword[0]:
   //   T.dw0 = A.dw1 = the guest value, T.dw1 = B.dw0 = don't-care.
-  // That is the exact inverse of the load path's xxpermdi(dst,dst,dst,2),
-  // and for size 4 the guest's low word lands in bits 32:63 of dw0 — the
-  // half stxsiwx stores — because it was the low word of the LE integer in
-  // dword[1]. Nothing outside the `size` bytes is written, which is the
-  // whole point of not using stvx here (hello_static __tls_init_tp SEGV).
+  // That is the exact inverse of the load path's xxpermdi(dst,dst,dst,2), and
+  // for the narrow sizes the guest's low bytes land at the bottom of dw0 —
+  // the end those stores read — because they were the low bytes of the LE
+  // integer in dword[1]. Nothing outside the `size` bytes is written, which is
+  // the whole point of not using stvx here (hello_static __tls_init_tp SEGV).
   //
   // src must be preserved for the caller, so permute into VTMP3_VSX (the
   // RA-invisible low-bank scratch) — same choice, and therefore the same
   // clobbers-no-VMX-register contract, as the pre-3.0 StoreUnalignedV128
-  // path. All three consumers here are VSX-form, which is what makes the
-  // low bank encodable at all.
+  // path. Every consumer here is VSX-form, which is what makes the low bank
+  // encodable at all.
   // stxsdx is ISA 2.06 and stxsiwx ISA 2.07, so both are POWER8-legal with
   // no feature gate — matching the ungated lxsdx/lxsiwzx on the load side.
   // `ea` sits in RA (where RA=0 would mean literal zero), so it must not be
   // r0; that is already the documented precondition for these helpers.
-  if (size == 4 || size == 8) {
-    xxpermdi(VTMP3_VSX, toVSX(src), toVSX(src), 2);
-    if (size == 8) {
-      stxsdx(VTMP3_VSX, ea, GPRegs::r0);
+  //
+  // Anything else is a bug upstream, not a size to emit for: the old code
+  // reached a `default: break` here after spilling to JITScratch and stored
+  // NOTHING, silently. f80 stores do not exist (x86's FSTP tword is the only
+  // producer and there is no x86 frontend in this tree); if one appears, it
+  // needs a lowering, not a no-op.
+  if (size != 1 && size != 2 && size != 4 && size != 8) {
+    LOGMAN_MSG_A_FMT("StoreFPRSized: no scalar store for size {}", size);
+    return;
+  }
+  xxpermdi(VTMP3_VSX, src, src, 2);
+  if (size == 8) {
+    stxsdx(VTMP3_VSX, ea, GPRegs::r0);
+    return;
+  }
+  if (size == 4) {
+    stxsiwx(VTMP3_VSX, ea, GPRegs::r0);
+    return;
+  }
+  // Sizes 1 and 2. On ISA 3.0 stxsibx/stxsihx store bits 56:63 and 48:63 of
+  // dword[0] -- guest bytes 0 and 0:1 after the permute -- so this is the same
+  // two instructions the 4/8 arms cost. What it replaces is a five-instruction
+  // bounce through STATE+JITScratch (addi, li, stvx, lbz, stbx) plus the
+  // store-to-load-forwarding stall of reading back what stvx just wrote, and
+  // it replaced it on ISA 3.0 TOO, because the emitter had lxsibzx/lxsihzx but
+  // not their store twins until they were added. `str b`/`str h` were 7 host
+  // instructions on POWER9 for that reason alone.
+  //
+  // Pre-3.0 has no byte/halfword scalar VSX store, so move dword[0] into a GPR
+  // and use the ordinary stb/sth: three instructions, still no memory bounce
+  // and still nothing written outside the `size` bytes. mfvsrd is ISA 2.07, as
+  // is the stxsiwx above, so this arm needs no further gate.
+  if (EmitterCTX->HostFeatures.SupportsISA30) {
+    if (size == 1) {
+      stxsibx(VTMP3_VSX, ea, GPRegs::r0);
     } else {
-      stxsiwx(VTMP3_VSX, ea, GPRegs::r0);
+      stxsihx(VTMP3_VSX, ea, GPRegs::r0);
     }
     return;
   }
-
-  // Sizes 1/2 (and anything else that reaches here) keep the JITScratch
-  // bounce: pre-3.0 has no single-byte/halfword scalar VSX store.
-  GPR EaSafe = ea;
-  if (ea == TMP1 || ea == TMP2 || ea == TMP3) {
-    mr(TMP4, ea);
-    EaSafe = TMP4;
-  }
-  // Spill V128 into STATE+JITScratch (see block comment above).
-  constexpr int32_t kScratchOff = offsetof(FEXCore::Core::CpuStateFrame, JITScratch);
-  static_assert(kScratchOff >= -32768 && kScratchOff <= 32767,
-                "JITScratch offset must fit in int16 for addi-based addressing");
-  addi(TMP3, STATE, static_cast<int16_t>(kScratchOff));
-  li(TMP1, 0);
-  stvx(src, TMP3, TMP1);
-  // Pull the low `size` bytes from the slot and store them to *ea.
-  switch (size) {
-  case 1:
-    lbz(TMP1, 0, TMP3);
-    stbx(TMP1, EaSafe, GPRegs::r0);
-    break;
-  case 2:
-    lhz(TMP1, 0, TMP3);
-    sthx(TMP1, EaSafe, GPRegs::r0);
-    break;
-  case 4:
-    lwz(TMP1, 0, TMP3);
-    stwx(TMP1, EaSafe, GPRegs::r0);
-    break;
-  case 8:
-    ld(TMP1, 0, TMP3);
-    stdx(TMP1, EaSafe, GPRegs::r0);
-    break;
-  default: break;
+  // The GPR is written before `ea` is read, so it must not BE `ea`.
+  // [Load|Store]MemPair hands this helper TMP1 as the address (see
+  // ComputeOffsetAddrInto) and MaterializeAddr hands it TMP3, so the aliasing
+  // case is reachable rather than hypothetical.
+  const GPR Scratch = (ea == TMP1) ? TMP2 : TMP1;
+  mfvsrd(Scratch, VTMP3_VSX);
+  if (size == 1) {
+    stbx(Scratch, ea, GPRegs::r0);
+  } else {
+    sthx(Scratch, ea, GPRegs::r0);
   }
 }
 
-void PPC64EmitterBase::LoadFPRSized(VR dst, GPR ea, uint32_t size) {
+void PPC64EmitterBase::LoadFPRSized(VSXR dst, GPR ea, uint32_t size) {
   if (size == 16) {
     LoadUnalignedV128(dst, ea);
     return;
@@ -645,9 +657,15 @@ void PPC64EmitterBase::LoadFPRSized(VR dst, GPR ea, uint32_t size) {
   //   * pre-3.0 (sizes 4/8): lxsiwzx/lxsdx leave dword[1] UNDEFINED on
   //     2.06/2.07 hardware, so merge against the pinned zero with DM=0
   //     (T.dw0 = VZERO_VSX.dw0 = 0, T.dw1 = B.dw0 = value) — never reading
-  //     the undefined half.  2 instructions.  Sizes 1/2 have no pre-3.0
-  //     scalar load; they keep the JITScratch bounce below.
-  // These paths clobber no TMP GPR and no vector temp.
+  //     the undefined half.  2 instructions.
+  //   * pre-3.0 (sizes 1/2): no scalar VSX load exists, so the zero-extended
+  //     byte/halfword comes through a GPR: lbzx/lhzx + mtvsrd into dword[0] +
+  //     the same DM=0 merge against the pinned zero.  3 instructions, against
+  //     the 7 of the JITScratch bounce this replaces (addi, std, std, lbzx,
+  //     stb, li, lvx) and with no store-to-load-forwarding stall.  `ldr b`/
+  //     `ldr h` cost 9 host instructions on a POWER8 for that reason.
+  // The 3.0 and 4/8 paths clobber no TMP GPR and no vector temp; the pre-3.0
+  // 1/2 path writes one TMP (`ea` is read first, in the same instruction).
   const bool ISA30 = EmitterCTX->HostFeatures.SupportsISA30;
   if (ISA30 && (size == 1 || size == 2 || size == 4 || size == 8)) {
     switch (size) {
@@ -659,20 +677,43 @@ void PPC64EmitterBase::LoadFPRSized(VR dst, GPR ea, uint32_t size) {
     xxpermdi(dst, dst, dst, 2);
     return;
   }
-  if (!ISA30 && (size == 4 || size == 8)) {
-    if (size == 4) {
-      lxsiwzx(dst, ea, GPRegs::r0);
-    } else {
-      lxsdx(dst, ea, GPRegs::r0);
+  if (!ISA30 && (size == 1 || size == 2 || size == 4 || size == 8)) {
+    switch (size) {
+    case 1:
+      // lbzx/lhzx zero-extend to the whole 64-bit GPR and mtvsrd copies all
+      // of it into dword[0], so the upper bytes of the result are zero for
+      // the same reason the wider arms' are. RT may be RA here (dst and ea
+      // are different register files, and a load reads its address operands
+      // before writing RT), so no aliasing guard is needed.
+      lbzx(TMP1, ea, GPRegs::r0);
+      mtvsrd(dst, TMP1);
+      break;
+    case 2:
+      lhzx(TMP1, ea, GPRegs::r0);
+      mtvsrd(dst, TMP1);
+      break;
+    case 4: lxsiwzx(dst, ea, GPRegs::r0); break;
+    case 8: lxsdx(dst, ea, GPRegs::r0); break;
     }
     // DM=0: T.dw0 = VZERO_VSX.dw0 = 0, T.dw1 = B.dw0 = value — the undefined
-    // dword[1] of the scalar load is never read. The pinned zero replaces a
-    // per-load xxlxor + vector temp (one per guest movss/movsd in DSP-heavy
-    // blocks); the dispatcher maintains vs14 == 0 (see VZERO_VSX).
-    xxpermdi(toVSX(dst), VZERO_VSX, toVSX(dst), 0);
+    // dword[1] of the scalar load (and the undefined dword[1] of mtvsrd) is
+    // never read. The pinned zero replaces a per-load xxlxor + vector temp
+    // (one per guest movss/movsd in DSP-heavy blocks); the dispatcher
+    // maintains vs14 == 0 (see VZERO_VSX). T == B is fine: xxpermdi reads
+    // both source doublewords before writing either.
+    xxpermdi(dst, VZERO_VSX, dst, 0);
     return;
   }
 
+  // f80 only, and so x86 only: the one size with no scalar VSX load at any
+  // level. No AArch64 instruction produces it, and there is no x86 frontend in
+  // this tree, so nothing below is reachable today -- it is kept because it is
+  // the IR contract for OpSize::f80Bit and a silent mis-load is worse than a
+  // cold path.
+  if (size != 10) {
+    LOGMAN_MSG_A_FMT("LoadFPRSized: no scalar load for size {}", size);
+    return;
+  }
   GPR EaSafe = ea;
   if (ea == TMP1 || ea == TMP2 || ea == TMP3) {
     mr(TMP4, ea);
@@ -687,41 +728,21 @@ void PPC64EmitterBase::LoadFPRSized(VR dst, GPR ea, uint32_t size) {
   addi(TMP3, STATE, static_cast<int16_t>(kScratchOff));
   std(GPRegs::r0, 0, TMP3);
   std(GPRegs::r0, 8, TMP3);
-  switch (size) {
-  case 1:
-    lbzx(TMP1, EaSafe, GPRegs::r0);
-    stb(TMP1, 0, TMP3);
-    break;
-  case 2:
-    lhzx(TMP1, EaSafe, GPRegs::r0);
-    sth(TMP1, 0, TMP3);
-    break;
-  case 4:
-    lwzx(TMP1, EaSafe, GPRegs::r0);
-    stw(TMP1, 0, TMP3);
-    break;
-  case 8:
-    ldx(TMP1, EaSafe, GPRegs::r0);
-    std(TMP1, 0, TMP3);
-    break;
-  case 10:
-    // 80-bit float (FLD tword [mem]): read 8+2 bytes from EA into scratch's
-    // low 10 bytes, leaving the upper 6 zeroed by the std r0 prelude above.
-    ldx(TMP1, EaSafe, GPRegs::r0);
-    std(TMP1, 0, TMP3);
-    li(TMP2, 8);
-    lhzx(TMP1, EaSafe, TMP2);
-    sth(TMP1, 8, TMP3);
-    break;
-  case 16:
-    // Should be unreachable (early return at top of fn for size==16), but
-    // matches the IR contract for f128. Fall to default break to avoid silent
-    // mis-load.
-    break;
-  default: break;
-  }
-  li(TMP1, 0);
-  lvx(dst, TMP3, TMP1);
+  // 80-bit float (FLD tword [mem]): read 8+2 bytes from EA into scratch's
+  // low 10 bytes, leaving the upper 6 zeroed by the std r0 prelude above.
+  ldx(TMP1, EaSafe, GPRegs::r0);
+  std(TMP1, 0, TMP3);
+  li(TMP2, 8);
+  lhzx(TMP1, EaSafe, TMP2);
+  sth(TMP1, 8, TMP3);
+  // The reload is the full-width VSX one, not `li` + `lvx`. JITScratch is
+  // alignas(16), so lvx's EA masking never bit, but the two forms produce the
+  // byte-identical register image for an aligned EA (the LoadUnalignedV128
+  // block comment above derives that) and this one needs no zero register --
+  // one instruction on ISA 3.0 against two, and the same two on POWER8.  It is
+  // also the only spelling a VSX-form helper may use at all: `lvx` takes a VR,
+  // which a low-bank destination cannot be.
+  LoadUnalignedV128(dst, V128AddrForm {TMP3, GPRegs::r0, 0});
 }
 
 void PPC64EmitterBase::SpillForABICall(GPR tmp, bool FPRs) {
