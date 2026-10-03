@@ -62,6 +62,10 @@ gcc -static -O2 -o sigfploop "$here/sigfploop.c"
 # ld1r is self-checking, so no golden is captured for it -- it is built here
 # only so the Pi runs the same binary the POWER host does.
 gcc -static -O2 -o ld1r "$here/ld1r.c"
+
+# sigvcache likewise: self-checking, no golden. It installs its own SIGSEGV
+# handler on a PROT_NONE page, so it needs no privileges and no timer.
+gcc -static -O2 -o sigvcache "$here/sigvcache.c"
 # Threaded: a guest signal handler returning through rt_sigreturn while its
 # thread is torn down.
 gcc -static -O2 -pthread -o sigteardown "$here/sigteardown.c"
