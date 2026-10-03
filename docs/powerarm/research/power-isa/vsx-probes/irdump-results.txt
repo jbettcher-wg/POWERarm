@@ -1,0 +1,35 @@
+# Post-RA IR dumps (POWERARM_DUMPIR=stderr, code cache off, build at df080ff1f), analysed by irdump_analyze.py / irdump_producers.py
+## node (code-server 4.137.0 bundled, aarch64) running v8_fp_kernel.js, POWERARM_VSXCLASSES=1
+######## v8
+== all low-bank blocks: n=185
+   {'stores': 542, 'loads': 859, 'reusable': 706, 'reusable_w8': 602, 'cons_allvmx': 859, 'coalesced_reads': 100, 'hoisted_writes': 99, 'VMov_8_16': 6}
+   reuse distance guest insns: median=2 p90=10
+   top vector ops: VAESE=198, VAESMC=175, VMov=157, A64FArith=75, VXor=44, VOr=35, VectorImm=34, VAdd=34, VAnd=31, VCastFromGPR=28, VUnZip=22, VExtractToGPR=16, VDupFromGPR=15, A64FloatFromGPR=15, FCmp=15, A64FloatToGPR=15, VExtr=14, VCMPGTU=13
+   consumers of non-coalesced loads: StoreMem=419, VAESE=274, VAESMC=69, VAdd=28, VUnZip=18, VCMPGTU=12, VZip=8, VZip2=8, VInsGPR=7, VExtractToGPR=5, VTBL1=5, VCMPGT=4, VUnZip2=4, VExtr=3
+== FP low-bank blocks (contain a scalar/lane FP op): n=25
+   {'hoisted_writes': 48, 'stores': 12, 'coalesced_reads': 49, 'loads': 4, 'cons_allvmx': 4, 'reusable': 1, 'reusable_w8': 1}
+   reuse distance guest insns: median=2 p90=2
+   top vector ops: VMov=105, A64FArith=75, VCastFromGPR=16, A64FloatFromGPR=15, FCmp=15, A64FloatToGPR=15, A64FMulAdd=6, A64FToF=3, VExtractToGPR=2, VectorImm=2, Vector_FToI=1
+   consumers of non-coalesced loads: VExtractToGPR=2, Vector_FToI=1, StoreMem=1
+######## claude
+== all low-bank blocks: n=71
+## claude 2.1.288 --version, POWERARM_VSXCLASSES=1
+   {'stores': 259, 'loads': 313, 'reusable': 274, 'reusable_w8': 212, 'cons_allvmx': 313, 'coalesced_reads': 110, 'hoisted_writes': 107, 'VMov_8_16': 12}
+   reuse distance guest insns: median=4 p90=19
+   top vector ops: VMov=76, VAnd=70, VAdd=43, VDupFromGPR=36, VectorImm=24, VCMPEQZ=24, VExtractToGPR=22, A64FArith=21, A64FMulAdd=19, VUXTL2=16, VUXTL=16, VInsGPR=16, VAddV=12, VCMPEQ=12, VOr=11, VTBL1=8, VInsElement=8, VSub=8
+   consumers of non-coalesced loads: StoreMem=152, VAdd=65, VUXTL2=16, VUXTL=16, VCMPEQZ=14, VExtractToGPR=7, VCMPGTU=7, VCMPEQ=6, VExtr=5, VUnZip=4, VTBL1=4, VInsElement=4, VInsGPR=4, VPopcount=3
+== FP low-bank blocks (contain a scalar/lane FP op): n=3
+   {'hoisted_writes': 39, 'stores': 20, 'coalesced_reads': 42, 'loads': 1, 'reusable': 1, 'reusable_w8': 1, 'cons_allvmx': 1}
+   reuse distance guest insns: median=3 p90=3
+   top vector ops: VMov=44, A64FArith=21, A64FMulAdd=19, VCastFromGPR=3, VFNeg=2, A64FloatFromGPR=1, VExtractToGPR=1, Vector_FToI=1, A64FloatToGPR=1
+   consumers of non-coalesced loads: Vector_FToI=1
+====HDR
+IR-post 0x7fff94bbbc00:
+	(%0) IRHeader %2, #0x7fff94bbbc00, #1, #5, EntryNZCVLiveIn=0, ExitsAssumeNZCVDead=0
+	(%2) CodeBlock %3, %4
+## producers of residual low-bank StoreRegister
+v8.ir non-hoisted low-bank StoreRegister = 542 ; producers: LoadMem=311, VAESE=78, VAESMC=69, VectorImm=30, VDupFromGPR=11, VUnZip=9, VExtr=7, VInsGPR=7, VAdd=6, VTBL1=5, VCMPGTU=4, VCMPGT=2
+claude.ir non-hoisted low-bank StoreRegister = 259 ; producers: LoadMem=125, VAdd=39, VectorImm=20, VDupFromGPR=15, VCMPEQZ=14, VUXTL=14, VUXTL2=12, VCMPGTU=6, VInsGPR=4, VUnZip=3, VCMPEQ=3, VExtr=2
+
+## same node run with POWERARM_VSXCLASSES=0: low-bank LoadRegister / StoreRegister counts off vs on
+loads 987 -> 859, stores 641 -> 542

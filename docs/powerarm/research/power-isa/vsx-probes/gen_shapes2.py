@@ -1,0 +1,63 @@
+LO = list(range(0, 16)); HI = list(range(16, 32))
+def regs(bank, k, n=3):
+    return [bank[(k * n + i) % 16] for i in range(n)]
+shapes = []
+def add(name, fmt, bank, n=3):
+    shapes.append((name, [fmt.format(*regs(bank, k, n)) for k in range(16)]))
+for bank, tag in ((LO, "lo"), (HI, "hi")):
+    add(f"zip1_v4s_{tag}",  "zip1 v{0}.4s, v{1}.4s, v{2}.4s", bank)
+    add(f"zip1_v2d_{tag}",  "zip1 v{0}.2d, v{1}.2d, v{2}.2d", bank)
+    add(f"uzp1_v4s_{tag}",  "uzp1 v{0}.4s, v{1}.4s, v{2}.4s", bank)
+    add(f"uzp2_v4s_{tag}",  "uzp2 v{0}.4s, v{1}.4s, v{2}.4s", bank)
+    add(f"trn1_v4s_{tag}",  "trn1 v{0}.4s, v{1}.4s, v{2}.4s", bank)
+    add(f"trn2_v4s_{tag}",  "trn2 v{0}.4s, v{1}.4s, v{2}.4s", bank)
+    add(f"ext8_{tag}",      "ext v{0}.16b, v{1}.16b, v{2}.16b, #8", bank)
+    add(f"ext4_{tag}",      "ext v{0}.16b, v{1}.16b, v{2}.16b, #4", bank)
+    add(f"ext3_{tag}",      "ext v{0}.16b, v{1}.16b, v{2}.16b, #3", bank)
+    add(f"ins_ss_{tag}",    "ins v{0}.s[1], v{1}.s[2]", bank, 2)
+    add(f"ins_dd_{tag}",    "ins v{0}.d[1], v{1}.d[0]", bank, 2)
+    add(f"ins_sw_{tag}",    "ins v{0}.s[1], w1", bank, 1)
+    add(f"ins_bw_{tag}",    "ins v{0}.b[3], w1", bank, 1)
+    add(f"umov_ws_{tag}",   "umov w1, v{0}.s[1]", bank, 1)
+    add(f"umov_wb_{tag}",   "umov w1, v{0}.b[3]", bank, 1)
+    add(f"umov_xd_{tag}",   "umov x1, v{0}.d[1]", bank, 1)
+    add(f"dup_ss_{tag}",    "dup v{0}.4s, v{1}.s[1]", bank, 2)
+    add(f"dup_sw_{tag}",    "dup v{0}.4s, w1", bank, 1)
+    add(f"dup_bw_{tag}",    "dup v{0}.16b, w1", bank, 1)
+    add(f"movi_b55_{tag}",  "movi v{0}.16b, #0x55", bank, 1)
+    add(f"movi_w1_{tag}",   "movi v{0}.4s, #1", bank, 1)
+    add(f"movi_h1_{tag}",   "movi v{0}.8h, #1", bank, 1)
+    add(f"fcvtn_sd_{tag}",  "fcvtn v{0}.2s, v{1}.2d", bank, 2)
+    add(f"fcvtl_ds_{tag}",  "fcvtl v{0}.2d, v{1}.2s", bank, 2)
+    add(f"fcvtn_hs_{tag}",  "fcvtn v{0}.4h, v{1}.4s", bank, 2)
+    add(f"fcvtl_sh_{tag}",  "fcvtl v{0}.4s, v{1}.4h", bank, 2)
+    add(f"fcvtns_v4s_{tag}","fcvtns v{0}.4s, v{1}.4s", bank, 2)
+    add(f"fcvtzs_v4s_{tag}","fcvtzs v{0}.4s, v{1}.4s", bank, 2)
+    add(f"fcvtns_v2d_{tag}","fcvtns v{0}.2d, v{1}.2d", bank, 2)
+    add(f"frintn_v4s_{tag}","frintn v{0}.4s, v{1}.4s", bank, 2)
+    add(f"frintz_v4s_{tag}","frintz v{0}.4s, v{1}.4s", bank, 2)
+    add(f"frintn_v2d_{tag}","frintn v{0}.2d, v{1}.2d", bank, 2)
+    add(f"fcmgt_v4s_{tag}", "fcmgt v{0}.4s, v{1}.4s, v{2}.4s", bank)
+    add(f"fcmeq_v4s_{tag}", "fcmeq v{0}.4s, v{1}.4s, v{2}.4s", bank)
+    add(f"fmin_v4s_{tag}",  "fmin v{0}.4s, v{1}.4s, v{2}.4s", bank)
+    add(f"fadd_v4s_{tag}",  "fadd v{0}.4s, v{1}.4s, v{2}.4s", bank)
+    add(f"ldr_b_{tag}",     "ldr b{0}, [x0, #1]", bank, 1)
+    add(f"ldr_h_{tag}",     "ldr h{0}, [x0, #2]", bank, 1)
+    add(f"ldr_s_{tag}",     "ldr s{0}, [x0, #4]", bank, 1)
+    add(f"ldr_d_{tag}",     "ldr d{0}, [x0, #8]", bank, 1)
+    add(f"ldr_q_{tag}",     "ldr q{0}, [x0, #16]", bank, 1)
+    add(f"str_b_{tag}",     "str b{0}, [x0, #1]", bank, 1)
+    add(f"str_h_{tag}",     "str h{0}, [x0, #2]", bank, 1)
+    add(f"str_d_{tag}",     "str d{0}, [x0, #8]", bank, 1)
+    add(f"ld1r_s_{tag}",    "ld1r {{v{0}.4s}}, [x0]", bank, 1)
+    add(f"fmov_v1_{tag}",   "fmov v{0}.2d, #1.0", bank, 1)
+    add(f"movi0_{tag}",     "movi v{0}.2d, #0", bank, 1)
+out = [".text", ".globl _start", "_start:", "  adr x0, buf", "  mov x1, #3"]
+for i in range(32): out.append(f"  fmov d{i}, x1")
+for name, body in shapes: out += [f"  adr x9, f_{name}", "  blr x9"]
+out += ["  adr x9, f_empty", "  blr x9", "  mov x0, #0", "  mov x8, #93", "  svc #0"]
+out += [".balign 2048", "f_empty:", "  ret"]
+for name, body in shapes: out += [".balign 2048", f"f_{name}:"] + ["  " + b for b in body] + ["  ret"]
+out += [".data", ".balign 64", "buf: .space 4096"]
+open("shapes.S", "w").write("\n".join(out) + "\n")
+print(len(shapes), "shapes")

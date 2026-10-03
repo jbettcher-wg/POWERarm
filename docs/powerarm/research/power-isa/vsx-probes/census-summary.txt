@@ -1,0 +1,17 @@
+binary         insns  fp/simd   %fp | fam          n  low% | per-family n(low%) ...
+chrome      56401162  2041578   3.6 | all   2041578  15.6 | S1 403075(20.3%) S2 215406(14.2%) C 320050(48.3%) ldst 1103047(4.7%)
+libc          293465     3713   1.3 | all      3713  72.3 | S1 564(63.7%) S2 303(74.9%) C 412(73.3%) ldst 2434(73.7%)
+libcairo      229974    15781   6.9 | all     15781  66.8 | S1 7690(68.6%) S2 347(82.1%) C 806(73.9%) ldst 6938(63.2%)
+libm           90643    30445  33.6 | all     30445  56.7 | S1 16416(77.9%) S2 1297(50.7%) C 466(72.1%) ldst 12266(28.4%)
+libpixman     125311    30716  24.5 | all     30716  69.8 | S1 8748(90.4%) S2 3763(84.1%) C 11637(58.8%) ldst 6568(53.7%)
+libstdc++     394664     2540   0.6 | all      2540  87.6 | S1 295(71.2%) S2 342(94.2%) C 221(97.7%) ldst 1682(87.8%)
+libxul      28802040  1613815   5.6 | all   1613815  21.5 | S1 429495(30.1%) S2 142820(25.8%) C 299943(46.3%) ldst 741557(5.6%)
+libz           13938       89   0.6 | all        89  82.0 | S1 4(75.0%) S2 3(66.7%) C 22(68.2%) ldst 60(88.3%)
+
+# targeted counts (census_targeted.py), n / low-bank
+libm {'dup .s/.d': 4/4, 'ext': 1/1, 'ins/mov .s/.d element': 7/7, 'ldp q/d': 1080/712, 'movi #0': 825/451, 'movi other': 288/262, 'stp q/d': 349/184, 'umov/fmov from element': 94/1}
+libcairo {'dup .s/.d': 36/32, 'ins/mov .s/.d element': 104/91, 'ldp q/d': 1326/670, 'movi #0': 282/102, 'movi other': 25/24, 'stp q/d': 1112/610, 'trunc vector fcvtz*': 2/2, 'umov/fmov from element': 10/10, 'uzp1 .s/.d': 1/1, 'uzp2 .s/.d': 2/2, 'zip1 .s/.d': 32/32, 'zip2 .s/.d': 1/1}
+libpixman {'dup .s/.d': 62/31, 'ext': 1/1, 'fcm* .4s/.2s': 68/68, 'ins/mov .s/.d element': 3034/2499, 'ldp q/d': 173/78, 'movi #0': 258/230, 'movi other': 263/260, 'stp q/d': 217/104, 'trunc vector fcvtz*': 6/6, 'umov/fmov from element': 4/4, 'uzp1 .s/.d': 31/21, 'zip1 .s/.d': 19/19}
+libc {'dup .s/.d': 22/21, 'ext': 9/9, 'ins/mov .s/.d element': 23/22, 'ldp q/d': 295/267, 'movi #0': 124/105, 'movi other': 61/49, 'stp q/d': 638/386, 'umov/fmov from element': 20/19, 'uzp1 .s/.d': 11/11}
+libstdc++ {'dup .s/.d': 17/17, 'ext': 29/29, 'ins/mov .s/.d element': 7/7, 'ldp q/d': 296/296, 'movi #0': 227/209, 'movi other': 38/36, 'stp q/d': 508/500, 'umov/fmov from element': 2/0, 'uzp1 .s/.d': 15/15}
+# RNE vector converts (frintn/fcvtns/fcvtnu vector), other-rounding vector fcvt*, non-RNE vector frint*, fcvtn/fcvtl 32<->64: 0 in all five.
