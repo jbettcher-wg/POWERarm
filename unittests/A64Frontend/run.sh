@@ -662,6 +662,36 @@ if [ -f fp_lowbank ]; then
   fi
 fi
 
+# sigvcache is the same kind of test one layer down: a signal taken BETWEEN two
+# reads of one guest V register inside a single guest block, with the handler
+# EDITING that register in the frame. sigfploop cannot cover this -- its
+# synchronous delivery is an `svc`, which ends the block -- and nothing else in
+# the suite edits a vector register from a mid-block signal at all. The
+# delivery here is a SIGSEGV from a PROT_NONE page in the middle of a block
+# that reads V20 on both sides of it, so it is deterministic rather than
+# timing-dependent.
+#
+# What it pins is RestoreFrame_Arm64: an edited frame from a signal taken in
+# JIT code is NOT resumed as the interrupted host context, it is resumed
+# through the dispatcher at the frame's PC, which refills every static register
+# from CPUState and enters a fresh translation. If that were ever changed to
+# resume the host context, this is the test that fails.
+#
+# The run is worthless unless the positive control FAILs, so exactly one FAIL
+# line is required and it has to be that one.
+if [ -f sigvcache ]; then
+  "$emu" ./sigvcache > sigvcache.powerarm 2> /dev/null
+  svc_rc=$?
+  svc_fail=$(grep -c '^FAIL' sigvcache.powerarm 2> /dev/null)
+  svc_ctl=$(grep -c '^FAIL control-deliberately-wrong' sigvcache.powerarm 2> /dev/null)
+  svc_pass=$(grep -c '^PASS' sigvcache.powerarm 2> /dev/null)
+  if [ "$svc_rc" = 0 ] && [ "$svc_fail" = 1 ] && [ "$svc_ctl" = 1 ] && [ "$svc_pass" -ge 8 ]; then
+    report PASS sigvcache "$svc_pass checks clean; handler edit of V20 from a mid-block signal observed, control FAILed"
+  else
+    report FAIL sigvcache "rc=$svc_rc fails=$svc_fail control=$svc_ctl passes=$svc_pass; see $out/sigvcache.powerarm"
+  fi
+fi
+
 # ld1r runs in both switch states, because the lowering it exercises is the
 # one the register classes change: a 4 or 8-byte LD1R into V16-V31 is a single
 # VSX load only while VBroadcastFromMem is VSXClean, and the same instruction

@@ -173,15 +173,23 @@ done
 #
 # This is the check that fails loudest against the old code: there, "on", "true"
 # and "yes" all produced the OFF id, because strtoull gave 0 and nothing said so.
+# id_for SRC VALUE [OPTION] -- the code-cache config id a run writes with
+# OPTION (default VSXClasses) set to VALUE through SRC. OPTION has to be one
+# that is hashed into the id, or every value gives the same answer and the
+# caller's own guard quietly skips the block it is driving. Parameterised
+# rather than hard-coded so the next option hashed into the id can be read
+# back the same way without another copy of this function.
 id_for() {
-  local src=$1 val=$2
-  local dir="$w/cc-$src-$val"
+  local src=$1 val=$2 opt=${3:-VSXClasses}
+  local dir="$w/cc-$opt-$src-$val"
+  local envname
+  envname=POWERARM_$(echo "$opt" | tr '[:lower:]' '[:upper:]')
   rm -rf "$dir"
   mkdir -p "$dir"
   if [ "$src" = json ]; then
-    run "$(cfg VSXClasses "$val")" "$dir" -- > /dev/null
+    run "$(cfg "$opt" "$val")" "$dir" -- > /dev/null
   else
-    run - "$dir" POWERARM_VSXCLASSES="$val" -- > /dev/null
+    run - "$dir" "$envname=$val" -- > /dev/null
   fi
   # Match the id as a 16-hex field at end of name, and drop .tmp/.lock outright.
   # The old pattern anchored '[0-9a-f]*$' with a star, so it matched the EMPTY
