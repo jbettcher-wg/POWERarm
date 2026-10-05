@@ -64,6 +64,118 @@
 
 namespace FEXCore {
 
+// ---------------------------------------------------------------------------
+// The code cache's own file operations, as DIRECT SYSCALLS
+// ---------------------------------------------------------------------------
+//
+// DO NOT route any of these back through the libc wrapper of the same name,
+// however much tidier `::stat` reads than RawFile::Stat. Bypassing libc IS the
+// purpose of this block, and a "cleanup" that undoes it reintroduces a crash
+// that takes a core dump to diagnose.
+//
+// Why: POWERarm runs as the binfmt interpreter for the guest, so it inherits
+// the guest session's environment -- including LD_PRELOAD. Under `fakeroot`,
+// which is how every Arch package build runs, that means the HOST
+// libfakeroot.so is loaded into the emulator's own address space and
+// interposes the emulator's own libc file calls. libfakeroot turns each one
+// into IPC with the `faked` daemon, and when that IPC fails its error path is
+// exit(). Called from inside what this file believes is a plain stat(), that
+// runs POWERarm's exit handlers while the host allocator is still in use:
+//
+//   #0  ~unique_ptr<Alloc::HostAllocator>
+//   #2  exit                    (libc)
+//   #3  semaphore_down          (libfakeroot)
+//   #7  stat                    (libfakeroot)
+//   #8  FileCache::RetireSuperseded
+//   #10 SyscallHandler::CodeCacheImageExit
+//
+// observed four times on 2026-10-04 against guest `makepkg` and guest `ls`
+// alike -- any guest process exiting or exec'ing inside a fakeroot session.
+//
+// The guest-facing path in LinuxSyscalls/FileManagement.cpp deliberately does
+// NOT do this: it uses libc wrappers so that fakeroot keeps working for the
+// guest, which is what makepkg needs. The distinction is the whole design --
+// the emulator's INTERNAL housekeeping must be invisible to a guest-session
+// interposer, while the guest's own syscalls must remain visible to it. So the
+// fix is not to strip LD_PRELOAD (that would break package builds) and not to
+// convert FileManagement.cpp (same).
+//
+// ::syscall() sets errno exactly as the wrappers do, so existing errno checks
+// are unaffected.
+namespace RawFile {
+  inline int Stat(const char* Path, struct stat* St) {
+    return static_cast<int>(::syscall(SYS_newfstatat, AT_FDCWD, Path, St, 0));
+  }
+  inline int LStat(const char* Path, struct stat* St) {
+    return static_cast<int>(::syscall(SYS_newfstatat, AT_FDCWD, Path, St, AT_SYMLINK_NOFOLLOW));
+  }
+  // AT_EMPTY_PATH against an open fd is the fstat equivalent; the path must be
+  // "" rather than nullptr.
+  inline int FStat(int FD, struct stat* St) {
+    return static_cast<int>(::syscall(SYS_newfstatat, FD, "", St, AT_EMPTY_PATH));
+  }
+  inline int Access(const char* Path, int Mode) {
+    return static_cast<int>(::syscall(SYS_faccessat, AT_FDCWD, Path, Mode, 0));
+  }
+  inline int Open(const char* Path, int Flags, mode_t Mode = 0) {
+    return static_cast<int>(::syscall(SYS_openat, AT_FDCWD, Path, Flags, Mode));
+  }
+  inline int Unlink(const char* Path) {
+    return static_cast<int>(::syscall(SYS_unlinkat, AT_FDCWD, Path, 0));
+  }
+  inline int Rename(const char* From, const char* To) {
+    return static_cast<int>(::syscall(SYS_renameat, AT_FDCWD, From, AT_FDCWD, To));
+  }
+  inline int Link(const char* From, const char* To) {
+    return static_cast<int>(::syscall(SYS_linkat, AT_FDCWD, From, AT_FDCWD, To, 0));
+  }
+  inline int Chmod(const char* Path, mode_t Mode) {
+    return static_cast<int>(::syscall(SYS_fchmodat, AT_FDCWD, Path, Mode, 0));
+  }
+  inline int UTimesNow(const char* Path) {
+    return static_cast<int>(::syscall(SYS_utimensat, AT_FDCWD, Path, nullptr, 0));
+  }
+  inline int FUTimesNow(int FD) {
+    return static_cast<int>(::syscall(SYS_utimensat, FD, nullptr, nullptr, 0));
+  }
+  // getuid MUST be raw too, and this one is easy to miss: fakeroot's entire
+  // purpose is to report uid 0. The directory-ownership check below compares a
+  // raw st_uid against this, so a faked 0 would make the cache directory look
+  // foreign and be rejected.
+  inline uid_t GetUid() {
+    return static_cast<uid_t>(::syscall(SYS_getuid));
+  }
+  // `mkdir -p`, because std::filesystem::create_directories stats every
+  // component through libc from INSIDE libstdc++, where no shim can reach it.
+  // That is not hypothetical: it is where the fakeroot crash moved to once the
+  // direct calls above were converted --
+  //   #8  std::filesystem::status
+  //   #9  std::filesystem::create_directories
+  //   #10 CodeCache::SaveNewBlocks
+  // Errors are ignored exactly as the create_directories calls ignored their
+  // std::error_code: the caller's next open() is what decides the outcome, and
+  // EEXIST is the normal case for every component but the last.
+  inline void MkdirP(std::string_view Path) {
+    fextl::string Prefix;
+    Prefix.reserve(Path.size());
+    for (size_t i = 0; i < Path.size(); ++i) {
+      Prefix.push_back(Path[i]);
+      if (Path[i] != '/' && i + 1 != Path.size()) {
+        continue;
+      }
+      // Component boundary. "" and a lone "/" are not directories to create.
+      if (Prefix.size() <= 1) {
+        continue;
+      }
+      fextl::string Dir = Prefix;
+      if (Dir.back() == '/') {
+        Dir.pop_back();
+      }
+      ::syscall(SYS_mkdirat, AT_FDCWD, Dir.c_str(), 0777);
+    }
+  }
+} // namespace RawFile
+
 #if __clang_major__ < 16
 ExecutableFileInfo::ExecutableFileInfo(fextl::unique_ptr<HLE::SourcecodeMap> Map, uint64_t FileId, fextl::string Filename)
   : SourcecodeMap(std::move(Map))
@@ -894,7 +1006,7 @@ namespace {
       }
       struct stat St {};
       const int FD = ::fcntl(STDERR_FILENO, F_DUPFD_CLOEXEC, 3);
-      if (FD >= 0 && ::fstat(FD, &St) == 0) {
+      if (FD >= 0 && RawFile::FStat(FD, &St) == 0) {
         O = {FD, St.st_dev, St.st_ino};
       } else if (FD >= 0) {
         ::close(FD);
@@ -924,7 +1036,7 @@ namespace {
   const StderrIdentity& StartupStderr() {
     static const StderrIdentity Id = [] {
       struct stat St {};
-      if (::fstat(STDERR_FILENO, &St) != 0) {
+      if (RawFile::FStat(STDERR_FILENO, &St) != 0) {
         return StderrIdentity {};
       }
       return StderrIdentity {true, St.st_dev, St.st_ino};
@@ -938,7 +1050,7 @@ namespace {
   void Report(std::string_view Line) {
     const auto& Id = StartupStderr();
     struct stat St {};
-    if (!Id.Known || ::fstat(STDERR_FILENO, &St) != 0 || St.st_dev != Id.Dev || St.st_ino != Id.Ino) {
+    if (!Id.Known || RawFile::FStat(STDERR_FILENO, &St) != 0 || St.st_dev != Id.Dev || St.st_ino != Id.Ino) {
       return;
     }
     [[maybe_unused]] const auto Written = ::write(STDERR_FILENO, Line.data(), Line.size());
@@ -1010,7 +1122,7 @@ namespace {
   const std::array<uint8_t, 16>& CurrentBootId() {
     static const std::array<uint8_t, 16> Id = [] {
       std::array<uint8_t, 16> Out {};
-      int FD = ::open("/proc/sys/kernel/random/boot_id", O_RDONLY | O_CLOEXEC);
+      int FD = RawFile::Open("/proc/sys/kernel/random/boot_id", O_RDONLY | O_CLOEXEC);
       if (FD == -1) {
         return Out;
       }
@@ -1188,14 +1300,14 @@ namespace {
   fextl::string WriteTempSegment(const fextl::string& Base, const std::function<bool(int)>& Writer) {
     static std::atomic<uint64_t> Counter {0};
     auto Temp = fextl::fmt::format("{}.tmp.{}.{}", Base, ::getpid(), Counter.fetch_add(1));
-    int FD = ::open(Temp.c_str(), O_CREAT | O_EXCL | O_WRONLY | O_CLOEXEC, 0644);
+    int FD = RawFile::Open(Temp.c_str(), O_CREAT | O_EXCL | O_WRONLY | O_CLOEXEC, 0644);
     if (FD == -1) {
       return {};
     }
     const bool Ok = Writer(FD);
     ::close(FD);
     if (!Ok) {
-      ::unlink(Temp.c_str());
+      RawFile::Unlink(Temp.c_str());
       return {};
     }
     return Temp;
@@ -1278,13 +1390,13 @@ namespace {
   // a crashed or killed writer leaves behind. What is inside is not checked
   // here; every block is validated when it is installed.
   bool SegmentLooksComplete(const fextl::string& Path, uint64_t* SizeOut) {
-    const int FD = ::open(Path.c_str(), O_RDONLY | O_CLOEXEC);
+    const int FD = RawFile::Open(Path.c_str(), O_RDONLY | O_CLOEXEC);
     if (FD == -1) {
       return false;
     }
     SegmentHeader H {};
     struct stat St {};
-    const bool Ok = ::pread(FD, &H, sizeof(H), 0) == static_cast<ssize_t>(sizeof(H)) && ::fstat(FD, &St) == 0 && S_ISREG(St.st_mode) &&
+    const bool Ok = ::pread(FD, &H, sizeof(H), 0) == static_cast<ssize_t>(sizeof(H)) && RawFile::FStat(FD, &St) == 0 && S_ISREG(St.st_mode) &&
                     H.Magic == SegmentMagic && H.Version == SegmentVersion && H.HeaderHash == HashHeader(H) &&
                     static_cast<uint64_t>(St.st_size) >= H.CodeOffset + H.CodeSize;
     ::close(FD);
@@ -1320,7 +1432,7 @@ namespace {
     } else if (const char* Runtime = ::getenv("XDG_RUNTIME_DIR"); Runtime && Runtime[0] == '/') {
       Dir = fextl::fmt::format("{}/powerarm/cache", Runtime);
     } else {
-      Dir = fextl::fmt::format("/tmp/powerarm-{}/cache", static_cast<unsigned>(::getuid()));
+      Dir = fextl::fmt::format("/tmp/powerarm-{}/cache", static_cast<unsigned>(RawFile::GetUid()));
       Shared = true;
     }
     while (!Dir.empty() && Dir.back() == '/') {
@@ -1329,8 +1441,7 @@ namespace {
     if (Dir.empty() || Dir == DurableDir) {
       return {};
     }
-    std::error_code EC;
-    std::filesystem::create_directories(std::filesystem::path(std::string_view {Dir}), EC);
+    RawFile::MkdirP(Dir);
     if (Shared) {
       // A guessable name under a directory anyone can write. A cache file is
       // only ever as trustworthy as its directory -- every block in it is
@@ -1338,14 +1449,14 @@ namespace {
       // executed as written -- so this one is used only while it is ours and
       // nobody else's to write.
       const auto Parent = fextl::string {std::filesystem::path(std::string_view {Dir}).parent_path().string()};
-      ::chmod(Parent.c_str(), 0700);
+      RawFile::Chmod(Parent.c_str(), 0700);
       struct stat St {};
-      if (::lstat(Parent.c_str(), &St) != 0 || !S_ISDIR(St.st_mode) || St.st_uid != ::getuid() || (St.st_mode & (S_IWGRP | S_IWOTH))) {
+      if (RawFile::LStat(Parent.c_str(), &St) != 0 || !S_ISDIR(St.st_mode) || St.st_uid != RawFile::GetUid() || (St.st_mode & (S_IWGRP | S_IWOTH))) {
         LogMan::Msg::IFmt("Code cache: no hot tier, {} is not ours alone", Parent);
         return {};
       }
     }
-    if (::access(Dir.c_str(), R_OK | W_OK | X_OK) != 0) {
+    if (RawFile::Access(Dir.c_str(), R_OK | W_OK | X_OK) != 0) {
       LogMan::Msg::IFmt("Code cache: no hot tier, {} is not usable", Dir);
       return {};
     }
@@ -1373,27 +1484,26 @@ namespace {
     }
     for (size_t Index = 0; Index < MaxSegments; ++Index) {
       const auto Hot = SegmentPath(HotBase, Index);
-      if (::access(Hot.c_str(), F_OK) == 0) {
+      if (RawFile::Access(Hot.c_str(), F_OK) == 0) {
         continue;
       }
       uint64_t Size = 0;
       if (!SegmentLooksComplete(SegmentPath(DurableBase, Index), &Size)) {
         return;
       }
-      const int In = ::open(SegmentPath(DurableBase, Index).c_str(), O_RDONLY | O_CLOEXEC);
+      const int In = RawFile::Open(SegmentPath(DurableBase, Index).c_str(), O_RDONLY | O_CLOEXEC);
       if (In == -1) {
         return;
       }
-      std::error_code EC;
-      std::filesystem::create_directories(std::filesystem::path(std::string_view {HotBase}).parent_path(), EC);
+      RawFile::MkdirP(FHU::Filesystem::ParentPath(HotBase));
       auto Temp = WriteTempSegment(HotBase, [&](int FD) { return CopyFileContents(In, FD, Size); });
       ::close(In);
       if (Temp.empty()) {
         return;
       }
       // A sibling that seeded the same name first wins; this copy is dropped.
-      const bool Have = ::link(Temp.c_str(), Hot.c_str()) == 0 || errno == EEXIST;
-      ::unlink(Temp.c_str());
+      const bool Have = RawFile::Link(Temp.c_str(), Hot.c_str()) == 0 || errno == EEXIST;
+      RawFile::Unlink(Temp.c_str());
       if (!Have) {
         return;
       }
@@ -1406,12 +1516,11 @@ namespace {
     if (!SegmentLooksComplete(SegmentPath(HotBase, Index), &Size)) {
       return false;
     }
-    const int In = ::open(SegmentPath(HotBase, Index).c_str(), O_RDONLY | O_CLOEXEC);
+    const int In = RawFile::Open(SegmentPath(HotBase, Index).c_str(), O_RDONLY | O_CLOEXEC);
     if (In == -1) {
       return false;
     }
-    std::error_code EC;
-    std::filesystem::create_directories(std::filesystem::path(std::string_view {DurableBase}).parent_path(), EC);
+    RawFile::MkdirP(FHU::Filesystem::ParentPath(DurableBase));
     auto Temp = WriteTempSegment(DurableBase, [&](int FD) { return CopyFileContents(In, FD, Size); });
     ::close(In);
     if (Temp.empty()) {
@@ -1419,8 +1528,8 @@ namespace {
     }
     // rename(2), not link(2): this replaces whatever the durable tier had under
     // that name, and it replaces it in one step.
-    if (::rename(Temp.c_str(), SegmentPath(DurableBase, Index).c_str()) != 0) {
-      ::unlink(Temp.c_str());
+    if (RawFile::Rename(Temp.c_str(), SegmentPath(DurableBase, Index).c_str()) != 0) {
+      RawFile::Unlink(Temp.c_str());
       return false;
     }
     return true;
@@ -1433,13 +1542,13 @@ namespace {
   void WriteBackNamespace(const fextl::string& HotBase, const fextl::string& DurableBase) {
     size_t Present = 0;
     for (; Present < MaxSegments; ++Present) {
-      if (::access(SegmentPath(HotBase, Present).c_str(), F_OK) != 0) {
+      if (RawFile::Access(SegmentPath(HotBase, Present).c_str(), F_OK) != 0) {
         break;
       }
       WriteBackSegment(HotBase, DurableBase, Present);
     }
     for (size_t Index = MaxSegments; Index-- > Present;) {
-      ::unlink(SegmentPath(DurableBase, Index).c_str());
+      RawFile::Unlink(SegmentPath(DurableBase, Index).c_str());
     }
   }
 } // namespace
@@ -1577,18 +1686,18 @@ struct CodeCache::CacheSegment {
   // MarkUsed: record a use for the size sweep's LRU order by refreshing the
   // file's mtime, at most every UseStampSeconds per file.
   static fextl::shared_ptr<CacheSegment> Open(const fextl::string& Path, uint64_t ConfigId, uint64_t FileId, bool MarkUsed = false) {
-    int FD = ::open(Path.c_str(), O_RDONLY | O_CLOEXEC);
+    int FD = RawFile::Open(Path.c_str(), O_RDONLY | O_CLOEXEC);
     if (FD == -1) {
       return nullptr;
     }
     struct stat St {};
-    if (::fstat(FD, &St) != 0 || St.st_size < static_cast<off_t>(sizeof(SegmentHeader))) {
+    if (RawFile::FStat(FD, &St) != 0 || St.st_size < static_cast<off_t>(sizeof(SegmentHeader))) {
       ::close(FD);
       return nullptr;
     }
     if (MarkUsed && St.st_mtime + UseStampSeconds < ::time(nullptr)) {
       // Fails harmlessly on a read-only cache.
-      ::utimensat(AT_FDCWD, Path.c_str(), nullptr, 0);
+      RawFile::UTimesNow(Path.c_str());
     }
     const size_t Size = static_cast<size_t>(St.st_size);
     void* Map = FEXCore::Allocator::mmap(nullptr, Size, PROT_READ, MAP_PRIVATE, FD, 0);
@@ -1693,7 +1802,7 @@ struct CodeCache::FileCache {
     size_t Keep = 0;
     for (; Keep < Count; ++Keep) {
       struct stat St {};
-      if (::stat(SegmentPath(BasePath, Keep).c_str(), &St) != 0 || St.st_dev != Segments[Keep]->Dev || St.st_ino != Segments[Keep]->Ino) {
+      if (RawFile::Stat(SegmentPath(BasePath, Keep).c_str(), &St) != 0 || St.st_dev != Segments[Keep]->Dev || St.st_ino != Segments[Keep]->Ino) {
         break;
       }
     }
@@ -1726,9 +1835,9 @@ struct CodeCache::FileCache {
       return;
     }
     struct stat St {};
-    if (::stat(BasePath.c_str(), &St) == 0 && St.st_mtime + UseStampSeconds < ::time(nullptr)) {
+    if (RawFile::Stat(BasePath.c_str(), &St) == 0 && St.st_mtime + UseStampSeconds < ::time(nullptr)) {
       // Fails harmlessly on a read-only cache.
-      ::utimensat(AT_FDCWD, BasePath.c_str(), nullptr, 0);
+      RawFile::UTimesNow(BasePath.c_str());
     }
   }
 };
@@ -1764,7 +1873,7 @@ uint64_t CodeCache::ComputeCodeMapId(std::string_view Filename, int FD) {
   XXH3_state_t State;
   XXH3_64bits_reset(&State);
   struct stat St {};
-  if (FD >= 0 && ::fstat(FD, &St) == 0) {
+  if (FD >= 0 && RawFile::FStat(FD, &St) == 0) {
     const uint64_t Fields[] = {
       static_cast<uint64_t>(St.st_dev),        static_cast<uint64_t>(St.st_ino),         static_cast<uint64_t>(St.st_size),
       static_cast<uint64_t>(St.st_mtim.tv_sec), static_cast<uint64_t>(St.st_mtim.tv_nsec), static_cast<uint64_t>(St.st_ctim.tv_sec),
@@ -1888,7 +1997,7 @@ void CodeCache::DumpStats() {
   const auto& Out = StatsStream();
   int FD = STDERR_FILENO;
   struct stat St {};
-  if (Out.FD >= 0 && ::fstat(Out.FD, &St) == 0 && St.st_dev == Out.Dev && St.st_ino == Out.Ino) {
+  if (Out.FD >= 0 && RawFile::FStat(Out.FD, &St) == 0 && St.st_dev == Out.Dev && St.st_ino == Out.Ino) {
     FD = Out.FD;
   }
   const auto Line = fextl::fmt::format(
@@ -2513,12 +2622,12 @@ static bool CompactSegments(const fextl::string& Base, const fextl::string& Extr
   if (Temp.empty()) {
     return false;
   }
-  if (::rename(Temp.c_str(), Base.c_str()) != 0) {
-    ::unlink(Temp.c_str());
+  if (RawFile::Rename(Temp.c_str(), Base.c_str()) != 0) {
+    RawFile::Unlink(Temp.c_str());
     return false;
   }
   for (size_t i = NumNamed; i-- > 1;) {
-    ::unlink(SegmentPath(Base, i).c_str());
+    RawFile::Unlink(SegmentPath(Base, i).c_str());
   }
   LogMan::Msg::IFmt("Code cache: compacted {} segments into {} ({} blocks)", Inputs.size(), Base, Index.size());
   return true;
@@ -2637,7 +2746,7 @@ namespace {
 
   // True if the segment file was written by this build in this format.
   bool IsOwnBuild(const fextl::string& Path) {
-    int FD = ::open(Path.c_str(), O_RDONLY | O_CLOEXEC);
+    int FD = RawFile::Open(Path.c_str(), O_RDONLY | O_CLOEXEC);
     if (FD == -1) {
       return false;
     }
@@ -2654,7 +2763,7 @@ namespace {
     const fextl::string LockPath = BasePath + ".lock";
     int LockFD = -1;
     if (Info.HasLock) {
-      LockFD = ::open(LockPath.c_str(), O_RDWR | O_CLOEXEC);
+      LockFD = RawFile::Open(LockPath.c_str(), O_RDWR | O_CLOEXEC);
       if (LockFD != -1 && ::flock(LockFD, LOCK_EX | LOCK_NB) != 0) {
         ::close(LockFD);
         return false;
@@ -2662,14 +2771,14 @@ namespace {
     }
     for (size_t i = MaxSegments; i-- > 0;) {
       if (Info.SegmentMask & (1u << i)) {
-        ::unlink(SegmentPath(BasePath, i).c_str());
+        RawFile::Unlink(SegmentPath(BasePath, i).c_str());
       }
     }
     for (const auto& Temp : Info.TempFiles) {
-      ::unlink(Temp.c_str());
+      RawFile::Unlink(Temp.c_str());
     }
     if (LockFD != -1) {
-      ::unlink(LockPath.c_str());
+      RawFile::Unlink(LockPath.c_str());
       ::close(LockFD);
     }
     return true;
@@ -2679,11 +2788,11 @@ namespace {
     const int64_t Now = ::time(nullptr);
     const fextl::string StampPath = Dir + "/.sweep";
     struct stat St {};
-    if (::stat(StampPath.c_str(), &St) == 0 && St.st_mtime + SweepIntervalSeconds > Now) {
+    if (RawFile::Stat(StampPath.c_str(), &St) == 0 && St.st_mtime + SweepIntervalSeconds > Now) {
       return;
     }
     const fextl::string SweepLock = Dir + "/.sweep.lock";
-    int LockFD = ::open(SweepLock.c_str(), O_RDWR | O_CREAT | O_CLOEXEC, 0644);
+    int LockFD = RawFile::Open(SweepLock.c_str(), O_RDWR | O_CREAT | O_CLOEXEC, 0644);
     if (LockFD == -1) {
       return;
     }
@@ -2692,12 +2801,12 @@ namespace {
       return;
     }
     // Claim this interval: re-check under the lock, then stamp before the scan.
-    if (::stat(StampPath.c_str(), &St) == 0 && St.st_mtime + SweepIntervalSeconds > Now) {
+    if (RawFile::Stat(StampPath.c_str(), &St) == 0 && St.st_mtime + SweepIntervalSeconds > Now) {
       ::close(LockFD);
       return;
     }
-    if (int StampFD = ::open(StampPath.c_str(), O_WRONLY | O_CREAT | O_CLOEXEC, 0644); StampFD != -1) {
-      ::futimens(StampFD, nullptr);
+    if (int StampFD = RawFile::Open(StampPath.c_str(), O_WRONLY | O_CREAT | O_CLOEXEC, 0644); StampFD != -1) {
+      RawFile::FUTimesNow(StampFD);
       ::close(StampFD);
     }
 
@@ -2748,7 +2857,7 @@ namespace {
       if (!Info.TempFiles.empty()) {
         // Leftovers of a crashed writer; the namespace itself stays.
         for (const auto& Temp : Info.TempFiles) {
-          ::unlink(Temp.c_str());
+          RawFile::Unlink(Temp.c_str());
         }
       }
       Total += Info.Bytes;
@@ -2940,7 +3049,7 @@ namespace {
     size_t Index = 0;
     for (; Index < MaxSegments; ++Index) {
       struct stat St {};
-      if (::stat(SegmentPath(Base, Index).c_str(), &St) != 0) {
+      if (RawFile::Stat(SegmentPath(Base, Index).c_str(), &St) != 0) {
         break;
       }
       Extent.Bytes += static_cast<uint64_t>(St.st_size);
@@ -3010,11 +3119,11 @@ namespace {
                                    uint64_t WaitSeconds, uint64_t MaxCompactBytes = 0) {
     PublishResult Result;
     const auto LockPath = Base + ".lock";
-    const int LockFD = ::open(LockPath.c_str(), O_RDWR | O_CREAT | O_CLOEXEC, 0644);
+    const int LockFD = RawFile::Open(LockPath.c_str(), O_RDWR | O_CREAT | O_CLOEXEC, 0644);
     if (LockFD != -1) {
       if (LockWithDeadline(LockFD, LOCK_SH, WaitSeconds)) {
         for (size_t i = 0; i < MaxSegments && !Result.Written; ++i) {
-          if (::link(Temp.c_str(), SegmentPath(Base, i).c_str()) == 0) {
+          if (RawFile::Link(Temp.c_str(), SegmentPath(Base, i).c_str()) == 0) {
             Result.Written = true;
             Result.Index = i;
           } else if (errno != EEXIST) {
@@ -3041,7 +3150,7 @@ namespace {
       }
       ::close(LockFD);
     }
-    ::unlink(Temp.c_str());
+    RawFile::Unlink(Temp.c_str());
     return Result;
   }
 
@@ -3322,8 +3431,7 @@ size_t CodeCache::PublishSegments(std::span<PendingSegment> Pending, uint64_t Co
     if (P.Written) {
       continue;
     }
-    std::error_code EC;
-    std::filesystem::create_directories(std::filesystem::path(std::string_view {P.Base}).parent_path(), EC);
+    RawFile::MkdirP(FHU::Filesystem::ParentPath(P.Base));
     // Asked before the segment is serialized, not only inside the publish: a
     // full namespace over the bound is the steady state of a large guest, so
     // without this every periodic pass would write a multi-megabyte temp file
@@ -3339,7 +3447,7 @@ size_t CodeCache::PublishSegments(std::span<PendingSegment> Pending, uint64_t Co
         // A segment a writer would not take is already a file; the publish is
         // what would have consumed it, and it is not going to run.
         if (!P.Temp.empty()) {
-          ::unlink(P.Temp.c_str());
+          RawFile::Unlink(P.Temp.c_str());
           P.Temp.clear();
         }
         continue;
@@ -3411,7 +3519,7 @@ bool CodeCache::StartSegmentWriter() {
   // the originals happen to have.
   const int SocketDup = ::fcntl(Pair[1], F_DUPFD_CLOEXEC, 10);
   const int StatsDup = GetSaveWriterStats() ? ::fcntl(WriterStatsFD, F_DUPFD_CLOEXEC, 10) : -1;
-  const int NullFD = ::open("/dev/null", O_RDWR | O_CLOEXEC);
+  const int NullFD = RawFile::Open("/dev/null", O_RDWR | O_CLOEXEC);
 
   pid_t Spawned = -1;
   int Err = ENOMEM;
@@ -3488,8 +3596,7 @@ size_t CodeCache::HandSegmentsToWriter(std::span<PendingSegment> Pending, uint64
   }
   size_t Handed = 0;
   for (auto& P : Pending) {
-    std::error_code EC;
-    std::filesystem::create_directories(std::filesystem::path(std::string_view {P.Base}).parent_path(), EC);
+    RawFile::MkdirP(FHU::Filesystem::ParentPath(P.Base));
     // Written here, published there. The segment is a finished file before the
     // request that names it is sent, so nothing of this process's memory has to
     // cross and a writer that never gets to it leaves a temp file for the sweep
@@ -3519,15 +3626,15 @@ bool CodeCache::CompactAllSegments(const fextl::string& DurableBase, uint64_t Fi
   const auto& Base = Hot.empty() ? DurableBase : Hot;
   SeedHotNamespace(Hot, DurableBase);
   const auto LockPath = Base + ".lock";
-  int LockFD = ::open(LockPath.c_str(), O_RDWR | O_CREAT | O_CLOEXEC, 0644);
+  int LockFD = RawFile::Open(LockPath.c_str(), O_RDWR | O_CREAT | O_CLOEXEC, 0644);
   if (LockFD == -1) {
     return false;
   }
   bool Done = false;
   bool Compacted = false;
   if (::flock(LockFD, LOCK_EX | LOCK_NB) == 0) {
-    Compacted = ::access(SegmentPath(Base, 1).c_str(), F_OK) == 0 && CompactSegments(Base, {}, ComputeCodeCacheConfigId(), FileId);
-    Done = Compacted || ::access(SegmentPath(Base, 1).c_str(), F_OK) != 0;
+    Compacted = RawFile::Access(SegmentPath(Base, 1).c_str(), F_OK) == 0 && CompactSegments(Base, {}, ComputeCodeCacheConfigId(), FileId);
+    Done = Compacted || RawFile::Access(SegmentPath(Base, 1).c_str(), F_OK) != 0;
     Stats.Compactions.fetch_add(Done ? 1 : 0, std::memory_order_relaxed);
     ::flock(LockFD, LOCK_UN);
   }

@@ -44,6 +44,25 @@ cd packaging/archpower
 makepkg -s
 ```
 
+This is a **native powerpc64le** package and must be built with the **host**
+`makepkg`. Check first if there is any doubt:
+
+```sh
+uname -m    # powerpc64le = host. aarch64 = you are inside the emulated rootfs.
+```
+
+A shell inside the AArch64 rootfs resolves `makepkg` and its `bash` out of the
+rootfs, so the whole build would run under emulation against the wrong
+architecture. `arch=('powerpc64le')` makes `makepkg` refuse that outright --
+"not available for the 'aarch64' architecture" -- but only after it has sourced
+the PKGBUILD, so read the architecture in the error rather than the exit code.
+
+Agents have done this repeatedly. Until 2026-10-04 it was worse than a refusal:
+every guest process exiting or exec'ing inside a `fakeroot` session could take
+the emulator down with it, because the host `libfakeroot.so` is preloaded into
+POWERarm and interposed the code cache's own file calls (see HANDOVER item 62).
+That is fixed, so the wrong `makepkg` now fails cleanly instead of dumping core.
+
 The `source` array points at `https://github.com/daedalao/fastppcx86.git`,
 branch `main`. `main` is the deployment branch: development happens on
 `daedalao-wt` and is merged into `main` at release time (see
