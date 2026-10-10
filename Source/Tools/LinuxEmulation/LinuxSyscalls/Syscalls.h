@@ -343,6 +343,9 @@ public:
   FEX_CONFIG_OPT(Filename, APP_FILENAME);
   FEX_CONFIG_OPT(RootFSPath, ROOTFS);
   FEX_CONFIG_OPT(SMCChecks, SMCCHECKS);
+  // See RetireGuestCode. Atomic because other guest threads are still running
+  // when main sets it.
+  std::atomic<bool> GuestCodeRetired {false};
   FEX_CONFIG_OPT(SMCMarkMemo, SMCMARKMEMO);
   FEX_CONFIG_OPT(SMCStoreEmulation, SMCSTOREEMULATION);
   FEX_CONFIG_OPT(SMCStoreBackpatch, SMCSTOREBACKPATCH);
@@ -544,15 +547,67 @@ public:
   void FinishTrackedMprotect(FEXCore::Core::InternalThreadState* Thread, void* addr, int prot);
   void TrackMadvise(FEXCore::Core::InternalThreadState* Thread, uintptr_t Base, uintptr_t Size, int advice);
 
+  // Past this point the guest will never execute again, so invalidating its
+  // code is work with no reader -- and it is not free work, it is the most
+  // expensive kind: InvalidateGuestCodeRange takes CodeInvalidationMutex
+  // EXCLUSIVELY, and ThreadManager's acquire is a 4-second deadlock detector
+  // that ERROR_AND_DIEs rather than stealing the lock.
+  //
+  // At shutdown that detector has no way to succeed, and the reason is not
+  // that other threads are running -- TM.Stop(true) has already stopped them.
+  // It is that a thread STOPPED inside a shared critical section still holds
+  // the shared side, and nothing is left to make it drop it: the exit_group
+  // path calls ReleaseAllPendingSharedLocks, but this path is the other one.
+  // main()'s tail is reached only when ExecuteThread RETURNS, i.e. when the
+  // guest's threads all ended without any of them calling exit_group (which
+  // exits via a raw syscall and never comes back here). That is rare for an
+  // ordinary program, whose libc exit calls exit_group, and is why only a
+  // browser ever showed it. The wait then runs its full deadline and kills
+  // the process:
+  //
+  //   #0 FEXCore::Assert::ForcedAssert
+  //   #1 ThreadManager::TakeCodeInvalidationWriteLockOrSteal
+  //   #2 ThreadManager::InvalidateGuestCodeRange
+  //   #3 SyscallHandler::GuestMunmap
+  //   #5 FEX::VDSO::UnloadVDSOMapping
+  //   #6 main
+  //
+  // Five of these in ten days on this machine, four of them Chrome, every one
+  // through UnloadVDSOMapping. The damage is not the core dump: the abort
+  // lands before UninstallTLSState, DestroyThread, DebugServer.reset,
+  // SyscallHandler.reset, SignalDelegation.reset and Threads::Shutdown, so
+  // NONE of the teardown runs -- which is what leaves processes behind and
+  // sockets unlinked after the guest window closes. The code cache is already
+  // saved by then (CodeCacheImageExit runs earlier in main), so nothing
+  // compiled is lost either way.
+  //
+  // This bounds the blast radius of a stopped thread's held shared lock to
+  // exactly the acquire that was observed failing; it does NOT fix the
+  // underlying condition. Any OTHER exclusive acquire after TM.Stop would
+  // deadlock the same way, and the real repair is for Stop to drop a stopped
+  // thread's shared locks the way exit_group does. Not attempted here: that
+  // touches every stop path, and this crash needs no such change to go away.
+  //
+  // Set once, from main, immediately before the vDSO unload. Deliberately not
+  // a config option: there is no workload for which invalidating code the
+  // guest can no longer reach is correct.
+  void RetireGuestCode() {
+    GuestCodeRetired.store(true, std::memory_order_release);
+  }
+
+  bool IsGuestCodeRetired() const {
+    return GuestCodeRetired.load(std::memory_order_acquire);
+  }
+
   void InvalidateCodeRangeIfNecessary(FEXCore::Core::InternalThreadState* Thread, uint64_t Base, uint64_t Length) {
-    if (SMCChecks != FEXCore::Config::CONFIG_SMC_NONE) {
+    if (SMCChecks != FEXCore::Config::CONFIG_SMC_NONE && !IsGuestCodeRetired()) {
       TM.InvalidateGuestCodeRange(Thread, Base, Length);
     }
   }
 
   void InvalidateCodeRangeIfNecessaryOnRemap(FEXCore::Core::InternalThreadState* Thread, uint64_t OldAddress, uint64_t NewAddress,
                                              size_t OldSize, size_t NewSize) {
-    if (SMCChecks != FEXCore::Config::CONFIG_SMC_NONE) {
+    if (SMCChecks != FEXCore::Config::CONFIG_SMC_NONE && !IsGuestCodeRetired()) {
       if (OldAddress != NewAddress) {
         if (OldSize != 0) {
           // This also handles the MREMAP_DONTUNMAP case

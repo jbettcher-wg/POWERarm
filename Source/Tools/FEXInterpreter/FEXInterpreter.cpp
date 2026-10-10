@@ -1032,6 +1032,14 @@ int main(int argc, char** argv, char** const envp) {
     FEX::Logging::FlushHeldErrorsToStderr();
   }
 
+  // The guest is finished; its code will never be entered again. Say so before
+  // the vDSO unload, because that unmap would otherwise ask for the code
+  // invalidation lock EXCLUSIVELY while the other guest threads -- not torn
+  // down until DestroyThread/Threads::Shutdown below -- still hold the shared
+  // side, and ThreadManager's 4-second detector would kill the process here,
+  // skipping every line of teardown that follows. See RetireGuestCode.
+  SyscallHandler->RetireGuestCode();
+
   FEX::VDSO::UnloadVDSOMapping(ParentThread->Thread, SyscallHandler.get(), VDSOMapping);
 
   SignalDelegation->UninstallTLSState(ParentThread);
