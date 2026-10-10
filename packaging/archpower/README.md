@@ -1,8 +1,8 @@
-# Arch Linux POWER packaging for FastPPCx86
+# Arch Linux POWER packaging for POWERarm
 
-`PKGBUILD` for `fastppcx86`, the ppc64le x86/x86-64 emulator (downstream port of
-FEX-Emu). Targets [Arch Linux POWER](https://archlinuxpower.org/), whose
-architecture name is `powerpc64le`.
+`PKGBUILD` for `powerarm`, the AArch64 emulator for ppc64le. Targets
+[Arch Linux POWER](https://archlinuxpower.org/), whose architecture name is
+`powerpc64le`.
 
 ## Host requirements
 
@@ -63,15 +63,15 @@ the emulator down with it, because the host `libfakeroot.so` is preloaded into
 POWERarm and interposed the code cache's own file calls (see HANDOVER item 62).
 That is fixed, so the wrong `makepkg` now fails cleanly instead of dumping core.
 
-The `source` array points at `https://github.com/daedalao/fastppcx86.git`,
-branch `main`. `main` is the deployment branch: development happens on
-`daedalao-wt` and is merged into `main` at release time (see
-[docs/ReleaseProcess.md](../../docs/ReleaseProcess.md)). Building the working
-branch or a local clone:
+The `source` array points at `https://github.com/jbettcher-wg/POWERarm.git`,
+branch `main`. `main` is the rolling development branch; a release is a
+`release/x.y` branch pinned off it plus an annotated `x.y.z` tag (see
+[docs/ReleaseProcess.md](../../docs/ReleaseProcess.md)). Building a pinned
+release, or a local clone:
 
 ```sh
-FASTPPCX86_GIT_BRANCH=daedalao-wt makepkg -s
-FASTPPCX86_GIT_URL='file:///path/to/another/clone' makepkg -s
+POWERARM_GIT_BRANCH=release/0.12 makepkg -s
+POWERARM_GIT_URL='file:///path/to/another/clone' makepkg -s
 ```
 
 Regenerate `.SRCINFO` after changing package metadata, with the default URL so
@@ -81,19 +81,13 @@ no machine-local path leaks in:
 makepkg --printsrcinfo > .SRCINFO
 ```
 
-### 32-bit guest stubs
+### Guest thunk stubs
 
-The 64-bit guest stub libraries always build, using the repo cross gcc. The
-32-bit ones need an i686/multilib x86 sysroot, which the Arch POWER repos do not
-carry. Point `FASTPPCX86_X86_ROOTFS` at an extracted multilib x86-64 RootFS to
-build and ship them too:
-
-```sh
-FASTPPCX86_X86_ROOTFS=$HOME/.local/share/fex-emu/RootFS/ArchLinux makepkg -s
-```
-
-Without it, 64-bit titles get thunks and 32-bit titles fall back to the emulated
-libraries in the rootfs. Nothing breaks; 32-bit graphics are just slower.
+Not built here: the recipe sets `BUILD_GUEST_THUNKS=OFF`, so the package ships
+the HOST halves only. There is no sysroot knob to set and nothing to opt into.
+AArch64 guest stubs are POWERarm milestone M5; until then a guest resolves the
+thunked libraries out of its rootfs as ordinary emulated code, which costs
+speed and nothing else.
 
 ### Iterating
 
@@ -115,8 +109,7 @@ flock /tmp/fex_build.lock nice -n19 taskset -c <high cores> makepkg -s
 | `CMAKE_C/CXX_COMPILER` | `clang` / `clang++` | GCC is rejected outright |
 | `BUILD_TESTING` | `OFF` | no unit tests in a package; also why `nasm` is not a makedepend |
 | `BUILD_THUNKS` | `ON` | host-side thunk libraries |
-| `BUILD_GUEST_THUNKS` | `ON` | 64-bit guest stubs, via the repo cross gcc |
-| `BUILD_GUEST_THUNKS_32` | conditional | `ON` only when `FASTPPCX86_X86_ROOTFS` is set |
+| `BUILD_GUEST_THUNKS` | `OFF` | host halves only; AArch64 guest stubs are milestone M5 |
 | `BUILD_FEXCONFIG` | `ON` | the Qt6 settings GUI |
 | `ENABLE_LTO` | `OFF` | as in the validated build; `options=('!lto')` keeps makepkg from re-adding it |
 | `ENABLE_JEMALLOC_GLIBC_ALLOC` | `ON` | required for thunk execution |
@@ -147,28 +140,36 @@ listed explicitly in the PKGBUILD.
 
 ## What gets installed
 
-* `/usr/bin/`: `FEX` (the loader/interpreter), `FEXInterpreter` (compat symlink
-  to `FEX`), `FEXServer`, `FEXBash`, `FEXConfig`, `FEXGetConfig`,
-  `FEXRootFSFetcher`, `FEXOfflineCompiler`, `FEXpidof`
-* `/usr/lib/libFEXCore.so`, `/usr/lib/gdb/libFEXGDBReader.so` and the FEXCore
-  headers under `/usr/include/FEXCore/`
-* `/usr/lib/fex-emu/HostThunks/`, `HostThunks_32/`: host-side thunk libraries
-* `/usr/share/fex-emu/GuestThunks/` and, when `FASTPPCX86_X86_ROOTFS` was set,
-  `GuestThunks_32/`: guest-side stub libraries
-* `/usr/share/fex-emu/Config.json`: system-wide defaults. Ships a `ThunksDB`
-  block enabling Vulkan, GL, EGL, WaylandClient, drm and xshmfence. `asound`
-  ships `0`: the guest stub exports no ELF symbol versions, so versioned ALSA
-  lookups fail and `steamwebhelper` crash-loops. Game audio goes through
-  PulseAudio and does not need it.
-* `/usr/share/fex-emu/ThunksDB.json` and the per-application config JSONs from
-  `Data/AppConfig/`
-* `/usr/lib/binfmt.d/FEX-x86.conf`, `FEX-x86_64.conf`: binfmt_misc handlers.
-  Upstream installs these on aarch64 hosts only, so the PKGBUILD generates them
-  from the same `.conf.in` templates. Activate with
-  `systemctl restart systemd-binfmt`.
-* `/usr/share/man/man1/FEX.1.gz`
-* `/usr/share/doc/fastppcx86/`: `README.md`, `GAMING.md`, `CPUID.md`
-* `/usr/share/licenses/fastppcx86/LICENSE` (MIT, from upstream FEX)
+* `/usr/bin/`: `POWERarm` (the loader/interpreter), `POWERarmInterpreter`
+  (compat symlink to `POWERarm`), `POWERarmServer`, `POWERarmBash`,
+  `POWERarmConfig`, `POWERarmGetConfig`, `POWERarmRootFSFetcher`,
+  `POWERarmOfflineCompiler`, `POWERarmpidof`
+* `/usr/lib/libPOWERarmCore.so` — renamed so it cannot collide with an
+  unrelated FEX-Emu install's `libFEXCore.so`
+  (`FEXCore/Source/CMakeLists.txt`), plus the headers under
+  `/usr/include/FEXCore/`
+* `/usr/lib/powerarm/HostThunks/`: host-side thunk libraries. No
+  `GuestThunks/`: `BUILD_GUEST_THUNKS` is `OFF` here
+* `/usr/share/powerarm/Config.json`: system-wide defaults, written by
+  `package()`. Ships a `ThunksDB` block enabling Vulkan, GL, EGL,
+  WaylandClient, drm and xshmfence. `asound` ships `0`: the guest stub exports
+  no ELF symbol versions, so versioned ALSA lookups fail and PulseAudio
+  clients crash-loop. Guest audio goes through the PulseAudio protocol and
+  does not need it
+* `/usr/lib/binfmt.d/POWERarm-aarch64.conf`: the binfmt_misc handler,
+  generated by `package()` from `Data/binfmts/POWERarm-aarch64.conf.in`
+  because upstream only adds that directory on aarch64 hosts. Activate with
+  `systemctl restart systemd-binfmt`
+* `/usr/share/doc/powerarm/README.md`
+* `/usr/share/licenses/powerarm/LICENSE` (MIT, from upstream FEX)
+
+The binaries and the library above are what `package()` and the install
+prefix determine. For the exact `cmake --install` manifest of a given build,
+read it off the built package rather than this list:
+
+```sh
+pacman -Qlp powerarm-*.pkg.tar.zst
+```
 
 ## Validation
 
@@ -176,20 +177,20 @@ Build the package and inspect it without installing:
 
 ```sh
 namcap PKGBUILD
-namcap fastppcx86-*.pkg.tar.zst
-pacman -Qlp fastppcx86-*.pkg.tar.zst
+namcap powerarm-*.pkg.tar.zst
+pacman -Qlp powerarm-*.pkg.tar.zst
 ```
 
 Expect namcap to report `Dependency included, but may not be needed` for the
 `dlopen`'d thunk libraries; it cannot see a dependency that is not DT_NEEDED.
 It has also reported that warning for `glibc`, `gcc-libs`, `fmt`, `xxhash` and
 `qt6-base` while simultaneously reporting those same libraries as referenced by
-the binaries. All of them really are linked. The `fastppcx86-debug` package's
+the binaries. All of them really are linked. The `powerarm-debug` package's
 `Symlink ... points to non-existing` errors are the normal artefact of split
 debug packages: the `.build-id` symlinks point at files in the main package.
 
 Because `debug` is in the default Arch POWER `OPTIONS`, every build also
-produces a `fastppcx86-debug` package. FEX resolves its own SIGILL/JIT frames
+produces a `powerarm-debug` package. FEX resolves its own SIGILL/JIT frames
 from symbols, so keep that package when debugging emulation problems.
 
 The from-source thunk build was validated end to end on 2026-08-10

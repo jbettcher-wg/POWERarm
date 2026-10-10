@@ -82,9 +82,9 @@ makedepends=(
   'wayland'        # wayland-client host thunk
 )
 optdepends=(
-  'squashfuse: mount squashfs x86-64 RootFS images'
-  'erofs-utils: mount EROFS x86-64 RootFS images'
-  'wget: used by FEXRootFSFetcher to download a RootFS'
+  'squashfuse: mount squashfs AArch64 RootFS images'
+  'erofs-utils: mount EROFS AArch64 RootFS images'
+  'wget: used by POWERarmRootFSFetcher to download a RootFS'
   'xz: RootFS extraction'
   'vulkan-driver: an ICD for the Vulkan thunk to pass through to'
   'pipewire-pulse: PulseAudio server for guest audio (guests speak the PA protocol; pulseaudio works too)'
