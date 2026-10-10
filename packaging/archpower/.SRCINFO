@@ -1,8 +1,8 @@
 pkgbase = powerarm
-	pkgdesc = Fast x86 and x86-64 emulation for 64-bit POWER
+	pkgdesc = Fast AArch64 emulation for 64-bit POWER
 	pkgver = r14884.211e31a
 	pkgrel = 1
-	url = https://github.com/daedalao/fastppcx86
+	url = https://github.com/jbettcher-wg/POWERarm
 	install = powerarm.install
 	arch = powerpc64le
 	license = MIT
@@ -43,7 +43,7 @@ pkgbase = powerarm
 	optdepends = pipewire-pulse: PulseAudio server for guest audio (guests speak the PA protocol; pulseaudio works too)
 	optdepends = alsa-lib: only needed if you enable the asound thunk, which ships disabled
 	options = !lto
-	source = powerarm::git+https://github.com/daedalao/fastppcx86.git#branch=main
+	source = powerarm::git+https://github.com/jbettcher-wg/POWERarm.git#branch=main
 	source = drm-headers::git+https://github.com/FEX-Emu/drm-headers.git
 	source = fmt::git+https://github.com/fmtlib/fmt.git
 	source = xxhash::git+https://github.com/Cyan4973/xxHash.git

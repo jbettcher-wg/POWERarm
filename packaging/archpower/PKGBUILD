@@ -1,31 +1,38 @@
-# Maintainer: daedalao <daedalao@hotmail.com>
+# Maintainer: Jordan Bettcher <thebettcher@gmail.com>
 #
-# FastPPCx86: x86 / x86-64 emulation for 64-bit POWER (ppc64le).
-# Downstream port of FEX-Emu via fastppcx86; installed names use the POWERarm prefix.
+# POWERarm: AArch64 emulation for 64-bit POWER (ppc64le).
 #
 # Builds the 'main' branch of the public repository by default:
 #   cd packaging/archpower && makepkg -s
-# main is the deployment branch. Development happens on daedalao-wt and is
-# merged into main at release time; see docs/ReleaseProcess.md.
+# main is the rolling development branch; a release is a release/x.y branch
+# pinned off it and an annotated x.y.z tag. See docs/ReleaseProcess.md.
 #
-# Point it at a local checkout or a fork with FASTPPCX86_GIT_URL:
-#   FASTPPCX86_GIT_URL='file:///home/you/src/fastppcx86' makepkg -s
-# Override the branch with FASTPPCX86_GIT_BRANCH (e.g. to test daedalao-wt
-# before a release merge).
+# MUST be built with the HOST makepkg. A shell inside the AArch64 rootfs
+# resolves makepkg and its bash out of the rootfs, which would run the whole
+# build under emulation against the wrong architecture; arch=('powerpc64le')
+# below refuses that, but only after sourcing this file. `uname -m` is the
+# check -- powerpc64le is the host, aarch64 means the rootfs. See README.md.
+#
+# Point it at a local checkout or a fork with POWERARM_GIT_URL:
+#   POWERARM_GIT_URL='file:///home/you/src/POWERarm' makepkg -s
+# Override the branch with POWERARM_GIT_BRANCH, e.g. to build a pinned
+# release rather than the rolling branch:
+#   POWERARM_GIT_BRANCH=release/0.12 makepkg -s
 #
 # Library thunks: host halves only. Guest stub libraries are not built
 # (AArch64 guest thunks are POWERarm milestone M5).
 
-# POWERarm: package renamed so it installs side by side with fastppcx86. Only the
-# names are updated here; the build recipe below is still fastppcx86's.
+# Installed names carry the POWERarm prefix throughout so this can sit side by
+# side with an unrelated FEX-Emu install; see Source/POWERarm/EnvPrefix.cpp and
+# Data/binfmts/CMakeLists.txt for the two places that matters most.
 pkgname=powerarm
 # Placeholder: pkgver() below recomputes this from the checkout at build time.
 # The committed value tracks the last metadata refresh so .SRCINFO is not stale.
 pkgver=r14884.211e31a
 pkgrel=1
-pkgdesc='Fast x86 and x86-64 emulation for 64-bit POWER'
+pkgdesc='Fast AArch64 emulation for 64-bit POWER'
 arch=('powerpc64le')
-url='https://github.com/daedalao/fastppcx86'
+url='https://github.com/jbettcher-wg/POWERarm'
 license=('MIT')
 
 # Runtime: fmt is linked as a shared library (the build prefers the system copy
@@ -89,10 +96,10 @@ optdepends=(
 options=('!lto')
 install="$pkgname.install"
 
-_repourl="${FASTPPCX86_GIT_URL:-https://github.com/daedalao/fastppcx86.git}"
+_repourl="${POWERARM_GIT_URL:-https://github.com/jbettcher-wg/POWERarm.git}"
 # Pinned explicitly rather than relying on the remote HEAD symref, so a change
 # to the repository's default branch cannot silently change what is packaged.
-_repobranch="${FASTPPCX86_GIT_BRANCH:-main}"
+_repobranch="${POWERARM_GIT_BRANCH:-main}"
 
 # The bundled third-party trees are git submodules. They are listed here as
 # real makepkg sources (rather than fetched inside prepare()) so that the
