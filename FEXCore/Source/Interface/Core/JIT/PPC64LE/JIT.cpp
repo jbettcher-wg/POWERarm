@@ -5291,6 +5291,7 @@ CPUBackend::CompiledCode PPC64JITCore::CompileCode(
     REGISTER_OP(VMADDPAIRWISE16,   VMaddPairwise16);
     REGISTER_OP(VEXTRACTSIGNBITS,  VExtractSignBits);
     REGISTER_OP(VANYNONZERO,       VAnyNonZero);
+    REGISTER_OP(VLANETESTCR,       VLaneTestCR);
     REGISTER_OP(LOADMEMREV,        LoadMemRev);
     REGISTER_OP(STOREMEMREV,       StoreMemRev);
 

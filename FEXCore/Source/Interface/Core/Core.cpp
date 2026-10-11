@@ -1132,6 +1132,21 @@ ContextImpl::GenerateIR(FEXCore::Core::InternalThreadState* Thread, uint64_t Gue
           }
         }
 
+        // The across-lanes form of the same idiom (POWER-STRENGTHS.md 2.1).
+        // Reached only when the pairwise one above did not fire, since that
+        // one breaks out of this loop when it does. Its own kill switch is
+        // POWERARM_DISABLELANETESTFUSION, read inside the matcher.
+        if (!FullSMCValidation) {
+          const size_t Fused = Thread->OpDispatcher->TryFuseVectorLaneTest(Block, i);
+          if (Fused > 0) {
+            BlockInstructionsLength += Fused * FEXCore::A64::INSTRUCTION_SIZE;
+            TotalInstructionsLength += Fused * FEXCore::A64::INSTRUCTION_SIZE;
+            TotalInstructions += Fused;
+            Thread->OpDispatcher->FinishOp(InstAddress + Fused * FEXCore::A64::INSTRUCTION_SIZE, true);
+            break;
+          }
+        }
+
         // Native lwarx/stwcx. for a complete guest LDXR..STXR retry loop. Like
         // the vector-scan fusion this swallows the rest of the block, and like
         // it, it must not run under full SMC validation: that inserts a

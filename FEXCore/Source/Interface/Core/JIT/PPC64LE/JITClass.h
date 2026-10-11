@@ -1549,6 +1549,7 @@ private:
   DEF_OP(VMaddPairwise16);
   DEF_OP(VExtractSignBits);
   DEF_OP(VAnyNonZero);
+  DEF_OP(VLaneTestCR);
 
   // PPC64LE-only fused byte-reversed memory ops (MemoryOps.cpp) — the MOVBE
   // lowering. Same JITDispatch:false / hand-registered mechanism as above.

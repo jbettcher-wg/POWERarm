@@ -1365,8 +1365,11 @@ DEF_OP(CondJump) {
           Prev = IR->GetNode(Prev)->Header.Previous;
           continue;
         }
-        LOGMAN_THROW_A_FMT(PrevOp->Op == IR::OP_CHAINCOMPARE,
-                           "CondJump FromChainCR: expected a ChainCompare immediately before it, found {}",
+        // Two ops leave a predicate in kChainPredicateBit: the conditional-compare
+        // chain (ALUOps.cpp) and the A64 vector lane test (VectorOps.cpp,
+        // POWER-STRENGTHS.md 2.1). Either may be the producer; nothing else.
+        LOGMAN_THROW_A_FMT(PrevOp->Op == IR::OP_CHAINCOMPARE || PrevOp->Op == IR::OP_VLANETESTCR,
+                           "CondJump FromChainCR: expected a ChainCompare or VLaneTestCR immediately before it, found {}",
                            IR::GetName(PrevOp->Op));
         break;
       }

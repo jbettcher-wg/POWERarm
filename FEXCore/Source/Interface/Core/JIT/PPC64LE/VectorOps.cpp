@@ -369,6 +369,25 @@ DEF_OP(VNeg) {
   const auto ElemSz = Op->Header.ElementSize;
   const auto Dst = GetVReg(Node);
   const auto Src = GetVReg(Op->Vector);
+
+  // ISA 3.0 has a one-instruction lane negation for the two wide element
+  // sizes (POWER-STRENGTHS.md 2.8). The pair below exists only because the
+  // pinned zero is VZERO_VSX, a VSX-numbered register the VMX subtract cannot
+  // name, so the zero has to be built into a VMX temp first.
+  //
+  // vnegw/vnegd are 0 - lane in the lane's own width, which is exactly what
+  // A64 NEG is, INT_MIN included: both wrap modularly and both leave INT_MIN
+  // unchanged. No byte or halfword form exists, and neither does a POWER8
+  // fallback, so those two sizes and every pre-3.0 host keep the pair.
+  if (CTX->HostFeatures.SupportsISA30 && (ElemSz == IR::OpSize::i32Bit || ElemSz == IR::OpSize::i64Bit)) {
+    if (ElemSz == IR::OpSize::i32Bit) {
+      vnegw(Dst, Src);
+    } else {
+      vnegd(Dst, Src);
+    }
+    return;
+  }
+
   vspltisw(VTMP1, 0);
   switch (ElemSz) {
   case IR::OpSize::i8Bit:  vsububm(Dst, VTMP1, Src); break;
@@ -2871,6 +2890,95 @@ DEF_OP(VAnyNonZero) {
   mfocrf(TMP1, 0x02);
   rlwinm(TMP1, TMP1, 25, 31, 31);
   xori(Dst, TMP1, 1);
+}
+
+// VLaneTestCR -- the whole "did any lane match" idiom, reduced to a compare
+// and a CR bit (POWER-STRENGTHS.md 2.1). Every VMX integer compare has a
+// record form that writes CR field 6 from the WHOLE result:
+//
+//   CR6[0] (CR bit 24) = 1 iff EVERY lane's comparison was true
+//   CR6[2] (CR bit 26) = 1 iff NO lane's comparison was true
+//
+// so "any lane" is the complement of bit 26 and "all lanes" is bit 24, with
+// no reduction and no VSU->FXU crossing. VTMP1 absorbs the lane mask nobody
+// wants.
+//
+// The host has `>` signed and unsigned and `==`, and no `>=` at all, so the
+// two GE predicates are taken as a >= b <=> !(b > a): the operands swap and
+// the lane sense inverts, which swaps which CR6 bit answers the question:
+//
+//            any lane P            all lanes P
+//   direct   NOT CR6[none]         CR6[all]
+//   swapped  NOT CR6[all]          CR6[none]
+//
+// The remaining complement is folded into the choice of CR logical op, so the
+// bit this leaves in kChainPredicateBit always means "take the TrueBlock" and
+// the CondJump that follows needs no condition of its own. That is the same
+// channel DEF_OP(ChainCompare) uses, and it carries the same adjacency
+// requirement: see the assert in DEF_OP(CondJump)'s FromChainCR arm.
+DEF_OP(VLaneTestCR) {
+  const auto Op = IROp->C<IR::IROp_VLaneTestCR>();
+  const auto ElemSz = IROp->ElementSize;
+
+  // a >= b is !(b > a): swap the operands and invert the lane sense.
+  const bool Swap = Op->Cond == IR::CondClass::UGE || Op->Cond == IR::CondClass::SGE;
+  const bool Signed = Op->Cond == IR::CondClass::SGT || Op->Cond == IR::CondClass::SGE;
+  const bool Equality = Op->Cond == IR::CondClass::EQ;
+  LOGMAN_THROW_A_FMT(Equality || Signed || Op->Cond == IR::CondClass::UGT || Op->Cond == IR::CondClass::UGE,
+                     "VLaneTestCR: lane predicate {} has no record-form compare", static_cast<uint32_t>(Op->Cond));
+
+  const auto A = GetVReg(Swap ? Op->Vector2 : Op->Vector1);
+  const auto B = GetVReg(Swap ? Op->Vector1 : Op->Vector2);
+
+  switch (ElemSz) {
+  case IR::OpSize::i8Bit:
+    if (Equality) {
+      vcmpequb_(VTMP1, A, B);
+    } else if (Signed) {
+      vcmpgtsb_(VTMP1, A, B);
+    } else {
+      vcmpgtub_(VTMP1, A, B);
+    }
+    break;
+  case IR::OpSize::i16Bit:
+    if (Equality) {
+      vcmpequh_(VTMP1, A, B);
+    } else if (Signed) {
+      vcmpgtsh_(VTMP1, A, B);
+    } else {
+      vcmpgtuh_(VTMP1, A, B);
+    }
+    break;
+  case IR::OpSize::i32Bit:
+    if (Equality) {
+      vcmpequw_(VTMP1, A, B);
+    } else if (Signed) {
+      vcmpgtsw_(VTMP1, A, B);
+    } else {
+      vcmpgtuw_(VTMP1, A, B);
+    }
+    break;
+  case IR::OpSize::i64Bit:
+    if (Equality) {
+      vcmpequd_(VTMP1, A, B);
+    } else if (Signed) {
+      vcmpgtsd_(VTMP1, A, B);
+    } else {
+      vcmpgtud_(VTMP1, A, B);
+    }
+    break;
+  default: LOGMAN_MSG_A_FMT("VLaneTestCR: unhandled element size {}", static_cast<uint32_t>(ElemSz)); return;
+  }
+
+  // CR field 6 occupies CR bits 24..27.
+  constexpr uint32_t CR6_AllTrue = 24;
+  constexpr uint32_t CR6_NoneTrue = 26;
+  const uint32_t Bit = (Op->AllLanes != Swap) ? CR6_AllTrue : CR6_NoneTrue;
+  if (Op->AllLanes) {
+    crmove(kChainPredicateBit, Bit);
+  } else {
+    crnot(kChainPredicateBit, Bit);
+  }
 }
 
 DEF_OP(VUMulH) {

@@ -76,6 +76,14 @@ public:
   // Returns number of instructions consumed (4 on match, 0 if not matched).
   size_t TryFuseVectorScan(const Decoder::DecodedBlocks& Block, size_t Index);
 
+  // Recognizes the across-lanes form of the same question -- a vector compare,
+  // UMAXV/UMINV, FMOV, CBZ/CBNZ -- and fuses it into a record-form vector
+  // compare plus the guest's own branch (VLaneTestCR + a FromChainCR
+  // CondJump). Returns the number of instructions consumed (4 on a match, 0
+  // if not matched). See the comment block over the definition for what it
+  // refuses.
+  size_t TryFuseVectorLaneTest(const Decoder::DecodedBlocks& Block, size_t Index);
+
   // Recognizes the complete AArch64 exclusive retry loop
   //   L: LDXR/LDAXR Wt,[Xn] ; <register-only body> ; STXR/STLXR Ws,Wv,[Xn] ; CBNZ Ws,L
   // and lowers it onto POWER's native lwarx/stwcx. reservation instead of the

@@ -761,6 +761,112 @@ if [ -f vins ]; then
   fi
 fi
 
+
+# vneg runs in both switch states for the same reason vins does, and the
+# suite's disableisa30 mode supplies the other axis: NEG.4S and NEG.2D are one
+# `vnegw`/`vnegd` on an ISA 3.0 host and the `vspltisw 0 ; vsubu{w,d}m` pair
+# below it, so between the two suite runs this covers both lowerings of the
+# same IR op in both register banks. The byte and halfword arrangements have no
+# `vneg` form at all and are here to show the swap did not reach them.
+if [ -f vneg ]; then
+  vn_fail=0
+  vn_detail=""
+  for vn_mode in on off; do
+    POWERARM_VSXCLASSES=$vn_mode "$emu" ./vneg > "vneg.vsx$vn_mode" 2> /dev/null
+    vn_rc=$?
+    vn_bad=$(grep -c '^FAIL' "vneg.vsx$vn_mode" 2> /dev/null)
+    vn_checks=$(sed -n 's/^checks \([0-9]*\) failures 0$/\1/p' "vneg.vsx$vn_mode")
+    vn_ctl=$(grep -c '^PASS control-detects-corruption$' "vneg.vsx$vn_mode" 2> /dev/null)
+    if [ "$vn_rc" != 0 ] || [ "$vn_bad" != 0 ] || [ "$vn_ctl" != 1 ] || [ -z "$vn_checks" ] || [ "$vn_checks" -lt 150 ]; then
+      vn_fail=1
+      vn_detail="$vn_detail switch=$vn_mode rc=$vn_rc fails=$vn_bad checks=${vn_checks:-none} control=$vn_ctl;"
+    fi
+  done
+  if [ "$vn_fail" = 0 ]; then
+    report PASS vneg "$vn_checks lane-negation checks clean with VSXCLASSES off and on"
+  else
+    report FAIL vneg "$vn_detail see $out/vneg.vsxon"
+  fi
+fi
+
+# vlanetest is the gate on the vector lane-test fusion (POWER-STRENGTHS.md
+# 2.1): a compare, UMAXV/UMINV, FMOV and CBZ/CBNZ become a record-form compare
+# and the guest's own branch. Three things are checked, and the second and
+# third are the ones a value test alone would miss.
+#
+#  1. The architecturally forced answer, for all 200 recognised shapes: the
+#     lane mask, the reduction, the GPR and the branch direction. The mask and
+#     the GPR are read AFTER the join, i.e. in a block the branch reaches from
+#     either side, because they are real guest registers that the fused path
+#     does not write where the unfused one does. Deliberately breaking the
+#     fused edge's register writes takes this from 0 to 1,914 failures, and
+#     taking the wrong CR6 bit to 1,870.
+#  2. The switch changed nothing observable: the same binary with
+#     POWERARM_DISABLELANETESTFUSION=1 must produce byte-identical output,
+#     which makes the fused and the unfused lowering differential against each
+#     other on every shape at once -- and the unfused one is what the goldens
+#     already pin.
+#  3. The fusion actually fired, counted in the IR dump, and did not fire with
+#     the switch. Under POWERARM_MAXINST=1 the block is one instruction, so the
+#     idiom is never the last four of a block and NOTHING may fuse: that is the
+#     unit-boundary case, and firing there would be a fusion over operands it
+#     cannot see.
+if [ -f vlanetest ]; then
+  vl_fail=0
+  vl_detail=""
+  for vl_mode in on off; do
+    POWERARM_VSXCLASSES=$vl_mode "$emu" ./vlanetest > "vlanetest.vsx$vl_mode" 2> /dev/null
+    vl_rc=$?
+    vl_bad=$(grep -c '^FAIL' "vlanetest.vsx$vl_mode" 2> /dev/null)
+    vl_checks=$(sed -n 's/^checks \([0-9]*\) failures 0$/\1/p' "vlanetest.vsx$vl_mode")
+    vl_ctl=$(grep -c '^PASS control-detects-corruption$' "vlanetest.vsx$vl_mode" 2> /dev/null)
+    if [ "$vl_rc" != 0 ] || [ "$vl_bad" != 0 ] || [ "$vl_ctl" != 1 ] || [ -z "$vl_checks" ] || [ "$vl_checks" -lt 6000 ]; then
+      vl_fail=1
+      vl_detail="$vl_detail switch=$vl_mode rc=$vl_rc fails=$vl_bad checks=${vl_checks:-none} control=$vl_ctl;"
+    fi
+  done
+  POWERARM_DISABLELANETESTFUSION=1 "$emu" ./vlanetest > vlanetest.nofuse 2> /dev/null
+  vl_nf_rc=$?
+  if [ "$vl_nf_rc" != 0 ]; then
+    vl_fail=1
+    vl_detail="$vl_detail unfused run exited $vl_nf_rc;"
+  fi
+  if ! cmp -s vlanetest.vsxon vlanetest.nofuse; then
+    vl_fail=1
+    vl_detail="$vl_detail the switch changed the output: $(cmp vlanetest.vsxon vlanetest.nofuse 2>&1 | head -1);"
+  fi
+  POWERARM_ENABLECODECACHINGWIP=0 POWERARM_DUMPIR=stderr POWERARM_PASSMANAGERDUMPIR=afteropt \
+    "$emu" ./vlanetest > /dev/null 2> vlanetest.irdump
+  POWERARM_DISABLELANETESTFUSION=1 POWERARM_ENABLECODECACHINGWIP=0 POWERARM_DUMPIR=stderr POWERARM_PASSMANAGERDUMPIR=afteropt \
+    "$emu" ./vlanetest > /dev/null 2> vlanetest.irdump.nofuse
+  vl_fused=$(grep -cE '\bVLaneTestCR\b' vlanetest.irdump 2> /dev/null)
+  vl_fused_off=$(grep -cE '\bVLaneTestCR\b' vlanetest.irdump.nofuse 2> /dev/null)
+  # One instruction per block leaves no four-instruction idiom to recognise,
+  # so the fusion must be absent rather than guessing across the boundary.
+  if [ -n "${POWERARM_MAXINST:-}" ] && [ "${POWERARM_MAXINST:-}" != 0 ]; then
+    vl_want=0
+  else
+    vl_want=200
+  fi
+  if [ "$vl_fused" -lt "$vl_want" ]; then
+    vl_fail=1
+    vl_detail="$vl_detail only $vl_fused of $vl_want shapes fused;"
+  fi
+  if [ "$vl_want" = 0 ] && [ "$vl_fused" != 0 ]; then
+    vl_fail=1
+    vl_detail="$vl_detail $vl_fused fused under MAXINST, where no block holds the idiom;"
+  fi
+  if [ "$vl_fused_off" != 0 ]; then
+    vl_fail=1
+    vl_detail="$vl_detail POWERARM_DISABLELANETESTFUSION=1 still fused $vl_fused_off;"
+  fi
+  if [ "$vl_fail" = 0 ]; then
+    report PASS vlanetest "$vl_checks lane-test checks clean in both switch states, control FAILed; fused $vl_fused, none with the switch, output identical to the unfused run"
+  else
+    report FAIL vlanetest "$vl_detail see $out/vlanetest.vsxon"
+  fi
+fi
+
 # fcmp_denorm is the gate on the f32 compare arms having moved from the VMX
 # vcmpeqfp/vcmpgtfp/vcmpgefp to their VSX twins. The VMX ones flush denormal
 # inputs to zero when VSCR.NJ is set and the VSX ones never do, so the test
