@@ -60,9 +60,9 @@ extern "C" void BROKEN_INSTALL___TRIED_LOADING_NON_AARCH64_BUILD_OF_GUEST_THUNK(
 // not support aliasing to static functions. Make them regular non-static
 // functions on that compiler instead, hence.
 #if defined(__clang__)
-#define FEX_PACKFN_LINKAGE
+#define POWERARM_PACKFN_LINKAGE
 #else
-#define FEX_PACKFN_LINKAGE static
+#define POWERARM_PACKFN_LINKAGE static
 #endif
 
 struct LoadlibArgs {

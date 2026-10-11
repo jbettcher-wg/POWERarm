@@ -229,7 +229,7 @@ SourceWithAST Fixture::run_thunkgen_guest(std::string_view prelude, std::string_
                        "template<typename>\n"
                        "struct callback_thunk_defined;\n"
                        "#define MAKE_CALLBACK_THUNK(name, sig, hash) template<> struct callback_thunk_defined<sig> {};\n"
-                       "#define FEX_PACKFN_LINKAGE\n"
+                       "#define POWERARM_PACKFN_LINKAGE\n"
                        "template<typename Target>\n"
                        "Target *MakeHostTrampolineForGuestFunction(uint8_t HostPacker[32], void (*)(uintptr_t, void*), Target*);\n"
                        "template<typename Target>\n"
