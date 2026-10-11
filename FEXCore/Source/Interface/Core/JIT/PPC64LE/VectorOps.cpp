@@ -3881,68 +3881,100 @@ DEF_OP(VCMPGTU) {
   }
 }
 
-// Float compares — use vcmpeqfp, vcmpgefp, vcmpgtfp families
-DEF_OP(VFCMPEQ) {
+// Float compares.
+//
+// Both arms are VSX-form: the f64 arms always were (xvcmp*dp) and the f32
+// arms are now their single-precision twins (xvcmp*sp) rather than the VMX
+// vcmpeqfp/vcmpgtfp/vcmpgefp they used to be. Same instruction count, same
+// result lanes -- and VSX-form means these ops can take a guest V16-V31
+// operand instead of a copy of one, which is why they are DEF_OP_VSX.
+//
+// The VMX float compares were "Java/IEEE-mode" instructions: with VSCR.NJ
+// set they flush denormal INPUTS to zero, so vcmpeqfp would call a denormal
+// equal to zero where xvcmpeqsp does not, and the f32 and f64 arms of the
+// same IR op would then disagree. That cannot happen here, and the reason is
+// not that NJ is unlikely to be set -- it is that nothing ever sets it:
+//
+//   * The kernel hands a fresh process VSCR = 0 (measured, mfvscr on this
+//     host, vsx-probes/vscr_native.c).
+//   * The backend's only mtvscr is DEF_OP(StoreFPSR), which builds VSCR from
+//     the guest FPSR's QC bit alone, so NJ lands as 0 on every guest
+//     `msr fpsr`. SetRoundingMode drops guest FPCR.FZ by design.
+//
+// The other difference is FPSCR: xvcmp*sp set VXSNAN/VXVC on a NaN input
+// where vcmp*fp set nothing. Nothing reads them -- LoadFPSR synthesises the
+// guest FPSR from CPUState.fpsr and VSCR.SAT, the frontend never asks for
+// IOC/IXC, and the only host-FPSCR reads in the backend are of the RN field.
+// FPSCR.VE is 0, so there is no trap either.
+//
+// unittests/A64Frontend/fcmp_denorm.c is the gate on all of that: it asserts
+// the architecturally forced answer for denormal, NaN, signed-zero and
+// infinity inputs on .4s and .2d, so a flushing compare and an arm that
+// disagreed with its twin are both caught.
+//
+// VFCMPGT, VFCMPORD and VFCMPNEQ have no emission site in the A64 frontend;
+// they are swapped here with the rest so the file cannot grow a VMX arm back
+// by being the odd one out.
+DEF_OP_VSX(VFCMPEQ) {
   const auto Op  = IROp->C<IR::IROp_VFCMPEQ>();
-  const auto Dst = GetVReg(Node);
-  const auto V1  = GetVReg(Op->Vector1);
-  const auto V2  = GetVReg(Op->Vector2);
+  const auto Dst = GetVSXReg(Node);
+  const auto V1  = GetVSXReg(Op->Vector1);
+  const auto V2  = GetVSXReg(Op->Vector2);
   if (Op->Header.ElementSize == IR::OpSize::i64Bit) {
     xvcmpeqdp(Dst, V1, V2);
   } else {
-    vcmpeqfp(Dst, V1, V2);
+    xvcmpeqsp(Dst, V1, V2);
   }
 }
 
-DEF_OP(VFCMPNEQ) {
+DEF_OP_VSX(VFCMPNEQ) {
   const auto Op  = IROp->C<IR::IROp_VFCMPNEQ>();
-  const auto Dst = GetVReg(Node);
-  const auto V1  = GetVReg(Op->Vector1);
-  const auto V2  = GetVReg(Op->Vector2);
+  const auto Dst = GetVSXReg(Node);
+  const auto V1  = GetVSXReg(Op->Vector1);
+  const auto V2  = GetVSXReg(Op->Vector2);
   if (Op->Header.ElementSize == IR::OpSize::i64Bit) {
-    xvcmpeqdp(VTMP1, V1, V2);
-    xxlnor(Dst, VTMP1, VTMP1);
+    xvcmpeqdp(VTMP1_VSX, V1, V2);
   } else {
-    vcmpeqfp(Dst, V1, V2);
-    vnot(Dst, Dst);
+    xvcmpeqsp(VTMP1_VSX, V1, V2);
   }
+  xxlnor(Dst, VTMP1_VSX, VTMP1_VSX);
 }
 
-DEF_OP(VFCMPLT) {
+DEF_OP_VSX(VFCMPLT) {
   const auto Op  = IROp->C<IR::IROp_VFCMPLT>();
-  const auto Dst = GetVReg(Node);
-  const auto V1  = GetVReg(Op->Vector1);
-  const auto V2  = GetVReg(Op->Vector2);
+  const auto Dst = GetVSXReg(Node);
+  const auto V1  = GetVSXReg(Op->Vector1);
+  const auto V2  = GetVSXReg(Op->Vector2);
   // lt(a,b) = gt(b,a)
   if (Op->Header.ElementSize == IR::OpSize::i64Bit) {
     xvcmpgtdp(Dst, V2, V1);
   } else {
-    vcmpgtfp(Dst, V2, V1);
+    xvcmpgtsp(Dst, V2, V1);
   }
 }
 
-DEF_OP(VFCMPGT) {
+DEF_OP_VSX(VFCMPGT) {
   const auto Op  = IROp->C<IR::IROp_VFCMPGT>();
-  const auto Dst = GetVReg(Node);
-  const auto V1  = GetVReg(Op->Vector1);
-  const auto V2  = GetVReg(Op->Vector2);
+  const auto Dst = GetVSXReg(Node);
+  const auto V1  = GetVSXReg(Op->Vector1);
+  const auto V2  = GetVSXReg(Op->Vector2);
   if (Op->Header.ElementSize == IR::OpSize::i64Bit) {
     xvcmpgtdp(Dst, V1, V2);
   } else {
-    vcmpgtfp(Dst, V1, V2);
+    xvcmpgtsp(Dst, V1, V2);
   }
 }
 
-DEF_OP(VFCMPLE) {
+DEF_OP_VSX(VFCMPLE) {
   const auto Op  = IROp->C<IR::IROp_VFCMPLE>();
-  const auto Dst = GetVReg(Node);
-  const auto V1  = GetVReg(Op->Vector1);
-  const auto V2  = GetVReg(Op->Vector2);
+  const auto Dst = GetVSXReg(Node);
+  const auto V1  = GetVSXReg(Op->Vector1);
+  const auto V2  = GetVSXReg(Op->Vector2);
   // le(a,b) = ge(b,a)
   if (Op->Header.ElementSize == IR::OpSize::i64Bit) {
     xvcmpgedp(Dst, V2, V1);
   } else {
-    vcmpgefp(Dst, V2, V1);
+    xvcmpgesp(Dst, V2, V1);
   }
 }
 
@@ -3952,48 +3984,49 @@ DEF_OP(VFCMPLE) {
 // PPC has no direct ord/uno compare.  NaN is the only value where x != x, so
 //   ord(a,b)  = (a == a) AND (b == b)
 //   uno(a,b)  = NOT ord(a,b)
-DEF_OP(VFCMPORD) {
+DEF_OP_VSX(VFCMPORD) {
   const auto Op = IROp->C<IR::IROp_VFCMPORD>();
   const auto ElemSz = Op->Header.ElementSize;
-  const auto Dst = GetVReg(Node);
-  const auto V1  = GetVReg(Op->Vector1);
-  const auto V2  = GetVReg(Op->Vector2);
+  const auto Dst = GetVSXReg(Node);
+  const auto V1  = GetVSXReg(Op->Vector1);
+  const auto V2  = GetVSXReg(Op->Vector2);
   switch (ElemSz) {
   case IR::OpSize::i32Bit:
-    vcmpeqfp(VTMP1, V1, V1);
-    vcmpeqfp(VTMP2, V2, V2);
-    vand    (Dst,  VTMP1, VTMP2);
+    xvcmpeqsp(VTMP1_VSX, V1, V1);
+    xvcmpeqsp(VTMP2_VSX, V2, V2);
+    xxland   (Dst, VTMP1_VSX, VTMP2_VSX);
     break;
   case IR::OpSize::i64Bit:
-    xvcmpeqdp(VTMP1, V1, V1);
-    xvcmpeqdp(VTMP2, V2, V2);
-    xxland   (Dst,  VTMP1, VTMP2);
+    xvcmpeqdp(VTMP1_VSX, V1, V1);
+    xvcmpeqdp(VTMP2_VSX, V2, V2);
+    xxland   (Dst, VTMP1_VSX, VTMP2_VSX);
     break;
-  default: Op_Unhandled(IROp, Node); break;
+  default:
+    ERROR_AND_DIE_FMT("VFCMPORD: element size {} is not 4 or 8 bytes", static_cast<uint32_t>(ElemSz));
   }
 }
 
-DEF_OP(VFCMPUNO) {
+DEF_OP_VSX(VFCMPUNO) {
   const auto Op = IROp->C<IR::IROp_VFCMPUNO>();
   const auto ElemSz = Op->Header.ElementSize;
-  const auto Dst = GetVReg(Node);
-  const auto V1  = GetVReg(Op->Vector1);
-  const auto V2  = GetVReg(Op->Vector2);
+  const auto Dst = GetVSXReg(Node);
+  const auto V1  = GetVSXReg(Op->Vector1);
+  const auto V2  = GetVSXReg(Op->Vector2);
   // uno = !(a==a && b==b) is literally NAND, so xxlnand folds the trailing
-  // complement into the AND: 3 instructions instead of 4. (xxl* addresses
-  // VTMP1/VTMP2 = v30/v31 = vs62/vs63 exactly as xxland already does here.)
+  // complement into the AND: 3 instructions instead of 4.
   switch (ElemSz) {
   case IR::OpSize::i32Bit:
-    vcmpeqfp(VTMP1, V1, V1);
-    vcmpeqfp(VTMP2, V2, V2);
-    xxlnand (Dst,   VTMP1, VTMP2);   // uno = !(ord)
+    xvcmpeqsp(VTMP1_VSX, V1, V1);
+    xvcmpeqsp(VTMP2_VSX, V2, V2);
+    xxlnand  (Dst, VTMP1_VSX, VTMP2_VSX);   // uno = !(ord)
     break;
   case IR::OpSize::i64Bit:
-    xvcmpeqdp(VTMP1, V1, V1);
-    xvcmpeqdp(VTMP2, V2, V2);
-    xxlnand  (Dst,   VTMP1, VTMP2);
+    xvcmpeqdp(VTMP1_VSX, V1, V1);
+    xvcmpeqdp(VTMP2_VSX, V2, V2);
+    xxlnand  (Dst, VTMP1_VSX, VTMP2_VSX);
     break;
-  default: Op_Unhandled(IROp, Node); break;
+  default:
+    ERROR_AND_DIE_FMT("VFCMPUNO: element size {} is not 4 or 8 bytes", static_cast<uint32_t>(ElemSz));
   }
 }
 

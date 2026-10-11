@@ -68,6 +68,12 @@ gcc -static -O2 -o ld1r "$here/ld1r.c"
 # itself. Built here only so the same binary runs on both sides.
 gcc -static -O2 -o vins "$here/vins.c"
 
+# fcmp_denorm is self-checking and MUST stay that way: it asserts the
+# architecturally forced result of a float compare over denormal, NaN,
+# signed-zero and infinity inputs, which is precisely what a reference run
+# taken from the emulator under test could not tell you.
+gcc -static -O2 -o fcmp_denorm "$here/fcmp_denorm.c"
+
 # sigvcache likewise: self-checking, no golden. It installs its own SIGSEGV
 # handler on a PROT_NONE page, so it needs no privileges and no timer.
 gcc -static -O2 -o sigvcache "$here/sigvcache.c"

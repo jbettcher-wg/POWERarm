@@ -2734,30 +2734,72 @@
         "ElementSize": "ElementSize"
       },
       "FPR = VFCMPEQ OpSize:#RegisterSize, OpSize:#ElementSize, FPR:$Vector1, FPR:$Vector2": {
+        "Desc": ["Every arm of the PPC64LE lowering is a VSX-form compare (xvcmp*sp for",
+                 "4-byte elements, xvcmp*dp for 8), so this is VSXClean. The VMX",
+                 "vcmp*fp it used to use for 4-byte elements flush denormal inputs",
+                 "when VSCR.NJ is set, which nothing on this host ever sets."
+                ],
+        "VSXClean": true,
         "DestSize": "RegisterSize",
         "ElementSize": "ElementSize"
       },
       "FPR = VFCMPNEQ OpSize:#RegisterSize, OpSize:#ElementSize, FPR:$Vector1, FPR:$Vector2": {
+        "Desc": ["Every arm of the PPC64LE lowering is a VSX-form compare (xvcmp*sp for",
+                 "4-byte elements, xvcmp*dp for 8), so this is VSXClean. The VMX",
+                 "vcmp*fp it used to use for 4-byte elements flush denormal inputs",
+                 "when VSCR.NJ is set, which nothing on this host ever sets."
+                ],
+        "VSXClean": true,
         "DestSize": "RegisterSize",
         "ElementSize": "ElementSize"
       },
       "FPR = VFCMPLT OpSize:#RegisterSize, OpSize:#ElementSize, FPR:$Vector1, FPR:$Vector2": {
+        "Desc": ["Every arm of the PPC64LE lowering is a VSX-form compare (xvcmp*sp for",
+                 "4-byte elements, xvcmp*dp for 8), so this is VSXClean. The VMX",
+                 "vcmp*fp it used to use for 4-byte elements flush denormal inputs",
+                 "when VSCR.NJ is set, which nothing on this host ever sets."
+                ],
+        "VSXClean": true,
         "DestSize": "RegisterSize",
         "ElementSize": "ElementSize"
       },
       "FPR = VFCMPGT OpSize:#RegisterSize, OpSize:#ElementSize, FPR:$Vector1, FPR:$Vector2": {
+        "Desc": ["Every arm of the PPC64LE lowering is a VSX-form compare (xvcmp*sp for",
+                 "4-byte elements, xvcmp*dp for 8), so this is VSXClean. The VMX",
+                 "vcmp*fp it used to use for 4-byte elements flush denormal inputs",
+                 "when VSCR.NJ is set, which nothing on this host ever sets."
+                ],
+        "VSXClean": true,
         "DestSize": "RegisterSize",
         "ElementSize": "ElementSize"
       },
       "FPR = VFCMPLE OpSize:#RegisterSize, OpSize:#ElementSize, FPR:$Vector1, FPR:$Vector2": {
+        "Desc": ["Every arm of the PPC64LE lowering is a VSX-form compare (xvcmp*sp for",
+                 "4-byte elements, xvcmp*dp for 8), so this is VSXClean. The VMX",
+                 "vcmp*fp it used to use for 4-byte elements flush denormal inputs",
+                 "when VSCR.NJ is set, which nothing on this host ever sets."
+                ],
+        "VSXClean": true,
         "DestSize": "RegisterSize",
         "ElementSize": "ElementSize"
       },
       "FPR = VFCMPORD OpSize:#RegisterSize, OpSize:#ElementSize, FPR:$Vector1, FPR:$Vector2": {
+        "Desc": ["Every arm of the PPC64LE lowering is a VSX-form compare (xvcmp*sp for",
+                 "4-byte elements, xvcmp*dp for 8), so this is VSXClean. The VMX",
+                 "vcmp*fp it used to use for 4-byte elements flush denormal inputs",
+                 "when VSCR.NJ is set, which nothing on this host ever sets."
+                ],
+        "VSXClean": true,
         "DestSize": "RegisterSize",
         "ElementSize": "ElementSize"
       },
       "FPR = VFCMPUNO OpSize:#RegisterSize, OpSize:#ElementSize, FPR:$Vector1, FPR:$Vector2": {
+        "Desc": ["Every arm of the PPC64LE lowering is a VSX-form compare (xvcmp*sp for",
+                 "4-byte elements, xvcmp*dp for 8), so this is VSXClean. The VMX",
+                 "vcmp*fp it used to use for 4-byte elements flush denormal inputs",
+                 "when VSCR.NJ is set, which nothing on this host ever sets."
+                ],
+        "VSXClean": true,
         "DestSize": "RegisterSize",
         "ElementSize": "ElementSize"
       },
