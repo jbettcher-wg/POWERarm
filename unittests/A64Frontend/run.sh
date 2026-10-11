@@ -867,6 +867,84 @@ if [ -f vlanetest ]; then
   fi
 fi
 
+# memrev is the gate on the load+REV / REV+store fusion (TryFuseMemRev):
+# every width at every alignment, every addressing form the fusion accepts
+# and the ones it refuses, the store direction's register result, and the
+# fault boundary at a page edge. Every answer is architecturally forced and
+# the test computes it from the bytes itself, so there is no golden.
+#
+# It runs twice, and the two runs must agree byte for byte. The second run is
+# POWERARM_MAXINST=1, which puts one guest instruction in a block and so
+# cannot fuse anything: the matcher needs the pair in one decoded block. That
+# makes the fused and unfused lowerings differential against each other on
+# this host, which is a sharper gate than either run alone -- a golden only
+# says "matches the Pi", this says "the fusion changed nothing observable".
+if [ -f memrev ]; then
+  mr_fail=0
+  mr_detail=""
+  for mr_mode in fused unfused; do
+    if [ "$mr_mode" = unfused ]; then
+      POWERARM_MAXINST=1 "$emu" ./memrev > "memrev.$mr_mode" 2> /dev/null
+    else
+      "$emu" ./memrev > "memrev.$mr_mode" 2> /dev/null
+    fi
+    mr_rc=$?
+    mr_bad=$(grep -c '^FAIL' "memrev.$mr_mode" 2> /dev/null)
+    mr_checks=$(sed -n 's/^checks \([0-9]*\) failures 0$/\1/p' "memrev.$mr_mode")
+    mr_ctl=$(grep -c '^PASS control-detects-corruption$' "memrev.$mr_mode" 2> /dev/null)
+    # A missing summary line means it died before printing one, which an rc
+    # check alone would miss if it died with status 0.
+    if [ "$mr_rc" != 0 ] || [ "$mr_bad" != 0 ] || [ "$mr_ctl" != 1 ] || [ -z "$mr_checks" ] || [ "$mr_checks" -lt 200 ]; then
+      mr_fail=1
+      mr_detail="$mr_detail mode=$mr_mode rc=$mr_rc fails=$mr_bad checks=${mr_checks:-none} control=$mr_ctl;"
+    fi
+  done
+  if [ "$mr_fail" = 0 ] && ! cmp -s memrev.fused memrev.unfused; then
+    mr_fail=1
+    mr_detail="$mr_detail fused and unfused output differ: $(cmp memrev.fused memrev.unfused 2>&1 | head -1);"
+  fi
+  if [ "$mr_fail" = 0 ]; then
+    report PASS memrev "$mr_checks byte-reversed access checks clean, fused and unfused identical"
+  else
+    report FAIL memrev "$mr_detail see $out/memrev.fused"
+  fi
+fi
+
+# prfmhint is the gate on PRFM reaching dcbt/dcbtst: every hint kind and every
+# addressing form against a writable page, a read-only page, a PROT_NONE page,
+# an unmapped hole, the last byte of a mapping, its own code page and
+# addresses no mapping covers. A touch cannot raise a data storage exception,
+# so the forced answer is "no signal, no byte moved, and the instructions
+# after it still ran", which the test checks itself -- no golden.
+#
+# Both switch states, and they must agree byte for byte: POWERARM_GUESTPREFETCH=0
+# emits the nop PRFM used to be. That a hint changed nothing observable is the
+# whole correctness claim, so it is the thing the gate checks.
+if [ -f prfmhint ]; then
+  pf_fail=0
+  pf_detail=""
+  for pf_mode in 1 0; do
+    POWERARM_GUESTPREFETCH=$pf_mode "$emu" ./prfmhint > "prfmhint.gp$pf_mode" 2> /dev/null
+    pf_rc=$?
+    pf_bad=$(grep -c '^FAIL' "prfmhint.gp$pf_mode" 2> /dev/null)
+    pf_checks=$(sed -n 's/^checks \([0-9]*\) failures 0$/\1/p' "prfmhint.gp$pf_mode")
+    pf_ctl=$(grep -c '^PASS control-unmapped-page-really-faults$' "prfmhint.gp$pf_mode" 2> /dev/null)
+    if [ "$pf_rc" != 0 ] || [ "$pf_bad" != 0 ] || [ "$pf_ctl" != 1 ] || [ -z "$pf_checks" ] || [ "$pf_checks" -lt 10 ]; then
+      pf_fail=1
+      pf_detail="$pf_detail switch=$pf_mode rc=$pf_rc fails=$pf_bad checks=${pf_checks:-none} control=$pf_ctl;"
+    fi
+  done
+  if [ "$pf_fail" = 0 ] && ! cmp -s prfmhint.gp1 prfmhint.gp0; then
+    pf_fail=1
+    pf_detail="$pf_detail dcbt and nop output differ: $(cmp prfmhint.gp1 prfmhint.gp0 2>&1 | head -1);"
+  fi
+  if [ "$pf_fail" = 0 ]; then
+    report PASS prfmhint "$pf_checks prefetch checks clean with GUESTPREFETCH on and off"
+  else
+    report FAIL prfmhint "$pf_detail see $out/prfmhint.gp1"
+  fi
+fi
+
 # fcmp_denorm is the gate on the f32 compare arms having moved from the VMX
 # vcmpeqfp/vcmpgtfp/vcmpgefp to their VSX twins. The VMX ones flush denormal
 # inputs to zero when VSCR.NJ is set and the VSX ones never do, so the test

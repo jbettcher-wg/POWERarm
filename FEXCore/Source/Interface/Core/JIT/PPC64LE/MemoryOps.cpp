@@ -2245,7 +2245,19 @@ DEF_OP(Fence) {
 
 DEF_OP(Prefetch) {
   auto Op = IROp->C<IR::IROp_Prefetch>();
-  GPR Addr = GetReg(Op->Addr);
+  // The op carries an addressing mode, not a finished address: the A64
+  // frontend's PRFM hands over the base with the guest's own displacement or
+  // index+extend, exactly as its loads and stores do. dcbt/dcbtst are X-form
+  // (EA = (RA|0) + RB) with no displacement, so an index is free and a
+  // displacement costs the addi MaterializeAddr emits. This used to read
+  // Op->Addr alone and silently prefetch the base, which for the unsigned
+  // offset form -- the overwhelming majority of guest PRFMs -- is a different
+  // cache line from the one the guest asked for.
+  uint64_t OffC = 0;
+  const bool OffValid = !Op->Offset.IsInvalid();
+  const bool OffConst = OffValid && IsInlineConstant(Op->Offset, &OffC);
+  const MemOffsetOperand Off {OffValid, OffConst, OffC, (OffValid && !OffConst) ? GetReg(Op->Offset) : r0, Op->OffsetType, Op->OffsetScale};
+  const MemAddrForm EAF = MakeAddrForm(*this, GetReg(Op->Addr), Off, CTX->HostFeatures.SupportsISA30);
   // PREFETCHW / prefetch-for-store is `dcbtst`, a DIFFERENT OPCODE (XO 246),
   // not a TH encoding of dcbt. This used to emit `dcbt RA,RB,16`, which the
   // assembler spells `dcbtt` — a non-transient LOAD touch. The line arrived
@@ -2253,6 +2265,21 @@ DEF_OP(Prefetch) {
   // read-for-ownership; the store hint was silently dropped. CacheLevel and
   // Stream stay advisory and unused (their dcbt/dcbtst TH stream encodings
   // want a measured depth, which we do not have).
+  //
+  // A touch cannot raise a data storage exception: an unmapped, protected or
+  // mtrack-write-protected address is dropped by the hardware. Nothing here
+  // needs a fault path.
+  if (EAF.HasIndex) {
+    // Base in RA (GetReg never returns r0, so RA is never the literal zero)
+    // and the index in RB.
+    if (Op->ForStore) {
+      dcbtst(EAF.Base, EAF.Index);
+    } else {
+      dcbt(EAF.Base, EAF.Index);
+    }
+    return;
+  }
+  const GPR Addr = MaterializeAddr(*this, EAF);
   if (Op->ForStore) {
     dcbtst(r0, Addr);
   } else {

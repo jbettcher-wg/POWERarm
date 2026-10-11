@@ -165,9 +165,21 @@ build() {
 
   # Mirrors the known-good POWER9 configuration (build-smc): clang, Ninja,
   # RelWithDebInfo, jemalloc-glibc + FEX allocator on, LTO off, tests off.
-  # TUNE_CPU is forced to 'none'; the upstream default of 'native' bakes
-  # -march=native into a package that other machines then install.
-  # Set it to power9/power10 for a machine-specific rebuild.
+  #
+  # TUNE_CPU is pinned to 'power8', which is the distribution baseline and
+  # therefore what this package has always produced: with 'none' no -mcpu=
+  # reached the compiler and clang's own default for powerpc64le-linux is
+  # pwr8, so the emitted baseline is unchanged -- it is now stated instead of
+  # inherited. Stating it is what keeps the package portable. TUNE_CPU=native
+  # now resolves to -mcpu=native on this target (it used to probe -march= and
+  # silently add nothing), so a makepkg on a POWER9 would otherwise bake ISA
+  # 3.0 into the binary and SIGILL on a POWER8 the moment it executed one.
+  # Nothing about EMITTED guest code changes with this flag either way; the
+  # JIT picks its instructions from HostFeatures at runtime.
+  #
+  # Whether ArchPOWER's baseline should move to power9 is a packaging
+  # decision, not a build one: set it to power9/power10 here for a
+  # machine-specific rebuild.
   #
   # One option is deliberately left at its CMakeLists default:
   #   X86_DEV_ROOTFS ("/")     "/" is the cache default meaning "unset", which
@@ -197,7 +209,7 @@ build() {
     -DENABLE_GDB_SYMBOLS=ON \
     -DENABLE_OFFLINE_TELEMETRY=ON \
     -DUSE_LEGACY_BINFMTMISC=OFF \
-    -DTUNE_CPU=none \
+    -DTUNE_CPU=power8 \
     -DTUNE_ARCH=generic \
     -DOVERRIDE_VERSION="POWERarm-$pkgver" \
     -DOVERRIDE_HASH="$_hash" \

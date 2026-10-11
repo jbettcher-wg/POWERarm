@@ -488,9 +488,30 @@ if (NOT TUNE_ARCH STREQUAL "generic")
 endif()
 
 if (TUNE_CPU STREQUAL "native")
+  # Two spellings, and the target decides which one exists. x86 and AArch64
+  # take -march=native; PowerPC has no -march at all -- clang rejects it
+  # outright ("unsupported option '-march=' for target
+  # 'powerpc64le-unknown-linux-gnu'") and spells host tuning -mcpu=native.
+  # Probing only -march= therefore left every native ppc64le build with NO
+  # tuning flag: the check failed, nothing was appended, and the -mcpu= branch
+  # below is an elseif, so it never ran. The emulator's own code then compiled
+  # at the compiler's default baseline -- ISA 2.07 on this target, i.e. no
+  # lxv/stxv, no mtvsrdd/mfvsrld, no cnttzd, and an xxswapd after every
+  # lxvd2x -- on a POWER9 host.
+  #
+  # -march= stays first so the x86 and AArch64 builds keep resolving exactly as
+  # before; -mcpu=native is tried only where -march= is not a flag at all.
   check_cxx_compiler_flag("-march=native" COMPILER_SUPPORTS_MARCH_NATIVE)
   if(COMPILER_SUPPORTS_MARCH_NATIVE)
     list(APPEND FEX_TUNE_COMPILE_FLAGS "-march=native")
+  else()
+    check_cxx_compiler_flag("-mcpu=native" COMPILER_SUPPORTS_MCPU_NATIVE)
+    if(COMPILER_SUPPORTS_MCPU_NATIVE)
+      list(APPEND FEX_TUNE_COMPILE_FLAGS "-mcpu=native")
+    else()
+      message(WARNING "TUNE_CPU=native: the compiler accepts neither -march=native nor -mcpu=native; "
+                      "building untuned. Set TUNE_CPU to a named CPU (e.g. power9) to tune explicitly.")
+    endif()
   endif()
 elseif (NOT TUNE_CPU STREQUAL "none")
   check_cxx_compiler_flag("-mcpu=${TUNE_CPU}" COMPILER_SUPPORTS_CPU_TYPE)

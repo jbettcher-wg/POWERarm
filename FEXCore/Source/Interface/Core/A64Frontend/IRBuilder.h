@@ -71,6 +71,13 @@ public:
   // alone. See TranslateDataProcessing.cpp.
   size_t TryFuseRbitClz(const Decoder::DecodedBlocks& Block, size_t Index);
 
+  // Recognizes a load with the REV of its result next to it, and a REV with
+  // the store of its result next to it, and routes the pair onto POWER's
+  // byte-reversed memory forms (l{h,w,d}brx / st{h,w,d}brx). Returns 2 on a
+  // match, 0 otherwise; like TryFuseRbitClz it consumes a fixed pair and
+  // leaves the rest of the block alone. See TranslateLoadStore.cpp.
+  size_t TryFuseMemRev(const Decoder::DecodedBlocks& Block, size_t Index);
+
   // Recognizes the vector-scan idiom (CMEQ -> UMAXP/ADDP -> FMOV -> CBZ/CBNZ)
   // and fuses it into a vector-compare branch (CondJump with VCmpElementSize).
   // Returns number of instructions consumed (4 on match, 0 if not matched).
@@ -430,6 +437,10 @@ private:
   // the memory op itself (a D-form displacement on the host).
   void LoadStoreSingle(bool IsLoad, OpSize Size, bool SignExtend, bool Is64Dest, uint32_t Rt, Ref Address, Ref Offset = nullptr,
                        IR::MemOffsetType OffsetType = IR::MemOffsetType::SXTX, uint8_t OffsetScale = 1);
+  // One guest PRFM: Rt is the 5-bit prefetch operation, not a register. PLD
+  // and PST become dcbt/dcbtst, everything else stays a nop.
+  void PrefetchHint(uint32_t Rt, Ref Address, Ref Offset = nullptr, IR::MemOffsetType OffsetType = IR::MemOffsetType::SXTX,
+                    uint8_t OffsetScale = 1);
   // One SIMD&FP register load or store of Size bytes at Address.
   void LoadStoreV(bool IsLoad, OpSize Size, uint32_t Rt, Ref Address, Ref Offset = nullptr,
                   IR::MemOffsetType OffsetType = IR::MemOffsetType::SXTX, uint8_t OffsetScale = 1);
