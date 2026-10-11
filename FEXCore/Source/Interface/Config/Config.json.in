@@ -1250,6 +1250,26 @@
           "data-dependent -- hence a field kill switch of its own."
         ]
       },
+      "DisableCCMPChain": {
+        "Type": "bool",
+        "Default": "false",
+        "Desc": [
+          "Kill switch for conditional-compare chain collapsing (POWERARM_DISABLECCMPCHAIN=1 turns it OFF), which",
+          "DeadFlagCalculationElimination runs before compare fusion (IR/Passes/CompareBranchFusion.cpp, RunChain; the item is",
+          "docs/powerarm/research/power-isa/ISA-OPPORTUNITIES.md 3.2). A64 'cmp a,b; ccmp c,d,#K,cond; b.cond2' arrives as",
+          "SubNZCV + CondSubNZCV + a FromNZCV CondJump, and lowering that literally costs a packed-NZCV compare, a",
+          "DATA-DEPENDENT HOST BRANCH over either the second compare or a 7-9 instruction write of the constant K into CR0 and",
+          "XER, and then the consumer's projection of XER back out. But 'taken = cond(first) ? cond2(second) : cond2(K)' has a",
+          "compile-time cond2(K), so the chain collapses to two compares in two CR fields plus one CR logical op plus the guest's",
+          "own branch (ChainCompare + a FromChainCR CondJump), with no packed NZCV and no host branch at all.",
+          "Collapsed only when NZCV is dead at the end of the block, when nothing else reads or writes it between the three ops,",
+          "when nothing that can raise a signal sits between them, and when BOTH conditions are ones the direct-compare form",
+          "decodes identically to the packed-NZCV form -- the same table compare fusion uses, so VS/VC never and MI/PL only",
+          "against zero. Chains of two conditional compares and CSEL consumers are refused and keep the old lowering.",
+          "A mis-collapsed chain is a wrong-direction conditional jump -- silent and data-dependent -- hence a field kill switch",
+          "of its own."
+        ]
+      },
       "DisableScalarSplatChain": {
         "Type": "bool",
         "Default": "false",

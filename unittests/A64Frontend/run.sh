@@ -795,6 +795,73 @@ if [ -f flaglive ]; then
   fi
 fi
 
+# ccmpchain is the conditional-compare chain (ISA-OPPORTUNITIES.md §3.2):
+# `cmp ; ccmp ; b.cond` collapsed into two compares, one CR logical op and the
+# guest's branch. It needs no reference implementation because it is its own:
+# each case runs the chain shape AND the same arithmetic with an MRS between
+# the conditional compare and the branch, which the chain walker refuses, so
+# the second is the packed-NZCV lowering the differential tests here already
+# pin. 896 condition pairs plus eleven hand-computed anchors, and a positive
+# control, so exactly one FAIL is required and it has to be that one.
+#
+# Same second check as flaglive, for the same reason: a chain that never
+# collapses emits the old code twice and passes. The run must COLLAPSE some
+# chains and collapse none with POWERARM_DISABLECCMPCHAIN=1, with identical
+# output either way.
+if [ -f ccmpchain ]; then
+  cc_fail=0
+  cc_detail=""
+  for cc_sw in on off; do
+    if [ "$cc_sw" = on ]; then
+      POWERARM_DISABLECCMPCHAIN=1 "$emu" ./ccmpchain > ccmpchain.nochain 2> /dev/null
+      cc_out=ccmpchain.nochain
+    else
+      "$emu" ./ccmpchain > ccmpchain.powerarm 2> /dev/null
+      cc_out=ccmpchain.powerarm
+    fi
+    cc_rc=$?
+    cc_pass=$(grep -c '^PASS' "$cc_out" 2> /dev/null)
+    cc_bad=$(grep -c '^FAIL' "$cc_out" 2> /dev/null)
+    cc_ctl=$(grep -c '^FAIL control_deliberately_wrong' "$cc_out" 2> /dev/null)
+    if [ "$cc_rc" != 0 ] || [ "$cc_bad" != 1 ] || [ "$cc_ctl" != 1 ] || [ "$cc_pass" -lt 25 ]; then
+      cc_fail=1
+      cc_detail="$cc_detail disablechain=$cc_sw rc=$cc_rc pass=$cc_pass fail=$cc_bad control=$cc_ctl;"
+    fi
+  done
+  if ! cmp -s ccmpchain.powerarm ccmpchain.nochain; then
+    cc_fail=1
+    cc_detail="$cc_detail the switch changed the output: $(cmp ccmpchain.powerarm ccmpchain.nochain 2>&1 | head -1);"
+  fi
+  POWERARM_ENABLECODECACHINGWIP=0 POWERARM_DUMPIR=stderr POWERARM_PASSMANAGERDUMPIR=afteropt \
+    "$emu" ./ccmpchain > /dev/null 2> ccmpchain.irdump
+  POWERARM_DISABLECCMPCHAIN=1 POWERARM_ENABLECODECACHINGWIP=0 POWERARM_DUMPIR=stderr POWERARM_PASSMANAGERDUMPIR=afteropt \
+    "$emu" ./ccmpchain > /dev/null 2> ccmpchain.irdump.nochain
+  cc_chains=$(grep -cE '\bChainCompare\b' ccmpchain.irdump 2> /dev/null)
+  cc_chains_off=$(grep -cE '\bChainCompare\b' ccmpchain.irdump.nochain 2> /dev/null)
+  # Under POWERARM_MAXINST=1 the branch's legs are constant exits, every exit
+  # is seeded with all four flags live, and no chain is collapsible at all --
+  # so the test is exercising the old lowering on both shapes. A mode of the
+  # test, not a failure of it; the value checks still have to pass.
+  if [ -n "${POWERARM_MAXINST:-}" ] && [ "${POWERARM_MAXINST:-}" != 0 ]; then
+    cc_want=0
+  else
+    cc_want=1
+  fi
+  if [ "$cc_want" = 1 ] && [ "$cc_chains" -lt 1 ]; then
+    cc_fail=1
+    cc_detail="$cc_detail no chain was collapsed, so both shapes ran the old lowering;"
+  fi
+  if [ "$cc_chains_off" != 0 ]; then
+    cc_fail=1
+    cc_detail="$cc_detail POWERARM_DISABLECCMPCHAIN=1 still collapsed $cc_chains_off;"
+  fi
+  if [ "$cc_fail" = 0 ]; then
+    report PASS ccmpchain "$cc_pass chain checks clean, control FAILed; collapsed $cc_chains chains, none with the switch"
+  else
+    report FAIL ccmpchain "$cc_detail see $out/ccmpchain.powerarm"
+  fi
+fi
+
 if [ -f threadexit ]; then
   te_total=96
   te_batch=8

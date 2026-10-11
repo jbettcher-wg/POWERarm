@@ -3525,6 +3525,82 @@ DEF_OP(CondSubNZCV) {
   SetNZCVConstant(Op->FalseNZCV);
   Bind(&Done);
 }
+// ChainCompare: an A64 conditional compare and its consumer, as two compares
+// and one CR logical op (ISA-OPPORTUNITIES.md §3.2). Built by
+// CompareFusion::RunChain, consumed by the CondJump immediately after it.
+//
+//     cmp{w,d}{,l}  cr6, Cmp1, Cmp2      ; bit A = Cond1 against the first
+//     cmp{w,d}{,l}  cr7, Cmp3, Cmp4      ; bit B = Cond2 against the second
+//     cr<op>        31, ...              ; predicate -> CR bit 31
+//
+// and the branch is `bc 12, 31`. Nothing here touches CR0 or XER, so the
+// guest's packed NZCV is not involved at any point -- which is the whole
+// point: the conditional compare's four flags never have to be materialised,
+// and the data-dependent host branch that materialised them goes away.
+//
+// WHERE THE PREDICATE LIVES. CR bit 31 is cr7's SO bit. It is a safe landing
+// place and not an arbitrary choice: MapCC returns only BI 0, 1 or 2 (LT, GT,
+// EQ), so neither compare's own condition bit can ever be bit 31, and the
+// second compare's cmp writes bits 28-31 BEFORE this op's CR logical reads
+// them. A CR logical op reads both source bits and then writes BT, so a BT
+// that aliases a source (which happens when Cond2 is EQ, BI 30) is still
+// exact.
+//
+// POLARITY. MapCC answers with BO 12 ("branch if the bit is set") or BO 4
+// ("branch if clear"), so a condition is not always the bit itself. Rather
+// than normalise with a crnot, the eight CR logical ops absorb both
+// polarities: with the predicate wanted as
+//     FalseResult == false:  A AND B          (the gating condition held, so
+//                                              the consumer reads the second
+//                                              compare; on the other leg its
+//                                              answer against K is false)
+//     FalseResult == true:   (NOT A) OR B     (on the other leg its answer
+//                                              against K is true)
+// the four polarity combinations of each pick out crand/crandc/crnor and
+// cror/crorc/crnand respectively. Every case is one instruction.
+DEF_OP(ChainCompare) {
+  auto Op = IROp->C<IR::IROp_ChainCompare>();
+  LOGMAN_THROW_A_FMT(IROp->Size == IR::OpSize::i32Bit || IROp->Size == IR::OpSize::i64Bit, "ChainCompare: unsupported size");
+  LOGMAN_THROW_A_FMT(Op->Cmp2Size == IR::OpSize::i32Bit || Op->Cmp2Size == IR::OpSize::i64Bit, "ChainCompare: unsupported Cmp2Size");
+
+  // Each EmitCompare consumes its scratch (TMP1-TMP4) within itself and leaves
+  // its answer in a CR field, so the second cannot disturb the first.
+  EmitCompare(Op->Cond1, IROp->Size, Op->Cmp1, Op->Cmp2, /*CRField=*/6);
+  EmitCompare(Op->Cond2, Op->Cmp2Size, Op->Cmp3, Op->Cmp4, /*CRField=*/7);
+
+  const auto CC1 = MapCC(Op->Cond1);
+  const auto CC2 = MapCC(Op->Cond2);
+  // MapCC numbers BI against CR0; rebase onto the field each compare used.
+  const uint32_t A = CC1.BI + 24;  // cr6
+  const uint32_t B = CC2.BI + 28;  // cr7
+  const bool PosA = CC1.BO == 12;
+  const bool PosB = CC2.BO == 12;
+
+  if (!Op->FalseResult) {
+    // A AND B.
+    if (PosA && PosB) {
+      crand(kChainPredicateBit, A, B);
+    } else if (PosA) {
+      crandc(kChainPredicateBit, A, B);         // A & ~B
+    } else if (PosB) {
+      crandc(kChainPredicateBit, B, A);         // B & ~A
+    } else {
+      crnor(kChainPredicateBit, A, B);          // ~A & ~B
+    }
+  } else {
+    // (NOT A) OR B.
+    if (PosA && PosB) {
+      crorc(kChainPredicateBit, B, A);          // B | ~A
+    } else if (PosA) {
+      crnand(kChainPredicateBit, A, B);         // ~A | ~B
+    } else if (PosB) {
+      cror(kChainPredicateBit, A, B);           // A | B
+    } else {
+      crorc(kChainPredicateBit, A, B);          // A | ~B
+    }
+  }
+}
+
 DEF_OP(ShiftFlags) {
   // After a variable-count shift: set NZCV from the result and produce the new
   // raw PF. If the masked count is zero, flags stay unchanged — return the

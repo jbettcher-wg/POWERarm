@@ -1340,6 +1340,39 @@ DEF_OP(CondJump) {
                        "CondJump vector-compare mode only encodes EQ/NEQ over 'any lane matched'");
     // BI 26 = CR6's "none matched" bit (CR field 6 occupies CR bits 24..27).
     CC = (Op->Cond == IR::CondClass::NEQ) ? Cond {4, 26} : Cond {12, 26};
+  } else if (Op->FromChainCR) {
+    // Conditional-compare chain (ISA-OPPORTUNITIES.md §3.2): the predicate was
+    // computed by the ChainCompare immediately before this op, in
+    // kChainPredicateBit, and is already in "set means take the branch"
+    // polarity -- DEF_OP(ChainCompare) folds both compares' polarities and the
+    // false-leg constant into its choice of CR logical op, so there is nothing
+    // left to decode here and Op->Cond is not consulted.
+    //
+    // The contract is that nothing emitted between the two writes a condition
+    // register. CompareFusion::RunChain puts the ChainCompare directly before
+    // this node, and the only ops the register allocator inserts afterwards
+    // are spills and fills, whose lowering (DEF_OP(SpillRegister) /
+    // DEF_OP(FillRegister)) is stores and loads plus a LoadConstant -- no CR
+    // writes. Assert it rather than trust it, so a future pass that inserts
+    // something here fails loudly instead of branching on a stale bit.
+#if defined(ASSERTIONS_ENABLED) && ASSERTIONS_ENABLED
+    {
+      auto Prev = Node->Header.Previous;
+      while (true) {
+        auto PrevOp = IR->GetOp<IR::IROp_Header>(Prev);
+        if (PrevOp->Op == IR::OP_SPILLREGISTER || PrevOp->Op == IR::OP_FILLREGISTER || PrevOp->Op == IR::OP_GUESTOPCODE ||
+            PrevOp->Op == IR::OP_INLINECONSTANT) {
+          Prev = IR->GetNode(Prev)->Header.Previous;
+          continue;
+        }
+        LOGMAN_THROW_A_FMT(PrevOp->Op == IR::OP_CHAINCOMPARE,
+                           "CondJump FromChainCR: expected a ChainCompare immediately before it, found {}",
+                           IR::GetName(PrevOp->Op));
+        break;
+      }
+    }
+#endif
+    CC = Cond {12, static_cast<uint8_t>(kChainPredicateBit)};
   } else if (Op->FromNZCV) {
     CC = MapNZCVCC(Op->Cond);
   } else if (Op->Cond == IR::CondClass::TSTZ || Op->Cond == IR::CondClass::TSTNZ) {

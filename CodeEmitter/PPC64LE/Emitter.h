@@ -689,6 +689,18 @@ public:
     Emit32((19u << 26) | (bt << 21) | (ba << 16) | (bb << 11) | (129u << 1));
   }
 
+  // crorc BT, BA, BB  (XO 417): CR[BT] <- CR[BA] | ~CR[BB].
+  // The last of the eight CR logical ops to be needed here. It is what makes
+  // the CCMP chain (ISA-OPPORTUNITIES.md §3.2, DEF_OP(ChainCompare)) one CR op
+  // instead of two: when the conditional compare's false-NZCV already
+  // satisfies the consumer's condition, the predicate is `NOT cond1 OR cond2`,
+  // and crorc is exactly that with no separate crnot.
+  // Verified against llvm-mc -triple=powerpc64le: crorc 30,29,24 = 0x4FDDC342,
+  // crorc 0,0,0 = 0x4C000342, crorc 31,26,28 = 0x4FFAE342.
+  void crorc(uint32_t bt, uint32_t ba, uint32_t bb) {
+    Emit32((19u << 26) | (bt << 21) | (ba << 16) | (bb << 11) | (417u << 1));
+  }
+
   // mcrf BF, BFA  (move one condition register field to another — XL-form,
   // opcode 19, XO 0; base ISA, on every POWER this backend targets).
   // Four bits, CR[BF] <- CR[BFA], in one uncracked ~1-cycle instruction. That

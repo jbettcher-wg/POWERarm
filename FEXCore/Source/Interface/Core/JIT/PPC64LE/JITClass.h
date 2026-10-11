@@ -617,6 +617,13 @@ private:
   // hardware threads — one constant looks defensible so far.
   // ☞ Every verdict above is subjective (no MangoHud CSV was captured); p99
   // frametime legs are owed before this default is trusted beyond opt-in use.
+  // The CR bit DEF_OP(ChainCompare) leaves its predicate in, and the only bit
+  // DEF_OP(CondJump)'s FromChainCR arm branches on. CR bit 31 is cr7's SO bit:
+  // MapCC returns only BI 0/1/2, so it can never collide with either compare's
+  // own condition bit, and nothing on the compare path reads SO. Shared so the
+  // producer and the consumer cannot drift apart.
+  static constexpr uint32_t kChainPredicateBit = 31;
+
   static constexpr uint16_t kSpinCollapseKDefault = 32;
   uint16_t kSpinCollapseK = kSpinCollapseKDefault;
   bool SpinCollapseEnabled {};

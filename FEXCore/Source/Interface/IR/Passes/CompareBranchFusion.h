@@ -25,6 +25,14 @@ public:
   // DisableDFCEStoreElim knob).
   void Run(IREmitter* IREmit, IRListView& IR, Ref Block, bool NZCVLiveOut, bool RemoveDeadProducers);
 
+  // Conditional-compare chains: `cmp ; ccmp ; b.cond` collapsed into one
+  // ChainCompare plus a branch on its predicate bit
+  // (ISA-OPPORTUNITIES.md §3.2). Must run BEFORE Run on the same block: it
+  // removes both flag producers and leaves a branch that reads no flags, so
+  // Run then sees a block with nothing of the chain left in it. Returns the
+  // number of chains it collapsed.
+  size_t RunChain(IREmitter* IREmit, IRListView& IR, Ref Block, bool NZCVLiveOut);
+
 private:
   struct Consumer {
     Ref Node;
@@ -47,6 +55,9 @@ private:
 
   fextl::vector<Consumer> Consumers;
   fextl::vector<Ref> DeadProducers;
+  // RunChain's snapshot of the block, so it can look both ways from a
+  // conditional compare without three cursors over one linked list.
+  fextl::vector<Ref> ChainOps;
 };
 
 } // namespace FEXCore::IR

@@ -309,7 +309,7 @@
         "HasSideEffects": true,
         "RAOverride": "0"
       },
-      "CondJump SSA:$Cmp1, SSA:$Cmp2, SSA:$TrueBlock, SSA:$FalseBlock, CondClass:$Cond{CondClass::NEQ}, OpSize:$CompareSize{OpSize::iInvalid}, i1:$FromNZCV{false}, OpSize:$VCmpElementSize{OpSize::iInvalid}, i1:$NZCVDead{false}": {
+      "CondJump SSA:$Cmp1, SSA:$Cmp2, SSA:$TrueBlock, SSA:$FalseBlock, CondClass:$Cond{CondClass::NEQ}, OpSize:$CompareSize{OpSize::iInvalid}, i1:$FromNZCV{false}, OpSize:$VCmpElementSize{OpSize::iInvalid}, i1:$NZCVDead{false}, i1:$FromChainCR{false}": {
         "Desc": ["Conditional branch.",
                  "Normally Cmp1/Cmp2 are GPR-class values compared per Cond/CompareSize, or",
                  "FromNZCV selects the packed-flags side channel instead.",
@@ -331,7 +331,19 @@
                  "TSTZ/TSTNZ bit-test arm, which may then extract with a record-form",
                  "rldicl. and branch on CR0 rather than stage the test through cr7.",
                  "Default false, so any frontend or configuration without that pass emits",
-                 "the CR0-preserving sequence."
+                 "the CR0-preserving sequence.",
+                 "",
+                 "FromChainCR selects a FOURTH mode: Cmp1/Cmp2 are unused, and the branch",
+                 "is taken on the predicate bit the IMMEDIATELY PRECEDING ChainCompare left",
+                 "in a condition register (see that op). It is the only field here whose",
+                 "meaning depends on a neighbouring op, so: nothing emitted between the",
+                 "two may write a condition register. That holds because",
+                 "CompareFusion::RunChain creates the ChainCompare directly before this",
+                 "node, and the only ops the register allocator can insert between them",
+                 "are a spill or a fill, whose lowering is loads and stores.",
+                 "DEF_OP(CondJump) asserts it rather than trusting it. Mutually exclusive",
+                 "with FromNZCV, which this mode clears: a chained branch reads no part of",
+                 "the guest flag domain at all."
                 ],
         "Inline": ["", "AddSub"],
         "HasSideEffects": true,
@@ -1248,6 +1260,46 @@
         "DestSize": "Size",
         "EmitValidation": [
           "Size == FEXCore::IR::OpSize::i32Bit || Size == FEXCore::IR::OpSize::i64Bit"
+        ]
+      },
+      "ChainCompare OpSize:#Size, GPR:$Cmp1, GPR:$Cmp2, GPR:$Cmp3, GPR:$Cmp4, CondClass:$Cond1, CondClass:$Cond2, OpSize:$Cmp2Size, i1:$FalseResult": {
+        "Desc": ["Two independent compares combined by one condition-register logical op,",
+                 "leaving a single predicate bit for the CondJump that follows to branch on.",
+                 "It is the lowering of an A64 conditional compare and its consumer",
+                 "(docs/powerarm/research/power-isa/ISA-OPPORTUNITIES.md 3.2), built by",
+                 "CompareFusion::RunChain:",
+                 "",
+                 "    cmp x0, x1 ; ccmp x2, x3, #K, cond ; b.cond2 L",
+                 "",
+                 "is `taken = cond(flags of the first compare) ? cond2(flags of the second)",
+                 ": cond2(K)`, and cond2(K) is a COMPILE-TIME boolean because K is an",
+                 "immediate. So the whole thing is two compares and one of the eight CR",
+                 "logical ops, with no packed-NZCV state and no data-dependent branch.",
+                 "FalseResult carries that compile-time cond2(K): false makes the predicate",
+                 "cond1 AND cond2, true makes it (NOT cond1) OR cond2, and the polarity of",
+                 "each CR bit is absorbed by picking among crand/crandc/crnor and",
+                 "cror/crorc/crnand.",
+                 "",
+                 "Cmp1/Cmp2 are compared at the op's own Size under Cond1 (the conditional",
+                 "compare's gating condition, evaluated against the FIRST compare), and",
+                 "Cmp3/Cmp4 at Cmp2Size under Cond2 (the consumer's condition, evaluated",
+                 "against the conditional compare's own operands). Every condition must be",
+                 "one the direct-compare arm decodes identically to the packed-NZCV arm --",
+                 "the identity table at the top of CompareBranchFusion.cpp -- which is why",
+                 "VS/VC never appear here and MI/PL only against zero.",
+                 "",
+                 "This op PRODUCES NO SSA VALUE and writes no part of the guest flag",
+                 "domain: the predicate lives in a condition-register bit, which is not",
+                 "where the guest's NZCV lives (CR0 and XER are), so the dead-flag pass",
+                 "correctly classifies it as touching no flags. It is side-effecting, and",
+                 "the CondJump that consumes it must be the very next op -- see the",
+                 "FromChainCR note on CondJump for what that requires and why it holds."
+                ],
+        "HasSideEffects": true,
+        "DestSize": "Size",
+        "EmitValidation": [
+          "Size == FEXCore::IR::OpSize::i32Bit || Size == FEXCore::IR::OpSize::i64Bit",
+          "Cmp2Size == FEXCore::IR::OpSize::i32Bit || Cmp2Size == FEXCore::IR::OpSize::i64Bit"
         ]
       },
       "GPR = AdcWithFlags OpSize:#Size, GPR:$Src1, GPR:$Src2": {

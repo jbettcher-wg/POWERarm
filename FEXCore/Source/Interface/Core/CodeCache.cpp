@@ -818,6 +818,7 @@ uint64_t ComputeCodeCacheConfigId() {
       // Latent rather than live, since EnableCodeCachingWIP is off by default,
       // but it is exactly the shape of bug that costs a week when it does bite.
       HASH_OPT(DISABLECMPBRANCHFUSION);
+      HASH_OPT(DISABLECCMPCHAIN);
       HASH_OPT(DISABLESCALARSPLATCHAIN);
       // VSX register classes: with it on, an operation on guest V16-V31 reads
       // and writes the pinned low-bank register directly; with it off the same

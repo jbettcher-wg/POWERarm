@@ -175,6 +175,7 @@ public:
 private:
   FEX_CONFIG_OPT(DisableDFCEStoreElim, DISABLEDFCESTOREELIM);
   FEX_CONFIG_OPT(DisableCmpBranchFusion, DISABLECMPBRANCHFUSION);
+  FEX_CONFIG_OPT(DisableCCMPChain, DISABLECCMPCHAIN);
 
 public:
   // Stateless, and shared with CompareBranchFusion via IROpWritesNZCV below.
@@ -1192,6 +1193,16 @@ void DeadFlagCalculationEliminination::Run(IREmitter* IREmit) {
         FlagsOut = CFG.Get(Op->TrueBlock)->Flags | CFG.Get(Op->FalseBlock)->Flags;
       } else if (ExitOp->Op == IR::OP_JUMP) {
         FlagsOut = CFG.Get(ExitOp->Args[0])->Flags;
+      }
+      // Conditional-compare chains first: RunChain deletes both flag
+      // producers of a `cmp ; ccmp ; b.cond` and leaves a branch that reads no
+      // flags at all, so Run then walks a block with nothing of the chain left
+      // in it and needs no knowledge of the shape. Its own kill switch, for
+      // the same reason the others have one -- a mis-collapsed chain is a
+      // wrong-direction branch, silent and data-dependent:
+      //     POWERARM_DISABLECCMPCHAIN=1
+      if (!DisableCCMPChain()) {
+        Fusion.RunChain(IREmit, CurrentIR, Block, (FlagsOut & FLAG_NZCV) != 0);
       }
       Fusion.Run(IREmit, CurrentIR, Block, (FlagsOut & FLAG_NZCV) != 0, !DisableDFCEStoreElim());
     }
