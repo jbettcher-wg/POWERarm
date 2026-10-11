@@ -11,6 +11,8 @@
 #include "Interface/Core/A64Frontend/IRBuilder.h"
 #include "Interface/Core/A64Frontend/TranslateCommon.h"
 
+#include <cstring>
+
 namespace FEXCore::A64 {
 using namespace FEXCore::IR;
 
@@ -283,6 +285,234 @@ bool IRBuilder::STP_LDP_gen(uint32_t Word) {
   StoreReg(Rt, Is64Dest, Value1);
   StoreReg(Rt2, Is64Dest, Value2);
   return true;
+}
+
+// ---------------------------------------------------------------------------
+// A memory access fused with the byte reverse next to it
+// ---------------------------------------------------------------------------
+//
+// POWER has load-and-byte-reverse and store-and-byte-reverse at halfword,
+// word and doubleword (lhbrx/lwbrx/ldbrx, sthbrx/stwbrx/stdbrx, all X-form).
+// AArch64 has no byte-swapping memory form at all, so every big-endian field
+// a guest reads or writes is an access plus a REV -- which is why the pair is
+// adjacent in the WebRTC, ffmpeg, PNG and ICU parsers, in V8's and JSC's
+// serialisers, and in every NSS/resolv wire format in libc.
+//
+// Unfused, the REV alone is 5 host instructions for `rev16` (the SWAR mask
+// chain in REV16_int), 3 for a 32-bit `rev`, and for a 64-bit `rev` an
+// `addi; stdbrx; ld` through the red zone -- a store-to-load forward on the
+// dependent chain. Fused, the whole pair is the one memory instruction (plus
+// an addi when a displacement has to be folded in, since the byte-reversed
+// forms are X-form only: base + index, no displacement).
+//
+// WHAT THE TWO DIRECTIONS ELIDE, AND WHAT THEY DO NOT.
+//
+// Load then REV elides the load's write of the UNREVERSED value, which the
+// match proves dead: the REV both reads and writes the very register the load
+// wrote, and the two are adjacent in one decoded block. The fused instruction
+// faults where the load faults, at the same PC, with Rt unchanged, so a
+// resumed synchronous fault sees exactly the unfused state. An asynchronous
+// signal taken between the two in unfused code would see Rt unreversed and
+// the fused code cannot produce that state -- the same acceptance the
+// RBIT+CLZ, vector-scan and exclusive-loop fusions already made.
+//
+// REV then store elides NOTHING: a guest register is architectural state and
+// nothing here proves the reversed value dead, so the REV still runs. What
+// the fusion removes is the store's DEPENDENCE on it -- st{h,w,d}brx takes
+// the unreversed register, so the store issues without waiting for the byte
+// swap (at 64 bits, without waiting for a store-forward stall). The byte
+// order in memory is identical, because that is what the instruction is for.
+// A byte-reversed store that faults on an mtrack-protected code page is not a
+// form SyscallsSMCTracking's DecodePPCStore emulates; it takes the legacy
+// invalidate-unprotect-retry path, which is correct and already what every
+// vector and store-conditional form there does.
+namespace {
+  // One side of the pair, decoded from the guest word. Only the plain
+  // base+displacement and base+index(64-bit, unscaled) shapes are here:
+  // LoadMemRev/StoreMemRev take an address register and nothing else, so an
+  // address needing a UXTW/SXTW extend or a scaled index would cost more IR
+  // than the REV it saves. The acquire/release forms (LDAPUR/STLUR, LDAR,
+  // LDXR) are excluded by name -- their ordering is not this fusion's
+  // business.
+  struct RevAccess {
+    bool Valid {false};
+    bool IsLoad {false};
+    uint32_t Size {0}; // log2 of the access width: 1, 2 or 3
+    uint32_t Rt {0};
+    uint32_t Rn {0};
+    int64_t Disp {0};
+    bool WriteBack {false};
+    bool PostIndex {false};
+    uint32_t Rm {31}; // 31: no index register (every extend of XZR is zero)
+  };
+
+  RevAccess DecodeRevAccess(const Decoder::DecodedInst& Inst) {
+    RevAccess A {};
+    if (!Inst.Matcher) {
+      return A;
+    }
+    const uint32_t Word = Inst.Word;
+    // Every GPR load/store form below is op0=xx1110xx with bit 26 clear
+    // ("zz111000..." and "zz111001..."). Checking that first keeps this out
+    // of the string comparisons for all but a few percent of instructions:
+    // the matcher runs once per decoded instruction at compile time.
+    if (Bits(Word, 29, 27) != 0b111 || Bit(Word, 26)) {
+      return A;
+    }
+    const uint32_t Size = Bits(Word, 31, 30);
+    const auto Decode = DecodeSizeOpc(Size, Bits(Word, 23, 22));
+    // Byte accesses have no byte order, and a sign-extending load does not
+    // compose with a byte reverse into one instruction.
+    if (Size == 0 || Decode.SignExtend || (Decode.Op != MemOp::Load && Decode.Op != MemOp::Store)) {
+      return A;
+    }
+    A.IsLoad = Decode.Op == MemOp::Load;
+    A.Size = Size;
+    A.Rt = Bits(Word, 4, 0);
+    A.Rn = Bits(Word, 9, 5);
+
+    const char* Name = Inst.Matcher->Name;
+    if (strcmp(Name, "STRx_LDRx_imm_2") == 0) {
+      A.Disp = static_cast<int64_t>(Bits(Word, 21, 10)) << Size;
+      A.Valid = true;
+    } else if (strcmp(Name, "STURx_LDURx") == 0) {
+      A.Disp = FEXCore::A64::SignExtend(Bits(Word, 20, 12), 9);
+      A.Valid = true;
+    } else if (strcmp(Name, "STRx_LDRx_imm_1") == 0) {
+      // The indexed forms: bits 11:10 are 01 (post) or 11 (pre).
+      A.Disp = FEXCore::A64::SignExtend(Bits(Word, 20, 12), 9);
+      A.WriteBack = true;
+      A.PostIndex = Bits(Word, 11, 10) == 0b01;
+      A.Valid = true;
+    } else if (strcmp(Name, "LDRx_reg") == 0 || strcmp(Name, "STRx_reg") == 0) {
+      // option=011 is LSL/UXTX: the index is the whole 64-bit register. Only
+      // the unscaled form, so the address is one add.
+      if (Bits(Word, 15, 13) == 0b011 && !Bit(Word, 12)) {
+        A.Rm = Bits(Word, 20, 16);
+        A.Valid = true;
+      }
+    }
+    return A;
+  }
+
+  // Is this instruction the byte reverse that composes with a Size-byte
+  // access into a single byte-reversed access?
+  bool RevOfWidth(const Decoder::DecodedInst& Rev, uint32_t Size) {
+    if (!Rev.Matcher) {
+      return false;
+    }
+    const char* Name = Rev.Matcher->Name;
+    if (strcmp(Name, "REV16_int") == 0) {
+      // `rev16` swaps the bytes of every halfword, so over a 16-bit field it
+      // is exactly bswap16 -- at both operand widths, because the bytes above
+      // halfword 0 are zero in a zero-extended halfword load and are not
+      // stored by a 16-bit store.
+      return Size == 1;
+    }
+    if (strcmp(Name, "REV") == 0) {
+      // sf must equal opc<0> or this is not REV at all (REV() refuses it);
+      // then a 32-bit REV composes with a word and a 64-bit REV with a
+      // doubleword. A 64-bit REV over a zero-extended word is a different
+      // function (the swapped word lands in the upper half), and so is a
+      // 32-bit REV over a zero-extended halfword.
+      const bool Is64 = Bit(Rev.Word, 31);
+      if (Is64 != Bit(Rev.Word, 10)) {
+        return false;
+      }
+      return Size == (Is64 ? 3U : 2U);
+    }
+    return false;
+  }
+} // namespace
+
+size_t IRBuilder::TryFuseMemRev(const Decoder::DecodedBlocks& Block, size_t Index) {
+  if (Index + 2 > Block.NumInstructions) {
+    return 0;
+  }
+  const auto& First = Block.DecodedInstructions[Index];
+  const auto& Second = Block.DecodedInstructions[Index + 1];
+
+  // --- load then REV -------------------------------------------------------
+  const RevAccess Load = DecodeRevAccess(First);
+  if (Load.Valid && Load.IsLoad && Load.Rt != 31 && RevOfWidth(Second, Load.Size) && Bits(Second.Word, 9, 5) == Load.Rt &&
+      Bits(Second.Word, 4, 0) == Load.Rt) {
+    // Rt is both operands of the REV, which is what makes the load's own
+    // write dead. Rt == 31 is the discarding form and not worth a case.
+    const auto MemSize = IR::SizeToOpSize(1U << Load.Size);
+    // LoadGPRSlot's value cache is keyed on CurrentPC, which the caller has
+    // not advanced yet (TranslateInstruction is not running).
+    CurrentPC = First.PC;
+    Ref Base = LoadXSP(Load.Rn);
+    Ref Address = Base;
+    Ref Offsetted = Base;
+    if (Load.WriteBack) {
+      Offsetted = Load.Disp ? _Add(OpSize::i64Bit, Base, Constant(Load.Disp)) : Base;
+      Address = Load.PostIndex ? Base : Offsetted;
+    } else if (Load.Rm != 31) {
+      Address = _Add(OpSize::i64Bit, Base, LoadX(Load.Rm));
+    } else if (Load.Disp) {
+      Address = _Add(OpSize::i64Bit, Base, Constant(Load.Disp));
+    }
+    // TSO=0: a plain AArch64 LDR carries no ordering, exactly as the
+    // unfused _LoadMem here does not.
+    Ref Value = _LoadMemRev(MemSize, Address, 0);
+    if (Load.WriteBack) {
+      // The memory access precedes the writeback, so a faulting load leaves
+      // Rn as it was; and with Rt == Rn the load's value wins, which is the
+      // order LoadStoreImm9 uses.
+      StoreXSP(Load.Rn, Offsetted);
+    }
+    // l{h,w,d}brx zero-extend to 64 bits, which is exactly what a write of
+    // the W register means, so the value is stored as it is rather than run
+    // through StoreW's extra 32-bit mask.
+    StoreX(Load.Rt, Value);
+    // Core.cpp emitted the marker for the load; the REV needs its own so a
+    // signal resuming at either PC still finds an instruction boundary.
+    _GuestOpcode(Second.PC - Entry);
+    return 2;
+  }
+
+  // --- REV then store ------------------------------------------------------
+  const RevAccess Store = DecodeRevAccess(Second);
+  if (Store.Valid && !Store.IsLoad && Store.Rt != 31 && RevOfWidth(First, Store.Size) && Bits(First.Word, 4, 0) == Store.Rt) {
+    CurrentPC = First.PC;
+    // The REV's SOURCE, read before the REV writes anything: `rev x0,x0` is
+    // the common shape, and it is the unreversed value the store needs.
+    Ref Src = LoadX(Bits(First.Word, 9, 5));
+    // The byte reverse itself runs exactly as its own handler emits it.
+    const bool RevHandled = strcmp(First.Matcher->Name, "REV16_int") == 0 ? REV16_int(First.Word) : REV(First.Word);
+    if (!RevHandled) {
+      // Unreachable: RevOfWidth already accepted the encoding. Bail rather
+      // than leave a half-translated pair behind.
+      return 0;
+    }
+    // From here the guest PC is the store's, so a faulting store reports it
+    // -- with Rd already reversed, which is the architectural state at that
+    // point.
+    _GuestOpcode(Second.PC - Entry);
+    CurrentPC = Second.PC;
+    const auto MemSize = IR::SizeToOpSize(1U << Store.Size);
+    // The base is read AFTER the REV: in `rev x0,x1 ; str x0,[x0]` the
+    // address is the REVERSED x0, which is what the guest does.
+    Ref Base = LoadXSP(Store.Rn);
+    Ref Address = Base;
+    Ref Offsetted = Base;
+    if (Store.WriteBack) {
+      Offsetted = Store.Disp ? _Add(OpSize::i64Bit, Base, Constant(Store.Disp)) : Base;
+      Address = Store.PostIndex ? Base : Offsetted;
+    } else if (Store.Rm != 31) {
+      Address = _Add(OpSize::i64Bit, Base, LoadX(Store.Rm));
+    } else if (Store.Disp) {
+      Address = _Add(OpSize::i64Bit, Base, Constant(Store.Disp));
+    }
+    _StoreMemRev(MemSize, Address, Src, 0);
+    if (Store.WriteBack) {
+      StoreXSP(Store.Rn, Offsetted);
+    }
+    return 2;
+  }
+
+  return 0;
 }
 
 } // namespace FEXCore::A64

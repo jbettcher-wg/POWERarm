@@ -71,6 +71,13 @@ public:
   // alone. See TranslateDataProcessing.cpp.
   size_t TryFuseRbitClz(const Decoder::DecodedBlocks& Block, size_t Index);
 
+  // Recognizes a load with the REV of its result next to it, and a REV with
+  // the store of its result next to it, and routes the pair onto POWER's
+  // byte-reversed memory forms (l{h,w,d}brx / st{h,w,d}brx). Returns 2 on a
+  // match, 0 otherwise; like TryFuseRbitClz it consumes a fixed pair and
+  // leaves the rest of the block alone. See TranslateLoadStore.cpp.
+  size_t TryFuseMemRev(const Decoder::DecodedBlocks& Block, size_t Index);
+
   // Recognizes the vector-scan idiom (CMEQ -> UMAXP/ADDP -> FMOV -> CBZ/CBNZ)
   // and fuses it into a vector-compare branch (CondJump with VCmpElementSize).
   // Returns number of instructions consumed (4 on match, 0 if not matched).

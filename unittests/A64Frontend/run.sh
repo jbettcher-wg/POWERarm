@@ -761,6 +761,49 @@ if [ -f vins ]; then
   fi
 fi
 
+# memrev is the gate on the load+REV / REV+store fusion (TryFuseMemRev):
+# every width at every alignment, every addressing form the fusion accepts
+# and the ones it refuses, the store direction's register result, and the
+# fault boundary at a page edge. Every answer is architecturally forced and
+# the test computes it from the bytes itself, so there is no golden.
+#
+# It runs twice, and the two runs must agree byte for byte. The second run is
+# POWERARM_MAXINST=1, which puts one guest instruction in a block and so
+# cannot fuse anything: the matcher needs the pair in one decoded block. That
+# makes the fused and unfused lowerings differential against each other on
+# this host, which is a sharper gate than either run alone -- a golden only
+# says "matches the Pi", this says "the fusion changed nothing observable".
+if [ -f memrev ]; then
+  mr_fail=0
+  mr_detail=""
+  for mr_mode in fused unfused; do
+    if [ "$mr_mode" = unfused ]; then
+      POWERARM_MAXINST=1 "$emu" ./memrev > "memrev.$mr_mode" 2> /dev/null
+    else
+      "$emu" ./memrev > "memrev.$mr_mode" 2> /dev/null
+    fi
+    mr_rc=$?
+    mr_bad=$(grep -c '^FAIL' "memrev.$mr_mode" 2> /dev/null)
+    mr_checks=$(sed -n 's/^checks \([0-9]*\) failures 0$/\1/p' "memrev.$mr_mode")
+    mr_ctl=$(grep -c '^PASS control-detects-corruption$' "memrev.$mr_mode" 2> /dev/null)
+    # A missing summary line means it died before printing one, which an rc
+    # check alone would miss if it died with status 0.
+    if [ "$mr_rc" != 0 ] || [ "$mr_bad" != 0 ] || [ "$mr_ctl" != 1 ] || [ -z "$mr_checks" ] || [ "$mr_checks" -lt 200 ]; then
+      mr_fail=1
+      mr_detail="$mr_detail mode=$mr_mode rc=$mr_rc fails=$mr_bad checks=${mr_checks:-none} control=$mr_ctl;"
+    fi
+  done
+  if [ "$mr_fail" = 0 ] && ! cmp -s memrev.fused memrev.unfused; then
+    mr_fail=1
+    mr_detail="$mr_detail fused and unfused output differ: $(cmp memrev.fused memrev.unfused 2>&1 | head -1);"
+  fi
+  if [ "$mr_fail" = 0 ]; then
+    report PASS memrev "$mr_checks byte-reversed access checks clean, fused and unfused identical"
+  else
+    report FAIL memrev "$mr_detail see $out/memrev.fused"
+  fi
+fi
+
 # fcmp_denorm is the gate on the f32 compare arms having moved from the VMX
 # vcmpeqfp/vcmpgtfp/vcmpgefp to their VSX twins. The VMX ones flush denormal
 # inputs to zero when VSCR.NJ is set and the VSX ones never do, so the test

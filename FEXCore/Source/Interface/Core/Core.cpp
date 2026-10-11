@@ -1121,6 +1121,26 @@ ContextImpl::GenerateIR(FEXCore::Core::InternalThreadState* Thread, uint64_t Gue
           }
         }
 
+        // The same shape again, and it also continues in the same block: a
+        // load with the REV of its result next to it, or a REV with the store
+        // of its result next to it, onto POWER's byte-reversed memory forms.
+        // Excluded under full SMC validation for the reason above, and
+        // because the fused access must fault at the access's own PC, which a
+        // _ValidateCode block boundary between the pair would break.
+        if (!FullSMCValidation) {
+          const size_t Fused = Thread->OpDispatcher->TryFuseMemRev(Block, i);
+          if (Fused > 0) {
+            BlockInstructionsLength += Fused * FEXCore::A64::INSTRUCTION_SIZE;
+            TotalInstructionsLength += Fused * FEXCore::A64::INSTRUCTION_SIZE;
+            TotalInstructions += Fused;
+            if (Thread->OpDispatcher->FinishOp(InstAddress + Fused * FEXCore::A64::INSTRUCTION_SIZE, i + Fused == InstsInBlock)) {
+              break;
+            }
+            i += Fused - 1;
+            continue;
+          }
+        }
+
         if (!FullSMCValidation && Config.VCmpFusion) {
           const size_t Fused = Thread->OpDispatcher->TryFuseVectorScan(Block, i);
           if (Fused > 0) {
