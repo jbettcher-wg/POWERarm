@@ -203,6 +203,7 @@ private:
   void FoldBranch(IREmitter* IREmit, IRListView& CurrentIR, IROp_CondJump* Op, Ref CodeNode);
   CondClass X86ToArmFloatCond(CondClass X86);
   bool ProcessBlock(IREmitter* IREmit, IRListView& CurrentIR, Ref Block, ControlFlowGraph& CFG);
+  void AnnotateFlagLiveness(IRListView& CurrentIR, ControlFlowGraph& CFG);
 };
 
 // See the NZCVBracket declaration for what a preserve bracket is and why it
@@ -884,6 +885,148 @@ bool DeadFlagCalculationEliminination::ProcessBlock(IREmitter* IREmit, IRListVie
   return (OldFlagsRead != FlagsRead);
 }
 
+// ---------------------------------------------------------------------------
+// AnnotateFlagLiveness: the per-SITE answer to "is this flag dead here".
+//
+// ISA-OPPORTUNITIES.md §2 records why the PPC64LE backend refuses the record
+// forms and the XER-writing forms on every op that is not a flag producer:
+// CR0.LT/CR0.EQ and XER.CA/XER.OV ARE the guest's N/Z/C/V between a producer
+// and its consumer, so `sradi`, which writes XER.CA, destroys the guest C flag
+// and `rldicl.`, which writes CR0, destroys N and Z. §3.5's answer is not to
+// relax the rule but to ask, at each site, whether anything can observe the
+// bit being destroyed -- and this pass already computes that, because it is
+// the same question it answers when it DROPS a producer.
+//
+// This walk exports it. It runs last, after the backward fixpoint has
+// converged AND after compare fusion and FoldBranch have finished rewriting,
+// so what it measures is the liveness of the IR the backend will actually
+// emit. The annotation is a PERMISSION on three ops:
+//
+//   Ashr, Sbfe    CarryDead: no later read of C observes this op's value of
+//                 it, so the lowering may use sradi/srad/srawi/sraw (which
+//                 write XER.CA and nothing else in the flag domain).
+//   CondJump      NZCVDead: no later read of ANY of N/Z/C/V observes this
+//                 op's value, so the TSTZ/TSTNZ bit test may use `rldicl.`
+//                 and branch on CR0 instead of staging through cr7. All four
+//                 bits are required dead, not just N and Z: CR0 is also where
+//                 DEF_OP(FCmp) leaves a full four-condition FP result that
+//                 MapNZCVCC decodes from LT/GT/EQ/SO (the FlagsFromFCmp arm),
+//                 so "N and Z are dead" is not sufficient to make a CR0
+//                 clobber invisible.
+//
+// WHAT IT INHERITS, AND WHAT THAT COSTS. FlagsRead on arrival at an op is the
+// op's live-out under this pass's model: the bits some later op reads before
+// any later op rewrites them, across blocks through CFG::Flags. Every unit
+// exit is seeded FLAG_ALL unless the NZCV peek proved the guest overwrites the
+// flags at the exit's constant target, so with POWERARM_NZCVEXITDEAD off a
+// permission is granted only where a full writer follows inside the block.
+// That is the ceiling §2 describes and it is deliberate: this reads the
+// liveness the pass already has rather than inventing a second notion of it.
+// Nothing here looks at the switch -- the switch moves the seed, this reads
+// the seed, and both items are correct in every mode because of that.
+//
+// WHY THE CACHED CFG::Flags ARE STILL SOUND HERE, after fusion ran. Fusion
+// can only make a block's liveness LOWER than the cached value, never higher:
+//   * a fused consumer stops reading NZCV (FromNZCV cleared), which removes a
+//     read;
+//   * a dropped producer removes a WRITE, which in general lets a successor's
+//     liveness through a block that used to kill it -- but CompareFusion drops
+//     a producer only when its flags are read by nothing, which for the last
+//     producer in a block means NZCV is not live out of that block at all,
+//     and for any earlier one means the next writer writes all four bits and
+//     kills them just the same. Either way nothing new reaches the block
+//     entry. FoldBranch's removal is the same case, guarded by its own
+//     `(FlagsOut & FLAG_NZCV) == 0`.
+// So a cached entry value can be an over-estimate (conservative, we refuse a
+// permission we could have granted) and never an under-estimate. Within the
+// block there is no staleness at all: the walk below re-derives it from the
+// post-fusion ops.
+//
+// PRESERVE BRACKETS ARE NOT CANCELLED HERE, unlike in the EntryNZCVLiveIn
+// reach below, and must not be: this walk asks about the HOST state an op is
+// allowed to clobber, and a bracket's StoreNZCV genuinely does rewrite all
+// four host bits (so an Ashr inside a bracket is correctly granted its
+// permission) while its LoadNZCV genuinely does read them (so an Ashr before
+// the bracket is correctly refused). Cancelling them would be unsound in the
+// second case.
+//
+// SIGNALS. A granted permission makes the flag state imprecise at a
+// synchronous fault between the clobbering op and the next full writer, in
+// exactly the way and for exactly the span that dropping a producer already
+// does (see the ProcessBlock Remove site). The difference is that the stale
+// value becomes a garbage value rather than an older correct one; neither is
+// observable by guest code, because nothing reads it, and both are
+// observable by a handler that reads pstate at such a point. That is the
+// trade this pass already makes, not a new one.
+//
+// POWERARM_NOFLAGLIVESHIFT=1 withholds every permission, which restores the
+// old emitted code exactly. It changes emitted block bytes, so it is hashed
+// into the code cache config id (CodeCache.cpp).
+// ---------------------------------------------------------------------------
+static bool FlagLivePermissionsDisabled() {
+  static const bool Disabled = getenv("POWERARM_NOFLAGLIVESHIFT") != nullptr;
+  return Disabled;
+}
+
+void DeadFlagCalculationEliminination::AnnotateFlagLiveness(IRListView& CurrentIR, ControlFlowGraph& CFG) {
+  if (FlagLivePermissionsDisabled()) {
+    return;
+  }
+
+  for (auto [Block, BlockHeader] : CurrentIR.GetBlocks()) {
+    auto BlockIROp = CurrentIR.GetOp<IR::IROp_CodeBlock>(Block);
+
+    auto CodeBegin = CurrentIR.at(BlockIROp->Begin);
+    auto CodeLast = CurrentIR.at(BlockIROp->Last);
+
+    // Advance past EndBlock to get at the exit, as ProcessBlock does.
+    --CodeLast;
+
+    // The block's live-out. Same three cases, same order, same meaning as
+    // ProcessBlock's seed -- including the NZCV exit-deadness verdict, which
+    // is read off the op and never off the config.
+    uint32_t FlagsRead = FLAG_ALL;
+    auto [ExitNode, ExitOp] = CodeLast();
+    if (ExitOp->Op == OP_CONDJUMP) {
+      auto Op = ExitOp->C<IR::IROp_CondJump>();
+      FlagsRead = CFG.Get(Op->TrueBlock)->Flags | CFG.Get(Op->FalseBlock)->Flags;
+    } else if (ExitOp->Op == OP_JUMP) {
+      FlagsRead = CFG.Get(ExitOp->Args[0])->Flags;
+    } else if (ExitOp->Op == OP_EXITFUNCTION && ExitOp->C<IR::IROp_ExitFunction>()->NZCVDeadAtTarget) {
+      FlagsRead = 0;
+    }
+
+    // Unlike ProcessBlock this does NOT skip a block without HasFlags: such a
+    // block cannot change FlagsRead anywhere in it, so every op in it sees the
+    // seed, and a TBZ terminating a flag-free block is precisely the common
+    // case item §3.5 is about.
+    while (true) {
+      auto [CodeNode, IROp] = CodeLast();
+
+      // FlagsRead is this op's live-out: the annotation is written BEFORE the
+      // op's own read is folded in, because the question is what a CLOBBER
+      // here would destroy for somebody else, not what this op itself needs.
+      switch (IROp->Op) {
+      case OP_ASHR: IROp->CW<IR::IROp_Ashr>()->CarryDead = (FlagsRead & FLAG_C) == 0; break;
+      case OP_SBFE: IROp->CW<IR::IROp_Sbfe>()->CarryDead = (FlagsRead & FLAG_C) == 0; break;
+      case OP_CONDJUMP: IROp->CW<IR::IROp_CondJump>()->NZCVDead = (FlagsRead & FLAG_NZCV) == 0; break;
+      default: break;
+      }
+
+      struct FlagInfo Info = ClassifyFast(IROp);
+      if (!Info.Trivial()) {
+        FlagsRead &= ~Info.Write();
+        FlagsRead |= Info.Read();
+      }
+
+      if (CodeLast == CodeBegin) {
+        break;
+      }
+      --CodeLast;
+    }
+  }
+}
+
 void DeadFlagCalculationEliminination::Run(IREmitter* IREmit) {
   FEXCORE_PROFILE_SCOPED("PassManager::DFE");
 
@@ -1077,6 +1220,10 @@ void DeadFlagCalculationEliminination::Run(IREmitter* IREmit) {
     }
   }
 
+  // LAST. Everything above may still rewrite ops; this measures the result.
+  // See the block comment on AnnotateFlagLiveness for why running after the
+  // rewrites is both necessary and sound.
+  AnnotateFlagLiveness(CurrentIR, CFG);
 }
 
 fextl::unique_ptr<FEXCore::IR::Pass> CreateDeadFlagCalculationEliminination() {

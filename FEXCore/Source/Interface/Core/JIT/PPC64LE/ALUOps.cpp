@@ -1469,20 +1469,35 @@ DEF_OP(Lshr) {
 }
 
 DEF_OP(Ashr) {
-  // CRITICAL: PPC `sraw`/`sradi`/`srad` SET XER.CA based on whether any 1-bits
+  // PPC `sraw`/`srawi`/`srad`/`sradi` SET XER.CA based on whether any 1-bits
   // were shifted out of a negative value (and CLEAR CA otherwise — even for a
-  // shift count of 0). XER.CA is FEX's canonical x86 CF storage when
-  // CFInverted=true (the dispatcher's tracking state), so any Ashr emitted by
-  // the IR clobbers a flag we are required to preserve. This caused the
+  // shift count of 0). XER.CA is this backend's canonical home for the guest
+  // C flag — the A64 guest's NZCV.C, and the x86 guest's CF when
+  // CFInverted=true (the dispatcher's tracking state) — so an Ashr that used
+  // them would destroy a flag some later instruction may read. ARM's `asr`
+  // does not write C at all, so a following `b.cs`/`adc`/`ccmp` legitimately
+  // reads the C that a `sradi` here would have cleared. This caused the
   // ShiftZeroFlagsUpdate `sar eax, cl` (cl masked to 0) test to wrongly
   // produce CF=1: the prior popfq left XER.CA=1 (=> x86 CF=0); _Ashr for the
   // SAR's noop-shift cleared CA → ShiftFlags' noShift restore captured the
-  // already-corrupt CA → the resulting PUSHF saw CF=1.
+  // already-corrupt CA → the resulting PUSHF saw CF=1. (That exact shape is
+  // still refused below, and by construction: OP_SHIFTFLAGS is classified as
+  // READING all four flags, so a ShiftFlags anywhere after this op keeps C
+  // live and withholds the permission.)
   //
-  // Replace srawi/sradi/srad with sequences using only rldic*/rlwinm/srd/srw/
-  // neg/or_/sldi — none of which touch XER. For sub-64-bit operands we
-  // sign-extend (extsw/extsh/extsb) into a scratch and rely on the high bits
-  // being properly sign-filled before logical shift right.
+  // Op->CarryDead is that permission, computed per site by DFCE's
+  // AnnotateFlagLiveness: nothing that runs after this op can observe the C
+  // it is about to destroy. With it we emit the one- or two-instruction
+  // shift-algebraic form; without it the XER-neutral sequence below, built
+  // from rldic*/rlwinm/srd/srw/neg/or_/sldi only — none of which touch XER.
+  // For sub-64-bit operands that sequence sign-extends (extsw/extsh/extsb)
+  // into a scratch and relies on the high bits being properly sign-filled
+  // before a logical shift right.
+  //
+  // Both forms read only the LOW WORD of the value operand at Size <= i32
+  // (srawi/sraw are defined on RS[32:63]) and only the low 5 bits of a
+  // register count, which is the fact Compute32MaskElision's OP_ASHR row
+  // depends on; see the table there.
   auto Op  = IROp->C<IR::IROp_Ashr>();
   auto Dst = GetReg(Node);
   uint64_t C1, C2;
@@ -1513,6 +1528,25 @@ DEF_OP(Ashr) {
 
   if (S2Inline) {
     uint32_t sh = static_cast<uint32_t>(C2 & (IROp->Size <= IR::OpSize::i32Bit ? 31 : 63));
+    if (Op->CarryDead) {
+      // C is dead here: the architectural shift-algebraic forms.
+      if (IROp->Size <= IR::OpSize::i32Bit) {
+        // srawi is defined on RS[32:63] and sign-extends its 32-bit result
+        // across all 64 bits, so no extsw is needed; the tail mask restores
+        // the zero-extended i32 writeback convention.
+        srawi(Dst, S1, sh);
+        rldicl(Dst, Dst, 0, 32);
+      } else if (sh == 0) {
+        // A zero shift still writes CA, so prefer the move: same instruction
+        // count and it leaves XER alone whether or not C is really dead.
+        if (Dst != S1) {
+          mr(Dst, S1);
+        }
+      } else {
+        sradi(Dst, S1, sh);
+      }
+      return;
+    }
     if (IROp->Size <= IR::OpSize::i32Bit) {
       // Sign-extend low 32 to 64; logical-right via rldicl gives ASR semantics
       // because the high 32 bits are already sign-filled.
@@ -1542,6 +1576,23 @@ DEF_OP(Ashr) {
       }
     }
   } else {
+    if (Op->CarryDead) {
+      // C is dead: sraw/srad directly. The count must still be pre-masked --
+      // `sraw` reads 6 bits of RB and `srad` 7, and treats anything >= the
+      // width as "shift out everything", while A64 `asr` takes the count
+      // MODULO the width. Without the mask `asr w0, w1, #32` (count 32 in a
+      // register) would return all sign bits where the guest returns w1.
+      auto Src2 = GetReg(Op->Src2);
+      if (IROp->Size <= IR::OpSize::i32Bit) {
+        rldicl(TMP3, Src2, 0, 59);   // count &= 31
+        sraw(Dst, S1, TMP3);
+        rldicl(Dst, Dst, 0, 32);
+      } else {
+        rldicl(TMP3, Src2, 0, 58);   // count &= 63
+        srad(Dst, S1, TMP3);
+      }
+      return;
+    }
     if (IROp->Size <= IR::OpSize::i32Bit) {
       // Variable count masked to 5 bits; sign-extend then logical-srd.
       rldicl(TMP3, GetReg(Op->Src2), 0, 59);
@@ -1975,11 +2026,13 @@ DEF_OP(Bfe) {
 }
 
 DEF_OP(Sbfe) {
-  // Bit field extract (signed). Like Ashr above we cannot use srawi/sradi —
-  // they clobber XER.CA, the canonical x86 CF when CFInverted=true. Use
-  // extsb/extsh/extsw + rldicl-only sequences. Sbfe is heavily emitted by the
-  // ASHROp dispatcher pre-shift sign-extend (sub-32-bit SAR), so a CA leak
-  // here corrupts the next Adc/Sbb/PUSHF.
+  // Bit field extract (signed). Like Ashr above, srawi/sradi clobber XER.CA —
+  // the guest C flag (A64 NZCV.C; x86 CF when CFInverted=true) — so they are
+  // available only where DFCE's AnnotateFlagLiveness has proved that nothing
+  // can observe the C this op would destroy (Op->CarryDead). Sbfe is heavily
+  // emitted by the ASHROp dispatcher pre-shift sign-extend (sub-32-bit SAR),
+  // so a CA leak here corrupts the next Adc/Sbb/PUSHF; without the permission
+  // the extsb/extsh/extsw + rldicl-only sequences below are what runs.
   auto Op  = IROp->C<IR::IROp_Sbfe>();
   auto Dst = GetReg(Node);
   auto Src = GetReg(Op->Src);
@@ -2003,6 +2056,30 @@ DEF_OP(Sbfe) {
       if (IROp->Size <= IR::OpSize::i32Bit) rldicl(Dst, Dst, 0, 32);
       return;
     }
+  }
+
+  // General case with C dead: park the field's top bit at bit 63 and let an
+  // arithmetic shift do the sign-fill. IR.json's EmitValidation guarantees
+  // lsb + width <= OpSizeAsBits(Size) <= 64, so the left shift is in range and
+  // discards everything above the field -- including dirty bits above bit 31
+  // at i32, which the rlwinm form below drops by construction.
+  if (Op->CarryDead && width >= 1 && (lsb + width) <= 64) {
+    const uint32_t Left = 64u - (lsb + width);
+    const uint32_t Right = 64u - width;
+    GPR Staged = Src;
+    if (Left != 0) {
+      sldi(TMP1, Src, Left);       // rldicr: no XER, no CR
+      Staged = TMP1;
+    }
+    if (Right != 0) {
+      sradi(Dst, Staged, Right);   // writes XER.CA, which is why this needs the permission
+    } else if (Dst != Staged) {
+      mr(Dst, Staged);             // width == 64: nothing to fill
+    }
+    if (IROp->Size <= IR::OpSize::i32Bit) {
+      rldicl(Dst, Dst, 0, 32);     // zero-extended i32 writeback
+    }
+    return;
   }
 
   // General case: extract unsigned then construct sign-fill via neg(sign_bit).

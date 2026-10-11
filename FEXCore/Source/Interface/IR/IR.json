@@ -309,7 +309,7 @@
         "HasSideEffects": true,
         "RAOverride": "0"
       },
-      "CondJump SSA:$Cmp1, SSA:$Cmp2, SSA:$TrueBlock, SSA:$FalseBlock, CondClass:$Cond{CondClass::NEQ}, OpSize:$CompareSize{OpSize::iInvalid}, i1:$FromNZCV{false}, OpSize:$VCmpElementSize{OpSize::iInvalid}": {
+      "CondJump SSA:$Cmp1, SSA:$Cmp2, SSA:$TrueBlock, SSA:$FalseBlock, CondClass:$Cond{CondClass::NEQ}, OpSize:$CompareSize{OpSize::iInvalid}, i1:$FromNZCV{false}, OpSize:$VCmpElementSize{OpSize::iInvalid}, i1:$NZCVDead{false}": {
         "Desc": ["Conditional branch.",
                  "Normally Cmp1/Cmp2 are GPR-class values compared per Cond/CompareSize, or",
                  "FromNZCV selects the packed-flags side channel instead.",
@@ -323,7 +323,15 @@
                  "docs/VCMPEQ_FUSION_DESIGN.md. Added as a trailing defaulted field on the",
                  "existing op rather than as a new op so that every CFG-aware pass",
                  "(IRValidation successor/predecessor construction, the dead-flag pass's",
-                 "successor flag union, RA liveness) keeps working with no edits."
+                 "successor flag union, RA liveness) keeps working with no edits.",
+                 "",
+                 "NZCVDead is set by DeadFlagCalculationElimination's annotation walk when",
+                 "no read of any of N/Z/C/V after this branch can observe the flags it",
+                 "finds (AnnotateFlagLiveness). It is a PERMISSION, used only by the",
+                 "TSTZ/TSTNZ bit-test arm, which may then extract with a record-form",
+                 "rldicl. and branch on CR0 rather than stage the test through cr7.",
+                 "Default false, so any frontend or configuration without that pass emits",
+                 "the CR0-preserving sequence."
                 ],
         "Inline": ["", "AddSub"],
         "HasSideEffects": true,
@@ -1446,8 +1454,16 @@
           "Size == FEXCore::IR::OpSize::i32Bit || Size == FEXCore::IR::OpSize::i64Bit"
         ]
       },
-      "GPR = Ashr OpSize:#Size, GPR:$Src1, GPR:$Src2": {
-        "Desc": ["Integer arithmetic shift right"],
+      "GPR = Ashr OpSize:#Size, GPR:$Src1, GPR:$Src2, i1:$CarryDead{false}": {
+        "Desc": ["Integer arithmetic shift right",
+                 "",
+                 "CarryDead is set by DeadFlagCalculationElimination's annotation walk when",
+                 "no later read of the guest C flag can observe this op's value of it (see",
+                 "AnnotateFlagLiveness). It is a PERMISSION, never a requirement: the PPC64LE",
+                 "lowering may then use sradi/srad/srawi/sraw, which write XER.CA -- the",
+                 "canonical home of the guest C flag on that backend. False keeps the",
+                 "XER-neutral rldicl/srd/neg/or sequence. Default false, so a frontend or a",
+                 "configuration without DFCE emits the conservative form."],
         "Inline": ["", "Any"],
         "DestSize": "Size",
         "EmitValidation": [
@@ -1572,10 +1588,13 @@
           "(Width + lsb) <= IR::OpSizeAsBits(Size)"
         ]
       },
-      "GPR = Sbfe OpSize:#Size, u8:$Width, u8:$lsb, GPR:$Src": {
+      "GPR = Sbfe OpSize:#Size, u8:$Width, u8:$lsb, GPR:$Src, i1:$CarryDead{false}": {
         "Desc": ["Extracts a bitfield from one GPR with sext",
                  "The source bitfield is from Src[Width:0]",
-                 "The bitfield is then sign extended"
+                 "The bitfield is then sign extended",
+                 "",
+                 "CarryDead has exactly the meaning it has on Ashr: permission for the",
+                 "PPC64LE lowering to reach the field with sldi+sradi, which writes XER.CA."
                 ],
         "DestSize": "Size",
         "EmitValidation": [
