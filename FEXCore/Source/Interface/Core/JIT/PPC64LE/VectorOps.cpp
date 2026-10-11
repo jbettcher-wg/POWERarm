@@ -369,6 +369,25 @@ DEF_OP(VNeg) {
   const auto ElemSz = Op->Header.ElementSize;
   const auto Dst = GetVReg(Node);
   const auto Src = GetVReg(Op->Vector);
+
+  // ISA 3.0 has a one-instruction lane negation for the two wide element
+  // sizes (POWER-STRENGTHS.md 2.8). The pair below exists only because the
+  // pinned zero is VZERO_VSX, a VSX-numbered register the VMX subtract cannot
+  // name, so the zero has to be built into a VMX temp first.
+  //
+  // vnegw/vnegd are 0 - lane in the lane's own width, which is exactly what
+  // A64 NEG is, INT_MIN included: both wrap modularly and both leave INT_MIN
+  // unchanged. No byte or halfword form exists, and neither does a POWER8
+  // fallback, so those two sizes and every pre-3.0 host keep the pair.
+  if (CTX->HostFeatures.SupportsISA30 && (ElemSz == IR::OpSize::i32Bit || ElemSz == IR::OpSize::i64Bit)) {
+    if (ElemSz == IR::OpSize::i32Bit) {
+      vnegw(Dst, Src);
+    } else {
+      vnegd(Dst, Src);
+    }
+    return;
+  }
+
   vspltisw(VTMP1, 0);
   switch (ElemSz) {
   case IR::OpSize::i8Bit:  vsububm(Dst, VTMP1, Src); break;

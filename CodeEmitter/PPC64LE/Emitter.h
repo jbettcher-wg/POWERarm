@@ -1555,6 +1555,19 @@ public:
   void vsubuwm(VR vrt, VR vra, VR vrb)  { EmitVX(vrt.idx, vra.idx, vrb.idx, 1152);}
   void vsubudm(VR vrt, VR vra, VR vrb)  { EmitVX(vrt.idx, vra.idx, vrb.idx, 1216);} // POWER8+
 
+  // ISA 3.0 word and doubleword lane negation. VX-form with a FIXED value in
+  // the VRA field (6 for the word form, 7 for the doubleword), which is why
+  // these take one source: the field is part of the opcode, not a register.
+  // This is what makes NEG.4S/NEG.2D one instruction instead of the
+  // `vspltisw 0 ; vsubu{w,d}m` pair -- the pinned zero lives in a
+  // VSX-numbered register the VMX subtract cannot name. No byte or halfword
+  // form exists, so NEG.8B/.16B/.4H/.8H keep the pair.
+  // Encodings diffed against `llvm-mc -triple=powerpc64le -mcpu=pwr9`:
+  //   vnegw 12,31 = 02 fe 86 11     vnegd 12,31 = 02 fe 87 11
+  //   vnegw  3, 4 = 02 26 66 10     vnegd  3, 4 = 02 26 67 10
+  void vnegw(VR vrt, VR vrb) { EmitVX(vrt.idx, 6, vrb.idx, 1538); } // ISA 3.0
+  void vnegd(VR vrt, VR vrb) { EmitVX(vrt.idx, 7, vrb.idx, 1538); } // ISA 3.0
+
   void vmuloub(VR vrt, VR vra, VR vrb)  { EmitVX(vrt.idx, vra.idx, vrb.idx, 8);   }
   void vmulouh(VR vrt, VR vra, VR vrb)  { EmitVX(vrt.idx, vra.idx, vrb.idx, 72);  }
   void vmulouw(VR vrt, VR vra, VR vrb)  { EmitVX(vrt.idx, vra.idx, vrb.idx, 136); } // POWER8+

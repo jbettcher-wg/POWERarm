@@ -68,6 +68,12 @@ gcc -static -O2 -o ld1r "$here/ld1r.c"
 # itself. Built here only so the same binary runs on both sides.
 gcc -static -O2 -o vins "$here/vins.c"
 
+# vneg is self-checking: NEG is 0 - lane in the lane's own width, which the
+# architecture forces for every value including the minimum, so the file
+# computes its own answers. No golden, and it must stay that way -- it is the
+# gate on the ISA 3.0 vnegw/vnegd arms agreeing with the pre-3.0 pair.
+gcc -static -O2 -o vneg "$here/vneg.c"
+
 # fcmp_denorm is self-checking and MUST stay that way: it asserts the
 # architecturally forced result of a float compare over denormal, NaN,
 # signed-zero and infinity inputs, which is precisely what a reference run

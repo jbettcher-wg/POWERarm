@@ -761,6 +761,34 @@ if [ -f vins ]; then
   fi
 fi
 
+
+# vneg runs in both switch states for the same reason vins does, and the
+# suite's disableisa30 mode supplies the other axis: NEG.4S and NEG.2D are one
+# `vnegw`/`vnegd` on an ISA 3.0 host and the `vspltisw 0 ; vsubu{w,d}m` pair
+# below it, so between the two suite runs this covers both lowerings of the
+# same IR op in both register banks. The byte and halfword arrangements have no
+# `vneg` form at all and are here to show the swap did not reach them.
+if [ -f vneg ]; then
+  vn_fail=0
+  vn_detail=""
+  for vn_mode in on off; do
+    POWERARM_VSXCLASSES=$vn_mode "$emu" ./vneg > "vneg.vsx$vn_mode" 2> /dev/null
+    vn_rc=$?
+    vn_bad=$(grep -c '^FAIL' "vneg.vsx$vn_mode" 2> /dev/null)
+    vn_checks=$(sed -n 's/^checks \([0-9]*\) failures 0$/\1/p' "vneg.vsx$vn_mode")
+    vn_ctl=$(grep -c '^PASS control-detects-corruption$' "vneg.vsx$vn_mode" 2> /dev/null)
+    if [ "$vn_rc" != 0 ] || [ "$vn_bad" != 0 ] || [ "$vn_ctl" != 1 ] || [ -z "$vn_checks" ] || [ "$vn_checks" -lt 150 ]; then
+      vn_fail=1
+      vn_detail="$vn_detail switch=$vn_mode rc=$vn_rc fails=$vn_bad checks=${vn_checks:-none} control=$vn_ctl;"
+    fi
+  done
+  if [ "$vn_fail" = 0 ]; then
+    report PASS vneg "$vn_checks lane-negation checks clean with VSXCLASSES off and on"
+  else
+    report FAIL vneg "$vn_detail see $out/vneg.vsxon"
+  fi
+fi
+
 # fcmp_denorm is the gate on the f32 compare arms having moved from the VMX
 # vcmpeqfp/vcmpgtfp/vcmpgefp to their VSX twins. The VMX ones flush denormal
 # inputs to zero when VSCR.NJ is set and the VSX ones never do, so the test
