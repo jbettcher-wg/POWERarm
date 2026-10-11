@@ -50,7 +50,7 @@ Ref IRBuilder::HalfLanes(uint32_t Lanes, std::array<Ref, 3> Operands, bool KeepS
         D[k] = HalfToDouble(Lane, KeepSignalling, true);
       }
     }
-    Result = _VInsElement(RS, OpSize::i16Bit, i, 0, Result, Body(D));
+    Result = InsElement(RS, OpSize::i16Bit, i, 0, Result, Body(D));
   }
   return Result;
 }
@@ -173,7 +173,7 @@ bool IRBuilder::SIMDHalfPairwise(uint32_t Word, HalfOp Op, bool Scalar) {
     // Pairs of the concatenation B:A, as in SIMDFloatPairwise.
     Ref B = LoadV(Bits(Word, 20, 16));
     if (!Bit(Word, 30)) {
-      A = _VInsElement(RS, OpSize::i64Bit, 1, 0, A, B);
+      A = InsElement(RS, OpSize::i64Bit, 1, 0, A, B);
       B = A;
     }
     Even = _VUnZip(RS, OpSize::i16Bit, A, B);
@@ -329,7 +329,7 @@ bool IRBuilder::SIMDHalfToInt(uint32_t Word, uint8_t Rounding, bool Signed, bool
     } else {
       G = _Select(OpSize::i64Bit, OpSize::i32Bit, CondClass::UGT, G, Constant(0xFFFF), Constant(0xFFFF), G);
     }
-    Result = _VInsGPR(RS, OpSize::i16Bit, i, Result, G);
+    Result = InsGPR(RS, OpSize::i16Bit, i, Result, G);
   }
   StoreHalfLanes(Word, Scalar, Result);
   return true;
@@ -349,7 +349,7 @@ bool IRBuilder::SIMDIntToHalf(uint32_t Word, bool Signed, bool Scalar, uint32_t 
     if (FBits) {
       D = _VFMul(RS, OpSize::i64Bit, D, FPConstant(static_cast<uint64_t>(1023 - FBits) << 52, OpSize::i64Bit));
     }
-    Result = _VInsElement(RS, OpSize::i16Bit, i, 0, Result, DoubleToHalf(D, true));
+    Result = InsElement(RS, OpSize::i16Bit, i, 0, Result, DoubleToHalf(D, true));
   }
   StoreHalfLanes(Word, Scalar, Result);
   return true;

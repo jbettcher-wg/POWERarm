@@ -52,7 +52,7 @@ namespace FEXCore::IR {
 //      splat-form value, one instruction (plus operand splats when its inputs
 //      are not already splat form);
 //
-//   2. emits %M = VInsElement(ElementSize, DestIdx=0, SrcIdx=0,
+//   2. emits %M = VInsElementWide(ElementSize, DestIdx=0, SrcIdx=0,
 //      DestVector=<%R's original Vector1>, SrcVector=%R) immediately after %R
 //      -- the exact architectural value, upper elements from Vector1, element
 //      0 from the splat.  This is the same merge DEF_SCALAR_INSERT used to
@@ -504,7 +504,7 @@ void ScalarSplatChain::Run(IREmitter* IREmit) {
       }
 
       IREmit->SetWriteCursor(C.Node);
-      C.Merge = IREmit->_VInsElement(OpSize::i128Bit, C.IROp->ElementSize, 0, 0, V1, C.Node);
+      C.Merge = IREmit->_VInsElementWide(OpSize::i128Bit, C.IROp->ElementSize, 0, 0, V1, C.Node);
       SetSplatResult(C.IROp);
     }
 

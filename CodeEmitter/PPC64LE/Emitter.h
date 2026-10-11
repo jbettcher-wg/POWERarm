@@ -1038,6 +1038,26 @@ public:
            ((164u & 0x1FFu) << 2) | (((b.idx >> 5) & 1u) << 1) /*BX*/ | ((t.idx >> 5) & 1u) /*TX*/);
   }
 
+  // xxinsertw XT,XB,UIM — **ISA 3.0 (POWER9)** — XO 181. The VSX twin of
+  // vinsertw: takes BE word 1 of XB (physical bytes 4..7, the low word of the
+  // doubleword mtvsrd writes and the word every xxspltw leaves there) and
+  // places it at byte offset UIM of XT, leaving XT's other bytes alone.
+  // UIM is a BYTE offset and must be a multiple of 4 in 0..12, the same
+  // numbering vinsertw's UIM uses, so an existing vinsertw call site converts
+  // without touching the offset arithmetic.
+  //
+  // XX2-form with a 4-bit UIM in the field above B, so it is a read-modify-
+  // write of XT: XT is both source and destination and the caller must have
+  // put the surviving bytes there first. Verified against
+  // llvm-mc -triple=powerpc64le -mcpu=pwr9 over both halves of the register
+  // file: `xxinsertw 1,3,4` -> 0xf0241ad4 and `xxinsertw 63,62,12` ->
+  // 0xf3ecf2d7 (TX=1, BX=1), both of which this reproduces.
+  void xxinsertw(VSXR t, VSXR b, uint32_t uim) {
+    assert(uim <= 12);
+    Emit32((60u << 26) | ((t.idx & 31u) << 21) | ((uim & 15u) << 16) | ((b.idx & 31u) << 11) |
+           ((181u & 0x1FFu) << 2) | (((b.idx >> 5) & 1u) << 1) /*BX*/ | ((t.idx >> 5) & 1u) /*TX*/);
+  }
+
   // XX4-form: VRC sits at bits 10:6 with its extension bit CX at bit 3.
   void xxsel(VSXR t, VSXR a, VSXR b, VSXR c) {
     Emit32((60u << 26) | ((t.idx & 31u) << 21) | ((a.idx & 31u) << 16) | ((b.idx & 31u) << 11) | ((c.idx & 31u) << 6) |

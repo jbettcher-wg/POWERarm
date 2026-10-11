@@ -63,6 +63,11 @@ gcc -static -O2 -o sigfploop "$here/sigfploop.c"
 # only so the Pi runs the same binary the POWER host does.
 gcc -static -O2 -o ld1r "$here/ld1r.c"
 
+# vins is self-checking for the same reason: the architectural result of an
+# INS is the destination with one element replaced, which the test computes
+# itself. Built here only so the same binary runs on both sides.
+gcc -static -O2 -o vins "$here/vins.c"
+
 # sigvcache likewise: self-checking, no golden. It installs its own SIGSEGV
 # handler on a PROT_NONE page, so it needs no privileges and no timer.
 gcc -static -O2 -o sigvcache "$here/sigvcache.c"

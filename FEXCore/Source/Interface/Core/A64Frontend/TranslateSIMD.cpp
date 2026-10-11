@@ -93,8 +93,8 @@ namespace {
 
 // Builds a 128-bit value whose two halves are the low halves of Lower and
 // Upper: [Upper.low64 : Lower.low64].
-static IREmitter::IRPair<IROp_VInsElement> LowHalves(IRBuilder* B, Ref Lower, Ref Upper) {
-  return B->_VInsElement(OpSize::i128Bit, OpSize::i64Bit, 1, 0, Lower, Upper);
+static IREmitter::IRPair<IROp_VInsElementWide> LowHalves(IRBuilder* B, Ref Lower, Ref Upper) {
+  return B->_VInsElementWide(OpSize::i128Bit, OpSize::i64Bit, 1, 0, Lower, Upper);
 }
 
 // ---------------------------------------------------------------------------
@@ -176,7 +176,7 @@ bool IRBuilder::INS_gen(uint32_t Word) {
   }
   const uint32_t Rd = Bits(Word, 4, 0);
   const uint8_t Index = Imm5 >> (Size + 1);
-  StoreV(Rd, _VInsGPR(OpSize::i128Bit, ElementSizeFor(Size), Index, LoadV(Rd), LoadX(Bits(Word, 9, 5))));
+  StoreV(Rd, InsGPR(OpSize::i128Bit, ElementSizeFor(Size), Index, LoadV(Rd), LoadX(Bits(Word, 9, 5))));
   return true;
 }
 
@@ -189,7 +189,7 @@ bool IRBuilder::INS_elt(uint32_t Word) {
   const uint32_t Rd = Bits(Word, 4, 0);
   const uint8_t DestIndex = Imm5 >> (Size + 1);
   const uint8_t SrcIndex = Bits(Word, 14, 11) >> Size;
-  StoreV(Rd, _VInsElement(OpSize::i128Bit, ElementSizeFor(Size), DestIndex, SrcIndex, LoadV(Rd), LoadV(Bits(Word, 9, 5))));
+  StoreV(Rd, InsElement(OpSize::i128Bit, ElementSizeFor(Size), DestIndex, SrcIndex, LoadV(Rd), LoadV(Bits(Word, 9, 5))));
   return true;
 }
 
@@ -546,7 +546,7 @@ void IRBuilder::StoreNarrow(uint32_t Rd, bool Upper, Ref Narrow) {
     StoreVSized(Rd, OpSize::i64Bit, Narrow);
     return;
   }
-  StoreV(Rd, _VInsElement(OpSize::i128Bit, OpSize::i64Bit, 1, 0, LoadV(Rd), Narrow));
+  StoreV(Rd, InsElement(OpSize::i128Bit, OpSize::i64Bit, 1, 0, LoadV(Rd), Narrow));
 }
 
 bool IRBuilder::XTN(uint32_t Word) {

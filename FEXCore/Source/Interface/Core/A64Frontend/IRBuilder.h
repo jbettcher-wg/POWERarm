@@ -455,6 +455,27 @@ private:
   // A 128-bit vector with Pattern in both 64-bit lanes.
   Ref VectorConstant64(uint64_t Pattern);
 
+  // Element insertion is two IR ops split by element width: the 4 and 8-byte
+  // forms are VSXClean and the 1 and 2-byte forms are not, because on PPC64LE
+  // only the wide ones have a lowering that can name a pinned low-bank
+  // register (IR.json, and the PPC64LE handlers). Every frontend site goes
+  // through these, so no caller has to remember which op it wants -- and a
+  // site whose width is only known at translate time, like the `ins`/`mov`
+  // element forms that read it out of the instruction, gets the right one
+  // without a second code path.
+  Ref InsElement(OpSize RegisterSize, OpSize ElementSize, uint8_t DestIdx, uint8_t SrcIdx, Ref DestVector, Ref SrcVector) {
+    if (ElementSize == OpSize::i32Bit || ElementSize == OpSize::i64Bit) {
+      return _VInsElementWide(RegisterSize, ElementSize, DestIdx, SrcIdx, DestVector, SrcVector);
+    }
+    return _VInsElement(RegisterSize, ElementSize, DestIdx, SrcIdx, DestVector, SrcVector);
+  }
+  Ref InsGPR(OpSize RegisterSize, OpSize ElementSize, uint8_t DestIdx, Ref DestVector, Ref Src) {
+    if (ElementSize == OpSize::i32Bit || ElementSize == OpSize::i64Bit) {
+      return _VInsGPRWide(RegisterSize, ElementSize, DestIdx, DestVector, Src);
+    }
+    return _VInsGPR(RegisterSize, ElementSize, DestIdx, DestVector, Src);
+  }
+
   // Scalar FP shared bodies (TranslateFP.cpp).
   enum class FPUnaryOp { Abs, Neg, Sqrt };
   enum class FPBinaryOp { Add, Sub, Mul, Div, NMul, Min, Max, MinNum, MaxNum };

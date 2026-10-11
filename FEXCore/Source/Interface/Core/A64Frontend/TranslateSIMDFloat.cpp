@@ -207,7 +207,7 @@ bool IRBuilder::SIMDFloatPairwise(uint32_t Word, FPBinaryOp Op, bool Scalar) {
   Ref B = LoadV(Bits(Word, 20, 16));
   // Pairs of the concatenation B:A, as in SIMDPairwise.
   if (!Bit(Word, 30)) {
-    A = _VInsElement(RS, OpSize::i64Bit, 1, 0, A, B);
+    A = InsElement(RS, OpSize::i64Bit, 1, 0, A, B);
     B = A;
   }
   Ref Even = _VUnZip(RS, ES, A, B);
@@ -364,7 +364,7 @@ bool IRBuilder::SIMDFloatToInt(uint32_t Word, uint8_t Rounding, bool Signed, boo
     StoreVQ(Bits(Word, 4, 0), Bit(Word, 30), _A64VecFloatToInt(RS, ES, V, Rounding, Signed));
     return true;
   }
-  Ref Result = _VInsGPR(RS, ES, 0, _VectorZero(RS), _A64FloatToGPR(ES, ES, V, Rounding, Signed));
+  Ref Result = InsGPR(RS, ES, 0, _VectorZero(RS), _A64FloatToGPR(ES, ES, V, Rounding, Signed));
   StoreV(Bits(Word, 4, 0), Result);
   return true;
 }
@@ -412,7 +412,7 @@ bool IRBuilder::SIMDFixedConvert(uint32_t Word, bool ToFloat, bool Signed, bool 
     if (Lanes > 1) {
       Result = _A64VecIntToFloat(RS, ES, V, Signed);
     } else {
-      Result = _VInsElement(RS, ES, 0, 0, Result, _A64FloatFromGPR(ES, ES, _VExtractToGPR(RS, ES, V, 0), Signed));
+      Result = InsElement(RS, ES, 0, 0, Result, _A64FloatFromGPR(ES, ES, _VExtractToGPR(RS, ES, V, 0), Signed));
     }
     // One rounding in the conversion; the power-of-two scale is exact
     // (magnitudes stay at or above 2^-64).
@@ -426,7 +426,7 @@ bool IRBuilder::SIMDFixedConvert(uint32_t Word, bool ToFloat, bool Signed, bool 
     if (Lanes > 1) {
       Result = _A64VecFloatToInt(RS, ES, Scaled, ROUND_ZERO, Signed);
     } else {
-      Result = _VInsGPR(RS, ES, 0, Result, _A64FloatToGPR(ES, ES, Scaled, ROUND_ZERO, Signed));
+      Result = InsGPR(RS, ES, 0, Result, _A64FloatToGPR(ES, ES, Scaled, ROUND_ZERO, Signed));
     }
   }
   if (Scalar) {

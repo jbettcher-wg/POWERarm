@@ -722,6 +722,38 @@ if [ -f ld1r ]; then
   fi
 fi
 
+# vins runs in both switch states for the same reason ld1r does: the 4 and
+# 8-byte inserts are the ops the register classes moved, so with the switch on
+# a word insert into V16-V31 is the same xxinsertw (or xxspltw/xxsel pre-3.0)
+# that V0-V15 gets, and with it off the same instruction goes through a copy
+# out of the low bank. Both must give the same clean checks, and the suite's
+# disableisa30 mode supplies the other axis -- between the two suite runs this
+# covers all four combinations of switch and ISA level, which matters because
+# the pre-3.0 word insert is a different lowering (a splat and an xxsel
+# against a register-built word mask) rather than a twin of the 3.0 one.
+if [ -f vins ]; then
+  vi_fail=0
+  vi_detail=""
+  for vi_mode in on off; do
+    POWERARM_VSXCLASSES=$vi_mode "$emu" ./vins > "vins.vsx$vi_mode" 2> /dev/null
+    vi_rc=$?
+    vi_bad=$(grep -c '^FAIL' "vins.vsx$vi_mode" 2> /dev/null)
+    vi_checks=$(sed -n 's/^checks \([0-9]*\) failures 0$/\1/p' "vins.vsx$vi_mode")
+    vi_ctl=$(grep -c '^PASS control-detects-corruption$' "vins.vsx$vi_mode" 2> /dev/null)
+    # A missing summary line means it died before printing one, which an rc
+    # check alone would miss if it died with status 0.
+    if [ "$vi_rc" != 0 ] || [ "$vi_bad" != 0 ] || [ "$vi_ctl" != 1 ] || [ -z "$vi_checks" ] || [ "$vi_checks" -lt 200 ]; then
+      vi_fail=1
+      vi_detail="$vi_detail switch=$vi_mode rc=$vi_rc fails=$vi_bad checks=${vi_checks:-none} control=$vi_ctl;"
+    fi
+  done
+  if [ "$vi_fail" = 0 ]; then
+    report PASS vins "$vi_checks insert checks clean with VSXCLASSES off and on"
+  else
+    report FAIL vins "$vi_detail see $out/vins.vsxon"
+  fi
+fi
+
 if [ -f threadexit ]; then
   te_total=96
   te_batch=8

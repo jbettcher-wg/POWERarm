@@ -3345,104 +3345,39 @@ DEF_OP(VInsElement) {
   const auto DestVec  = GetVReg(Op->DestVector);
   const auto SrcVec   = GetVReg(Op->SrcVector);
 
-  // i64 elements are a pure doubleword blend — one xxpermdi, no perm control.
-  // Under the lvx-reverse layout LE dword 0 is phys[8..15] (= VSR dw1) and LE
-  // dword 1 is phys[0..7] (= VSR dw0), so LE index j maps to VSR dw (1-j).
-  // xxpermdi(D,A,B,dm): D.dw0 = A.dw[dm>>1], D.dw1 = B.dw[dm&1].
-  //   DestIdx==0: keep DestVec's LE dword 1 (= dw0) and take SrcVec's LE dword
-  //               SrcIdx (= dw 1-SrcIdx) into LE dword 0 (= dw1)
-  //               → xxpermdi(Dst, DestVec, SrcVec, 1-SrcIdx)
-  //   DestIdx==1: → xxpermdi(Dst, SrcVec, DestVec, 2*(1-SrcIdx)+1)
-  // Single instruction, so Dst may alias either source.  Hardware-verified for
-  // all four (DestIdx,SrcIdx) combinations ("VInsElement i64 D=.. S=..").
-  if (ElemSz == IR::OpSize::i64Bit) {
-    if (DestIdx == 0) {
-      xxpermdi(Dst, DestVec, SrcVec, (uint32_t)(1u - SrcIdx));
-    } else {
-      xxpermdi(Dst, SrcVec, DestVec, (uint32_t)(2u * (1u - SrcIdx) + 1u));
-    }
-    return;
+  // 1 and 2-byte elements ONLY -- see IR.json. A 4 or 8-byte insert is
+  // VInsElementWide, which is VSX-clean. The byte and halfword inserts stay
+  // here because neither has a VSX form on either level: vinsertb/vinserth
+  // are VMX, and before ISA 3.0 there is only the general vperm, whose
+  // control arrives through an lvx off the stack. Neither can name a pinned
+  // low-bank register, so a guest `ins v.b[]`/`ins v.h[]` into V16-V31 still
+  // pays the copy out of the low bank -- the census puts that at a handful of
+  // ops per run, against the thousands of word and doubleword inserts that
+  // VInsElementWide now takes.
+  if (ElemSz != IR::OpSize::i8Bit && ElemSz != IR::OpSize::i16Bit) {
+    // Not Op_Unhandled: that logs through the assert family, which is compiled
+    // out of a Release build, and this has to be a hard stop in every build --
+    // a silently skipped insert leaves the destination holding whatever the
+    // allocator last left there and the guest reads it as the inserted value.
+    ERROR_AND_DIE_FMT("VInsElement: element size {} is not 1 or 2 bytes; a wide insert is VInsElementWide",
+                      static_cast<uint32_t>(ElemSz));
   }
 
   if (CTX->HostFeatures.SupportsISA30) {
-    switch (ElemSz) {
-    case IR::OpSize::i8Bit:
+    if (ElemSz == IR::OpSize::i8Bit) {
       vspltb(VTMP2, SrcVec, SplatByteIdx(SrcIdx));
-      break;
-    case IR::OpSize::i16Bit:
+    } else {
       vsplth(VTMP2, SrcVec, SplatHalfIdx(SrcIdx));
-      break;
-    case IR::OpSize::i32Bit:
-      vspltw(VTMP2, SrcVec, SplatWordIdx(SrcIdx));
-      break;
-    default:
-      Op_Unhandled(IROp, Node);
-      return;
     }
     if (Dst != DestVec) {
       vmr(Dst, DestVec);
     }
     const uint8_t elem_bytes = (uint8_t)IR::OpSizeToSize(ElemSz);
     const uint32_t uimm = (16u - elem_bytes) - (DestIdx * elem_bytes);
-    switch (ElemSz) {
-    case IR::OpSize::i8Bit:
+    if (ElemSz == IR::OpSize::i8Bit) {
       vinsertb(Dst, VTMP2, uimm);
-      return;
-    case IR::OpSize::i16Bit:
-      vinserth(Dst, VTMP2, uimm);
-      return;
-    case IR::OpSize::i32Bit:
-      vinsertw(Dst, VTMP2, uimm);
-      return;
-    default:
-      break;
-    }
-  }
-
-  // i32 same-index insert at a doubleword *boundary* lane (LE element 0 or 3)
-  // is a 2-insn xxsldwi pair, not a vperm. This is the movss/movsd-adjacent
-  // reg-reg path: MOVScalarOpImpl/VMOVScalarOpImpl emit exactly
-  // VInsElement(i32, DestIdx=0, SrcIdx=0) for `movss xmm,xmm`, and
-  // VectorBlend's 0b0001/0b1000 (blendps imm) selectors emit the (0,0) and
-  // (3,3) cases respectively.
-  //
-  // Derivation (LE element E <-> BE word index W via W = 3-E, the same
-  // mapping the i64Bit case above documents for doublewords):
-  //   xxsldwi(T,A,B,s) takes 4 consecutive BE words from the 8-word
-  //   concatenation [A.w0,A.w1,A.w2,A.w3,B.w0,B.w1,B.w2,B.w3] starting at
-  //   word s. For s=3, T = [A.w3, B.w0, B.w1, B.w2] -- one word of A plus
-  //   three (but not all four) words of B; this only yields "3 words of one
-  //   operand + the 1 replacement word" at the two ends of the
-  //   concatenation (s=1 or s=3), which is exactly W=0 or W=3, i.e. LE
-  //   element 3 or element 0. Middle elements (1,2) have no such 2-insn
-  //   form and keep using the general vperm path below.
-  //
-  //   DestIdx=SrcIdx=0 (W=3): T = xxsldwi(SrcVec,DestVec,3)
-  //                              = [Src.w3, Dst.w0, Dst.w1, Dst.w2]
-  //                              = [Src.elem0, Dst.elem3, Dst.elem2, Dst.elem1]
-  //                           Dst = xxsldwi(T,T,1) rotates T left one word:
-  //                              = [Dst.elem3, Dst.elem2, Dst.elem1, Src.elem0]
-  //                              i.e. elem0=Src.elem0, elem[1..3]=Dst.elem[1..3]. ✓
-  //   DestIdx=SrcIdx=3 (W=0): symmetric with operand order and shifts
-  //                           swapped: T = xxsldwi(DestVec,SrcVec,1)
-  //                              = [Dst.w1, Dst.w2, Dst.w3, Src.w0]
-  //                              = [Dst.elem2, Dst.elem1, Dst.elem0, Src.elem3]
-  //                           Dst = xxsldwi(T,T,3) rotates T left three words
-  //                              = [Src.elem3, Dst.elem2, Dst.elem1, Dst.elem0]
-  //                              i.e. elem3=Src.elem3, elem[0..2]=Dst.elem[0..2]. ✓
-  //
-  // Both forms write Dst only after fully consuming DestVec/SrcVec into the
-  // scratch register, so Dst may alias either source (same property as the
-  // i64Bit case above). Hardware-verified against real x86 movss/blendps
-  // semantics -- see docs/sessions/2026-08-29/scalar-lowering-fixes.md §1.
-  // 14 -> 2 host instructions.
-  if (ElemSz == IR::OpSize::i32Bit && DestIdx == SrcIdx && (DestIdx == 0 || DestIdx == 3)) {
-    if (DestIdx == 0) {
-      xxsldwi(VTMP1, SrcVec, DestVec, 3);
-      xxsldwi(Dst, VTMP1, VTMP1, 1);
     } else {
-      xxsldwi(VTMP1, DestVec, SrcVec, 1);
-      xxsldwi(Dst, VTMP1, VTMP1, 3);
+      vinserth(Dst, VTMP2, uimm);
     }
     return;
   }
@@ -3500,21 +3435,16 @@ DEF_OP(VInsGPR) {
   // Put Src into low element of VTMP2.
   mtvsrd(VTMP2, Src);  // puts into high 64-bits of VTMP2 (phys bytes 0-7)
 
-  // i64: mtvsrd already leaves Src in VTMP2.dw0, so the insert is one
-  // doubleword blend (see VInsElement i64 for the LE dword ↔ VSR dw mapping).
-  //   DestIdx==0 → Dst.dw1 = VTMP2.dw0, Dst.dw0 = DestVec.dw0
-  //              → xxpermdi(Dst, DestVec, VTMP2, 0)
-  //   DestIdx==1 → Dst.dw0 = VTMP2.dw0, Dst.dw1 = DestVec.dw1
-  //              → xxpermdi(Dst, VTMP2, DestVec, 1)
-  // Hardware-verified for both DestIdx ("VInsGPR i64 DestIdx=0/1"); the same
-  // test also confirms mtvsrd lands the GPR in dw0 (phys[0..7]).
-  if (ElemSz == IR::OpSize::i64Bit) {
-    if (DestIdx == 0) {
-      xxpermdi(Dst, DestVec, VTMP2, 0);
-    } else {
-      xxpermdi(Dst, VTMP2, DestVec, 1);
-    }
-    return;
+  // 1 and 2-byte elements ONLY -- see IR.json. The 4 and 8-byte inserts are
+  // VInsGPRWide, which is VSX-clean, and the doubleword and word arms live
+  // there. Byte and halfword stay here for the reason VInsElement's do:
+  // vinsertb/vinserth are VMX-form, and before ISA 3.0 there is only the
+  // stack-built vperm, whose control arrives through an lvx. Neither can name
+  // a pinned low-bank register.
+  if (ElemSz != IR::OpSize::i8Bit && ElemSz != IR::OpSize::i16Bit) {
+    // Not Op_Unhandled -- see VInsElement.
+    ERROR_AND_DIE_FMT("VInsGPR: element size {} is not 1 or 2 bytes; a wide insert is VInsGPRWide",
+                      static_cast<uint32_t>(ElemSz));
   }
 
   uint8_t elem_bytes = (uint8_t)IR::OpSizeToSize(ElemSz);
@@ -3523,19 +3453,12 @@ DEF_OP(VInsGPR) {
       vmr(Dst, DestVec);
     }
     const uint32_t uimm = (16u - elem_bytes) - (DestIdx * elem_bytes);
-    switch (ElemSz) {
-    case IR::OpSize::i8Bit:
+    if (ElemSz == IR::OpSize::i8Bit) {
       vinsertb(Dst, VTMP2, uimm);
-      return;
-    case IR::OpSize::i16Bit:
+    } else {
       vinserth(Dst, VTMP2, uimm);
-      return;
-    case IR::OpSize::i32Bit:
-      vinsertw(Dst, VTMP2, uimm);
-      return;
-    default:
-      break;
     }
+    return;
   }
 
   // Now insert element 0 of VTMP2 into DestIdx of DestVec.
@@ -3578,6 +3501,177 @@ DEF_OP(VInsGPR) {
   lvx(VTMP1, r(0), TMP1);
 
   vperm(Dst, DestVec, VTMP2, VTMP1);
+}
+
+// ---------------------------------------------------------------------------
+// VInsElementWide / VInsGPRWide — the 4 and 8-byte inserts, VSX-clean
+// ---------------------------------------------------------------------------
+// Split out of VInsElement/VInsGPR by element width because only these two
+// widths have a lowering that is VSX-form in every arm, which is what lets
+// the allocator hand them a guest V16-V31 value directly. See IR.json.
+//
+// Build the word lane mask an xxsel needs: all-ones in BE word BEWord, zero
+// elsewhere, without a memory bounce and without reading the half of
+// VZERO_VSX that a host call may have clobbered.
+//
+// BE doubleword 0 is BE words 0 and 1, doubleword 1 is words 2 and 3, so the
+// mask is one doubleword of ones-in-a-word beside one doubleword of zero.
+// mtvsrd defines dw0 and leaves dw1 UNDEFINED per the ISA, so the zero half
+// cannot simply be left as it lands -- it comes from VZERO_VSX through an
+// xxpermdi with DM=0, which reads dw0 of both operands and so touches only
+// the half of VZERO_VSX that ELFv2 guarantees across a call (the rule at its
+// declaration in PPC64Emitter.h).
+//
+// Four instructions at most, against the seven-instruction stack round trip
+// (two LoadConstants, two stds, an addi and an lvx) that the vperm path these
+// replace used to build its control with -- and that lvx is also why the
+// vperm path could never be VSX-clean.
+template<typename View>
+static void BuildWordLaneMask(View* j, VSXR Dst, uint8_t BEWord) {
+  // Ones in the word, within whichever doubleword that word falls in.
+  const uint64_t MaskDW = (BEWord & 1u) ? 0x00000000FFFFFFFFull : 0xFFFFFFFF00000000ull;
+  j->LoadConstant(TMP1, MaskDW);
+  j->mtvsrd(Dst, TMP1);
+  if (BEWord < 2) {
+    j->xxpermdi(Dst, Dst, VZERO_VSX, 0);   // dw0 = mask, dw1 = 0
+  } else {
+    j->xxpermdi(Dst, VZERO_VSX, Dst, 0);   // dw0 = 0,    dw1 = mask
+  }
+}
+
+DEF_OP_VSX(VInsElementWide) {
+  const auto Op       = IROp->C<IR::IROp_VInsElementWide>();
+  const auto ElemSz   = Op->Header.ElementSize;
+  const auto DestIdx  = Op->DestIdx;
+  const auto SrcIdx   = Op->SrcIdx;
+  const auto Dst      = GetVSXReg(Node);
+  const auto DestVec  = GetVSXReg(Op->DestVector);
+  const auto SrcVec   = GetVSXReg(Op->SrcVector);
+
+  // i64 elements are a pure doubleword blend — one xxpermdi, no perm control.
+  // Under the lvx-reverse layout LE dword 0 is phys[8..15] (= VSR dw1) and LE
+  // dword 1 is phys[0..7] (= VSR dw0), so LE index j maps to VSR dw (1-j).
+  // xxpermdi(D,A,B,dm): D.dw0 = A.dw[dm>>1], D.dw1 = B.dw[dm&1].
+  //   DestIdx==0: keep DestVec's LE dword 1 (= dw0) and take SrcVec's LE dword
+  //               SrcIdx (= dw 1-SrcIdx) into LE dword 0 (= dw1)
+  //               → xxpermdi(Dst, DestVec, SrcVec, 1-SrcIdx)
+  //   DestIdx==1: → xxpermdi(Dst, SrcVec, DestVec, 2*(1-SrcIdx)+1)
+  // Single instruction, so Dst may alias either source.  Hardware-verified for
+  // all four (DestIdx,SrcIdx) combinations ("VInsElement i64 D=.. S=..").
+  if (ElemSz == IR::OpSize::i64Bit) {
+    if (DestIdx == 0) {
+      xxpermdi(Dst, DestVec, SrcVec, (uint32_t)(1u - SrcIdx));
+    } else {
+      xxpermdi(Dst, SrcVec, DestVec, (uint32_t)(2u * (1u - SrcIdx) + 1u));
+    }
+    return;
+  }
+
+  if (ElemSz != IR::OpSize::i32Bit) {
+    ERROR_AND_DIE_FMT("VInsElementWide: element size {} is not 4 or 8 bytes; a narrow insert is VInsElement",
+                      static_cast<uint32_t>(ElemSz));
+  }
+
+  if (CTX->HostFeatures.SupportsISA30) {
+    // The same three instructions the VMX form used, each swapped for its VSX
+    // twin: xxspltw for vspltw, xxlor for vmr, xxinsertw for vinsertw.
+    // xxinsertw reads BE word 1 of its source, which is where the splat put a
+    // copy, and takes the identical byte-offset UIM. No row changes length.
+    xxspltw(VTMP2_VSX, SrcVec, SplatWordIdx(SrcIdx));
+    if (Dst != DestVec) {
+      xxlor(Dst, DestVec, DestVec);
+    }
+    xxinsertw(Dst, VTMP2_VSX, (uint32_t)(12u - 4u * DestIdx));
+    return;
+  }
+
+  // i32 same-index insert at a doubleword *boundary* lane (LE element 0 or 3)
+  // is a 2-insn xxsldwi pair. Derivation (LE element E <-> BE word index W via
+  // W = 3-E, the same mapping the i64Bit case above documents for
+  // doublewords): xxsldwi(T,A,B,s) takes 4 consecutive BE words from the
+  // 8-word concatenation [A.w0..A.w3, B.w0..B.w3] starting at word s. For
+  // s=3, T = [A.w3, B.w0, B.w1, B.w2] -- one word of A plus three of B; that
+  // shape only exists at the two ends of the concatenation (s=1 or s=3),
+  // i.e. W=0 or W=3, so the middle lanes fall through to the mask below.
+  //
+  // Both forms write Dst only after fully consuming DestVec/SrcVec into the
+  // scratch register, so Dst may alias either source.
+  if (DestIdx == SrcIdx && (DestIdx == 0 || DestIdx == 3)) {
+    if (DestIdx == 0) {
+      xxsldwi(VTMP1_VSX, SrcVec, DestVec, 3);
+      xxsldwi(Dst, VTMP1_VSX, VTMP1_VSX, 1);
+    } else {
+      xxsldwi(VTMP1_VSX, DestVec, SrcVec, 1);
+      xxsldwi(Dst, VTMP1_VSX, VTMP1_VSX, 3);
+    }
+    return;
+  }
+
+  // Pre-3.0, any other word lane: splat the source word to all four lanes and
+  // pick the one being replaced with xxsel, whose control is a word lane mask
+  // built in registers. This is what the general vperm used to do through a
+  // stack-built control -- about six instructions instead of fourteen, and
+  // VSX-form throughout, where vperm and the lvx feeding it were neither.
+  xxspltw(VTMP2_VSX, SrcVec, SplatWordIdx(SrcIdx));
+  BuildWordLaneMask(this, VTMP1_VSX, SplatWordIdx(DestIdx));
+  // xxsel(T,A,B,C): T = (A & ~C) | (B & C). All three are read before Dst is
+  // written, so Dst may alias DestVec or SrcVec.
+  xxsel(Dst, DestVec, VTMP2_VSX, VTMP1_VSX);
+}
+
+DEF_OP_VSX(VInsGPRWide) {
+  const auto Op      = IROp->C<IR::IROp_VInsGPRWide>();
+  const auto ElemSz  = Op->Header.ElementSize;
+  const auto DestIdx = Op->DestIdx;
+  const auto Dst     = GetVSXReg(Node);
+  const auto DestVec = GetVSXReg(Op->DestVector);
+  const auto Src     = GetReg(Op->Src);
+
+  // Src goes into a vector register first, before anything else touches a
+  // scratch GPR -- LoadConstant below clobbers TMP1, which an operand may
+  // have been allocated to.
+  mtvsrd(VTMP2_VSX, Src);  // lands in BE dword 0 (phys bytes 0-7); dw1 UNDEFINED
+
+  // i64: mtvsrd already leaves Src in VTMP2.dw0, so the insert is one
+  // doubleword blend (see VInsElementWide i64 for the LE dword ↔ VSR dw
+  // mapping).
+  //   DestIdx==0 → Dst.dw1 = VTMP2.dw0, Dst.dw0 = DestVec.dw0
+  //              → xxpermdi(Dst, DestVec, VTMP2, 0)
+  //   DestIdx==1 → Dst.dw0 = VTMP2.dw0, Dst.dw1 = DestVec.dw1
+  //              → xxpermdi(Dst, VTMP2, DestVec, 1)
+  // Hardware-verified for both DestIdx ("VInsGPR i64 DestIdx=0/1"); the same
+  // test also confirms mtvsrd lands the GPR in dw0 (phys[0..7]).
+  if (ElemSz == IR::OpSize::i64Bit) {
+    if (DestIdx == 0) {
+      xxpermdi(Dst, DestVec, VTMP2_VSX, 0);
+    } else {
+      xxpermdi(Dst, VTMP2_VSX, DestVec, 1);
+    }
+    return;
+  }
+
+  if (ElemSz != IR::OpSize::i32Bit) {
+    ERROR_AND_DIE_FMT("VInsGPRWide: element size {} is not 4 or 8 bytes; a narrow insert is VInsGPR",
+                      static_cast<uint32_t>(ElemSz));
+  }
+
+  if (CTX->HostFeatures.SupportsISA30) {
+    // xxinsertw reads BE word 1 of its source, which is exactly where mtvsrd
+    // left the low 32 bits of the GPR -- the same word vinsertw read here
+    // before, at the same UIM. vmr becomes xxlor; nothing else changes.
+    if (Dst != DestVec) {
+      xxlor(Dst, DestVec, DestVec);
+    }
+    xxinsertw(Dst, VTMP2_VSX, (uint32_t)(12u - 4u * DestIdx));
+    return;
+  }
+
+  // Pre-3.0: splat the GPR's word out of BE word 1 to all four lanes, then
+  // select the lane being replaced. Replaces a sixteen-instruction vperm with
+  // a stack-built control.
+  xxspltw(VTMP2_VSX, VTMP2_VSX, 1);
+  BuildWordLaneMask(this, VTMP1_VSX, SplatWordIdx(DestIdx));
+  xxsel(Dst, DestVec, VTMP2_VSX, VTMP1_VSX);
 }
 
 // ---------------------------------------------------------------------------

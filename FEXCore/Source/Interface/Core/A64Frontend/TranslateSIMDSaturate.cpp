@@ -654,7 +654,7 @@ Ref IRBuilder::DoublingMultiplyHigh(OpSize ES, Ref A, Ref B, bool Rounding, Ref*
   };
   Ref Low = HighHalf(_VSMull(RS, ES, A, B));
   Ref High = HighHalf(_VSMull2(RS, ES, A, B));
-  Ref Wrapped = _VInsElement(RS, OpSize::i64Bit, 1, 0, Low, High);
+  Ref Wrapped = InsElement(RS, OpSize::i64Bit, 1, 0, Low, High);
   Ref IsMin = _VCMPEQ(RS, ES, Wrapped, LaneConstant(1ULL << (W - 1), ES));
   *Saturated = IsMin;
   return _VXor(RS, RS, Wrapped, IsMin);
@@ -744,7 +744,7 @@ bool IRBuilder::SIMDDoublingMultiplyAccumulateHigh(uint32_t Word, bool Subtract,
                            : _VAdd(RS, WideES, _VSXTL2(RS, ES, D), TermHigh);
     Ref SatHigh {};
     Ref NarrowHigh = SaturateNarrow(AccHigh, WideES, NarrowKind::SignedToSigned, &SatHigh);
-    Ref Result = _VInsElement(RS, OpSize::i64Bit, 1, 0, NarrowLow, NarrowHigh);
+    Ref Result = InsElement(RS, OpSize::i64Bit, 1, 0, NarrowLow, NarrowHigh);
     Ref Sat = _VOr(RS, RS, SatLow, SatHigh);
     SetQCIfAny(Sat);
     StoreVQ(Rd, true, Result);
@@ -935,7 +935,7 @@ bool IRBuilder::SIMDSignedAcrossLanesMinMax(uint32_t Word, bool IsMax) {
   Ref Flip = LaneConstant(1ULL << (IR::OpSizeAsBits(ES) - 1), ES);
   Ref V = _VXor(RS, RS, LoadV(Bits(Word, 9, 5)), Flip);
   if (!Q) {
-    V = _VInsElement(RS, OpSize::i64Bit, 1, 0, V, V);
+    V = InsElement(RS, OpSize::i64Bit, 1, 0, V, V);
   }
   Ref Result = IsMax ? _VUMaxV(RS, ES, V).Node : _VUMinV(RS, ES, V).Node;
   StoreVSized(Bits(Word, 4, 0), ES, _VXor(RS, RS, Result, Flip));

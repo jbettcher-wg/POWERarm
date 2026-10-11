@@ -473,7 +473,7 @@ bool IRBuilder::SIMDSingleStructure(uint32_t Word) {
         // a 1/2-byte element still needs the dup off the GPR load.
         StoreVQ(Reg, Q, ElementBytes >= 4 ? Loaded[s] : _VDupFromGPR(OpSize::i128Bit, ES, Loaded[s]).Node);
       } else {
-        StoreV(Reg, _VInsGPR(OpSize::i128Bit, ES, Index, LoadV(Reg), Loaded[s]));
+        StoreV(Reg, InsGPR(OpSize::i128Bit, ES, Index, LoadV(Reg), Loaded[s]));
       }
     }
   }

@@ -2657,11 +2657,44 @@
         "ElementSize": "ElementSize"
       },
       "FPR = VInsElement OpSize:#RegisterSize, OpSize:#ElementSize, u8:$DestIdx, u8:$SrcIdx, FPR:$DestVector, FPR:$SrcVector": {
+        "Desc": ["Inserts element SrcIdx of SrcVector into element DestIdx of DestVector.",
+                 "ElementSize must be 1 or 2 bytes. A 4 or 8-byte insert is",
+                 "VInsElementWide, which is VSXClean -- see the PPC64LE handler."
+                ],
+        "TiedSource": 0,
+        "DestSize": "RegisterSize",
+        "ElementSize": "ElementSize"
+      },
+      "FPR = VInsElementWide OpSize:#RegisterSize, OpSize:#ElementSize, u8:$DestIdx, u8:$SrcIdx, FPR:$DestVector, FPR:$SrcVector": {
+        "Desc": ["VInsElement restricted to 4 and 8-byte elements, which is what makes it",
+                 "VSXClean: a doubleword insert is one xxpermdi and a word insert is an",
+                 "xxspltw/xxinsertw or xxspltw/xxsel pair, all VSX-form. The 1 and 2-byte",
+                 "inserts have no VSX form at all on either ISA level -- vinsertb/vinserth",
+                 "on 3.0 and a vperm through the stack before it -- so they stay on",
+                 "VInsElement and the two ops are chosen by width at the frontend."
+                ],
+        "VSXClean": true,
         "TiedSource": 0,
         "DestSize": "RegisterSize",
         "ElementSize": "ElementSize"
       },
       "FPR = VInsGPR OpSize:#RegisterSize, OpSize:#ElementSize, u8:$DestIdx, FPR:$DestVector, GPR:$Src": {
+        "Desc": ["Inserts a GPR into element DestIdx of DestVector.",
+                 "ElementSize must be 1 or 2 bytes. A 4 or 8-byte insert is VInsGPRWide,",
+                 "which is VSXClean -- see the PPC64LE handler."
+                ],
+        "TiedSource": 0,
+        "DestSize": "RegisterSize",
+        "ElementSize": "ElementSize"
+      },
+      "FPR = VInsGPRWide OpSize:#RegisterSize, OpSize:#ElementSize, u8:$DestIdx, FPR:$DestVector, GPR:$Src": {
+        "Desc": ["VInsGPR restricted to 4 and 8-byte elements, for the same reason",
+                 "VInsElementWide is: mtvsrd lands the value in the doubleword every arm",
+                 "below reads, and from there a doubleword insert is one xxpermdi and a",
+                 "word insert is xxinsertw or xxsel. The 1 and 2-byte inserts stay on",
+                 "VInsGPR."
+                ],
+        "VSXClean": true,
         "TiedSource": 0,
         "DestSize": "RegisterSize",
         "ElementSize": "ElementSize"

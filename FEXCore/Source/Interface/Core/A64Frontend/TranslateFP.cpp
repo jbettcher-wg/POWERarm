@@ -191,7 +191,7 @@ bool IRBuilder::FMOV_float_gen(uint32_t Word) {
     if (Index == 0) {
       StoreV(Rd, _VCastFromGPR(OpSize::i128Bit, Size, Src));
     } else {
-      StoreV(Rd, _VInsGPR(OpSize::i128Bit, OpSize::i64Bit, 1, LoadV(Rd), Src));
+      StoreV(Rd, InsGPR(OpSize::i128Bit, OpSize::i64Bit, 1, LoadV(Rd), Src));
     }
   } else {
     StoreReg(Rd, Sf, _VExtractToGPR(OpSize::i128Bit, Size, LoadV(Rn), Index));
@@ -721,7 +721,7 @@ bool IRBuilder::SIMDConvertRoundToOdd(uint32_t Word, bool Scalar) {
     Ref Inexact = _VOr(RS, RS, Away, _VFCMPLT(RS, ES, AbsY, AbsX));
     Y = _VAdd(RS, OpSize::i32Bit, Y, Away);
     Y = _VOr(RS, RS, Y, _VAnd(RS, RS, Inexact, FPConstant(1, OpSize::i32Bit)));
-    Narrow = _VInsElement(RS, OpSize::i32Bit, i, 0, Narrow, Y);
+    Narrow = InsElement(RS, OpSize::i32Bit, i, 0, Narrow, Y);
   }
   if (Scalar) {
     StoreVSized(Bits(Word, 4, 0), OpSize::i32Bit, Narrow);
