@@ -49,8 +49,8 @@ POWERARM_VSXCLASSES=0            sh unittests/A64Frontend/run.sh "$E" "$G"
 
 sh Scripts/powerarm/check-code-cache.sh   "$PWD/build-powerarm"   # run ALONE
 sh Scripts/powerarm/check-config-errors.sh "$PWD/build-powerarm"
-sh Scripts/powerarm/check-rootfs-server.sh
-sh Scripts/powerarm/check-user-strings.sh
+sh Scripts/powerarm/check-rootfs-server.sh "$PWD/build-powerarm"
+sh Scripts/powerarm/check-user-strings.sh  "$PWD/build-powerarm"
 sh unittests/MemoryModel/check.sh
 ```
 
