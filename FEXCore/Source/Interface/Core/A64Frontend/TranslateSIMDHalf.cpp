@@ -46,7 +46,7 @@ Ref IRBuilder::HalfLanes(uint32_t Lanes, std::array<Ref, 3> Operands, bool KeepS
     std::array<Ref, 3> D {};
     for (size_t k = 0; k < Operands.size(); ++k) {
       if (Operands[k]) {
-        Ref Lane = i == 0 ? Operands[k] : _VDupElement(RS, OpSize::i16Bit, Operands[k], i).Node;
+        Ref Lane = i == 0 ? Operands[k] : DupElement(RS, OpSize::i16Bit, Operands[k], i);
         D[k] = HalfToDouble(Lane, KeepSignalling, true);
       }
     }
@@ -105,7 +105,7 @@ bool IRBuilder::SIMDHalfThreeSame(uint32_t Word, HalfOp Op, bool Scalar) {
 // index is H:L:M. Every lane holds the element.
 Ref IRBuilder::HalfElementOperand(uint32_t Word) {
   const uint32_t Index = (Bit(Word, 11) << 2) | (Bit(Word, 21) << 1) | Bit(Word, 20);
-  return _VDupElement(OpSize::i128Bit, OpSize::i16Bit, LoadV(Bits(Word, 19, 16)), Index);
+  return DupElement(OpSize::i128Bit, OpSize::i16Bit, LoadV(Bits(Word, 19, 16)), Index);
 }
 
 bool IRBuilder::SIMDHalfMulElement(uint32_t Word, HalfOp Op, bool Scalar) {
@@ -168,7 +168,7 @@ bool IRBuilder::SIMDHalfPairwise(uint32_t Word, HalfOp Op, bool Scalar) {
   if (Scalar) {
     // FADDP/FMAXP/... Hd, Vn.2H: the two lowest elements.
     Even = A;
-    Odd = _VDupElement(RS, OpSize::i16Bit, A, 1);
+    Odd = DupElement(RS, OpSize::i16Bit, A, 1);
   } else {
     // Pairs of the concatenation B:A, as in SIMDFloatPairwise.
     Ref B = LoadV(Bits(Word, 20, 16));
@@ -197,7 +197,7 @@ bool IRBuilder::SIMDHalfAcrossLanes(uint32_t Word, HalfOp Op) {
   Ref V = LoadV(Bits(Word, 9, 5));
   std::array<Ref, 8> D {};
   for (uint32_t i = 0; i < Lanes; ++i) {
-    D[i] = HalfToDouble(i == 0 ? V : _VDupElement(RS, OpSize::i16Bit, V, i).Node, true, true);
+    D[i] = HalfToDouble(i == 0 ? V : DupElement(RS, OpSize::i16Bit, V, i), true, true);
   }
   for (uint32_t Width = Lanes; Width > 1; Width /= 2) {
     for (uint32_t i = 0; i < Width / 2; ++i) {
@@ -318,7 +318,7 @@ bool IRBuilder::SIMDHalfToInt(uint32_t Word, uint8_t Rounding, bool Signed, bool
   Ref V = LoadV(Bits(Word, 9, 5));
   Ref Result = _VectorZero(RS);
   for (uint32_t i = 0; i < Lanes; ++i) {
-    Ref D = HalfToDouble(i == 0 ? V : _VDupElement(RS, OpSize::i16Bit, V, i).Node, false, true);
+    Ref D = HalfToDouble(i == 0 ? V : DupElement(RS, OpSize::i16Bit, V, i), false, true);
     if (FBits) {
       D = _VFMul(RS, OpSize::i64Bit, D, FPConstant(static_cast<uint64_t>(1023 + FBits) << 52, OpSize::i64Bit));
     }

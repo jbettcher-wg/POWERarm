@@ -868,13 +868,58 @@ DEF_OP(VDupElement) {
   const auto Dst = GetVReg(Node);
   const auto Src = GetVReg(Op->Vector);
   const uint8_t Idx = Op->Index;
+
+  // 1 and 2-byte elements ONLY -- see IR.json. A 4 or 8-byte splat is
+  // VDupElementWide, which is VSX-clean. vspltb/vsplth are VMX-form and VSX
+  // has no byte or halfword splat at any level, so these two stay here.
+  if (ElemSz != IR::OpSize::i8Bit && ElemSz != IR::OpSize::i16Bit) {
+    ERROR_AND_DIE_FMT("VDupElement: element size {} is not 1 or 2 bytes; a wide splat is VDupElementWide",
+                      static_cast<uint32_t>(ElemSz));
+  }
   EmitVSplat(this, Dst, Src, ElemSz, Idx);
   if (IROp->Size == IR::OpSize::i64Bit) {
     // IR contract: with RegSize=i64Bit the upper 64 of the result must be 0.
     // ARM64 NEON gets this for free; AltiVec splats fill all 128 bits. SSE
     // DPPS dispatcher relies on this for DstMask=0b0011 broadcast.
-    vspltisb(VTMP1, 0);
-    xxpermdi(Dst, VTMP1, Dst, 1);
+    //
+    // DM=1 takes dw0 of the first operand and dw1 of the second, so the zero
+    // comes out of VZERO_VSX's dw0 -- the half ELFv2 guarantees across a host
+    // call -- and the vspltisb that used to materialise a zero here is gone.
+    // One instruction instead of two, on every bank and both ISA levels.
+    xxpermdi(Dst, VZERO_VSX, Dst, 1);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// VDupElementWide — the 4 and 8-byte splats, VSX-clean
+// ---------------------------------------------------------------------------
+DEF_OP_VSX(VDupElementWide) {
+  const auto Op = IROp->C<IR::IROp_VDupElementWide>();
+  const auto ElemSz = Op->Header.ElementSize;
+  const auto Dst = GetVSXReg(Node);
+  const auto Src = GetVSXReg(Op->Vector);
+  const uint8_t Idx = Op->Index;
+
+  if (ElemSz == IR::OpSize::i32Bit) {
+    // xxspltw for vspltw: identical semantics at the same index, VSX-form.
+    xxspltw(Dst, Src, SplatWordIdx(Idx));
+  } else if (ElemSz == IR::OpSize::i64Bit) {
+    // POWER8 has no vspltd, so this always was an xxpermdi. Under
+    // lvx-reverse, BE dw0 = phys[0..7] = LE element 1 and BE dw1 =
+    // phys[8..15] = LE element 0, so LE index 0 wants both halves from BE
+    // dw1 (DM=0b11) and LE index 1 wants both from BE dw0 (DM=0b00). Taking
+    // the identity copy instead silently breaks VDupElement(i64, 1) -- it
+    // did once, and showed up as vpmovsxdq producing the low lanes twice.
+    xxpermdi(Dst, Src, Src, Idx == 0 ? 0b11u : 0b00u);
+  } else {
+    ERROR_AND_DIE_FMT("VDupElementWide: element size {} is not 4 or 8 bytes; a narrow splat is VDupElement",
+                      static_cast<uint32_t>(ElemSz));
+  }
+
+  if (IROp->Size == IR::OpSize::i64Bit) {
+    // Same zero-the-upper-half contract, same single xxpermdi against the
+    // pinned zero's dw0 -- see DEF_OP(VDupElement).
+    xxpermdi(Dst, VZERO_VSX, Dst, 1);
   }
 }
 
@@ -2034,11 +2079,32 @@ DEF_OP(VZip) {
   const auto Dst = GetVReg(Node);
   const auto VL  = GetVReg(Op->VectorLower);
   const auto VU  = GetVReg(Op->VectorUpper);
+  // 1 and 2-byte elements ONLY -- see IR.json. A 4 or 8-byte zip is VZipWide,
+  // which is VSX-clean. VSX has no byte or halfword merge at any level, so
+  // vmrglb/vmrglh stay here and a `zip1 v.16b`/`v.8h` into V16-V31 still pays
+  // a copy out of the low bank.
   // LE: "lower" elements are at high physical bytes (mrgl in physical = low addresses in LE)
   switch (ElemSz) {
   case IR::OpSize::i8Bit:  vmrglb(Dst, VU, VL); break;
   case IR::OpSize::i16Bit: vmrglh(Dst, VU, VL); break;
-  case IR::OpSize::i32Bit: vmrglw(Dst, VU, VL); break;
+  default:
+    ERROR_AND_DIE_FMT("VZip: element size {} is not 1 or 2 bytes; a wide zip is VZipWide",
+                      static_cast<uint32_t>(ElemSz));
+  }
+}
+
+// VZipWide — the 4 and 8-byte interleaves, VSX-clean.
+DEF_OP_VSX(VZipWide) {
+  const auto Op = IROp->C<IR::IROp_VZipWide>();
+  const auto ElemSz = Op->Header.ElementSize;
+  const auto Dst = GetVSXReg(Node);
+  const auto VL  = GetVSXReg(Op->VectorLower);
+  const auto VU  = GetVSXReg(Op->VectorUpper);
+  switch (ElemSz) {
+  case IR::OpSize::i32Bit:
+    // xxmrglw for vmrglw: the same low-half word interleave, VSX-form.
+    xxmrglw(Dst, VU, VL);
+    break;
   case IR::OpSize::i64Bit:
     // POWER8 has no `vmrgld`.  Use VSX `xxpermdi DM=3` to assemble Dst from
     // the BE-low doublewords of VU (→ Dst phys[0..7]) and VL (→ phys[8..15]).
@@ -2047,7 +2113,9 @@ DEF_OP(VZip) {
     // the IR's "lower=VL, upper=VU" semantic.
     xxpermdi(Dst, VU, VL, 3);
     break;
-  default: Op_Unhandled(IROp, Node); break;
+  default:
+    ERROR_AND_DIE_FMT("VZipWide: element size {} is not 4 or 8 bytes; a narrow zip is VZip",
+                      static_cast<uint32_t>(ElemSz));
   }
 }
 
@@ -2074,16 +2142,59 @@ DEF_OP(VZip2) {
     switch (ElemSz) {
     case IR::OpSize::i8Bit:  vmrglb(Dst, VTMP2, VTMP1); break;
     case IR::OpSize::i16Bit: vmrglh(Dst, VTMP2, VTMP1); break;
-    case IR::OpSize::i32Bit: vmrglw(Dst, VTMP2, VTMP1); break;
     default: Op_Unhandled(IROp, Node); break;
     }
     return;
   }
 
+  // 1 and 2-byte elements ONLY -- see IR.json. A 4 or 8-byte zip is
+  // VZip2Wide, which is VSX-clean; VSX has no byte or halfword merge.
   switch (ElemSz) {
   case IR::OpSize::i8Bit:  vmrghb(Dst, VU, VL); break;
   case IR::OpSize::i16Bit: vmrghh(Dst, VU, VL); break;
-  case IR::OpSize::i32Bit: vmrghw(Dst, VU, VL); break;
+  default:
+    ERROR_AND_DIE_FMT("VZip2: element size {} is not 1 or 2 bytes; a wide zip is VZip2Wide",
+                      static_cast<uint32_t>(ElemSz));
+  }
+}
+
+// VZip2Wide — the 4 and 8-byte upper interleaves, VSX-clean.
+DEF_OP_VSX(VZip2Wide) {
+  const auto Op = IROp->C<IR::IROp_VZip2Wide>();
+  const auto ElemSz = Op->Header.ElementSize;
+  const auto Dst = GetVSXReg(Node);
+  const auto VL  = GetVSXReg(Op->VectorLower);
+  const auto VU  = GetVSXReg(Op->VectorUpper);
+
+  if (IROp->Size == IR::OpSize::i64Bit) {
+    // A 64-bit register's valid data is LE bytes 0-7 (physical 15-8), which
+    // the high-half merge would read as the zero half, so each source is
+    // first shifted right by four LE bytes and then merged with the LOW-half
+    // form -- the derivation is DEF_OP(VZip2)'s, unchanged. Only the
+    // instructions differ: xxlxor for vspltisw, xxsldwi by 3 words for
+    // vsldoi by 12 bytes, xxmrglw for vmrglw. Four instructions, as before.
+    //
+    // The zero cannot come from VZERO_VSX here: xxsldwi reads all 128 bits of
+    // both operands, and only VZERO_VSX's dw0 is guaranteed zero after a host
+    // call. xxlxor against the temp itself is a full-width zero and costs the
+    // one instruction vspltisw cost.
+    if (ElemSz != IR::OpSize::i32Bit) {
+      // As DEF_OP(VZip2) did for this combination.
+      Op_Unhandled(IROp, Node);
+      return;
+    }
+    xxlxor(VTMP1_VSX, VTMP1_VSX, VTMP1_VSX);
+    xxsldwi(VTMP2_VSX, VTMP1_VSX, VU, 3);  // VTMP2.LE[0..3] = VU.LE[4..7]
+    xxsldwi(VTMP1_VSX, VTMP1_VSX, VL, 3);  // VTMP1.LE[0..3] = VL.LE[4..7]
+    xxmrglw(Dst, VTMP2_VSX, VTMP1_VSX);
+    return;
+  }
+
+  switch (ElemSz) {
+  case IR::OpSize::i32Bit:
+    // xxmrghw for vmrghw: the same high-half word interleave, VSX-form.
+    xxmrghw(Dst, VU, VL);
+    break;
   case IR::OpSize::i64Bit:
     // i64 VZip2: result LE[0] = VL LE[1], result LE[1] = VU LE[1] (take the
     // upper element of each input and pack lower-of-VL : upper-of-VU). Under
@@ -2093,7 +2204,9 @@ DEF_OP(VZip2) {
     // Dst LE_1 = VU LE_1}.
     xxpermdi(Dst, VU, VL, 0);
     break;
-  default: Op_Unhandled(IROp, Node); break;
+  default:
+    ERROR_AND_DIE_FMT("VZip2Wide: element size {} is not 4 or 8 bytes; a narrow zip is VZip2",
+                      static_cast<uint32_t>(ElemSz));
   }
 }
 
@@ -3747,6 +3860,36 @@ DEF_OP(VStoreVectorElement) {
 // VExtr — extract: result = (VectorUpper:VectorLower)[Index*ElemSize .. +16]
 // Like ARM EXT: concatenates [lower, upper] and extracts 16 bytes at byte offset.
 // ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// VExtrWord — the word-aligned 128-bit extract, VSX-clean
+// ---------------------------------------------------------------------------
+// vsldoi shifts the 32-byte concatenation by a BYTE count; xxsldwi shifts it
+// by a WORD count. They therefore agree on exactly the byte offsets that are
+// multiples of four, and at those offsets this is one instruction just as
+// vsldoi was -- but VSX-form, so it can name a pinned low-bank register. The
+// frontend sends the other offsets, and the 64-bit register size (which needs
+// a zero-filled shift), to DEF_OP(VExtr); see IR.json.
+DEF_OP_VSX(VExtrWord) {
+  const auto Op    = IROp->C<IR::IROp_VExtrWord>();
+  const auto Dst   = GetVSXReg(Node);
+  const auto VLow  = GetVSXReg(Op->VectorLower);
+  const auto VHigh = GetVSXReg(Op->VectorUpper);
+  const size_t N   = (size_t)Op->Index * IR::OpSizeToSize(Op->Header.ElementSize);
+
+  if (IROp->Size != IR::OpSize::i128Bit || N == 0 || N >= 16 || (N % 4) != 0) {
+    ERROR_AND_DIE_FMT("VExtrWord: byte offset {} at register size {} is not a word-aligned 128-bit "
+                      "extract; the general form is VExtr",
+                      static_cast<uint32_t>(N), static_cast<uint32_t>(IROp->Size));
+  }
+
+  // Dst.phys[b] = (VLow||VHigh).phys[b + 16 - N] is what vsldoi SHB=16-N
+  // computes, and xxsldwi shw takes words [shw..shw+3] of the same
+  // concatenation, i.e. phys bytes [shw*4 .. shw*4+15]. So shw = (16-N)/4,
+  // which is 3, 2 or 1 for N = 4, 8 or 12. The EXT-semantics derivation is
+  // DEF_OP(VExtr)'s and is unchanged by the change of granularity.
+  xxsldwi(Dst, VLow, VHigh, (uint32_t)((16u - N) / 4u));
+}
+
 DEF_OP(VExtr) {
   const auto Op    = IROp->C<IR::IROp_VExtr>();
   const auto ElemSz = Op->Header.ElementSize;
@@ -5032,52 +5175,70 @@ DEF_OP(VDupFromGPR) {
   const auto Dst   = GetVReg(Node);
   const auto Src   = GetReg(Op->Src);
 
-  // On ISA 3.0:
-  // - 32-bit: mtvsrws splats word across all 4 elements in 1 instruction
-  // - 64-bit: mtvsrdd splats doubleword across both elements in 1 instruction
-  // - 8/16-bit: mtvsrws into VTMP1 splats across all words, then vspltb/vsplth
-  if (CTX->HostFeatures.SupportsISA30) {
-    switch (ElemSz) {
-    case IR::OpSize::i8Bit:
-      mtvsrws(VTMP1, Src);
-      vspltb(Dst, VTMP1, SplatByteIdx(0));
-      return;
-    case IR::OpSize::i16Bit:
-      mtvsrws(VTMP1, Src);
-      vsplth(Dst, VTMP1, SplatHalfIdx(0));
-      return;
-    case IR::OpSize::i32Bit:
-      mtvsrws(Dst, Src);
-      return;
-    case IR::OpSize::i64Bit:
-      mtvsrdd(Dst, Src, Src);
-      return;
-    default:
-      break;
-    }
+  // 1 and 2-byte elements ONLY -- see IR.json. A 4 or 8-byte broadcast is
+  // VDupFromGPRWide, which is VSX-clean. These two have to finish with
+  // vspltb/vsplth, which are VMX-form with no VSX equivalent at any
+  // granularity, so they stay.
+  if (ElemSz != IR::OpSize::i8Bit && ElemSz != IR::OpSize::i16Bit) {
+    ERROR_AND_DIE_FMT("VDupFromGPR: element size {} is not 1 or 2 bytes; a wide broadcast is VDupFromGPRWide",
+                      static_cast<uint32_t>(ElemSz));
   }
 
-  // mtvsrd defines BE dword 0 (phys[0..7]); BE dword 1 (phys[8..15]) is
-  // undefined per ISA. SplatByteIdx(0)=15/SplatHalfIdx(0)=7/SplatWordIdx(0)=3
-  // all read from the undefined half — duplicate the defined dword into both
-  // halves first (same pattern as VShlI i64 — invariant 0a).
-  mtvsrd(VTMP1, Src);
-  xxpermdi(VTMP1, VTMP1, VTMP1, 0);
-  switch (ElemSz) {
-  case IR::OpSize::i8Bit:
+  if (CTX->HostFeatures.SupportsISA30) {
+    // mtvsrws splats the word across all four, then the byte/halfword splat
+    // picks a lane out of it.
+    mtvsrws(VTMP1, Src);
+  } else {
+    // mtvsrd defines BE dword 0 (phys[0..7]); BE dword 1 (phys[8..15]) is
+    // undefined per ISA. SplatByteIdx(0)=15/SplatHalfIdx(0)=7 both read from
+    // the undefined half — duplicate the defined dword into both halves
+    // first (same pattern as VShlI i64 — invariant 0a).
+    mtvsrd(VTMP1, Src);
+    xxpermdi(VTMP1, VTMP1, VTMP1, 0);
+  }
+  if (ElemSz == IR::OpSize::i8Bit) {
     vspltb(Dst, VTMP1, SplatByteIdx(0));
-    break;
-  case IR::OpSize::i16Bit:
+  } else {
     vsplth(Dst, VTMP1, SplatHalfIdx(0));
-    break;
-  case IR::OpSize::i32Bit:
-    vspltw(Dst, VTMP1, SplatWordIdx(0));
-    break;
-  case IR::OpSize::i64Bit:
-    vmr(Dst, VTMP1);
-    break;
-  default:
-    break;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// VDupFromGPRWide — the 4 and 8-byte broadcasts, VSX-clean
+// ---------------------------------------------------------------------------
+DEF_OP_VSX(VDupFromGPRWide) {
+  const auto Op    = IROp->C<IR::IROp_VDupFromGPRWide>();
+  const auto ElemSz = Op->Header.ElementSize;
+  const auto Dst   = GetVSXReg(Node);
+  const auto Src   = GetReg(Op->Src);
+
+  if (ElemSz != IR::OpSize::i32Bit && ElemSz != IR::OpSize::i64Bit) {
+    ERROR_AND_DIE_FMT("VDupFromGPRWide: element size {} is not 4 or 8 bytes; a narrow broadcast is VDupFromGPR",
+                      static_cast<uint32_t>(ElemSz));
+  }
+
+  if (CTX->HostFeatures.SupportsISA30) {
+    // One instruction each, and both are XX1-form with full reach.
+    if (ElemSz == IR::OpSize::i32Bit) {
+      mtvsrws(Dst, Src);
+    } else {
+      mtvsrdd(Dst, Src, Src);
+    }
+    return;
+  }
+
+  // Pre-3.0. mtvsrd defines BE dword 0 and leaves BE dword 1 UNDEFINED per
+  // the ISA, and the word index a splat would read (SplatWordIdx(0) = 3) is
+  // in the undefined half, so duplicate the defined doubleword into both
+  // halves first. Writing Dst directly rather than staging through a vector
+  // temp is what drops the old `vmr Dst, VTMP1` tail: for an 8-byte element
+  // the duplicate IS the broadcast, so the op is two instructions instead of
+  // three, on every bank.
+  mtvsrd(Dst, Src);
+  xxpermdi(Dst, Dst, Dst, 0);
+  if (ElemSz == IR::OpSize::i32Bit) {
+    // xxspltw for vspltw: same index, same semantics, VSX-form.
+    xxspltw(Dst, Dst, SplatWordIdx(0));
   }
 }
 

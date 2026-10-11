@@ -2161,7 +2161,19 @@
         "ElementSize": "ElementSize"
       },
       "FPR = VDupElement OpSize:#RegisterSize, OpSize:#ElementSize, FPR:$Vector, u8:$Index": {
-        "Desc": ["Duplicates one element from the source register across the whole register"],
+        "Desc": ["Duplicates one element from the source register across the whole register",
+                 "ElementSize must be 1 or 2 bytes. A 4 or 8-byte duplicate is",
+                 "VDupElementWide, which is VSXClean -- see the PPC64LE handler."
+                ],
+        "DestSize": "RegisterSize",
+        "ElementSize": "ElementSize"
+      },
+      "FPR = VDupElementWide OpSize:#RegisterSize, OpSize:#ElementSize, FPR:$Vector, u8:$Index": {
+        "Desc": ["VDupElement restricted to 4 and 8-byte elements: a word splat is xxspltw",
+                 "and a doubleword splat is xxpermdi, both VSX-form, while the 1 and 2-byte",
+                 "splats are vspltb/vsplth and have no VSX form at any granularity."
+                ],
+        "VSXClean": true,
         "DestSize": "RegisterSize",
         "ElementSize": "ElementSize"
       },
@@ -2431,10 +2443,35 @@
       },
 
       "FPR = VZip OpSize:#RegisterSize, OpSize:#ElementSize, FPR:$VectorLower, FPR:$VectorUpper": {
+        "Desc": ["ElementSize must be 1 or 2 bytes. A 4 or 8-byte zip is VZipWide,",
+                 "which is VSXClean -- see the PPC64LE handler."
+                ],
+        "DestSize": "RegisterSize",
+        "ElementSize": "ElementSize"
+      },
+      "FPR = VZipWide OpSize:#RegisterSize, OpSize:#ElementSize, FPR:$VectorLower, FPR:$VectorUpper": {
+        "Desc": ["VZip restricted to 4 and 8-byte elements: xxmrglw for a word interleave",
+                 "and xxpermdi for a doubleword one. VSX has no byte or halfword merge at",
+                 "all, so those stay on VZip."
+                ],
+        "VSXClean": true,
         "DestSize": "RegisterSize",
         "ElementSize": "ElementSize"
       },
       "FPR = VZip2 OpSize:#RegisterSize, OpSize:#ElementSize, FPR:$VectorLower, FPR:$VectorUpper": {
+        "Desc": ["ElementSize must be 1 or 2 bytes. A 4 or 8-byte zip is VZip2Wide,",
+                 "which is VSXClean -- see the PPC64LE handler."
+                ],
+        "DestSize": "RegisterSize",
+        "ElementSize": "ElementSize"
+      },
+      "FPR = VZip2Wide OpSize:#RegisterSize, OpSize:#ElementSize, FPR:$VectorLower, FPR:$VectorUpper": {
+        "Desc": ["VZip2 restricted to 4 and 8-byte elements: xxmrghw for a word interleave",
+                 "and xxpermdi for a doubleword one, and for a 64-bit register size an",
+                 "xxlxor and two xxsldwi where the VMX arm used vspltisw and two vsldoi.",
+                 "VSX has no byte or halfword merge, so those stay on VZip2."
+                ],
+        "VSXClean": true,
         "DestSize": "RegisterSize",
         "ElementSize": "ElementSize"
       },
@@ -2705,8 +2742,27 @@
                  "Index is an element index. So it is offset by ElementSize argument",
                  "op:",
                  "TmpVector <RegisterSize *2> = concat(Upper:Lower)",
-                 "Dest = TmpVector >> (ElementSize * Index * 8); // Or can be thought of `concat(&TmpVector[Index], i128)`"
+                 "Dest = TmpVector >> (ElementSize * Index * 8); // Or can be thought of `concat(&TmpVector[Index], i128)`",
+                 "",
+                 "This is the general form and handles every index. When the byte offset",
+                 "Index*ElementSize is 4, 8 or 12 and RegisterSize is 128-bit, the frontend",
+                 "emits VExtrWord instead, which is the same single instruction in VSX form",
+                 "and therefore VSXClean."
                 ],
+        "TiedSource": 1,
+        "DestSize": "RegisterSize",
+        "ElementSize": "ElementSize"
+      },
+
+      "FPR = VExtrWord OpSize:#RegisterSize, OpSize:#ElementSize, FPR:$VectorLower, FPR:$VectorUpper, u8:$Index": {
+        "Desc": ["VExtr restricted to the word-aligned offsets of a 128-bit extract:",
+                 "Index*ElementSize must be 4, 8 or 12, and RegisterSize must be 128-bit.",
+                 "Those are exactly the offsets vsldoi shares with xxsldwi, which shifts by",
+                 "whole words -- one instruction either way, but VSX-form, so this op is",
+                 "VSXClean. Every other offset needs vsldoi's byte granularity, and the",
+                 "64-bit register size needs a zero-filled shift, so both stay on VExtr."
+                ],
+        "VSXClean": true,
         "TiedSource": 1,
         "DestSize": "RegisterSize",
         "ElementSize": "ElementSize"
@@ -2898,7 +2954,21 @@
       },
 
       "FPR = VDupFromGPR OpSize:#RegisterSize, OpSize:#ElementSize, GPR:$Src": {
-        "Desc": ["Broadcasts a value in a GPR into each ElementSize-sized element in a vector"],
+        "Desc": ["Broadcasts a value in a GPR into each ElementSize-sized element in a vector",
+                 "ElementSize must be 1 or 2 bytes. A 4 or 8-byte broadcast is",
+                 "VDupFromGPRWide, which is VSXClean -- see the PPC64LE handler."
+                ],
+        "DestSize": "RegisterSize",
+        "ElementSize": "ElementSize"
+      },
+      "FPR = VDupFromGPRWide OpSize:#RegisterSize, OpSize:#ElementSize, GPR:$Src": {
+        "Desc": ["VDupFromGPR restricted to 4 and 8-byte elements, which is what makes it",
+                 "VSXClean: mtvsrws and mtvsrdd do the whole broadcast in one VSX-form",
+                 "instruction on ISA 3.0, and before that it is mtvsrd plus xxpermdi plus",
+                 "xxspltw. A 1 or 2-byte broadcast has to finish with vspltb/vsplth, which",
+                 "are VMX-form, so those stay on VDupFromGPR."
+                ],
+        "VSXClean": true,
         "DestSize": "RegisterSize",
         "ElementSize": "ElementSize"
       },

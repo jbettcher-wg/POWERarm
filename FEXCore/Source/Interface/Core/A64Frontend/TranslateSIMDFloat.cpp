@@ -104,7 +104,7 @@ bool IRBuilder::FloatElementOperand(uint32_t Word, OpSize ES, Ref* Element) {
   } else {
     Index = (H << 1) | L;
   }
-  *Element = _VDupElement(OpSize::i128Bit, ES, LoadV(Rm), Index);
+  *Element = DupElement(OpSize::i128Bit, ES, LoadV(Rm), Index);
   return true;
 }
 
@@ -201,7 +201,7 @@ bool IRBuilder::SIMDFloatPairwise(uint32_t Word, FPBinaryOp Op, bool Scalar) {
   Ref A = LoadV(Bits(Word, 9, 5));
   if (Scalar) {
     // FADDP/FMAXP/... Sd/Dd, Vn.2<T>: the two lowest elements.
-    StoreFloatLanes(Word, true, ES, FPBinaryLanes(Op, ES, A, _VDupElement(RS, ES, A, 1)));
+    StoreFloatLanes(Word, true, ES, FPBinaryLanes(Op, ES, A, DupElement(RS, ES, A, 1)));
     return true;
   }
   Ref B = LoadV(Bits(Word, 20, 16));
@@ -230,7 +230,7 @@ bool IRBuilder::SIMDFloatAcrossLanes(uint32_t Word, FPBinaryOp Op) {
   Ref V = LoadV(Bits(Word, 9, 5));
   // Lanes 0 and 1 of Pairs hold op(e0, e1) and op(e2, e3).
   Ref Pairs = FPBinaryLanes(Op, ES, _VUnZip(RS, ES, V, V), _VUnZip2(RS, ES, V, V));
-  StoreVSized(Bits(Word, 4, 0), ES, FPBinaryLanes(Op, ES, Pairs, _VDupElement(RS, ES, Pairs, 1)));
+  StoreVSized(Bits(Word, 4, 0), ES, FPBinaryLanes(Op, ES, Pairs, DupElement(RS, ES, Pairs, 1)));
   return true;
 }
 

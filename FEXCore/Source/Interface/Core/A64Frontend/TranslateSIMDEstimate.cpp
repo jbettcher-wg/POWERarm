@@ -163,7 +163,7 @@ Ref IRBuilder::OverflowToInfinityMask(OpSize ES, Ref X) {
   // RMode is FPCR<23:22>: 00 RN, 01 RP, 10 RM, 11 RZ.
   Ref PosInf = _Sub(OpSize::i64Bit, _Bfe(OpSize::i64Bit, 1, 23, FPCR), Constant(1));
   Ref NegInf = _Sub(OpSize::i64Bit, _Bfe(OpSize::i64Bit, 1, 22, FPCR), Constant(1));
-  return _VBSL(RS, _VCMPLTZ(RS, ES, X), _VDupFromGPR(RS, ES, NegInf), _VDupFromGPR(RS, ES, PosInf));
+  return _VBSL(RS, _VCMPLTZ(RS, ES, X), DupFromGPR(RS, ES, NegInf), DupFromGPR(RS, ES, PosInf));
 }
 
 // X holds single or double operands in ES lanes, or with HalfInWord half

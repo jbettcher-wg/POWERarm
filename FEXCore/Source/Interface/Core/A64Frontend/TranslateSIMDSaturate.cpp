@@ -631,7 +631,7 @@ bool IRBuilder::IntElementOperand(uint32_t Word, Ref* Element) {
   } else {
     return false;
   }
-  *Element = _VDupElement(OpSize::i128Bit, LaneSize(Size), LoadV(Rm), Index);
+  *Element = DupElement(OpSize::i128Bit, LaneSize(Size), LoadV(Rm), Index);
   return true;
 }
 

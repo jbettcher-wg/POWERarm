@@ -476,6 +476,50 @@ private:
     return _VInsGPR(RegisterSize, ElementSize, DestIdx, DestVector, Src);
   }
 
+  // The same width split, for the same reason, over the rest of the element
+  // movers: on PPC64LE the 4 and 8-byte forms of each have a lowering that is
+  // VSX-form in every arm and the 1 and 2-byte forms do not, because VSX has
+  // no byte or halfword splat and no byte or halfword merge at all.
+  static bool WideElement(OpSize ElementSize) {
+    return ElementSize == OpSize::i32Bit || ElementSize == OpSize::i64Bit;
+  }
+  Ref DupFromGPR(OpSize RegisterSize, OpSize ElementSize, Ref Src) {
+    if (WideElement(ElementSize)) {
+      return _VDupFromGPRWide(RegisterSize, ElementSize, Src);
+    }
+    return _VDupFromGPR(RegisterSize, ElementSize, Src);
+  }
+  Ref DupElement(OpSize RegisterSize, OpSize ElementSize, Ref Vector, uint8_t Index) {
+    if (WideElement(ElementSize)) {
+      return _VDupElementWide(RegisterSize, ElementSize, Vector, Index);
+    }
+    return _VDupElement(RegisterSize, ElementSize, Vector, Index);
+  }
+  Ref Zip(OpSize RegisterSize, OpSize ElementSize, Ref VectorLower, Ref VectorUpper) {
+    if (WideElement(ElementSize)) {
+      return _VZipWide(RegisterSize, ElementSize, VectorLower, VectorUpper);
+    }
+    return _VZip(RegisterSize, ElementSize, VectorLower, VectorUpper);
+  }
+  Ref Zip2(OpSize RegisterSize, OpSize ElementSize, Ref VectorLower, Ref VectorUpper) {
+    if (WideElement(ElementSize)) {
+      return _VZip2Wide(RegisterSize, ElementSize, VectorLower, VectorUpper);
+    }
+    return _VZip2(RegisterSize, ElementSize, VectorLower, VectorUpper);
+  }
+
+  // VExtr splits on the byte OFFSET rather than the element width: vsldoi
+  // shifts the concatenation by bytes and xxsldwi by whole words, so they
+  // agree only where the offset is a multiple of four. A 64-bit register size
+  // needs a zero-filled shift and stays on the general op.
+  Ref Extr(OpSize RegisterSize, OpSize ElementSize, Ref VectorLower, Ref VectorUpper, uint8_t Index) {
+    const unsigned Bytes = Index * IR::OpSizeToSize(ElementSize);
+    if (RegisterSize == OpSize::i128Bit && Bytes != 0 && Bytes < 16 && (Bytes % 4) == 0) {
+      return _VExtrWord(RegisterSize, ElementSize, VectorLower, VectorUpper, Index);
+    }
+    return _VExtr(RegisterSize, ElementSize, VectorLower, VectorUpper, Index);
+  }
+
   // Scalar FP shared bodies (TranslateFP.cpp).
   enum class FPUnaryOp { Abs, Neg, Sqrt };
   enum class FPBinaryOp { Add, Sub, Mul, Div, NMul, Min, Max, MinNum, MaxNum };
