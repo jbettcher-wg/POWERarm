@@ -535,26 +535,33 @@ fi
 #    cmpbranch is used because check 2 above already establishes that it reaches
 #    the policy at all.
 if [ -f cmpbranch.golden ]; then
+  # Not in OUTDIR: see the re-entry comment at the top of this file. These two
+  # files are read back after they are written, so a second suite running in
+  # the same shared golden directory truncates one mid-read and this check
+  # fails for a reason that has nothing to do with the policy. Keep them per
+  # run; the directory survives a failure so the file can still be read.
+  nw_work=$(mktemp -d "${TMPDIR:-/tmp}/nzcv-window.XXXXXX") || exit 2
   POWERARM_NZCVEXITDEAD=on POWERARM_NZCVEXITDEADSTATS=1 POWERARM_ENABLECODECACHINGWIP=0 \
-    "$emu" ./cmpbranch > /dev/null 2> nzcv_window.err
+    "$emu" ./cmpbranch > /dev/null 2> "$nw_work/nzcv_window.err"
   POWERARM_NZCVEXITDEAD=on POWERARM_NZCVEXITDEADSTATS=1 POWERARM_NZCVEXITDEADNOWINDOW=1 POWERARM_ENABLECODECACHINGWIP=0 \
-    "$emu" ./cmpbranch > /dev/null 2> nzcv_window_nocheck.err
-  wl=$(grep '^NZCV_EXITDEAD ' nzcv_window.err | tail -1)
-  wl_no=$(grep '^NZCV_EXITDEAD ' nzcv_window_nocheck.err | tail -1)
+    "$emu" ./cmpbranch > /dev/null 2> "$nw_work/nzcv_window_nocheck.err"
+  wl=$(grep '^NZCV_EXITDEAD ' "$nw_work/nzcv_window.err" | tail -1)
+  wl_no=$(grep '^NZCV_EXITDEAD ' "$nw_work/nzcv_window_nocheck.err" | tail -1)
   w_dead=$(echo "$wl" | sed -n 's/.* dead=\([0-9]*\).*/\1/p')
   w_below=$(echo "$wl" | sed -n 's/.*refused_below_entry=\([0-9]*\).*/\1/p')
   w_below_no=$(echo "$wl_no" | sed -n 's/.*refused_below_entry=\([0-9]*\).*/\1/p')
   w_dead_no=$(echo "$wl_no" | sed -n 's/.* dead=\([0-9]*\).*/\1/p')
   if [ -z "$w_dead" ] || [ -z "$w_below" ] || [ -z "$w_below_no" ]; then
-    report FAIL nzcv_exit_dead_window "no NZCV_EXITDEAD stats line: [$wl] [$wl_no]; see $out/nzcv_window.err"
+    report FAIL nzcv_exit_dead_window "no NZCV_EXITDEAD stats line: [$wl] [$wl_no]; see $nw_work/nzcv_window.err"
   elif [ "$w_dead" -le 0 ]; then
-    report FAIL nzcv_exit_dead_window "no verdict was taken at all (dead=$w_dead), so this check tests nothing; see $out/nzcv_window.err"
+    report FAIL nzcv_exit_dead_window "no verdict was taken at all (dead=$w_dead), so this check tests nothing; see $nw_work/nzcv_window.err"
   elif [ "$w_below_no" != 0 ]; then
     report FAIL nzcv_exit_dead_window "the lever does not disable the check: refused_below_entry=$w_below_no with POWERARM_NZCVEXITDEADNOWINDOW=1"
   elif [ "$w_below" -gt 0 ] && [ "$w_dead_no" -le "$w_dead" ]; then
     report FAIL nzcv_exit_dead_window "the check refused $w_below verdicts but disabling it did not accept more (dead=$w_dead vs $w_dead_no): it has no teeth"
   else
     report PASS nzcv_exit_dead_window "dead=$w_dead, refused_below_entry=$w_below; lever off: dead=$w_dead_no"
+    rm -rf "$nw_work"
   fi
 fi
 
