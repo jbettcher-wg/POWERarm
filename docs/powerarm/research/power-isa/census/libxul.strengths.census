@@ -1,0 +1,587 @@
+abs_v	164
+adc	140
+adcs	167
+addp	8
+addp_run3	65
+addp_scalar	203
+addp_v	502
+addp_vec	307
+adds	15818
+addv_v	746
+adr	35286
+adrp	1551459
+and	233258
+and_then_addp	10
+and_v	13323
+ands	14100
+asr	20716
+autiasp	2
+b	930712
+bfi	5395
+bfxil	8135
+bic	6875
+bic_v	9209
+bif_v	2268
+bit_v	3091
+bl	1347015
+blr	677089
+br	34993
+brk	1678
+bsl_v	4108
+bti	71
+cas	2
+casa	2
+casal	2
+casl	1
+cbnz	308571
+cbz	808306
+ccmn	180
+ccmp	27410
+cinc	10605
+cinv	34
+cls	29
+clz	14474
+clz_v	104
+cmeq	10
+cmeq_v	10570
+cmge_v	5443
+cmgt	3
+cmgt_v	1272
+cmhi	14
+cmhi_v	2838
+cmhs_v	742
+cmle_v	7
+cmlt_v	6241
+cmn	87185
+cmp	1241707
+cmp_then_addv	35
+cmp_then_reduce	3372
+cmp_then_shrn	105
+cmp_then_umaxv	3284
+cmp_then_uminv	53
+cmtst_v	301
+cneg	2336
+cnt_then_addv	84
+cnt_then_uaddlp	4
+cnt_v	154
+cnt_vec	154
+crc32b	2
+crc32h	2
+crc32w	2
+crc32x	1
+csel	170891
+cset	46031
+csetm	1094
+csinc	13126
+csinv	6250
+csneg	201
+dc	1
+dmb	39805
+dmb_ish	416
+dmb_ishld	39389
+dot_mac_all	13844
+dot_mac_sabal	6
+dot_mac_sadalp	98
+dot_mac_saddl	70
+dot_mac_saddl2	51
+dot_mac_saddlp	108
+dot_mac_saddlv	2
+dot_mac_saddw	248
+dot_mac_smlal	1814
+dot_mac_smlal2	1062
+dot_mac_smlsl	278
+dot_mac_smlsl2	168
+dot_mac_sqdmulh	361
+dot_mac_sqrdmulh	1205
+dot_mac_ssubl	194
+dot_mac_ssubl2	140
+dot_mac_ssubw	15
+dot_mac_uabdl	19
+dot_mac_uadalp	76
+dot_mac_uaddl	337
+dot_mac_uaddl2	170
+dot_mac_uaddlp	170
+dot_mac_uaddlv	94
+dot_mac_uaddw	3997
+dot_mac_udot	16
+dot_mac_umlal	797
+dot_mac_umlal2	591
+dot_mac_umlsl	320
+dot_mac_umlsl2	134
+dot_mac_usdot	36
+dot_mac_usubl	996
+dot_mac_usubl2	227
+dot_mac_usubw	44
+dsb	2
+dsb_ish	2
+dup_v	38907
+eon	11
+eor	33792
+eor_v	652
+ext_v	4828
+extr	314
+fabd	826
+fabd_v	131
+fabs	1997
+fabs_v	294
+facgt_v	6
+fadd	23010
+fadd_v	41387
+fccmp	2353
+fcmeq	14
+fcmeq_v	1426
+fcmge_v	499
+fcmgt_v	3128
+fcmle_v	4
+fcmlt_v	531
+fcmp	33995
+fcsel	11524
+fcvt	7252
+fcvtas	318
+fcvtau	54
+fcvtl2_v	189
+fcvtl_v	856
+fcvtms	1516
+fcvtmu	207
+fcvtn2_v	197
+fcvtn_v	492
+fcvtns_v	46
+fcvtnu_v	94
+fcvtps	267
+fcvtpu	30
+fcvtzs	6487
+fcvtzs_v	10486
+fcvtzu	970
+fcvtzu_v	804
+fdiv	8221
+fdiv_v	2367
+fmadd	31
+fmax_v	7446
+fmaxnm	2337
+fmaxnm_v	291
+fmaxnmv_v	6
+fmin_v	13333
+fminnm	2991
+fminnm_v	165
+fminnmv_v	3
+fmla_v	2099
+fmls_v	856
+fmov	77592
+fmov_d_from_x	11476
+fmov_s_from_w	14108
+fmov_then_cnt	56
+fmov_v	2784
+fmov_w_from_s	8628
+fmov_x_from_d	16716
+fmsub	2
+fmul	31065
+fmul_v	43111
+fneg	1536
+fneg_v	961
+fnmsub	9
+fnmul	151
+frecpe_v	1100
+frecps_v	1106
+frinta	459
+frinta_v	45
+frinti	2
+frintm	1287
+frintm_v	456
+frintn	2
+frintn_v	10
+frintp	485
+frintp_v	202
+frintx	5
+frintz	203
+frintz_v	1
+frsqrte_v	392
+frsqrts_v	419
+fsqrt	453
+fsqrt_v	84
+fsub	9747
+fsub_v	11815
+ic	1
+isb	646
+isb_sy	646
+ld1_v	12178
+ld1r_v	2031
+ld2_v	587
+ld3_v	187
+ld4_v	957
+ld_then_rev	2786
+ldadd	2
+ldadda	2
+ldaddal	2
+ldaddl	2
+ldar	122529
+ldarb	4132
+ldarh	66
+ldaxr	13659
+ldrsb	7752
+ldrsh	4548
+ldrsw	10133
+ldursb	199
+ldursh	209
+ldursw	144
+ldxr	95682
+lsl	87047
+lsr	112384
+madd	28181
+mla	1
+mla_v	3196
+mls_v	179
+mov	4275924
+mov_v	44286
+movi	10314
+movi_v	58004
+movk	228141
+mrs	7700
+mrs_cntfrq_el0	1
+mrs_cntvct_el0	5
+mrs_ctr_el0	1
+mrs_fpcr	4
+mrs_id_aa64isar0_el1	1
+mrs_id_aa64isar1_el1	1
+mrs_id_aa64isar2_el1	1
+mrs_id_aa64mmfr0_el1	1
+mrs_id_aa64mmfr1_el1	1
+mrs_id_aa64mmfr2_el1	1
+mrs_id_aa64pfr0_el1	1
+mrs_id_aa64pfr1_el1	1
+mrs_id_aa64smfr0_el1	1
+mrs_id_aa64zfr0_el1	1
+mrs_nzcv	1
+mrs_tpidr_el0	7678
+msr	7
+msr_fpcr	6
+msr_nzcv	1
+msub	5628
+mul	21277
+mul_v	23343
+mvn	10746
+mvn_v	1113
+mvni_v	875
+neg	15294
+neg_v	979
+neg_vec	979
+ngc	4
+ngcs	13
+nop	32242
+orn	322
+orn_v	134
+orr	111937
+orr_v	9614
+paciasp	2
+popcnt_idiom	66
+prfm	1023
+prfm_pldl1keep	983
+prfm_pldl1strm	3
+prfm_pldl2keep	2
+prfm_pstl1keep	35
+rbit	9322
+rbit_v	6
+ret	253275
+rev	8183
+rev16	1968
+rev16_v	115
+rev32	3
+rev32_v	130
+rev64_v	1089
+rev_gpr	10154
+rev_gpr_rev	8183
+rev_gpr_rev16	1968
+rev_gpr_rev32	3
+rev_then_st	818
+rev_vec	1334
+ror	3884
+rshrn_v	703
+saba_v	50
+sabd_v	84
+sadalp_v	98
+saddlp_v	108
+saddlv_v	2
+sbc	57
+sbcs	113
+sbfiz	2700
+sbfx	722
+scalarfp_all	148861
+scalarfp_fabs	1997
+scalarfp_fadd	23010
+scalarfp_fcmeq	14
+scalarfp_fcmp	33995
+scalarfp_fcvt	7252
+scalarfp_fcvtzs	902
+scalarfp_fcvtzu	81
+scalarfp_fdiv	8221
+scalarfp_fmadd	31
+scalarfp_fmaxnm	2337
+scalarfp_fminnm	2991
+scalarfp_fmsub	2
+scalarfp_fmul	31065
+scalarfp_fneg	1536
+scalarfp_fnmsub	9
+scalarfp_fsqrt	453
+scalarfp_fsub	9747
+scalarfp_scvtf	16152
+scalarfp_ucvtf	9066
+scvtf	16152
+scvtf_v	1711
+sdiv	1529
+shadd_v	13
+shl_v	6265
+shrn2_v	183
+shrn_v	1045
+shsub_v	2
+sli_v	454
+smaddl	2846
+smax_v	1636
+smaxv_v	36
+smin_v	2760
+sminv_v	29
+smlal2_v	1062
+smlal_v	1814
+smlsl_v	278
+smov_v	176
+smsubl	112
+smulh	752
+smull	1891
+smull_v	1186
+sqadd_v	1418
+sqdmulh_v	361
+sqneg_v	72
+sqrdmulh_v	1205
+sqshl_v	48
+sqshlu_v	12
+sqsub_v	751
+sqxtn_v	115
+sqxtun_v	7414
+srhadd_v	34
+sri_v	621
+srshl_v	481
+srshr_v	1078
+srsra_v	15
+sshl_v	308
+sshll2_v	939
+sshll_v	2129
+sshr_v	3551
+ssra_v	1290
+st1_v	4867
+st2_v	923
+st3_v	510
+st4_v	988
+stlr	71483
+stlrb	329
+stlxr	90034
+stxr	19134
+subs	154432
+swp	2
+swpa	2
+swpal	2
+swpl	2
+sxtb	722
+sxth	1153
+sxtw	9328
+tbl	4
+tbl_v	22493
+tbnz	205308
+tbx_v	37
+tbz	267463
+total	28802025
+trn1	12
+trn1_v	2038
+trn2	4
+trn2_v	1788
+tst	58897
+uaba_v	6
+uabd_v	339
+uadalp_v	76
+uaddlp_v	170
+uaddlv_v	94
+ubfiz	4676
+ubfx	19162
+ucvtf	9066
+ucvtf_v	9468
+udf	21
+udiv	3601
+udot	8
+udot_v	8
+uhadd_v	123
+uhsub_v	13
+umaddl	13024
+umax_v	917
+umaxv_v	3536
+umin_v	1148
+uminv_v	137
+umlal2_v	591
+umlal_v	797
+umlsl_v	320
+umov_v	2294
+umsubl	36
+umulh	4580
+umull	4133
+umull_v	2913
+uqadd_v	869
+uqshl_v	5
+uqsub	30
+uqsub_v	216
+uqxtn_v	41
+urhadd	6
+urhadd_v	209
+urshl_v	53
+urshr_v	1367
+ursra_v	302
+usdot	8
+usdot_v	28
+ushl	1
+ushl_v	3361
+ushll2_v	4843
+ushll_v	15446
+ushr_v	20068
+usra_v	3417
+uxtb	9
+uxth	28
+uzp1	13
+uzp1_v	6142
+uzp2	4
+uzp2_v	2139
+vrot_idiom	27
+vrot_idiom_usra	94
+widen_all	23357
+widen_sshll2_2d	81
+widen_sshll2_4s	626
+widen_sshll2_8h	232
+widen_sshll_2d	402
+widen_sshll_4s	1101
+widen_sshll_8h	626
+widen_ushll2_2d	1219
+widen_ushll2_4s	2433
+widen_ushll2_8h	1191
+widen_ushll_2d	1721
+widen_ushll_4s	8985
+widen_ushll_8h	4740
+xpaclri	7
+xtn2_v	54
+xtn_v	3662
+zip1_v	4310
+zip2_v	3560
+--- bl targets, top 120
+BL	.text	706977
+BL	XRE_GetBootstrap	508720
+BL	malloc	37481
+BL	free	37237
+BL	uprofiler_get	25647
+BL	memcpy	16874
+BL	syscall	2288
+BL	memset	1661
+BL	memmove	1562
+BL	bcmp	1123
+BL	realloc	681
+BL	memalign	631
+BL	_ZNSt7__cxx1118basic_stringstreamIcSt11char_traitsIcESaIcEEC1Ev	624
+BL	_ZNKRSt7__cxx1115basic_stringbufIcSt11char_traitsIcESaIcEE3strEv	575
+BL	memcmp	544
+BL	sched_yield	417
+BL	calloc	319
+BL	__errno_location	190
+BL	_Unwind_Resume	175
+BL	strlen	171
+BL	PR_GetError	161
+BL	close	160
+BL	__cxa_thread_atexit	150
+BL	sqlite3_bind_parameter_count	117
+BL	dlsym	113
+BL	powf	108
+BL	PK11_FreeSymKey	99
+BL	sqlite3_reset	87
+BL	clock_gettime	86
+BL	sqlite3_column_count	75
+BL	__dynamic_cast	71
+BL	sqlite3_bind_text	61
+BL	pow	53
+BL	sqlite3_bind_int64	43
+BL	_ZStlsISt11char_traitsIcEERSt13basic_ostreamIcT_ES5_PKc	41
+BL	sqlite3_get_autocommit	39
+BL	pthread_detach	39
+BL	logf	39
+BL	PK11_FreeSlot	36
+BL	SSL_GetExperimentalAPI	36
+BL	read	32
+BL	sqlite3_extended_errcode	30
+BL	clock_nanosleep	30
+BL	sqlite3_step	29
+BL	sqlite3_db_handle	29
+BL	SECKEY_DestroyPublicKey	29
+BL	SECKEY_DestroyPrivateKey	27
+BL	expf	27
+BL	write	22
+BL	sqlite3_column_name	21
+BL	dbus_message_iter_get_arg_type	19
+BL	atanf	18
+BL	atan2f	18
+BL	sqlite3_bind_null	16
+BL	PK11_HPKE_DestroyContext	16
+BL	exp2f	16
+BL	sincos	16
+BL	setsockopt	16
+BL	hypotf	15
+BL	sqlite3_changes64	15
+BL	snd_seq_port_info_free	15
+BL	PK11_GetInternalSlot	15
+BL	PK11_GenerateRandom	15
+BL	tanf	15
+BL	sincosf	15
+BL	sqlite3_bind_blob	14
+BL	dbus_error_free	13
+BL	dbus_message_iter_get_basic	13
+BL	acosf	13
+BL	log2f	13
+BL	snd_seq_close	13
+BL	sqlite3_bind_double	12
+BL	sqlite3_bind_zeroblob	12
+BL	asinf	12
+BL	sinf	12
+BL	cosf	12
+BL	log	12
+BL	_ZNSt7__cxx1115basic_stringbufIcSt11char_traitsIcESaIcEEC2ERKNS_12basic_stringIcS2_S3_EESt13_Ios_Openmode	11
+BL	sysconf	11
+BL	PK11_DestroyContext	11
+BL	PK11_ExtractKeyValue	11
+BL	PK11_GetKeyData	11
+BL	munmap	11
+BL	sqlite3_finalize	10
+BL	dbus_error_init	10
+BL	_Unwind_GetIP	9
+BL	dbus_message_unref	9
+BL	tan	9
+BL	sqlite3_create_collation_v2	8
+BL	snd_seq_port_subscribe_free	8
+BL	PK11_ImportSymKey	7
+BL	sqlite3_db_config	7
+BL	snd_seq_port_info_get_port	6
+BL	fstat64	6
+BL	exp	6
+BL	PK11_GetInternalKeySlot	6
+BL	acos	6
+BL	SSL_OptionSet	6
+BL	snd_seq_port_info_malloc	5
+BL	snd_seq_port_info_get_client	5
+BL	snd_seq_port_subscribe_malloc	5
+BL	mmap64	5
+BL	poll	5
+BL	strerror	5
+BL	SECITEM_FreeItem	5
+BL	sqlite3_create_function_v2	5
+BL	sqlite3_user_data	5
+BL	dbus_message_iter_open_container	5
+BL	dbus_message_iter_next	5
+BL	socket	5
+BL	snd_seq_port_subscribe_set_sender	5
+BL	snd_seq_port_subscribe_set_dest	5
+BL	PK11_Derive	5
+BL	getauxval	5
+BL	_ZNSt7__cxx1115basic_stringbufIcSt11char_traitsIcESaIcEE3strEONS_12basic_stringIcS2_S3_EE	4
+BL	snd_seq_client_info_free	4
+BL	getpid	4
+BL	dbus_message_iter_init_append	4
+BL	PK11_CreateContextBySymKey	4
+BL	lseek64	4

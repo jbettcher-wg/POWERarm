@@ -1,0 +1,647 @@
+abs_v	270
+adc	1069
+adcs	528
+addp	16
+addp_run3	456
+addp_scalar	182
+addp_v	1610
+addp_vec	1444
+adds	34437
+addv_v	2029
+adr	65542
+adrp	889263
+aesd_v	44
+aese_v	748
+aesimc_v	41
+aesmc_v	686
+and	564092
+and_then_addp	116
+and_v	7364
+ands	38995
+asr	86089
+autiasp	490917
+b	1440213
+bfi	8420
+bfxil	11229
+bic	14083
+bic_v	2501
+bif_v	2001
+bit_v	1724
+bl	2713407
+bl_libml_all	1
+bl_libml_powl	1
+bl_tf___fixtfdi	1
+bl_tf___floatsitf	1
+bl_tf_all	2
+blr	193054
+br	25642
+brk	282441
+bsl_v	1475
+bti	194928
+cas	2
+casa	2
+casal	2
+casl	2
+cbnz	373924
+cbz	894716
+ccmn	586
+ccmp	25529
+cinc	13539
+cinv	198
+cls	44
+cls_v	1
+clz	13477
+clz_v	47
+cmeq	1
+cmeq_v	4494
+cmge_v	417
+cmgt_v	824
+cmhi	1
+cmhi_v	1289
+cmhs_v	372
+cmle_v	27
+cmlt_v	1771
+cmn	80187
+cmp	1684352
+cmp_then_addv	39
+cmp_then_reduce	1629
+cmp_then_shrn	244
+cmp_then_uaddlv	6
+cmp_then_umaxv	1539
+cmp_then_uminv	45
+cmtst_v	83
+cneg	4463
+cnt_then_addv	1020
+cnt_then_uaddlp	45
+cnt_v	1830
+cnt_vec	1830
+crc32b	10
+crc32cb	2
+crc32ch	2
+crc32cw	2
+crc32cx	134
+crc32x	18
+csel	284760
+cset	77212
+csetm	1081
+csinc	36589
+csinv	4665
+csneg	888
+dc	1
+dmb	223
+dmb_ish	99
+dmb_ishld	124
+dot_mac_all	51698
+dot_mac_pmull	206
+dot_mac_pmull2	97
+dot_mac_sadalp	1187
+dot_mac_saddl	148
+dot_mac_saddl2	70
+dot_mac_saddlp	194
+dot_mac_saddlv	55
+dot_mac_saddw	1202
+dot_mac_sdot	4056
+dot_mac_smlal	12961
+dot_mac_smlal2	9011
+dot_mac_smlsl	1868
+dot_mac_smlsl2	795
+dot_mac_sqdmulh	837
+dot_mac_sqrdmulh	1873
+dot_mac_ssubl	277
+dot_mac_ssubl2	151
+dot_mac_ssubw	15
+dot_mac_uabal	385
+dot_mac_uabdl	164
+dot_mac_uadalp	1600
+dot_mac_uaddl	333
+dot_mac_uaddl2	104
+dot_mac_uaddlp	996
+dot_mac_uaddlv	336
+dot_mac_uaddw	1847
+dot_mac_udot	3373
+dot_mac_umlal	3365
+dot_mac_umlal2	2022
+dot_mac_umlsl	402
+dot_mac_umlsl2	146
+dot_mac_usdot	713
+dot_mac_usubl	770
+dot_mac_usubl2	102
+dot_mac_usubw	37
+dsb	2
+dsb_ish	2
+dup_v	20775
+eon	82
+eor	62404
+eor_v	3886
+ext_v	7969
+extr	547
+fabd	883
+fabd_v	57
+fabs	1965
+fabs_v	524
+facgt_v	18
+fadd	19919
+fadd_v	10840
+fccmp	1435
+fcmeq	4
+fcmeq_v	2573
+fcmge_v	1170
+fcmgt_v	2925
+fcmle_v	10
+fcmlt_v	110
+fcmp	52423
+fcsel	17647
+fcvt	9350
+fcvtas	460
+fcvtas_v	12
+fcvtau	16
+fcvtau_v	4
+fcvtl2_v	24
+fcvtl_v	971
+fcvtms	399
+fcvtms_v	130
+fcvtmu	39
+fcvtmu_v	3
+fcvtn2_v	89
+fcvtn_v	520
+fcvtns_v	316
+fcvtnu	2
+fcvtnu_v	806
+fcvtps	140
+fcvtps_v	3
+fcvtpu	889
+fcvtpu_v	2
+fcvtzs	7693
+fcvtzs_v	804
+fcvtzu	1050
+fcvtzu_v	105
+fdiv	9459
+fdiv_v	1670
+fmadd	422
+fmax	10
+fmax_v	2690
+fmaxnm	403
+fmaxnm_v	151
+fmaxp_v	4
+fmaxv_v	17
+fmin	1
+fmin_v	2645
+fminnm	249
+fminnm_v	351
+fminp_v	2
+fminv_v	16
+fmla_v	14730
+fmls_v	2037
+fmov	79808
+fmov_d_from_x	10588
+fmov_s_from_w	13381
+fmov_then_cnt	1092
+fmov_v	1749
+fmov_w_from_s	8484
+fmov_x_from_d	8352
+fmsub	34
+fmul	25421
+fmul_v	14384
+fneg	1843
+fneg_v	994
+fnmadd	1
+fnmsub	65
+fnmul	212
+frecpe_v	32
+frecps_v	48
+frinta	621
+frinta_v	138
+frinti	175
+frintm	1122
+frintm_v	667
+frintn	27
+frintn_v	26
+frintp	726
+frintp_v	119
+frintx	218
+frintx_v	10
+frintz	211
+frintz_v	6
+frsqrte_v	10
+frsqrts_v	10
+fsqrt	676
+fsqrt_v	37
+fsub	10903
+fsub_v	6142
+hlt	187128
+ic	1
+isb	18
+isb_sy	18
+ld1_v	11177
+ld1r_v	3877
+ld2_v	595
+ld3_v	98
+ld4_v	988
+ld_then_rev	3833
+ldadd	2
+ldadda	1
+ldaddal	2
+ldaddl	2
+ldar	17455
+ldarb	19642
+ldarh	12356
+ldaxp	3
+ldaxr	46
+ldrsb	8913
+ldrsh	11227
+ldrsw	142737
+ldursb	471
+ldursh	753
+ldursw	2657
+ldxp	3
+ldxr	25
+lsl	124986
+lsr	247399
+madd	33009
+mla	2
+mla_v	8568
+mls_v	436
+mov	6096018
+mov_v	37256
+movi	12471
+movi_v	92980
+movk	167509
+movz	3699
+mrs	6282
+mrs_cntfrq_el0	1
+mrs_cntvct_el0	6
+mrs_ctr_el0	1
+mrs_fpcr	112
+mrs_nzcv	7
+mrs_svcr	5
+mrs_tco	7
+mrs_tpidr2_el0	9
+mrs_tpidr_el0	6134
+msr	123
+msr_fpcr	104
+msr_nzcv	6
+msr_tco	8
+msr_tpidr2_el0	5
+msub	11614
+mul	51559
+mul_v	7394
+mvn	18546
+mvn_v	2351
+mvni_v	1629
+neg	13137
+neg_v	868
+neg_vec	868
+ngc	126
+ngcs	26
+nop	79326
+orn	720
+orn_v	254
+orr	184868
+orr_v	5698
+paciasp	416975
+pmull2_v	97
+pmull_v	206
+popcnt_idiom	778
+prfm	6822
+prfm_pldl1keep	5502
+prfm_pldl1strm	97
+prfm_pldl2keep	14
+prfm_pldl3keep	856
+prfm_pstl1keep	151
+prfm_pstl1strm	202
+rbit	6297
+ret	473355
+rev	6056
+rev16	5553
+rev16_v	80
+rev32	8
+rev32_v	167
+rev64_v	2255
+rev_gpr	11617
+rev_gpr_rev	6056
+rev_gpr_rev16	5553
+rev_gpr_rev32	8
+rev_then_st	744
+rev_vec	2502
+ror	3085
+rshrn_v	8334
+saba_v	36
+sabd_v	84
+sadalp_v	1187
+saddlp_v	194
+saddlv_v	55
+sbc	287
+sbcs	333
+sbfiz	5108
+sbfx	4820
+scalarfp_all	155973
+scalarfp_fabs	1965
+scalarfp_fadd	19919
+scalarfp_fcmp	52423
+scalarfp_fcvt	9350
+scalarfp_fcvtzs	525
+scalarfp_fcvtzu	50
+scalarfp_fdiv	9459
+scalarfp_fmadd	422
+scalarfp_fmax	10
+scalarfp_fmaxnm	403
+scalarfp_fmin	1
+scalarfp_fminnm	249
+scalarfp_fmsub	34
+scalarfp_fmul	25413
+scalarfp_fneg	1843
+scalarfp_fnmadd	1
+scalarfp_fnmsub	65
+scalarfp_fsqrt	676
+scalarfp_fsub	10903
+scalarfp_scvtf	14542
+scalarfp_ucvtf	7720
+scvtf	14550
+scvtf_v	2712
+sdiv	3978
+sdot	960
+sdot_v	3096
+sha1c_v	5
+sha1h	20
+sha1m_v	5
+sha1p_v	10
+sha1su0_v	16
+sha1su1_v	16
+sha256h2_v	16
+sha256h_v	16
+sha256su0_v	12
+sha256su1_v	12
+shadd_v	46
+shl	2
+shl_v	3605
+shrn2_v	576
+shrn_v	2071
+shsub_v	46
+sli_v	642
+smaddl	5596
+smax_v	4550
+smaxv_v	32
+smin_v	3533
+sminv_v	24
+smlal2_v	9011
+smlal_v	12961
+smlsl_v	1868
+smov_v	322
+smsubl	102
+smulh	4211
+smull	5262
+smull_v	8191
+sqabs_v	6
+sqadd	10
+sqadd_v	5369
+sqdmulh_v	837
+sqneg_v	104
+sqrdmulh_v	1873
+sqshl_v	264
+sqshlu_v	396
+sqsub	11
+sqsub_v	3879
+sqxtn_v	774
+sqxtun_v	1310
+srhadd_v	414
+sri	56
+sri_v	104
+srshl_v	1701
+srshr	1
+srshr_v	3777
+srsra_v	818
+sshl_v	1379
+sshll2_v	1264
+sshll_v	3516
+sshr_v	2026
+ssra_v	992
+st1_v	5147
+st2_v	376
+st3_v	405
+st4_v	590
+stlr	3986
+stlrb	806
+stlrh	12636
+stlxp	3
+stlxr	48
+stxp	3
+stxr	23
+subs	140236
+svc	11
+swp	2
+swpa	2
+swpal	2
+swpl	2
+sxtb	2296
+sxth	3518
+sxtw	40879
+tbl	63
+tbl_v	3208
+tbnz	276139
+tbx_v	55
+tbz	331366
+total	39071029
+trn1	118
+trn1_v	4553
+trn2	34
+trn2_v	4222
+tst	121468
+uaba_v	756
+uabd_v	4150
+uadalp_v	1600
+uaddlp_v	996
+uaddlv_v	336
+ubfiz	9665
+ubfx	32182
+ucvtf	7724
+ucvtf_v	1243
+udf	33
+udiv	8636
+udot	144
+udot_v	3229
+uhadd_v	334
+uhsub_v	13
+umaddl	17200
+umax_v	904
+umaxv_v	2014
+umin	16
+umin_v	1210
+uminv_v	99
+umlal2_v	2022
+umlal_v	3365
+umlsl_v	402
+umov_v	813
+umsubl	79
+umulh	7738
+umull	4734
+umull_v	4903
+uqadd_v	575
+uqshl	68
+uqshl_v	15
+uqsub	348
+uqsub_v	476
+uqxtn_v	176
+urhadd	14
+urhadd_v	7375
+urshl_v	63
+urshr_v	2971
+ursra_v	346
+usdot	16
+usdot_v	697
+ushl	1
+ushl_v	3814
+ushll2_v	948
+ushll_v	4271
+ushr_v	2750
+usra	32
+usra_v	753
+uxtb	6
+uxth	26
+uzp1	14
+uzp1_v	3894
+uzp2	8
+uzp2_v	715
+vrot_idiom	37
+vrot_idiom_usra	34
+widen_all	9999
+widen_sshll2_2d	31
+widen_sshll2_4s	1126
+widen_sshll2_8h	107
+widen_sshll_2d	420
+widen_sshll_4s	1832
+widen_sshll_8h	1264
+widen_ushll2_2d	229
+widen_ushll2_4s	181
+widen_ushll2_8h	538
+widen_ushll_2d	583
+widen_ushll_4s	604
+widen_ushll_8h	3084
+xpaclri	118
+xtn2_v	45
+xtn_v	3242
+yield	2
+zip1	8
+zip1_v	3099
+zip2	8
+zip2_v	3596
+--- bl targets, top 120
+BL	localtime64_r	323489
+BL	_ZdlPvm	154891
+BL	_Z23_v8_internal_Node_PrintPv	134733
+BL	_ZN4node3url11BindingData8CanParseERKN2v820FunctionCallbackInfoINS2_5ValueEEE	87189
+BL	_Znwm	73366
+BL	mallinfo	71820
+BL	_ZN4node9inspector8protocol6Target10Dispatcher4wireEPN5crdtp14UberDispatcherEPNS2_7BackendE	60635
+BL	_ZdaPv	54284
+BL	__libc_csu_fini	48228
+BL	_ZNK12v8_inspector12V8DebuggerId4pairEv	43882
+BL	_ZNK2v88Function22GetScriptStartPositionEv	41953
+BL	uv_async_send	39251
+BL	uv_barrier_destroy	39131
+BL	uv_tty_set_vterm_state	37721
+BL	ares_dns_rr_get_ttl	37711
+BL	_ZN4node14options_parser24EnvironmentOptionsParserC2Ev	35833
+BL	uv__strdup	33576
+BL	_ZN4node9inspector8protocol10StringUtil14CharacterCountENSt4__Cr17basic_string_viewIcNS3_11char_traitsIcEEEE	32188
+BL	_ZNK2v814CpuProfileNode13GetDeoptInfosEv	30921
+BL	_ZNK2v812HeapSnapshot24GetMaxSnapshotJSObjectIdEv	29175
+BL	ares_llist_replace_destructor	26843
+BL	fontations_ffi$cxxbridge1$194$variation_position	26482
+BL	_ZNK2v88TryCatch9IsVerboseEv	24917
+BL	_ZN2v88internal19MoveTracedReferenceEPPmS2_	22968
+BL	_ZN4node9cjs_lexer5ParseERKN2v820FunctionCallbackInfoINS1_5ValueEEE	19281
+BL	memset	19177
+BL	_ZN2v817ValueDeserializerC2EPNS_7IsolateEPKhmPNS0_8DelegateE	18688
+BL	_ZN5cppgc8internal33MakeGarbageCollectedTraitInternal8AllocateERNS_16AllocationHandleEmt	18612
+BL	memcpy	16572
+BL	_ZN4node6crypto7NodeBIOD0Ev	16236
+BL	_ZN2v822SharedMemoryStatisticsC2Ev	16074
+BL	_ZN4node3url15EncodePathCharsENSt4__Cr17basic_string_viewIcNS1_11char_traitsIcEEEENS0_2OSE	15230
+BL	_ZdlPv	14901
+BL	_ZN4node12NodePlatform10ForIsolateEPN2v87IsolateE	13061
+BL	_start	12758
+BL	_ZN5cppgc8internal24PrefinalizerRegistrationC2EPvPFbRKNS_14LivenessBrokerES2_E	12716
+BL	__stack_chk_fail	12249
+BL	_ZN2v88internal7Version9GetSONAMEENS_4base6VectorIcEE	11962
+BL	_ZN2v87Promise8Resolver7ResolveENS_5LocalINS_7ContextEEENS2_INS_5ValueEEE	11490
+BL	_ZNK4node14PrincipalRealm35enhance_fatal_stack_after_inspectorEv	11045
+BL	_ZnamRKSt9nothrow_t	10977
+BL	uv__random_sysctl	10936
+BL	_ZN5cppgc8internal20WeakPersistentPolicy19GetPersistentRegionEPKv	10820
+BL	_ZN2v89CodeEvent15GetFunctionNameEv	10589
+BL	calloc	10554
+BL	uv_os_environ	10428
+BL	uv_handle_get_type	10053
+BL	_ZNK4node6crypto15X509Certificate15GetTransferModeEv	10051
+BL	_ZN2v88internal15ThreadIsolation21RegisterJitAllocationEmmNS1_17JitAllocationTypeEb	9418
+BL	_ZNK2v810CpuProfile10GetEndTimeEv	8865
+BL	_ZNK5cppgc8internal27CrossThreadPersistentRegion10NodesInUseEv	8759
+BL	_ZN5cppgc8internal22EnsureGCInfoIndexTrait17EnsureGCInfoIndexERNSt4__Cr6atomicItEEPFvPNS_7VisitorEPKvEPFvPvEPFNS0_14HeapObjectNameES9_NS0_30HeapObjectNameForUnnamedObjectEE	8638
+BL	_ZN2v812IsolateGroupC2EOS0_	8629
+BL	_ZN2v813CFunctionInfoC2ERKNS_9CTypeInfoEjPS2_NS0_19Int64RepresentationE	8456
+BL	_ZN5cppgc8internal9NameTraitIN4node10contextify17ContextifyContextEE7GetNameEPKvNS0_30HeapObjectNameForUnnamedObjectE	8274
+BL	_ZN2v88internal8compiler23CompilationDependencies46DependOnNoDateTimeConfigurationChangeProtectorEv	7864
+BL	_ZN2v811HandleScope6ExtendEPNS_7IsolateE	7795
+BL	_ZN2v88internal15ThreadIsolation18SplitJitPageLockedEmm	7725
+BL	_ZN2v88internal8compiler23CompilationDependencies6CommitENS0_6HandleINS0_4CodeEEE	7723
+BL	_ZN5cppgc8internal11GCInfoTable17RegisterNewGCInfoERNSt4__Cr6atomicItEERKNS0_6GCInfoE	7429
+BL	_ZN2v88Platform21SystemClockTimeMillisEv	7379
+BL	_ZNSt4__Cr16__variant_detail12__visitation6__base12__dispatcherIJLm1EEE10__dispatchIOZNS0_6__ctorINS0_8__traitsIJN7ncrypto13BignumPointerEiEEEE19__generic_constructINS0_18__move_constructorISA_LNS0_6_TraitE1EEEEEvRSB_OT_EUlSI_E_JONS0_6__baseILSE_1EJS9_iEEEEEEDcSH_DpT0_	7292
+BL	_ZN4node14ConnectionWrapINS_8PipeWrapE9uv_pipe_sE12AfterConnectEP12uv_connect_si	7274
+BL	_ZN2v87Isolate17GetCurrentContextEv	7148
+BL	_ZN2v86Object18CreateDataPropertyENS_5LocalINS_7ContextEEENS1_INS_4NameEEENS1_INS_5ValueEEE	7053
+BL	_ZN5cppgc8internal30TraceTraitFromInnerAddressImpl18GetTraceDescriptorEPKv	6974
+BL	_ZN4node6crypto9CryptoJobINS0_17RandomBytesTraitsEE3RunERKN2v820FunctionCallbackInfoINS4_5ValueEEE	6972
+BL	_ZN8electron5fuses41IsGrantFileProtocolExtraPrivilegesEnabledEv	6795
+BL	_ZN5cppgc8internal12WriteBarrier24SteeleMarkingBarrierSlowEPKv	6610
+BL	_ZN2v818DictionaryTemplate3NewEPNS_7IsolateENSt4__Cr4spanIKNS3_17basic_string_viewIcNS3_11char_traitsIcEEEELm18446744073709551615EEE	6541
+BL	_ZN4node6timers11BindingData18SlowToggleTimerRefERKN2v820FunctionCallbackInfoINS2_5ValueEEE	6536
+BL	_ZN2v87Isolate18NumberOfHeapSpacesEv	6490
+BL	uv__accept	6451
+BL	_ZN4node12NodePlatform21NumberOfWorkerThreadsEv	6357
+BL	_ZNK4node14PrincipalRealm19async_hooks_bindingEv	6223
+BL	_ZN2v88internal15ThreadIsolation13LookupJitPageEmm	6192
+BL	_ZN5cppgc8internal22ExplicitManagementImpl6ResizeEPvm	6188
+BL	free	6138
+BL	_ZN2v88internal8compiler23CompilationDependencies19DependOnContextCellENS1_14ContextCellRefENS0_11ContextCell5StateE	6108
+BL	uv_timer_set_repeat	5980
+BL	_ZN12v8_inspector14V8StackTraceId8ToStringEv	5939
+BL	_ZN2v86Object3HasENS_5LocalINS_7ContextEEENS1_INS_5ValueEEE	5911
+BL	_ZN2v814PrimitiveArray3SetEPNS_7IsolateEiNS_5LocalINS_9PrimitiveEEE	5740
+BL	_ZN8electron5fuses18IsRunAsNodeEnabledEv	5723
+BL	_ZN4node36StartExecutionCallbackInfoWithModuleC2EOS0_	5643
+BL	_ZNK4node14PrincipalRealm28inspector_enable_async_hooksEv	5602
+BL	strlen	5537
+BL	memmove	5420
+BL	_ZN4node8builtins13BuiltinLoader9GetConfigEv	5373
+BL	_ZNK4node14PrincipalRealm33inspector_enable_network_trackingEv	5368
+BL	_ZN2v86String9Utf8ValueD2Ev	5353
+BL	uv_req_get_data	5351
+BL	_ZN2v85Array7IterateENS_5LocalINS_7ContextEEEPFNS0_14CallbackResultEjNS1_INS_5ValueEEEPvES7_	5302
+BL	_ZN4node5http212Http2Session9CallbacksC2Eb	5262
+BL	_ZN2v87Isolate27RemoveCallCompletedCallbackEPFvPS0_E	5103
+BL	_ZN4node11Environment25EnqueueDeserializeRequestEPFvN2v85LocalINS1_7ContextEEENS2_INS1_6ObjectEEEiPNS_21InternalFieldInfoBaseEES6_iS8_	5097
+BL	_ZN12v8_inspector14V8StackTraceIdC2Ev	4936
+BL	uv_os_free_environ	4689
+BL	_ZNK2v810CpuProfile12GetStartTimeEv	4628
+BL	_ZN2v88internal15ThreadIsolation15RegisterJitPageEmm	4566
+BL	uv_now	4476
+BL	_ZN4node12NodePlatform22CurrentClockTimeMillisEv	4436
+BL	_ZZN4node23WorkerThreadsTaskRunner20DelayedTaskScheduler13TakeTimerTaskEP10uv_timer_sENUlP11uv_handle_sE_8__invokeES5_	4426
+BL	_ZN2v86String14NewFromTwoByteEPNS_7IsolateEPKtNS_13NewStringTypeEi	4280
+BL	_ZNK2v814CpuProfileNode15GetHitLineCountEv	4250
+BL	_ZN4node16EnabledDebugList5ParseERKNSt4__Cr12basic_stringIcNS1_11char_traitsIcEENS1_9allocatorIcEEEE	4064
+BL	_ZNK2v810StackFrame17GetSourcePositionEv	3838
+BL	_ZN2v814ScriptCompiler14StreamedSourceD2Ev	3817
+BL	_ZN4node6crypto13SecureContext22GetConstructorTemplateEPNS_11EnvironmentE	3812
+BL	_ZN2v87Isolate18SetIsInputHandlingEb	3756
+BL	_ZN2v87Promise4ThenENS_5LocalINS_7ContextEEENS1_INS_8FunctionEEES5_	3748
+BL	_ZN2v88internal15ThreadIsolation16JitPageReference6ShrinkEPNS1_7JitPageE	3719
+BL	_ZThn104_N4node15LibuvStreamWrap10DoTryWriteEPP8uv_buf_tPm	3719
+BL	_ZN2v812api_internal12ToLocalEmptyEv	3674
+BL	_ZN2v818DictionaryTemplate11NewInstanceENS_5LocalINS_7ContextEEENSt4__Cr4spanINS_10MaybeLocalINS_5ValueEEELm18446744073709551615EEE	3623
+BL	_ZN2v83Map3NewEPNS_7IsolateE	3618
+BL	_ZnwmRKSt9nothrow_t	3599
+BL	_ZN4node14options_parser18DebugOptionsParserC2Ev	3566
+BL	_ZN2v86String14NewFromOneByteEPNS_7IsolateEPKhNS_13NewStringTypeEi	3487
+BL	_ZNK2v86String12StringEqualsENS_5LocalIS0_EE	3474

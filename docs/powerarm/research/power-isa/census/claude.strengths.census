@@ -1,0 +1,579 @@
+abs_v	77
+adc	1555
+adcs	1414
+addp_run3	362
+addp_scalar	3543
+addp_v	4588
+addp_vec	1045
+adds	12637
+addv_v	883
+adr	14233
+adrp	336090
+aesd_v	44
+aese_v	748
+aesimc_v	41
+aesmc_v	686
+and	219691
+and_then_addp	224
+and_v	11997
+ands	15232
+asr	5823
+b	630064
+bfi	5508
+bfxil	7905
+bic	7584
+bic_v	2980
+bif_v	459
+bit_v	420
+bl	818912
+bl_libml_all	1
+bl_libml_ldexpl	1
+blr	60614
+br	7542
+brk	46722
+bsl_v	434
+cas	2
+casa	2
+casal	2
+casl	2
+cbnz	174449
+cbz	432755
+ccmn	1328
+ccmp	35748
+cinc	8540
+cinv	27
+clz	10712
+clz_v	45
+cmeq_v	13728
+cmge	1
+cmge_v	223
+cmgt_v	571
+cmhi	23
+cmhi_v	4008
+cmhs_v	552
+cmle_v	16
+cmlt_v	2516
+cmn	43336
+cmp	816440
+cmp_then_addv	88
+cmp_then_reduce	271
+cmp_then_shrn	1172
+cmp_then_uaddlv	7
+cmp_then_umaxv	77
+cmp_then_uminv	99
+cmtst_v	477
+cneg	1685
+cnt	4
+cnt_then_addv	228
+cnt_then_uaddlp	14
+cnt_v	595
+cnt_vec	595
+crc32b	10
+crc32h	8
+crc32w	8
+crc32x	117
+csel	98102
+cset	29931
+csetm	491
+csinc	10361
+csinv	4340
+csneg	123
+dc	2
+dc_zva	1
+dmb	8591
+dmb_ish	3630
+dmb_ishld	1278
+dmb_ishst	3608
+dmb_sy	75
+dot_mac_all	6914
+dot_mac_pmull	278
+dot_mac_pmull2	171
+dot_mac_saddl	37
+dot_mac_saddl2	33
+dot_mac_saddlp	6
+dot_mac_saddw	161
+dot_mac_smlal	191
+dot_mac_smlal2	97
+dot_mac_smlsl	92
+dot_mac_smlsl2	64
+dot_mac_sqdmulh	195
+dot_mac_sqrdmulh	130
+dot_mac_ssubl	10
+dot_mac_ssubl2	6
+dot_mac_ssubw	1
+dot_mac_uabdl	17
+dot_mac_uadalp	414
+dot_mac_uaddl	273
+dot_mac_uaddl2	177
+dot_mac_uaddlp	617
+dot_mac_uaddlv	111
+dot_mac_uaddw	2423
+dot_mac_udot	9
+dot_mac_umlal	531
+dot_mac_umlal2	400
+dot_mac_umlsl	175
+dot_mac_umlsl2	175
+dot_mac_usubl	67
+dot_mac_usubl2	24
+dot_mac_usubw	29
+dsb	3
+dsb_ish	2
+dsb_nsh	1
+dup_v	7299
+eon	17
+eor	48320
+eor_v	3169
+ext	12
+ext_v	2029
+extr	915
+fabd	13
+fabs	527
+fabs_v	9
+fadd	3277
+fadd_v	446
+fccmp	358
+fcmeq_v	328
+fcmge_v	12
+fcmgt	3
+fcmgt_v	54
+fcmlt_v	16
+fcmp	10786
+fcmpe	1
+fcsel	4697
+fcvt	833
+fcvtas	4
+fcvtau	19
+fcvtau_v	2
+fcvtl2_v	45
+fcvtl_v	47
+fcvtms	23
+fcvtmu	4
+fcvtn2_v	44
+fcvtn_v	49
+fcvtps	9
+fcvtpu	5
+fcvtzs	1952
+fcvtzs_v	40
+fcvtzu	948
+fcvtzu_v	7
+fdiv	1213
+fdiv_v	86
+fmadd	253
+fmax	1
+fmax_v	4
+fmaxnm	46
+fmaxnm_v	9
+fmin	1
+fmin_v	4
+fminnm	94
+fminnm_v	9
+fmla	2
+fmla_v	32
+fmls_v	2
+fmov	37558
+fmov_d_from_x	8761
+fmov_s_from_w	3452
+fmov_then_cnt	120
+fmov_v	120
+fmov_w_from_s	3177
+fmov_x_from_d	16607
+fmsub	96
+fmul	3296
+fmul_v	801
+fneg	624
+fneg_v	110
+fnmsub	17
+fnmul	8
+frinta	71
+frinta_v	2
+frintm	201
+frintm_v	33
+frintn	6
+frintn_v	2
+frintp	50
+frintp_v	3
+frintz	416
+frintz_v	4
+fsqrt	72
+fsqrt_v	2
+fsub	831
+fsub_v	210
+ic	1
+isb	570
+isb_sy	570
+ld1_v	3803
+ld1r_v	430
+ld2_v	1423
+ld3_v	44
+ld4_v	528
+ld_then_rev	648
+ldadd	2
+ldadda	2
+ldaddal	2
+ldaddl	2
+ldar	5997
+ldarb	3066
+ldarh	5
+ldaxr	66
+ldrsb	9129
+ldrsh	5170
+ldrsw	7681
+ldursb	491
+ldursh	281
+ldursw	914
+ldxr	29
+lsl	57035
+lsr	80495
+madd	14088
+mla_v	835
+mls_v	12
+mov	2384377
+mov_v	10090
+movi	3439
+movi_v	32925
+movk	130660
+movz	3750
+mrs	6825
+mrs_ctr_el0	1
+mrs_dczid_el0	1
+mrs_dit	2
+mrs_fpsr	1
+mrs_nzcv	50
+mrs_tpidr_el0	6770
+msr	55
+msr_dit	4
+msr_fpsr	1
+msr_nzcv	50
+msub	2403
+mul	19467
+mul_v	549
+mvn	7023
+mvn_v	2335
+mvni_v	744
+neg	7857
+neg_v	249
+neg_vec	249
+ngc	119
+ngcs	67
+nop	849143
+orn	661
+orn_v	1539
+orr	97980
+orr_v	15517
+pmull2_v	171
+pmull_v	278
+popcnt_idiom	75
+prfm	1626
+prfm_pldl1keep	1535
+prfm_pldl2keep	25
+prfm_pstl1keep	66
+rbit	7995
+ret	72956
+rev	2038
+rev16	612
+rev16_v	172
+rev32	8
+rev32_v	240
+rev64_v	828
+rev_gpr	2650
+rev_gpr_rev	2030
+rev_gpr_rev16	612
+rev_gpr_rev32	8
+rev_then_st	401
+rev_vec	1240
+ror	3884
+rshrn_v	143
+saba_v	14
+sabd_v	11
+saddlp_v	6
+sbc	160
+sbcs	556
+sbfiz	929
+sbfx	1099
+scalarfp_all	30345
+scalarfp_fabs	527
+scalarfp_fadd	3274
+scalarfp_fcmp	10786
+scalarfp_fcmpe	1
+scalarfp_fcvt	833
+scalarfp_fcvtzs	23
+scalarfp_fcvtzu	7
+scalarfp_fdiv	1213
+scalarfp_fmadd	253
+scalarfp_fmax	1
+scalarfp_fmaxnm	43
+scalarfp_fmin	1
+scalarfp_fminnm	94
+scalarfp_fmsub	96
+scalarfp_fmul	3293
+scalarfp_fneg	624
+scalarfp_fnmsub	17
+scalarfp_fsqrt	72
+scalarfp_fsub	828
+scalarfp_scvtf	4374
+scalarfp_ucvtf	3985
+scvtf	4374
+scvtf_v	188
+sdiv	367
+sha1c_v	5
+sha1h	20
+sha1m_v	5
+sha1p_v	10
+sha1su0_v	16
+sha1su1_v	16
+sha256h2_v	16
+sha256h_v	16
+sha256su0_v	12
+sha256su1_v	12
+shadd_v	6
+shl	6
+shl_v	2914
+shrn2_v	362
+shrn_v	2850
+shsub_v	2
+sli_v	665
+smaddl	3900
+smax_v	1480
+smaxv_v	26
+smin_v	104
+sminv_v	14
+smlal2_v	97
+smlal_v	191
+smlsl_v	92
+smov_v	87
+smsubl	64
+smulh	491
+smull	791
+smull_v	170
+sqabs_v	1
+sqadd_v	596
+sqdmulh_v	195
+sqrdmulh_v	130
+sqshlu_v	12
+sqsub_v	127
+sqxtn_v	4
+sqxtun_v	406
+srhadd_v	4
+sri_v	91
+srshr_v	6
+srsra_v	15
+sshl_v	23
+sshll2_v	254
+sshll_v	1170
+sshr_v	138
+ssra_v	121
+st1_v	506
+st2_v	640
+st3_v	421
+st4_v	550
+stlr	1027
+stlrb	270
+stlxr	74
+stxr	27
+subs	60382
+svc	535
+swp	2
+swpa	2
+swpal	2
+swpl	2
+sxtb	4427
+sxth	479
+sxtw	8044
+tbl	65
+tbl_v	4093
+tbnz	99069
+tbz	78986
+total	15487349
+trn1_v	136
+trn2_v	168
+tst	65265
+uaba_v	7
+uabd_v	151
+uadalp	1
+uadalp_v	413
+uaddlp_v	617
+uaddlv_v	111
+ubfiz	7914
+ubfx	16089
+ucvtf	3985
+ucvtf_v	163
+udf	5158
+udiv	1209
+udot	1
+udot_v	8
+uhadd_v	64
+uhsub_v	5
+umaddl	20206
+umax_v	305
+umaxv_v	480
+umin_v	169
+uminv_v	1160
+umlal2_v	400
+umlal_v	531
+umlsl_v	175
+umov_v	2399
+umsubl	32
+umulh	12255
+umull	2482
+umull_v	1881
+uqadd_v	47
+uqshl_v	3
+uqsub_v	100
+uqxtn_v	130
+urhadd_v	147
+ushl_v	1242
+ushll2_v	6410
+ushll_v	8629
+ushr_v	4332
+usra	9
+usra_v	1036
+uxtb	4
+uxth	1
+uzp1	26
+uzp1_v	4006
+uzp2	3
+uzp2_v	285
+vrot_idiom	76
+vrot_idiom_usra	83
+widen_all	16463
+widen_sshll2_2d	56
+widen_sshll2_4s	130
+widen_sshll2_8h	68
+widen_sshll_2d	133
+widen_sshll_4s	293
+widen_sshll_8h	744
+widen_ushll2_2d	1228
+widen_ushll2_4s	768
+widen_ushll2_8h	4414
+widen_ushll_2d	1506
+widen_ushll_4s	1207
+widen_ushll_8h	5916
+xpaclri	34
+xtn2_v	5
+xtn_v	2554
+yield	3
+zip1	5
+zip1_v	983
+zip2	2
+zip2_v	328
+--- bl targets, top 120
+BL	uv_wtf8_to_utf16	422612
+BL	.text	120748
+BL	free	85915
+BL	napi_unref_threadsafe_function	52813
+BL	malloc	30530
+BL	uv_tty_reset_mode	24814
+BL	memcpy	16433
+BL	_ZNK2v85Value12StrictEqualsENS_5LocalIS0_EE	14619
+BL	memset	6658
+BL	__posix_memalign	5922
+BL	abort	4490
+BL	uv_mutex_unlock	3061
+BL	strlen	2461
+BL	malloc_size	2452
+BL	strcmp	2221
+BL	napi_remove_async_cleanup_hook	2067
+BL	__errno_location	1856
+BL	strncasecmp	1765
+BL	bcmp	1680
+BL	memmove	1591
+BL	strndup	1138
+BL	syscall	916
+BL	getenv	910
+BL	memcmp	851
+BL	fprintf	782
+BL	realloc	702
+BL	__isoc99_sscanf	458
+BL	clock_gettime	450
+BL	memchr	381
+BL	__stack_chk_fail	367
+BL	pthread_mutex_unlock	327
+BL	write	311
+BL	snprintf	303
+BL	strchr	294
+BL	strncmp	249
+BL	calloc	237
+BL	close	231
+BL	__nl_langinfo_l	215
+BL	pthread_mutex_lock	190
+BL	fwrite	152
+BL	getauxval	135
+BL	fcntl	131
+BL	read	106
+BL	sigaction	101
+BL	strerror	79
+BL	strcpy	72
+BL	gettimeofday	69
+BL	fread	69
+BL	setsockopt	66
+BL	munmap	65
+BL	__cxa_atexit	65
+BL	napi_create_arraybuffer	60
+BL	time	59
+BL	sigemptyset	57
+BL	_aligned_malloc	57
+BL	wcslen	56
+BL	cosf	54
+BL	madvise	53
+BL	fclose	52
+BL	strstr	52
+BL	kill	50
+BL	sched_yield	50
+BL	sysconf	46
+BL	isatty	44
+BL	mmap	43
+BL	shutdown	40
+BL	exit	39
+BL	unlinkat	39
+BL	strrchr	37
+BL	getpid	37
+BL	__uselocale	37
+BL	strcasecmp	36
+BL	open	36
+BL	fputc	35
+BL	getcwd	34
+BL	strtoull	33
+BL	wmemcpy	33
+BL	__xstat	33
+BL	pthread_cond_signal	32
+BL	sincosf	32
+BL	strtol	31
+BL	lseek	31
+BL	strdup	30
+BL	atan2f	30
+BL	strtoul	29
+BL	sigaddset	29
+BL	prctl	28
+BL	getsockname	28
+BL	pthread_detach	28
+BL	unlink	28
+BL	pthread_sigmask	27
+BL	epoll_ctl	27
+BL	isspace	25
+BL	access	25
+BL	__fxstat64	24
+BL	lrint	24
+BL	hypotf	24
+BL	signal	22
+BL	vsnprintf	22
+BL	ftruncate	22
+BL	pthread_cond_destroy	21
+BL	localtime_r	21
+BL	pthread_mutex_destroy	21
+BL	memrchr	21
+BL	tcsetattr	20
+BL	poll	20
+BL	fchmod	20
+BL	renameat	20
+BL	_ZN2v88internal35IsolateFromNeverReadOnlySpaceObjectEm	20
+BL	ioctl	19
+BL	pthread_join	19
+BL	dlclose	19
+BL	symlink	19
+BL	clock	19
+BL	posix_memalign	18
+BL	mkdirat	18
+BL	chdir	17
+BL	tcgetattr	17
+BL	strcspn	17
+BL	socket	17

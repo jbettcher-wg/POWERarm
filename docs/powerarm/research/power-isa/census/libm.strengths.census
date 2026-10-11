@@ -1,0 +1,312 @@
+adc	10
+adds	60
+adr	6
+adrp	3389
+and	1223
+and_v	9
+ands	79
+asr	89
+autiasp	2
+b	3787
+bfi	94
+bfxil	92
+bic	19
+bif_v	130
+bit_v	111
+bl	5996
+bl_libml_all	186
+bl_libml_atanl	2
+bl_libml_ceill	6
+bl_libml_cosl	13
+bl_libml_erfcl	1
+bl_libml_erfl	1
+bl_libml_expl	2
+bl_libml_expm1l	8
+bl_libml_floorl	15
+bl_libml_fmal	8
+bl_libml_frexpl	6
+bl_libml_ilogbl	1
+bl_libml_logl	5
+bl_libml_modfl	31
+bl_libml_nearbyintl	4
+bl_libml_rintl	5
+bl_libml_roundl	8
+bl_libml_scalbnl	2
+bl_libml_sinl	9
+bl_libml_sqrtl	43
+bl_libml_tanl	1
+bl_libml_tgammal	6
+bl_libml_truncl	9
+blr	169
+br	32
+bsl_v	92
+casal	1
+cbnz	955
+cbz	892
+ccmn	14
+ccmp	145
+cinc	79
+clz	47
+cmge	1
+cmn	167
+cmp	3933
+cneg	19
+csel	114
+cset	343
+csetm	4
+csinc	23
+csinv	4
+dmb	6
+dmb_ishld	6
+dot_mac_all	8
+dot_mac_saddl	4
+dot_mac_saddl2	4
+dup_v	4
+eor	167
+eor_v	7
+ext_v	1
+extr	57
+fabd	3
+fabs	489
+fadd	1550
+fccmp	53
+fcmp	805
+fcmpe	951
+fcsel	132
+fcvt	210
+fcvtas	12
+fcvtms	2
+fcvtns	3
+fcvtzs	46
+fcvtzu	4
+fdiv	368
+fmadd	1854
+fmaxnm	3
+fminnm	3
+fmov	4446
+fmov_d_from_x	883
+fmov_s_from_w	593
+fmov_v	261
+fmov_w_from_s	238
+fmov_x_from_d	457
+fmsub	188
+fmul	1632
+fneg	179
+fneg_v	175
+fnmadd	4
+fnmsub	293
+frinta	26
+frinti	2
+frintm	31
+frintn	23
+frintp	10
+frintx	11
+frintz	14
+fsqrt	85
+fsub	1345
+ldar	21
+ldaxr	2
+ldrsb	8
+ldrsh	9
+ldrsw	21
+ldursh	3
+ldursw	1
+lsl	528
+lsr	478
+madd	7
+mov	6925
+mov_v	1289
+movi	224
+movi_v	889
+movk	790
+mrs	476
+mrs_fpcr	92
+mrs_fpsr	57
+mrs_gcspr_el0	2
+mrs_tpidr2_el0	2
+mrs_tpidr_el0	323
+msr	201
+msr_fpcr	155
+msr_fpsr	45
+msr_tpidr2_el0	1
+msub	15
+mul	35
+mvn	15
+mvni_v	18
+neg	86
+neg_v	1
+neg_vec	1
+nop	2792
+orr	817
+orr_v	1
+paciasp	2
+rbit	2
+ret	1466
+sbc	23
+sbfiz	44
+sbfx	1
+scalarfp_all	10069
+scalarfp_fabs	489
+scalarfp_fadd	1550
+scalarfp_fcmp	805
+scalarfp_fcmpe	951
+scalarfp_fcvt	210
+scalarfp_fcvtzs	2
+scalarfp_fdiv	368
+scalarfp_fmadd	1854
+scalarfp_fmaxnm	3
+scalarfp_fminnm	3
+scalarfp_fmsub	188
+scalarfp_fmul	1632
+scalarfp_fneg	179
+scalarfp_fnmadd	4
+scalarfp_fnmsub	293
+scalarfp_fsqrt	85
+scalarfp_fsub	1345
+scalarfp_scvtf	108
+scvtf	108
+scvtf_v	2
+sdiv	1
+shl	8
+shl_v	8
+smaddl	8
+smull	8
+stlr	1
+stlxr	2
+subs	193
+swpal	1
+sxtw	34
+tbnz	499
+tbz	412
+total	90644
+tst	198
+ubfiz	64
+ubfx	289
+udiv	13
+umaddl	20
+umulh	4
+umull	32
+ushr	1
+ushr_v	2
+xpaclri	6
+--- bl targets, top 120
+BL	fsubl	4741
+BL	feraiseexcept	128
+BL	__stack_chk_fail	81
+BL	matherr	52
+BL	sqrtl	43
+BL	ufromfpxf32	32
+BL	fwrite	31
+BL	modfl	31
+BL	modff64	30
+BL	__expl_finite	27
+BL	modff32	26
+BL	__yn_finite	24
+BL	llroundl	23
+BL	expf64	20
+BL	__atan2_finite	19
+BL	sincosl	19
+BL	sincosf64	19
+BL	atan2f32	18
+BL	sincosf32	18
+BL	__atan2l_finite	17
+BL	hypotf32	17
+BL	fmodf64	17
+BL	__logl_finite	16
+BL	lroundf64	16
+BL	floorl	15
+BL	hypotf64	15
+BL	expf32	15
+BL	__issignalingl	14
+BL	__hypotl_finite	13
+BL	cosl	13
+BL	logp1f32	13
+BL	logf64	12
+BL	cosf32	12
+BL	logf32	11
+BL	qsort	10
+BL	ynf32	10
+BL	powf64	9
+BL	powf32	9
+BL	sinl	9
+BL	truncl	9
+BL	fmal	8
+BL	roundl	8
+BL	expm1l	8
+BL	sinf32	8
+BL	y0f32	8
+BL	.text	7
+BL	__lgammal_r_finite	7
+BL	__powl_finite	7
+BL	expm1f64	7
+BL	tgammal	6
+BL	__coshl_finite	6
+BL	__sinhl_finite	6
+BL	fputs	6
+BL	__cosh_finite	6
+BL	__sinh_finite	6
+BL	coshf32	6
+BL	sinhf32	6
+BL	frexpl	6
+BL	ceill	6
+BL	__issignaling	6
+BL	cosf64	6
+BL	feholdexcept	5
+BL	rintl	5
+BL	__exp2l_finite	5
+BL	roundevenl	5
+BL	logl	5
+BL	__y0_finite	5
+BL	fesetenv	4
+BL	__scalbl_finite	4
+BL	exp2f64	4
+BL	__scalb_finite	4
+BL	__scalbf_finite	4
+BL	ufromfpxl	4
+BL	__fmodl_finite	4
+BL	fetestexcept	4
+BL	feupdateenv	4
+BL	nearbyintl	4
+BL	clogf64	4
+BL	ufromfpxf64	4
+BL	scalbnf64	4
+BL	clogf32	4
+BL	__exp10l_finite	3
+BL	exp10f64	3
+BL	__lgamma_r_finite	3
+BL	lgammaf_r	3
+BL	clogl	3
+BL	fesetround	3
+BL	__j0l_finite	3
+BL	__j1l_finite	3
+BL	__y1l_finite	3
+BL	__j0_finite	3
+BL	__j1_finite	3
+BL	__y1_finite	3
+BL	j0f32	3
+BL	j1f32	3
+BL	y1f32	3
+BL	atanl	2
+BL	nextupl	2
+BL	expl	2
+BL	fegetround	2
+BL	scalbnl	2
+BL	nextupf64	2
+BL	nextupf32	2
+BL	acoshf32	2
+BL	fmodf32	2
+BL	__jnl_finite	1
+BL	__ynl_finite	1
+BL	__gammal_r_finite	1
+BL	__assert_fail	1
+BL	__gamma_r_finite	1
+BL	exp10f32	1
+BL	exp2f32	1
+BL	tgammaf32	1
+BL	csqrtl	1
+BL	__acosl_finite	1
+BL	__asinl_finite	1
+BL	casinl	1
+BL	casinhl	1
+BL	__log10l_finite	1
+BL	pownl	1

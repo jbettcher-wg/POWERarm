@@ -1,0 +1,347 @@
+adc	10
+addp_scalar	4
+addp_v	5
+addp_vec	1
+adds	262
+addv_v	10
+adr	29
+adrp	9422
+and	3290
+and_v	22
+ands	125
+asr	264
+b	12914
+bfi	89
+bfxil	47
+bic	102
+bic_v	7
+bif_v	2
+bit_v	12
+bl	13524
+bl_libml___strtold_internal	1
+bl_libml_all	2
+bl_libml_modfl	1
+blr	562
+br	173
+brk	13
+bti	150
+cas	1
+casa	2
+casl	2
+cbnz	4307
+cbz	7071
+ccmn	49
+ccmp	1041
+cinc	93
+clz	159
+cmeq_v	45
+cmge_v	16
+cmhs_v	14
+cmlt_v	2
+cmn	1716
+cmp	16079
+cmp_then_shrn	15
+cmtst_v	2
+cneg	29
+cnt_then_addv	10
+cnt_v	12
+cnt_vec	12
+csel	1123
+cset	886
+csetm	49
+csinc	107
+csinv	124
+csneg	20
+dc	3
+dc_zva	2
+dmb	51
+dmb_ish	6
+dmb_ishld	28
+dmb_ishst	17
+dot_mac_all	15
+dot_mac_saddw	1
+dot_mac_ssubw	10
+dot_mac_uaddw	4
+dup_v	35
+eor	387
+eor_v	15
+ext_v	9
+extr	57
+fabs	1
+fadd	11
+fccmp	1
+fcmp	8
+fcmpe	11
+fcsel	28
+fcvt	1
+fcvtzs	1
+fdiv	7
+fmov	331
+fmov_d_from_x	131
+fmov_s_from_w	51
+fmov_then_cnt	7
+fmov_v	43
+fmov_w_from_s	21
+fmov_x_from_d	97
+fmul	52
+fneg	7
+fneg_v	10
+frintz	2
+fsub	4
+isb	2
+isb_sy	2
+ld1_v	25
+ld1r_v	2
+ld2_v	5
+ld_then_rev	77
+ldadd	2
+ldadda	2
+ldaddal	1
+ldaddl	2
+ldar	40
+ldaxr	9
+ldrsb	53
+ldrsh	56
+ldrsw	249
+ldursh	1
+ldursw	5
+ldxr	12
+lsl	1113
+lsr	858
+madd	90
+mov	47510
+mov_v	68
+movi	9
+movi_v	176
+movk	749
+mrs	1481
+mrs_ctr_el0	2
+mrs_dczid_el0	3
+mrs_fpcr	20
+mrs_fpsr	7
+mrs_gcspr_el0	5
+mrs_por_el0	2
+mrs_tpidr2_el0	1
+mrs_tpidr_el0	1441
+msr	6
+msr_fpcr	2
+msr_fpsr	1
+msr_por_el0	2
+msr_tpidr2_el0	1
+msub	153
+mul	158
+mvn	54
+mvn_v	4
+mvni_v	18
+neg	390
+nop	9967
+orn	6
+orn_v	5
+orr	1534
+orr_v	25
+paciasp	1
+popcnt_idiom	7
+rbit	53
+ret	4316
+rev	161
+rev16	47
+rev32_v	1
+rev64_v	1
+rev_gpr	208
+rev_gpr_rev	161
+rev_gpr_rev16	47
+rev_then_st	83
+rev_vec	2
+ror	22
+sbc	48
+sbfiz	137
+sbfx	32
+scalarfp_all	107
+scalarfp_fabs	1
+scalarfp_fadd	11
+scalarfp_fcmp	8
+scalarfp_fcmpe	11
+scalarfp_fcvt	1
+scalarfp_fcvtzs	1
+scalarfp_fdiv	7
+scalarfp_fmul	52
+scalarfp_fneg	7
+scalarfp_fsub	4
+scalarfp_scvtf	2
+scalarfp_ucvtf	2
+scvtf	2
+sdiv	52
+shl_v	1
+shrn_v	22
+smaddl	15
+smov_v	1
+smulh	29
+smull	57
+sshl_v	2
+sshll2_v	15
+sshll_v	21
+stlr	22
+stlxr	8
+stxr	13
+subs	1887
+svc	415
+swp	1
+swpa	2
+swpl	1
+sxtb	1
+sxth	4
+sxtw	1069
+tbl_v	2
+tbnz	1976
+tbz	1495
+total	293455
+tst	606
+ubfiz	501
+ubfx	320
+ucvtf	2
+udf	5
+udiv	137
+umaddl	43
+umov_v	17
+umsubl	4
+umulh	76
+umull	122
+ushl_v	2
+ushll_v	4
+ushr	11
+ushr_v	6
+uzp1_v	11
+widen_all	40
+widen_sshll2_2d	2
+widen_sshll2_4s	10
+widen_sshll2_8h	3
+widen_sshll_2d	8
+widen_sshll_4s	10
+widen_sshll_8h	3
+widen_ushll_2d	4
+xpaclri	14
+xtn2_v	1
+xtn_v	3
+zip1_v	3
+zip2_v	1
+--- bl targets, top 120
+BL	_dl_mcount_wrapper	1012
+BL	free	998
+BL	__stack_chk_fail	877
+BL	uselocale	527
+BL	strlen	386
+BL	malloc	351
+BL	__lll_lock_wake_private	326
+BL	pwrite64	308
+BL	__lll_lock_wait_private	275
+BL	__xpg_basename	250
+BL	memcpy	241
+BL	parse_printf_format	212
+BL	vprintf	195
+BL	strcmp	164
+BL	realloc	164
+BL	dcgettext	115
+BL	towctrans_l	112
+BL	__memcpy_chk	108
+BL	memset	106
+BL	_dl_mcount_wrapper_check	91
+BL	waitpid	89
+BL	close	88
+BL	fmemopen	87
+BL	strchr	83
+BL	__libc_scratch_buffer_grow_preserve	75
+BL	__uflow	74
+BL	__chk_fail	71
+BL	__libc_fatal	69
+BL	__nptl_death_event	68
+BL	fclose	67
+BL	timer_settime	63
+BL	__resolv_context_put	61
+BL	strdup	60
+BL	calloc	60
+BL	__libc_alloca_cutoff	57
+BL	gnu_get_libc_version	57
+BL	__close_nocancel_nostatus	52
+BL	__wuflow	50
+BL	__nss_hostname_digits_dots	50
+BL	getenv	49
+BL	wcslen	45
+BL	__default_morecore	45
+BL	__fprintf_chk	44
+BL	wmemset	42
+BL	memmove	40
+BL	_IO_wfile_xsputn	40
+BL	__gconv_get_alias_db	39
+BL	fexecve	39
+BL	__isoc23_strtoumax	38
+BL	strncasecmp_l	38
+BL	res_send	38
+BL	__open_nocancel	36
+BL	munmap	36
+BL	towlower	35
+BL	towlower_l	35
+BL	clock_gettime	34
+BL	__nss_lookup_function	33
+BL	updwtmp	33
+BL	dl_iterate_phdr	32
+BL	pthread_rwlock_unlock	32
+BL	clock_nanosleep	32
+BL	pthread_mutex_unlock	32
+BL	strnlen	31
+BL	__asprintf_chk	31
+BL	strncmp	31
+BL	pthread_mutex_lock	31
+BL	pmap_getport	31
+BL	__nss_next2	31
+BL	memcmp	30
+BL	_IO_sputbackc	30
+BL	vfscanf	28
+BL	sem_trywait	28
+BL	__pthread_get_minstack	27
+BL	vfprintf	27
+BL	socket	27
+BL	sgetsgent_r	27
+BL	perror	27
+BL	fstat64	26
+BL	__mempcpy_chk	26
+BL	getpid	26
+BL	__overflow	26
+BL	wmemcpy	26
+BL	vfwscanf	26
+BL	snprintf	26
+BL	towupper_l	26
+BL	adjtime	25
+BL	__res_get_nsaddr	25
+BL	__nss_files_fopen	25
+BL	__libc_scratch_buffer_grow	24
+BL	strncpy	24
+BL	fstatvfs64	24
+BL	__resolv_context_get	24
+BL	abort	23
+BL	stat64	23
+BL	__close_nocancel	23
+BL	_IO_enable_locks	23
+BL	globfree64	23
+BL	fopen64	22
+BL	textdomain	22
+BL	sigprocmask	21
+BL	sigaction	21
+BL	getuid	21
+BL	getw	21
+BL	fcntl64	21
+BL	pthread_cond_signal	21
+BL	xdr_u_long	21
+BL	mmap64	20
+BL	memchr	20
+BL	vfwprintf	20
+BL	_IO_link_in	20
+BL	glob64	20
+BL	stpcpy	19
+BL	closedir	19
+BL	__gconv_transliterate	19
+BL	pthread_setcancelstate	19
+BL	ns_name_unpack	19
+BL	read	18
+BL	uselib	18
+BL	__tunable_get_val	18
+BL	__res_iclose	18
