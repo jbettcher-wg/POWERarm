@@ -521,6 +521,7 @@ public:
     FEX_CONFIG_OPT(MonoHacks, MONOHACKS);
     FEX_CONFIG_OPT(VCmpFusion, VCMPFUSION);
     FEX_CONFIG_OPT(ExclusiveFusion, EXCLUSIVEFUSION);
+    FEX_CONFIG_OPT(GuestPrefetch, GUESTPREFETCH);
   } Config;
 
   FEXCore::Utils::WritePriorityMutex::Mutex CodeInvalidationMutex {};

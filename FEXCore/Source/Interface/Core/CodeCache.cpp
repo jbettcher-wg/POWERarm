@@ -889,6 +889,14 @@ uint64_t ComputeCodeCacheConfigId() {
     // would corrupt flags for real.
     HASH_OPT(NZCVEXITDEAD);
 
+    // The guest's PRFM is either a dcbt/dcbtst or nothing at all, which is a
+    // different instruction stream for the same guest code. It changes no
+    // guest-visible state either way -- a touch cannot fault and writes
+    // nothing -- so a block from the wrong population would still be correct;
+    // it would just quietly answer the measurement this switch exists to
+    // make with the other setting's code.
+    HASH_OPT(GUESTPREFETCH);
+
     // Detected host capabilities are hashed above, next to the build identity.
 #undef HASH_OPT
 #undef HASH_STR_OPT

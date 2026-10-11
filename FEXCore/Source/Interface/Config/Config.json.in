@@ -957,6 +957,24 @@
           "Off: the software monitor everywhere, as before."
         ]
       },
+      "GuestPrefetch": {
+        "Type": "bool",
+        "Default": "true",
+        "Desc": [
+          "Lower the guest's PRFM onto POWER's data-cache touch: PLD* -> dcbt, PST* -> dcbtst,",
+          "one instruction at the address the guest asked for. PLI* (instruction prefetch) and the",
+          "unallocated prfops stay a nop, and so does the level and the STRM policy, which the",
+          "backend has no measured stream depth for.",
+          "A touch cannot fault -- an unmapped, protected or write-protected address is dropped by",
+          "the hardware -- so this is never a correctness switch. It is a measurement switch: the",
+          "guest's prefetches were written for a 64-byte-line Cortex-A76 and land on a",
+          "128-byte-line POWER9 with a stronger hardware prefetcher, so whether they help has to",
+          "be run both ways. The sites are real (Chromium's and V8's hash-table probes and heap",
+          "visitors, JSC's GC marking, Factorio's containers), and a useless dcbt costs an issue",
+          "slot and nothing else.",
+          "Off: PRFM decodes and executes as the nop it was before, which is the comparison run."
+        ]
+      },
       "SMCStoreBackpatch": {
         "Type": "bool",
         "Default": "false",

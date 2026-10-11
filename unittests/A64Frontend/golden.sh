@@ -78,13 +78,16 @@ gcc -static -O2 -o fcmp_denorm "$here/fcmp_denorm.c"
 # handler on a PROT_NONE page, so it needs no privileges and no timer.
 gcc -static -O2 -o sigvcache "$here/sigvcache.c"
 
-# memrev is self-checking and MUST stay that way, like fcmp_denorm: it
-# asserts the byte order of a load-and-reverse and a reverse-and-store, which
-# is forced by the architecture and which the test assembles byte by byte
-# itself. It is not in $corpus, so no golden is captured for it -- a reference
-# taken from the emulator under test is precisely what could not tell you this
-# answer. Built here only so the same binary runs on both sides.
+# memrev and prfmhint are self-checking and MUST stay that way, like
+# fcmp_denorm. memrev asserts the byte order of a load-and-reverse and a
+# reverse-and-store, which is forced by the architecture and which the test
+# assembles byte by byte itself; prfmhint asserts that a prefetch raises no
+# signal and moves no byte, which is what a hint is. Neither is in $corpus,
+# so no golden is captured for either: a reference taken from the emulator
+# under test is precisely what could not tell you these answers. Built here
+# only so the same binary runs on both sides.
 gcc -static -O2 -o memrev "$here/memrev.c"
+gcc -static -O2 -o prfmhint "$here/prfmhint.c"
 # Threaded: a guest signal handler returning through rt_sigreturn while its
 # thread is torn down.
 gcc -static -O2 -pthread -o sigteardown "$here/sigteardown.c"

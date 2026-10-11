@@ -429,6 +429,10 @@ private:
   // the memory op itself (a D-form displacement on the host).
   void LoadStoreSingle(bool IsLoad, OpSize Size, bool SignExtend, bool Is64Dest, uint32_t Rt, Ref Address, Ref Offset = nullptr,
                        IR::MemOffsetType OffsetType = IR::MemOffsetType::SXTX, uint8_t OffsetScale = 1);
+  // One guest PRFM: Rt is the 5-bit prefetch operation, not a register. PLD
+  // and PST become dcbt/dcbtst, everything else stays a nop.
+  void PrefetchHint(uint32_t Rt, Ref Address, Ref Offset = nullptr, IR::MemOffsetType OffsetType = IR::MemOffsetType::SXTX,
+                    uint8_t OffsetScale = 1);
   // One SIMD&FP register load or store of Size bytes at Address.
   void LoadStoreV(bool IsLoad, OpSize Size, uint32_t Rt, Ref Address, Ref Offset = nullptr,
                   IR::MemOffsetType OffsetType = IR::MemOffsetType::SXTX, uint8_t OffsetScale = 1);

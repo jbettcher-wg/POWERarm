@@ -10,6 +10,7 @@
 // faulting access leaves the registers as they were.
 #include "Interface/Core/A64Frontend/IRBuilder.h"
 #include "Interface/Core/A64Frontend/TranslateCommon.h"
+#include "Interface/Context/Context.h"
 
 #include <cstring>
 
@@ -88,11 +89,57 @@ bool IRBuilder::LDRSW_lit(uint32_t Word) {
   return true;
 }
 
-bool IRBuilder::PRFM_lit(uint32_t) {
+// ---------------------------------------------------------------------------
+// PRFM
+// ---------------------------------------------------------------------------
+//
+// Rt is not a register in a PRFM: it is the 5-bit prefetch operation, <4:3>
+// the type (00 PLD load, 01 PLI instruction, 10 PST store), <2:1> the cache
+// level (00 L1, 01 L2, 10 L3) and <0> the policy (0 KEEP, 1 STRM).
+//
+// `dcbt` and `dcbtst` are the POWER data-cache touch for load and for store.
+// Neither can cause a data storage exception -- a touch of an unmapped, a
+// protected or a guest-code page is dropped by the hardware -- so there is no
+// faulting case to reason about and no mtrack interaction: the instruction
+// reads and writes nothing the guest can observe. The level and the STRM
+// policy are dropped, as DEF_OP(Prefetch) already documents (the dcbt TH
+// stream encodings want a measured prefetch depth, which we do not have).
+//
+// Whether a prefetch written for a 64-byte-line Cortex-A76 helps or hurts a
+// 128-byte-line POWER9 with a stronger hardware prefetcher is a measurement,
+// not a deduction, so POWERARM_GUESTPREFETCH=0 restores the nop and the
+// switch is part of the code-cache config id (CodeCache.cpp).
+void IRBuilder::PrefetchHint(uint32_t Rt, Ref Address, Ref Offset, IR::MemOffsetType OffsetType, uint8_t OffsetScale) {
+  if (!CTX->Config.GuestPrefetch()) {
+    return;
+  }
+  const uint32_t Type = Bits(Rt, 4, 3);
+  const uint32_t Level = Bits(Rt, 2, 1);
+  // PLI asks for an INSTRUCTION-cache prefetch, which `dcbt` is not; `icbt` is
+  // privileged on this host. Type 11 is unallocated at every architecture
+  // revision, and level 11 is unallocated in the profile this emulator
+  // presents (an A76, ARMv8.2; it only became the system-level cache in
+  // ARMv8.7). All three stay a nop, which a hint is always allowed to be.
+  if (Type == 0b01 || Type == 0b11 || Level == 0b11) {
+    return;
+  }
+  if (!Offset) {
+    Offset = Invalid();
+  }
+  _Prefetch(Type == 0b10, Bit(Rt, 0), Level + 1, Address, Offset, OffsetType, OffsetScale);
+}
+
+bool IRBuilder::PRFM_lit(uint32_t Word) {
+  PrefetchHint(Bits(Word, 4, 0), PCValue(CurrentPC + SignExtend(Bits(Word, 23, 5), 19) * 4));
   return true;
 }
 
-bool IRBuilder::PRFM_imm(uint32_t) {
+bool IRBuilder::PRFM_imm(uint32_t Word) {
+  // Two encodings share this handler: PRFM (immediate), bit 24 set, an
+  // unsigned imm12 scaled by 8; and PRFM (unscaled offset), bit 24 clear, a
+  // signed imm9.
+  const int64_t Offset = Bit(Word, 24) ? static_cast<int64_t>(Bits(Word, 21, 10)) * 8 : FEXCore::A64::SignExtend(Bits(Word, 20, 12), 9);
+  PrefetchHint(Bits(Word, 4, 0), LoadXSP(Bits(Word, 9, 5)), Offset ? _InlineConstant(Offset) : nullptr);
   return true;
 }
 
@@ -123,8 +170,12 @@ bool IRBuilder::LoadStoreImm9(uint32_t Word) {
   }
   if (Decode.Op == MemOp::Prefetch) {
     // PRFM (unscaled) is its own table entry; the indexed and unprivileged
-    // forms of size=11 opc=10 are unallocated.
-    return Mode == 0b00;
+    // forms of size=11 opc=10 are unallocated and must stay that way.
+    if (Mode != 0b00) {
+      return false;
+    }
+    PrefetchHint(Rt, LoadXSP(Rn), Offset ? _InlineConstant(Offset) : nullptr);
+    return true;
   }
 
   const bool WriteBack = Mode == 0b01 || Mode == 0b11;
@@ -173,6 +224,10 @@ bool IRBuilder::STRx_LDRx_imm_2(uint32_t Word) {
     return false;
   }
   if (Decode.Op == MemOp::Prefetch) {
+    // PRFM (immediate) has its own table entry; this is the same encoding
+    // reached through the generic one, so it lowers the same way.
+    const uint64_t PrefetchOffset = static_cast<uint64_t>(Bits(Word, 21, 10)) << Size;
+    PrefetchHint(Bits(Word, 4, 0), LoadXSP(Bits(Word, 9, 5)), PrefetchOffset ? _InlineConstant(PrefetchOffset) : nullptr);
     return true;
   }
 
@@ -197,6 +252,17 @@ bool IRBuilder::LoadStoreRegOffset(uint32_t Word) {
     return false;
   }
   if (Decode.Op == MemOp::Prefetch) {
+    // PRFM (register) -- `prfm pldl1keep, [x0, x1, lsl #3]` -- has no table
+    // entry of its own: size=11 opc=10 is opc<0>=0, so it decodes as STRx_reg
+    // and lands here. The extend and the scale ride on the prefetch the same
+    // way they ride on a load.
+    const uint32_t PrefetchRm = Bits(Word, 20, 16);
+    Ref PrefetchBase = LoadXSP(Bits(Word, 9, 5));
+    if (PrefetchRm == 31) {
+      PrefetchHint(Bits(Word, 4, 0), PrefetchBase);
+    } else {
+      PrefetchHint(Bits(Word, 4, 0), PrefetchBase, LoadX(PrefetchRm), ExtendOffsetType(Option), Scaled ? static_cast<uint8_t>(1U << Size) : 1);
+    }
     return true;
   }
 
