@@ -697,6 +697,13 @@ uint64_t ComputeCodeCacheConfigId() {
       // presence-DISABLED, 64-bit-guest-only; rewrites value-dead flag ops to
       // their flags-only forms pre-RA, so it changes emitted block bytes.
       Hasher.Add(static_cast<uint64_t>(getenv("FEX_NO_DFCE_NOWRITE") != nullptr));
+      // DFCE's per-site flag-liveness permissions (AnnotateFlagLiveness):
+      // presence-DISABLED. With them, Ashr/Sbfe reach sradi/srad/srawi/sraw
+      // and a TBZ reaches rldicl., all of which clobber host state that
+      // otherwise holds the guest's flags -- so the emitted bytes differ at
+      // every granted site and a cache built either way is unsound in a
+      // session running the other.
+      Hasher.Add(static_cast<uint64_t>(getenv("POWERARM_NOFLAGLIVESHIFT") != nullptr));
       // Linked-exit RIP sink (BranchOps.cpp): now default-ON, with
       // FEX_NOSINKEXITRIP as the kill switch. Presence-DISABLED; the switch
       // moves the destination-RIP constant and its `std State.rip` from below
@@ -811,6 +818,7 @@ uint64_t ComputeCodeCacheConfigId() {
       // Latent rather than live, since EnableCodeCachingWIP is off by default,
       // but it is exactly the shape of bug that costs a week when it does bite.
       HASH_OPT(DISABLECMPBRANCHFUSION);
+      HASH_OPT(DISABLECCMPCHAIN);
       HASH_OPT(DISABLESCALARSPLATCHAIN);
       // VSX register classes: with it on, an operation on guest V16-V31 reads
       // and writes the pinned low-bank register directly; with it off the same

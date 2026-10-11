@@ -136,6 +136,20 @@ for src in *.S; do
     sed -n 's|^// EXPECT-RC: ||p' "$src" > "$t.rc"
     continue
   fi
+  # `// NO-GOLDEN`: built but not run, because the test is self-checking and a
+  # golden would add nothing. The C corpus has had such tests since ld1r and
+  # sigvcache (they are simply left out of $corpus); this is the same thing for
+  # an assembly one, and it is a marker rather than a list here so that the
+  # rule travels with the test.
+  #
+  # It also stops this script from MANUFACTURING a golden for such a test on a
+  # host where the only available aarch64 execution is POWERarm itself. A
+  # golden taken from the thing under test compares equal to a failing run, and
+  # exactly that has shipped in this repo before -- see the exitdead_golden
+  # check in run.sh, which exists because of it.
+  if grep -q '^// NO-GOLDEN' "$src"; then
+    continue
+  fi
   run_golden "./$t"
 done
 for t in $corpus; do

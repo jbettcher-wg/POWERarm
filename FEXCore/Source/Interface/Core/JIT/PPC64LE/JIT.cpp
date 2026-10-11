@@ -3515,7 +3515,10 @@ static void RecordBlockAndMaybeDump(uint64_t Entry, uint64_t SSACount, uint64_t 
 //    rldicl bit-extract can address a high bit.
 //  * Lshl/Lshr/Ashr at Size <= i32: value operand is read by
 //    rlwinm/slw/srw/extsw (low word only); the register shift count is
-//    pre-masked with rldicl(...,0,59) (low 5 bits).
+//    pre-masked with rldicl(...,0,59) (low 5 bits). Ashr's flag-liveness arm
+//    (Op->CarryDead, ISA-OPPORTUNITIES.md §3.5) adds srawi/sraw to that list
+//    and the claim is unchanged: both are DEFINED on RS[32:63], and that arm
+//    pre-masks its register count with the same rldicl(...,0,59).
 //  * Mul/UMul at Size <= i32: mullw reads low words; mulli's low-32 product
 //    depends only on the low 32 of RA (multiplication mod 2^32). The
 //    handler's own tail mask re-canonicalizes the polluted high half.

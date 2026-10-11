@@ -447,6 +447,32 @@ void Dump(fextl::stringstream* out, const IRListView* IR) {
       default: *out << "<Unknown Args>"; break;
       }
 
+      // The flag-liveness PERMISSIONS, named. The generated arg printer above
+      // already prints them, but positionally and as bare values, which no
+      // check can match on; these are the fields a suite check has to count to
+      // show the mechanism fired at all (run.sh's flag_live_permissions), so
+      // they get a name here for the same reason EntryNZCVLiveIn does on the
+      // header line. See AnnotateFlagLiveness in
+      // Passes/RedundantFlagCalculationElimination.cpp.
+      switch (IROp->Op) {
+      case OP_ASHR:
+        if (IROp->C<IROp_Ashr>()->CarryDead) {
+          *out << " CarryDead=1";
+        }
+        break;
+      case OP_SBFE:
+        if (IROp->C<IROp_Sbfe>()->CarryDead) {
+          *out << " CarryDead=1";
+        }
+        break;
+      case OP_CONDJUMP:
+        if (IROp->C<IROp_CondJump>()->NZCVDead) {
+          *out << " NZCVDead=1";
+        }
+        break;
+      default: break;
+      }
+
       //*out << " (" <<  std::dec << CodeNode->GetUses() << ")";
 
       *out << "\n";

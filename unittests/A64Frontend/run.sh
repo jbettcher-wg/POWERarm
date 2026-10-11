@@ -785,6 +785,146 @@ if [ -f fcmp_denorm ]; then
   fi
 fi
 
+# flaglive is the guest-visible half of the flag-liveness permissions
+# (ISA-OPPORTUNITIES.md §3.5): Ashr/Sbfe reaching sradi/srad/srawi/sraw and a
+# TBZ reaching rldicl., each only where DFCE proved the flag it destroys is
+# dead. It needs no reference implementation -- every answer is forced by the
+# A64 definitions -- and it carries its own positive control, so exactly one
+# FAIL line is required and it has to be that one.
+#
+# The value check is not enough on its own, for the reason every switch-shaped
+# item here has a second check: a permission that is never granted emits the
+# old code, and the old code passes. So the run is also required to GRANT some
+# of each kind and to grant none with POWERARM_NOFLAGLIVESHIFT=1, and the same
+# binary's output must be identical either way -- "the switch changed nothing
+# observable", which is a sharper statement than any single run's PASS lines.
+# The counts are read from the afteropt IR dump with the code cache off, since
+# a unit served from the cache is never compiled and so never annotated.
+if [ -f flaglive ]; then
+  fl_fail=0
+  fl_detail=""
+  for fl_sw in on off; do
+    if [ "$fl_sw" = on ]; then
+      POWERARM_NOFLAGLIVESHIFT=1 "$emu" ./flaglive > flaglive.noperm 2> /dev/null
+      fl_out=flaglive.noperm
+    else
+      "$emu" ./flaglive > flaglive.powerarm 2> /dev/null
+      fl_out=flaglive.powerarm
+    fi
+    fl_rc=$?
+    fl_pass=$(grep -c '^PASS' "$fl_out" 2> /dev/null)
+    fl_bad=$(grep -c '^FAIL' "$fl_out" 2> /dev/null)
+    fl_ctl=$(grep -c '^FAIL control_deliberately_wrong' "$fl_out" 2> /dev/null)
+    if [ "$fl_rc" != 0 ] || [ "$fl_bad" != 1 ] || [ "$fl_ctl" != 1 ] || [ "$fl_pass" -lt 50 ]; then
+      fl_fail=1
+      fl_detail="$fl_detail noflagliveshift=$fl_sw rc=$fl_rc pass=$fl_pass fail=$fl_bad control=$fl_ctl;"
+    fi
+  done
+  if ! cmp -s flaglive.powerarm flaglive.noperm; then
+    fl_fail=1
+    fl_detail="$fl_detail the switch changed the output: $(cmp flaglive.powerarm flaglive.noperm 2>&1 | head -1);"
+  fi
+  # Granted-permission counts, with and without the switch.
+  POWERARM_ENABLECODECACHINGWIP=0 POWERARM_DUMPIR=stderr POWERARM_PASSMANAGERDUMPIR=afteropt \
+    "$emu" ./flaglive > /dev/null 2> flaglive.irdump
+  POWERARM_NOFLAGLIVESHIFT=1 POWERARM_ENABLECODECACHINGWIP=0 POWERARM_DUMPIR=stderr POWERARM_PASSMANAGERDUMPIR=afteropt \
+    "$emu" ./flaglive > /dev/null 2> flaglive.irdump.noperm
+  fl_carry=$(grep -c 'CarryDead=1' flaglive.irdump 2> /dev/null)
+  fl_tbz=$(grep -E 'CondJump .*(TSTZ|TSTNZ)' flaglive.irdump 2> /dev/null | grep -c 'NZCVDead=1')
+  fl_carry_off=$(grep -c 'CarryDead=1' flaglive.irdump.noperm 2> /dev/null)
+  fl_tbz_off=$(grep -E 'CondJump .*(TSTZ|TSTNZ)' flaglive.irdump.noperm 2> /dev/null | grep -c 'NZCVDead=1')
+  # Under POWERARM_MAXINST=1 every leg of a granted case is a constant exit and
+  # every exit is seeded with all four flags live, so NOTHING is granted and the
+  # test is exercising the conservative lowering instead. That is a mode of the
+  # test, not a failure of it -- but it must still be true that the switch
+  # grants nothing, and the value checks above still have to pass.
+  if [ -n "${POWERARM_MAXINST:-}" ] && [ "${POWERARM_MAXINST:-}" != 0 ]; then
+    fl_want=0
+  else
+    fl_want=1
+  fi
+  if [ "$fl_want" = 1 ] && { [ "$fl_carry" -lt 1 ] || [ "$fl_tbz" -lt 1 ]; }; then
+    fl_fail=1
+    fl_detail="$fl_detail no permission was granted (CarryDead=$fl_carry TBZ=$fl_tbz), so the values above tested only the old lowering;"
+  fi
+  if [ "$fl_carry_off" != 0 ] || [ "$fl_tbz_off" != 0 ]; then
+    fl_fail=1
+    fl_detail="$fl_detail POWERARM_NOFLAGLIVESHIFT=1 still granted CarryDead=$fl_carry_off TBZ=$fl_tbz_off;"
+  fi
+  if [ "$fl_fail" = 0 ]; then
+    report PASS flaglive "$fl_pass flag-liveness checks clean, control FAILed; granted CarryDead=$fl_carry TBZ=$fl_tbz, none with the switch"
+  else
+    report FAIL flaglive "$fl_detail see $out/flaglive.powerarm"
+  fi
+fi
+
+# ccmpchain is the conditional-compare chain (ISA-OPPORTUNITIES.md §3.2):
+# `cmp ; ccmp ; b.cond` collapsed into two compares, one CR logical op and the
+# guest's branch. It needs no reference implementation because it is its own:
+# each case runs the chain shape AND the same arithmetic with an MRS between
+# the conditional compare and the branch, which the chain walker refuses, so
+# the second is the packed-NZCV lowering the differential tests here already
+# pin. 896 condition pairs plus eleven hand-computed anchors, and a positive
+# control, so exactly one FAIL is required and it has to be that one.
+#
+# Same second check as flaglive, for the same reason: a chain that never
+# collapses emits the old code twice and passes. The run must COLLAPSE some
+# chains and collapse none with POWERARM_DISABLECCMPCHAIN=1, with identical
+# output either way.
+if [ -f ccmpchain ]; then
+  cc_fail=0
+  cc_detail=""
+  for cc_sw in on off; do
+    if [ "$cc_sw" = on ]; then
+      POWERARM_DISABLECCMPCHAIN=1 "$emu" ./ccmpchain > ccmpchain.nochain 2> /dev/null
+      cc_out=ccmpchain.nochain
+    else
+      "$emu" ./ccmpchain > ccmpchain.powerarm 2> /dev/null
+      cc_out=ccmpchain.powerarm
+    fi
+    cc_rc=$?
+    cc_pass=$(grep -c '^PASS' "$cc_out" 2> /dev/null)
+    cc_bad=$(grep -c '^FAIL' "$cc_out" 2> /dev/null)
+    cc_ctl=$(grep -c '^FAIL control_deliberately_wrong' "$cc_out" 2> /dev/null)
+    if [ "$cc_rc" != 0 ] || [ "$cc_bad" != 1 ] || [ "$cc_ctl" != 1 ] || [ "$cc_pass" -lt 25 ]; then
+      cc_fail=1
+      cc_detail="$cc_detail disablechain=$cc_sw rc=$cc_rc pass=$cc_pass fail=$cc_bad control=$cc_ctl;"
+    fi
+  done
+  if ! cmp -s ccmpchain.powerarm ccmpchain.nochain; then
+    cc_fail=1
+    cc_detail="$cc_detail the switch changed the output: $(cmp ccmpchain.powerarm ccmpchain.nochain 2>&1 | head -1);"
+  fi
+  POWERARM_ENABLECODECACHINGWIP=0 POWERARM_DUMPIR=stderr POWERARM_PASSMANAGERDUMPIR=afteropt \
+    "$emu" ./ccmpchain > /dev/null 2> ccmpchain.irdump
+  POWERARM_DISABLECCMPCHAIN=1 POWERARM_ENABLECODECACHINGWIP=0 POWERARM_DUMPIR=stderr POWERARM_PASSMANAGERDUMPIR=afteropt \
+    "$emu" ./ccmpchain > /dev/null 2> ccmpchain.irdump.nochain
+  cc_chains=$(grep -cE '\bChainCompare\b' ccmpchain.irdump 2> /dev/null)
+  cc_chains_off=$(grep -cE '\bChainCompare\b' ccmpchain.irdump.nochain 2> /dev/null)
+  # Under POWERARM_MAXINST=1 the branch's legs are constant exits, every exit
+  # is seeded with all four flags live, and no chain is collapsible at all --
+  # so the test is exercising the old lowering on both shapes. A mode of the
+  # test, not a failure of it; the value checks still have to pass.
+  if [ -n "${POWERARM_MAXINST:-}" ] && [ "${POWERARM_MAXINST:-}" != 0 ]; then
+    cc_want=0
+  else
+    cc_want=1
+  fi
+  if [ "$cc_want" = 1 ] && [ "$cc_chains" -lt 1 ]; then
+    cc_fail=1
+    cc_detail="$cc_detail no chain was collapsed, so both shapes ran the old lowering;"
+  fi
+  if [ "$cc_chains_off" != 0 ]; then
+    cc_fail=1
+    cc_detail="$cc_detail POWERARM_DISABLECCMPCHAIN=1 still collapsed $cc_chains_off;"
+  fi
+  if [ "$cc_fail" = 0 ]; then
+    report PASS ccmpchain "$cc_pass chain checks clean, control FAILed; collapsed $cc_chains chains, none with the switch"
+  else
+    report FAIL ccmpchain "$cc_detail see $out/ccmpchain.powerarm"
+  fi
+fi
+
 if [ -f threadexit ]; then
   te_total=96
   te_batch=8

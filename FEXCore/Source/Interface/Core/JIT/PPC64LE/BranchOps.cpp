@@ -1340,6 +1340,39 @@ DEF_OP(CondJump) {
                        "CondJump vector-compare mode only encodes EQ/NEQ over 'any lane matched'");
     // BI 26 = CR6's "none matched" bit (CR field 6 occupies CR bits 24..27).
     CC = (Op->Cond == IR::CondClass::NEQ) ? Cond {4, 26} : Cond {12, 26};
+  } else if (Op->FromChainCR) {
+    // Conditional-compare chain (ISA-OPPORTUNITIES.md §3.2): the predicate was
+    // computed by the ChainCompare immediately before this op, in
+    // kChainPredicateBit, and is already in "set means take the branch"
+    // polarity -- DEF_OP(ChainCompare) folds both compares' polarities and the
+    // false-leg constant into its choice of CR logical op, so there is nothing
+    // left to decode here and Op->Cond is not consulted.
+    //
+    // The contract is that nothing emitted between the two writes a condition
+    // register. CompareFusion::RunChain puts the ChainCompare directly before
+    // this node, and the only ops the register allocator inserts afterwards
+    // are spills and fills, whose lowering (DEF_OP(SpillRegister) /
+    // DEF_OP(FillRegister)) is stores and loads plus a LoadConstant -- no CR
+    // writes. Assert it rather than trust it, so a future pass that inserts
+    // something here fails loudly instead of branching on a stale bit.
+#if defined(ASSERTIONS_ENABLED) && ASSERTIONS_ENABLED
+    {
+      auto Prev = Node->Header.Previous;
+      while (true) {
+        auto PrevOp = IR->GetOp<IR::IROp_Header>(Prev);
+        if (PrevOp->Op == IR::OP_SPILLREGISTER || PrevOp->Op == IR::OP_FILLREGISTER || PrevOp->Op == IR::OP_GUESTOPCODE ||
+            PrevOp->Op == IR::OP_INLINECONSTANT) {
+          Prev = IR->GetNode(Prev)->Header.Previous;
+          continue;
+        }
+        LOGMAN_THROW_A_FMT(PrevOp->Op == IR::OP_CHAINCOMPARE,
+                           "CondJump FromChainCR: expected a ChainCompare immediately before it, found {}",
+                           IR::GetName(PrevOp->Op));
+        break;
+      }
+    }
+#endif
+    CC = Cond {12, static_cast<uint8_t>(kChainPredicateBit)};
   } else if (Op->FromNZCV) {
     CC = MapNZCVCC(Op->Cond);
   } else if (Op->Cond == IR::CondClass::TSTZ || Op->Cond == IR::CondClass::TSTNZ) {
@@ -1365,10 +1398,29 @@ DEF_OP(CondJump) {
       Reg = GetReg(Op->Cmp1);
     }
     uint32_t sh = (64u - static_cast<uint32_t>(Bit)) & 63u;
-    rldicl(TMP1, Reg, sh, 63);          // TMP1 = (Reg >> Bit) & 1 (no Rc, CR untouched)
-    cmpldi(cr(7), TMP1, 0);             // cr7 = (TMP1 == 0)
-    // bc BI = cr7*4 + EQ_bit(2) = 30. BO=12 → take when EQ set; BO=4 → when clear.
-    CC = (Op->Cond == IR::CondClass::TSTNZ) ? Cond{4, 30} : Cond{12, 30};
+    if (Op->NZCVDead) {
+      // ISA-OPPORTUNITIES.md §3.5: TBZ/TBNZ in two instructions instead of
+      // three. The record form sets CR0 from the extracted bit (0 or 1, so
+      // CR0.EQ answers "bit clear" exactly and the signed LT/GT bits are
+      // irrelevant), which removes the separate compare -- and clobbers CR0,
+      // which is why it needs DFCE's AnnotateFlagLiveness to have proved that
+      // no later read of ANY of N/Z/C/V can observe it. All four, not just
+      // the two that live in CR0: DEF_OP(FCmp) also leaves a four-condition
+      // FP result in CR0 that MapNZCVCC decodes from LT/GT/EQ/SO, so a CR0
+      // clobber is invisible only when nothing reads the flag domain at all.
+      //
+      // Nothing between here and the bc writes CR0 -- the branch shaping
+      // below emits the bc first in every shape, before any suspend check or
+      // spin hint -- and FlagsFromFCmp is cleared at the next block's entry.
+      rldicl_(TMP1, Reg, sh, 63);       // CR0 = cmp(TMP1, 0); TMP1 = (Reg >> Bit) & 1
+      // bc BI = CR0*4 + EQ_bit(2) = 2. BO=12 → take when EQ set (bit clear).
+      CC = (Op->Cond == IR::CondClass::TSTNZ) ? Cond{4, 2} : Cond{12, 2};
+    } else {
+      rldicl(TMP1, Reg, sh, 63);        // TMP1 = (Reg >> Bit) & 1 (no Rc, CR untouched)
+      cmpldi(cr(7), TMP1, 0);           // cr7 = (TMP1 == 0)
+      // bc BI = cr7*4 + EQ_bit(2) = 30. BO=12 → take when EQ set; BO=4 → when clear.
+      CC = (Op->Cond == IR::CondClass::TSTNZ) ? Cond{4, 30} : Cond{12, 30};
+    }
   } else if (IsSpinCollapseBranch(Node)) {
     // FEX_SPINCOLLAPSE (contract at kSpinCollapseK, JITClass.h): the spin
     // backedge of a matched counted-decrement pair whose Sub now retires K

@@ -279,15 +279,14 @@ namespace {
     uint64_t SignBit {};
   };
 
-  Producer AnalyzeProducer(IREmitter* IREmit, IRListView& IR, Ref Node, IROp_Header* Op) {
-    Producer P {.Op = Op, .Node = Node};
-    switch (Op->Op) {
-    case OP_SUBWITHFLAGS:
-    case OP_SUBNZCV: break;
-    case OP_ADDWITHFLAGS:
-    case OP_ADDNZCV: P.IsAdd = true; break;
-    default: return P;
-    }
+  // The operand half of AnalyzeProducer, for a caller that already knows the
+  // op's add/sub sense. A CONDITIONAL compare reaches it from the chain path
+  // (RunChain): CondSubNZCV/CondAddNZCV carry their own Src1/Src2, and the
+  // consumer's condition is evaluated against those exactly as it would be
+  // against an unconditional compare's, so the same operand rules and the same
+  // add-sense exclusions apply unchanged.
+  Producer AnalyzeOperands(IREmitter* IREmit, IRListView& IR, Ref Node, IROp_Header* Op, bool IsAdd) {
+    Producer P {.Op = Op, .Node = Node, .IsAdd = IsAdd};
 
     if (Op->Size != OpSize::i32Bit && Op->Size != OpSize::i64Bit) {
       return P;
@@ -315,6 +314,18 @@ namespace {
     return P;
   }
 
+  Producer AnalyzeProducer(IREmitter* IREmit, IRListView& IR, Ref Node, IROp_Header* Op) {
+    bool IsAdd = false;
+    switch (Op->Op) {
+    case OP_SUBWITHFLAGS:
+    case OP_SUBNZCV: break;
+    case OP_ADDWITHFLAGS:
+    case OP_ADDNZCV: IsAdd = true; break;
+    default: return Producer {.Op = Op, .Node = Node};
+    }
+    return AnalyzeOperands(IREmit, IR, Node, Op, IsAdd);
+  }
+
   // The condition a consumer needs after fusing against P, or nullopt if the
   // pair is not an identity (see the tables above).
   std::optional<CondClass> ResolveFusedCond(const Producer& P, CondClass Cond) {
@@ -339,7 +350,258 @@ namespace {
     }
     return Cond;
   }
+
+  // Evaluate an ARM condition against a LITERAL NZCV nibble -- the conditional
+  // compare's 4-bit false-NZCV immediate (bit3 = N, bit2 = Z, bit1 = C,
+  // bit0 = V). This is the whole reason a CCMP collapses to straight-line CR
+  // logic: on the leg where the condition does not hold, the flags the
+  // consumer reads are an assembly-time constant, so the consumer's answer on
+  // that leg is an assembly-time boolean too.
+  //
+  // The definitions are ARM's, and they must agree with MapNZCVCC's decode of
+  // the same CondClass against the same four bits -- that is the identity this
+  // table shares with the one at the top of this file. Evaluated against the
+  // ORIGINAL consumer condition, not the one ResolveFusedCond returns: the
+  // remap there is about reading a condition off a COMPARE instead of off
+  // packed flags, which has nothing to do with a literal.
+  bool EvalCondAgainstNZCV(CondClass Cond, uint8_t NZCV) {
+    const bool N = (NZCV & 0x8) != 0;
+    const bool Z = (NZCV & 0x4) != 0;
+    const bool C = (NZCV & 0x2) != 0;
+    const bool V = (NZCV & 0x1) != 0;
+
+    switch (Cond) {
+    case CondClass::EQ: return Z;
+    case CondClass::NEQ: return !Z;
+    case CondClass::UGE: return C;                  // CS / HS
+    case CondClass::ULT: return !C;                 // CC / LO
+    case CondClass::UGT: return C && !Z;            // HI
+    case CondClass::ULE: return !(C && !Z);         // LS
+    case CondClass::MI: return N;
+    case CondClass::PL: return !N;
+    case CondClass::VS: return V;
+    case CondClass::VC: return !V;
+    case CondClass::SGE: return N == V;             // GE
+    case CondClass::SLT: return N != V;             // LT
+    case CondClass::SGT: return (N == V) && !Z;     // GT
+    case CondClass::SLE: return !((N == V) && !Z);  // LE
+    default:
+      // AL/NV never reach a reader the frontend emits, and the FP codes and
+      // the bit-test codes are not produced against a conditional compare.
+      // ResolveFusedCond has already refused every one of these, so this is
+      // unreachable; answering false is the conservative direction anyway
+      // (it makes the predicate a plain AND).
+      return false;
+    }
+  }
 } // namespace
+
+// ---------------------------------------------------------------------------
+// RunChain: the conditional-compare chain (ISA-OPPORTUNITIES.md §3.2).
+//
+// `cmp w0, w1 ; ccmp w2, w3, #K, cond ; b.cond2 L` reaches the backend as
+//     SubNZCV      i32 w0, w1
+//     CondSubNZCV  i32 w2, w3, cond, #K
+//     CondJump     ..., cond2, FromNZCV=1
+// and lowers, today, to the packed-NZCV sequence for the compare, a
+// DATA-DEPENDENT HOST BRANCH over either the second compare or a 7-9
+// instruction write of the constant K into CR0 and XER, and then the
+// consumer's projection of XER back out -- about 13 host instructions and the
+// one branch the guest compiler used CCMP specifically to avoid.
+//
+// But the whole thing is a boolean function of two compares:
+//
+//     taken = cond(P) ? cond2(Q) : cond2(K)
+//
+// with cond2(K) a compile-time constant. So with the two compares in two CR
+// fields it is one CR logical op and the guest's own branch:
+//
+//     cmp cr6, w0, w1 ; cmp cr7, w2, w3 ; crand/crorc ; bc
+//
+// WHAT THIS REFUSES, and why each one.
+//
+//  * NZCV live out of the block. Both producers have to go for this to be a
+//    win and for the branch to be legal to retarget at all; if a flag escapes
+//    the block there is nothing to drop. Checked first.
+//  * Any condition where the direct-compare arm and the packed-NZCV arm do not
+//    agree -- ResolveFusedCond's table, the same one Run uses: VS/VC never (a
+//    cmp produces no V), MI/PL only against zero, and the CMN/ADDS add-sense
+//    exclusions (c == 0 for the unsigned conditions, c == 2^(n-1) for the
+//    signed ones). Both conditions are checked, each against its own compare.
+//  * A register-operand CMN/ADDS as either compare, for the same reason Run
+//    refuses one: without a compile-time addend there is no constant to negate.
+//  * Any other reader or writer of NZCV between the compare and the
+//    conditional compare, or between the conditional compare and the branch.
+//    The searches below find the NEAREST one in each direction and require it
+//    to be exactly the op wanted, so another CSEL, ADC, MRS or a second
+//    conditional compare refuses the chain rather than being reasoned about.
+//    That is what keeps CHAINS OF TWO conditional compares out: the reader
+//    after the first CCMP is the second CCMP, not a CondJump, so the shape
+//    falls back to today's lowering. A three-field version is possible (§3.2
+//    sketches cr5/cr6/cr7 and two CR ops) and is not built here.
+//  * An NZCVSelect consumer (`cmp ; ccmp ; csel`). §3.2 notes it takes `isel`
+//    on the same predicate; it needs a second chain mode on Select and is not
+//    built here, so the shape keeps today's lowering.
+//  * Anything between the compare and the branch that may raise a signal. A
+//    handler may resume the guest AT the conditional compare or AT the branch
+//    with NZCV from the signal frame, and both producers are about to be
+//    deleted. Run keeps a producer in this case; here there is nothing to keep
+//    a half of, so the chain is refused outright.
+//  * A FromNZCV CondJump carrying real Cmp1/Cmp2. The frontend passes Invalid
+//    for both in that mode and the chain mode reuses the fields for nothing,
+//    so rather than overwrite operands this refuses the rewrite if they are
+//    ever not Invalid.
+//
+// What it does NOT need to check is the predecessor's flags: a conditional
+// compare whose gating compare is in another block finds no writer in this one
+// and is refused by that alone.
+// ---------------------------------------------------------------------------
+size_t CompareFusion::RunChain(IREmitter* IREmit, IRListView& IR, Ref Block, bool NZCVLiveOut) {
+  // Nothing is droppable if a flag survives the block, and the chain is all
+  // or nothing.
+  if (NZCVLiveOut) {
+    return 0;
+  }
+
+  ChainOps.clear();
+  for (auto [CodeNode, IROp] : IR.GetCode(Block)) {
+    ChainOps.push_back(CodeNode);
+  }
+
+  size_t Collapsed = 0;
+  for (size_t i = 0; i < ChainOps.size(); ++i) {
+    Ref Q = ChainOps[i];
+    auto QOp = IR.GetOp<IROp_Header>(Q);
+    if (QOp->Op != OP_CONDSUBNZCV && QOp->Op != OP_CONDADDNZCV) {
+      continue;
+    }
+    // CondSubNZCV and CondAddNZCV share this layout; Classify() in the
+    // dead-flag pass reads both through IROp_CondAddNZCV for the same reason.
+    auto QCond = QOp->C<IROp_CondAddNZCV>();
+
+    // P: the nearest NZCV reader-or-writer BEFORE Q, required to be a plain
+    // compare. Finding a reader, or a writer that also reads (another
+    // conditional compare, ADCS), refuses the chain.
+    Ref P {};
+    size_t PIdx = 0;
+    for (size_t j = i; j-- > 0;) {
+      auto Op = IR.GetOp<IROp_Header>(ChainOps[j]);
+      if (IROpReadsNZCV(Op) || IROpWritesNZCV(Op)) {
+        P = ChainOps[j];
+        PIdx = j;
+        break;
+      }
+    }
+    if (!P) {
+      continue;
+    }
+    auto POp = IR.GetOp<IROp_Header>(P);
+    if (POp->Op != OP_SUBNZCV && POp->Op != OP_ADDNZCV && POp->Op != OP_SUBWITHFLAGS && POp->Op != OP_ADDWITHFLAGS) {
+      continue;
+    }
+
+    // R: the nearest NZCV reader-or-writer AFTER Q, required to be the
+    // branch. A CondJump is a block terminator, so "nothing reads the flags
+    // after R" is exactly the NZCVLiveOut already checked above.
+    Ref R {};
+    size_t RIdx = 0;
+    for (size_t k = i + 1; k < ChainOps.size(); ++k) {
+      auto Op = IR.GetOp<IROp_Header>(ChainOps[k]);
+      if (IROpReadsNZCV(Op) || IROpWritesNZCV(Op)) {
+        R = ChainOps[k];
+        RIdx = k;
+        break;
+      }
+    }
+    if (!R) {
+      continue;
+    }
+    auto ROp = IR.GetOp<IROp_Header>(R);
+    if (ROp->Op != OP_CONDJUMP) {
+      continue;
+    }
+    auto RJump = ROp->CW<IROp_CondJump>();
+    if (!RJump->FromNZCV || RJump->VCmpElementSize != OpSize::iInvalid || RJump->FromChainCR) {
+      continue;
+    }
+    if (!RJump->Cmp1.IsInvalid() || !RJump->Cmp2.IsInvalid()) {
+      continue;
+    }
+
+    // A signal between the first compare and the branch would be resumable at
+    // an op whose flags are about to stop existing.
+    bool SignalBetween = false;
+    for (size_t j = PIdx + 1; j < RIdx && !SignalBetween; ++j) {
+      auto Op = IR.GetOp<IROp_Header>(ChainOps[j]);
+      if (!IROpReadsNZCV(Op) && !IROpWritesNZCV(Op) && MayRaiseSignal(Op->Op)) {
+        SignalBetween = true;
+      }
+    }
+    if (SignalBetween) {
+      continue;
+    }
+
+    // Both compares must be ones the direct-compare arm can take, and both
+    // conditions must mean the same thing against a compare as against packed
+    // flags.
+    Producer Pp = AnalyzeProducer(IREmit, IR, P, POp);
+    if (!Pp.Fusable) {
+      continue;
+    }
+    Producer Qp = AnalyzeOperands(IREmit, IR, Q, QOp, QOp->Op == OP_CONDADDNZCV);
+    if (!Qp.Fusable) {
+      continue;
+    }
+
+    // Cond1 is the conditional compare's GATING condition, read against the
+    // first compare. Cond2 is the branch's condition, read against the
+    // conditional compare's own operands.
+    auto Cond1 = ResolveFusedCond(Pp, QCond->Cond);
+    if (!Cond1) {
+      continue;
+    }
+    auto Cond2 = ResolveFusedCond(Qp, RJump->Cond);
+    if (!Cond2) {
+      continue;
+    }
+
+    // The branch's answer on the leg where the gating condition fails, where
+    // the flags are the 4-bit immediate.
+    const bool FalseResult = EvalCondAgainstNZCV(RJump->Cond, QCond->FalseNZCV);
+
+    // Rewrite. The operands are read HERE, not when the shape was matched,
+    // for the reason recorded in Run: a Ref copied out early can name a node
+    // a later rewrite has replaced.
+    IREmit->SetWriteCursorBefore(R);
+    Ref A1 = IR.GetNode(POp->Args[0]);
+    Ref A2 = Pp.IsAdd ? IREmit->_InlineConstant(Pp.NegatedConst) : IR.GetNode(POp->Args[1]);
+    Ref B1 = IR.GetNode(QOp->Args[0]);
+    Ref B2 = Qp.IsAdd ? IREmit->_InlineConstant(Qp.NegatedConst) : IR.GetNode(QOp->Args[1]);
+    IREmit->_ChainCompare(POp->Size, A1, A2, B1, B2, *Cond1, *Cond2, QOp->Size, FalseResult);
+
+    RJump->FromNZCV = false;
+    RJump->FromChainCR = true;
+
+    // Both producers are now read by nothing. Same rewrites DFCE and Run
+    // apply to a dead flag writer: the flags-only forms go, the
+    // value-producing forms demote in place and keep their value.
+    IREmit->Remove(Q);
+    switch (POp->Op) {
+    case OP_SUBWITHFLAGS: POp->Op = OP_SUB; break;
+    case OP_ADDWITHFLAGS: POp->Op = OP_ADD; break;
+    case OP_SUBNZCV:
+    case OP_ADDNZCV:
+      if (P->GetUses() == 0) {
+        IREmit->Remove(P);
+      }
+      break;
+    default: break;
+    }
+    ++Collapsed;
+  }
+
+  return Collapsed;
+}
 
 void CompareFusion::Run(IREmitter* IREmit, IRListView& IR, Ref Block, bool NZCVLiveOut, bool RemoveDeadProducers) {
   Consumers.clear();
