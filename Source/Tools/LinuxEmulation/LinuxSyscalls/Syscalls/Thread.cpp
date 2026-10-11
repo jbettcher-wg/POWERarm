@@ -848,6 +848,17 @@ void RegisterThread(FEX::HLE::SyscallHandler* Handler) {
                         }));
 
   REGISTER_SYSCALL_IMPL(exit, [](FEXCore::Core::CpuStateFrame* Frame, int status) -> uint64_t {
+    // This thread will never execute guest code again, so from here on it can
+    // deliver nothing to the guest -- and a process-directed signal it accepts
+    // in the meantime is lost, whether by the thunk's no-thread-object bail or
+    // by being parked on DeferredSignalFrames and never drained. The kernel
+    // picks a thread for such a signal by mask alone and will happily pick
+    // this one, so say no now rather than at UninstallTLSState below: this is
+    // the one teardown path with real work in front of it (the clear_child_tid
+    // wake, the shared-lock sweep), and the signals lost in that stretch were
+    // measurable. See BlockSignalsForThreadExit.
+    FEX::HLE::BlockSignalsForThreadExit();
+
     FEX::HLE::VForkChildSync();
     // Release any WritePriorityMutex shared locks this thread is still
     // registered for.  The exit path below either longjmps out (which skips

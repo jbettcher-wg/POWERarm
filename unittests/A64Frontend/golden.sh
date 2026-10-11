@@ -98,6 +98,15 @@ gcc -static -O2 -o fcmp_denorm "$here/fcmp_denorm.c"
 # handler on a PROT_NONE page, so it needs no privileges and no timer.
 gcc -static -O2 -o sigvcache "$here/sigvcache.c"
 
+# sigchildteardown is self-checking and MUST stay that way. It asserts that
+# every child it reaped was announced to the process by a SIGCHLD, which it
+# computes from its own round count -- an emulator that drops one of those
+# signals in a thread-teardown window is exactly what a golden taken from the
+# emulator under test could not tell you. The marker in the file is what
+# enforces it; this line only builds the binary so the same one can run on
+# both sides.
+gcc -static -O2 -pthread -o sigchildteardown "$here/sigchildteardown.c"
+
 # memrev and prfmhint are self-checking and MUST stay that way, like
 # fcmp_denorm. memrev asserts the byte order of a load-and-reverse and a
 # reverse-and-store, which is forced by the architecture and which the test

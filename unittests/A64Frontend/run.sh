@@ -699,6 +699,41 @@ if [ -f sigvcache ]; then
   fi
 fi
 
+# A process-directed SIGCHLD generated while one of the guest's threads is
+# inside a FEX thread-teardown window. Golden-free and self-checking for the
+# same reason fcmp_denorm and memrev are: the expected answer is "every child
+# this process reaped was announced to it", which sigchildteardown.c computes
+# from its own round count, and a reference taken from the emulator under test
+# is precisely what could not tell you that a signal went missing.
+#
+# Two gates, because the second costs nothing and is sharper than the first.
+# The binary's own arithmetic has to come out -- every PASS line present, no
+# FAIL line -- AND the emulator's bail report must not have named a single
+# process-aimed drop. SignalHandlerThunk counts those apart from the
+# thread-aimed ones (tkill/tgkill at a named TID, where dropping a signal that
+# raced the thread's exit is correct), so `action=drop-process-aimed' on
+# stderr is the emulator stating that it lost a signal POSIX required it to
+# deliver -- true whether or not the guest's own count happened to catch it on
+# this run, and the thing to watch if this ever starts failing again.
+#
+# Before the fix in SignalDelegator::UninstallTLSState and the guest `exit'
+# syscall, this failed on the first handful of rounds: 4 of the first 5
+# children went unannounced, 3 of them with that bail line on stderr and one
+# swallowed silently by the deferred-signal queue.
+if [ -f sigchildteardown ]; then
+  "$emu" ./sigchildteardown > sigchildteardown.powerarm 2> sigchildteardown.stderr
+  sct_rc=$?
+  sct_pass=$(grep -c '^PASS' sigchildteardown.powerarm 2> /dev/null)
+  sct_fail=$(grep -c '^FAIL' sigchildteardown.powerarm 2> /dev/null)
+  sct_drop=$(grep -c 'action=drop-process-aimed' sigchildteardown.stderr 2> /dev/null)
+  sct_rounds=$(sed -n 's/^sigchildteardown: \([0-9]*\) rounds,.*/\1/p' sigchildteardown.powerarm)
+  if [ "$sct_rc" = 0 ] && [ "$sct_fail" = 0 ] && [ "$sct_pass" -ge 3 ] && [ "$sct_drop" = 0 ]; then
+    report PASS sigchildteardown "${sct_rounds:-0} children announced through a thread teardown, no process-aimed drop"
+  else
+    report FAIL sigchildteardown "rc=$sct_rc passes=$sct_pass fails=$sct_fail process-aimed-drops=$sct_drop; see $out/sigchildteardown.powerarm and .stderr"
+  fi
+fi
+
 # ld1r runs in both switch states, because the lowering it exercises is the
 # one the register classes change: a 4 or 8-byte LD1R into V16-V31 is a single
 # VSX load only while VBroadcastFromMem is VSXClean, and the same instruction

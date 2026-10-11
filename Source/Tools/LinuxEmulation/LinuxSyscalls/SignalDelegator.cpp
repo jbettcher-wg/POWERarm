@@ -745,6 +745,20 @@ namespace {
     return "none";
   }
 
+  // Running totals of the signals a bail could neither dispatch nor recover,
+  // split by who they were aimed at (see AimedAtThisThread). Countable rather
+  // than only loggable: a line per occurrence says nothing about the total
+  // without counting lines by eye, and the figure that has to stay at zero --
+  // process-aimed -- is exactly the one worth watching across a long session.
+  // Both appear on every bail line as `drops=<thread-aimed>/<process-aimed>',
+  // so one `grep POWERarm-SIGBAIL | tail -1' answers it.
+  //
+  // Relaxed atomics on file statics: no allocation, no lock, nothing to
+  // initialise late, which is what a handler on a half-dismantled thread can
+  // afford.
+  std::atomic<uint64_t> DropsThreadAimed {};
+  std::atomic<uint64_t> DropsProcessAimed {};
+
   // One line, hand-formatted and written with write(2), for a thunk bail.
   // This runs in a signal handler on a thread FEX has already half-dismantled,
   // so no fmt, no allocation, no locks -- the same rules the fatal host-fault
@@ -788,6 +802,10 @@ namespace {
     Line.Str(CookieRejected ? "bad" : "ok");
     Line.Str(" action=");
     Line.Str(Action);
+    Line.Str(" drops=");
+    Line.Dec(DropsThreadAimed.load(std::memory_order_relaxed));
+    Line.Char('/');
+    Line.Dec(DropsProcessAimed.load(std::memory_order_relaxed));
     Line.Char('\n');
     Line.Emit();
   }
@@ -818,6 +836,41 @@ namespace {
   // not by this handler.
   bool IsSyncFault(int Signal, const siginfo_t* Info) {
     return (Signal == SIGSEGV || Signal == SIGBUS || Signal == SIGILL || Signal == SIGFPE || Signal == SIGTRAP) && Info->si_code > 0;
+  }
+
+  // Who the signal was aimed at, which is what decides whether dropping it is
+  // correct -- the question the drop path used not to ask.
+  //
+  // SI_TKILL is tkill(2)/tgkill(2): the sender named THIS kernel TID, so there
+  // was no other thread the kernel could have chosen and the sender simply
+  // raced this thread's exit. Dropping is the right answer and always was.
+  // glibc's raise() and pthread_kill() are both tgkill, and so is FEX's own
+  // SIGNAL_FOR_PAUSE, which is why that is the common case in the logs.
+  //
+  // Everything else got here because the kernel PICKED this thread for a
+  // signal aimed at the process, so consuming it loses a notification POSIX
+  // requires some thread to take. SI_USER is kill(2) and SI_QUEUE is
+  // sigqueue(3) -- both process-directed, both counted here. si_code > 0 is
+  // kernel-generated, SIGCHLD/CLD_EXITED first among them, and is the case
+  // that was measured.
+  bool AimedAtThisThread(const siginfo_t* Info) {
+    return Info->si_code == SI_TKILL;
+  }
+
+  // The name a bail's report gives to a signal it can neither dispatch nor
+  // recover, and the one place the drop counters are bumped. Takes the Fault
+  // the caller already computed so that the name and DeadThreadEscape's
+  // behaviour cannot drift apart. Call it exactly once per bail.
+  const char* NameEscape(bool Fault, const siginfo_t* Info) {
+    if (Fault) {
+      return "default-disposition";
+    }
+    if (AimedAtThisThread(Info)) {
+      DropsThreadAimed.fetch_add(1, std::memory_order_relaxed);
+      return "drop-thread-aimed";
+    }
+    DropsProcessAimed.fetch_add(1, std::memory_order_relaxed);
+    return "drop-process-aimed";
   }
 
   // A sentinel trap this thunk cannot route back into the dispatcher. The
@@ -870,6 +923,15 @@ static void SignalHandlerThunk(int Signal, siginfo_t* Info, void* UContext) {
   // question as "will the kernel raise it again when we return"; see
   // HandToDefaultDisposition, which closes the gap by queueing the signal back
   // rather than trusting the interrupted instruction to fault a second time.
+  //
+  // The spending is still a spending, so the report names who the signal was
+  // aimed at (NameEscape / AimedAtThisThread) and counts the two cases apart.
+  // A thread-aimed drop is correct by construction. A process-aimed one is a
+  // lost notification, and is meant to be unreachable now that an exiting
+  // thread blocks asynchronous signals before this window opens (see
+  // BlockSignalsForThreadExit): a nonzero process-aimed count in `drops=' says
+  // the window is open again somewhere, which is the only thing these counters
+  // exist to tell you.
   const bool Fault = IsSyncFault(Signal, Info);
   const auto DeadThreadEscape = [Signal, Fault, Info, UContext]() {
     if (Fault) {
@@ -891,8 +953,10 @@ static void SignalHandlerThunk(int Signal, siginfo_t* Info, void* UContext) {
     // UninstallTLSState, or never had FEX state at all. There is nothing to
     // dispatch the signal through.
     const bool Trapped = Sentinel != SentinelKind::None;
-    ReportThunkBail("no-thread-object", Trapped ? "thread-exit" : (Fault ? "default-disposition" : "drop"), Signal, Info,
-                    _context->uc_stack, HostPC, Sentinel, ThreadObject, false, false, 0, CookieRejected);
+    // The ternary is load-bearing: NameEscape bumps a counter, so it must be
+    // evaluated for the bails that really do spend the signal and no others.
+    ReportThunkBail("no-thread-object", Trapped ? "thread-exit" : NameEscape(Fault, Info), Signal, Info, _context->uc_stack, HostPC,
+                    Sentinel, ThreadObject, false, false, 0, CookieRejected);
     if (Trapped) {
       ExitTrappedThread();
     }
@@ -940,8 +1004,8 @@ static void SignalHandlerThunk(int Signal, siginfo_t* Info, void* UContext) {
                       ObjTid, CookieRejected);
       ExitTrappedThread();
     }
-    ReportThunkBail("object-not-live", Fault ? "default-disposition" : "drop", Signal, Info, _context->uc_stack, HostPC, Sentinel,
-                    ThreadObject, true, ObjIsZombie, ObjTid, CookieRejected);
+    ReportThunkBail("object-not-live", NameEscape(Fault, Info), Signal, Info, _context->uc_stack, HostPC, Sentinel, ThreadObject, true,
+                    ObjIsZombie, ObjTid, CookieRejected);
     DeadThreadEscape();
     return;
   }
@@ -2981,7 +3045,98 @@ void SignalDelegator::RegisterTLSState(FEX::HLE::ThreadStateObject* Thread) {
   }
 }
 
+// Takes a dying thread out of the running for a process-directed signal. This
+// is the whole of the fix for a signal lost in thread teardown, and it is a
+// closing of the window rather than a recovery from it, because recovery is
+// not available -- see below.
+//
+// THE WINDOW. From the moment a thread can no longer reach guest code, nothing
+// it is handed can be delivered to the guest. There are two ways that fails,
+// both measured:
+//
+//  * Past the TLS_ThreadObject clear at the bottom of UninstallTLSState -- and
+//    past the alt-stack munmap that takes the back-pointer with it --
+//    SignalHandlerThunk cannot find a ThreadStateObject at all, and the bail
+//    it takes used to return, which CONSUMES the signal. This is the
+//    `no-thread-object ... action=drop' line in the logs.
+//  * Earlier on the same path, while the object is still reachable, an
+//    asynchronous signal arriving inside a signal-deferring section is parked
+//    on ThreadStateObject::SignalInfo.DeferredSignalFrames and drained at the
+//    thread's next guest block boundary. A thread that is exiting has no next
+//    block boundary, so the queued frame dies with it -- silently, with no
+//    bail line at all.
+//
+// WHO IT WAS AIMED AT. For a signal aimed at THIS thread with tkill/tgkill
+// either outcome is only a race the sender lost: there was no other thread the
+// kernel could have chosen. For a signal aimed at the PROCESS it is a lost
+// notification, and the kernel is actively likely to pick a thread in this
+// state: complete_signal() takes the first member of the thread group that
+// does not block the signal, PF_EXITING is not set until the kernel's own exit
+// path runs -- which is after the SYS_exit, long past everything here -- and a
+// thread on its way out blocks nothing. So the kernel hands a SIGCHLD to a
+// thread that is a few calls from death and the guest's handler never runs.
+// Measured under headless Chrome: one to three SIGCHLD/CLD_EXITED lost per
+// session, every session, kernel-generated (si_code > 0) and so
+// process-directed. Silent, because SIGCHLD's default disposition is ignore --
+// but a guest that installed a handler to reap its children loses the
+// notification.
+//
+// WHY BLOCKING AND NOT RE-RAISING. Blocking makes the kernel skip this thread,
+// so the signal goes to a thread that can still dispatch it; if every thread
+// in the group happens to be in this state at once it stays in the group's
+// shared_pending queue and the next thread to become eligible dequeues it.
+// Either way it is not consumed, which is the whole property. Re-raising the
+// original siginfo instead cannot work at all: the kernel refuses
+// rt_sigqueueinfo and rt_tgsigqueueinfo of an si_code >= 0 siginfo unless the
+// target IS the caller (the EPERM check in do_rt_tgsigqueueinfo), and a
+// non-leader thread -- which every thread exiting under a live guest is -- can
+// therefore queue a kernel-generated signal only back at itself, where it
+// lands in this same window again. Verified on this kernel: from a non-leader,
+// queueing CLD_EXITED at another thread and queueing it process-directed both
+// return EPERM, and only the queue at itself succeeds. The leader may queue
+// process-directed, but the leader only reaches here at the end of main, where
+// there is nothing left to deliver to.
+//
+// NOT THE SYNCHRONOUS FAULTS. The kernel force-delivers those whatever the
+// mask (force_sig_info_to_task), and the price of being blocked when it does
+// is sa_handler reset to SIG_DFL with SA_IMMUTABLE set, PROCESS-wide -- which
+// would take out HandleSIGILL, and with it the dispatcher's deliberate
+// rt_sigreturn trap, for every other thread in the process. Those five are
+// per-thread by construction, so they lose nothing by staying deliverable, and
+// the thunk's fault path (IsSyncFault -> HandToDefaultDisposition) goes on
+// working exactly as it did.
+//
+// pthread_sigmask rather than the raw rt_sigprocmask the rest of the teardown
+// uses: glibc drops SIGCANCEL and SIGSETXID from the set it passes on, and
+// blocking SIGSETXID here would hang any later host setuid/setgid on a
+// broadcast this thread could never acknowledge. The cost is that a guest
+// signal that happens to share a number with one of glibc's two stays
+// droppable in this window; that is a pre-existing collision and not worth
+// hanging the process over.
+//
+// Nothing restores this mask and nothing should: every caller is a thread on
+// its way to SYS_exit, or the main thread at the end of main.
+void BlockSignalsForThreadExit() {
+  sigset_t Async;
+  sigfillset(&Async);
+  sigdelset(&Async, SIGSEGV);
+  sigdelset(&Async, SIGBUS);
+  sigdelset(&Async, SIGILL);
+  sigdelset(&Async, SIGFPE);
+  sigdelset(&Async, SIGTRAP);
+  ::pthread_sigmask(SIG_BLOCK, &Async, nullptr);
+}
+
 void SignalDelegator::UninstallTLSState(FEX::HLE::ThreadStateObject* Thread) {
+  // The backstop, covering every path into teardown rather than only the ones
+  // that remembered to ask: both ThreadHandler exits, HandleNewClone (whose
+  // CloneBody is [[noreturn]]), the guest `exit' syscall -- which blocks
+  // earlier, at its own entry, because it has real work to do first -- and
+  // FEXInterpreter's shutdown of the main thread. This function is what clears
+  // TLS_ThreadObject and frees the alt stack, so whatever else is true, the
+  // no-thread-object window cannot open before this line.
+  BlockSignalsForThreadExit();
+
   // ORDER IS LOAD-BEARING, and it is the kernel -- not this process -- that
   // reads the memory being freed here.
   //

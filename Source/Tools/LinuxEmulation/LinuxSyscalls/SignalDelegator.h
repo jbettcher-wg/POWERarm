@@ -44,6 +44,19 @@ using HostSignalDelegatorFunction = std::function<bool(FEXCore::Core::InternalTh
 using HostSignalDelegatorFunctionForGuest =
   std::function<bool(FEXCore::Core::InternalThreadState* Thread, int Signal, void* info, void* ucontext, GuestSigAction* GuestAction, stack_t* GuestStack)>;
 
+/**
+ * @brief Takes this thread out of the running for a process-directed signal,
+ *        for good. Called once a thread can no longer reach guest code.
+ *
+ * Blocks every asynchronous signal -- everything but the five synchronous
+ * faults -- and never restores the mask, so the only callers are a thread on
+ * its way to exit. The reasoning, which is the whole of the fix for a
+ * process-directed signal lost in thread teardown, is at the definition in
+ * SignalDelegator.cpp. Call it as early on the exit path as the thread is
+ * certainly never going back to the guest, and again is harmless.
+ */
+void BlockSignalsForThreadExit();
+
 class SignalDelegator final : public FEXCore::SignalDelegator, public FEXCore::Allocator::FEXAllocOperators {
 public:
   constexpr static size_t MAX_SIGNALS {64};
