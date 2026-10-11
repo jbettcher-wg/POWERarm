@@ -1967,10 +1967,26 @@
       },
 
       "FPR = VectorImm OpSize:#RegisterSize, OpSize:#ElementSize, u8:$Immediate, u8:$ShiftAmount{0}": {
-        "Desc": ["Generates a vector with each element containg the immediate zexted"
+        "Desc": ["Generates a vector with each element containg the immediate zexted",
+                 "A zero immediate is VectorZero instead, which is VSXClean: of all the",
+                 "splat immediates only the zero has a VSX-form lowering on both of this",
+                 "host's ISA levels -- see the PPC64LE handler."
                 ],
         "DestSize": "RegisterSize",
         "ElementSize": "ElementSize"
+      },
+
+      "FPR = VectorZero OpSize:#RegisterSize": {
+        "Desc": ["Generates an all-zeroes vector.",
+                 "Split out of VectorImm because it is the one immediate that is VSXClean.",
+                 "A byte splat is xxspltib on ISA 3.0 but has nothing on 2.07, a word splat",
+                 "in -16..15 is one VMX vspltisw against two VSX instructions, and a",
+                 "halfword splat has no VSX form at all -- so VectorImm itself cannot be",
+                 "flagged without a V0-V15 row growing. Zero costs one instruction either",
+                 "way, so it moves and the rest stay."
+                ],
+        "VSXClean": true,
+        "DestSize": "RegisterSize"
       },
 
       "FPR = LoadNamedVectorConstant OpSize:#RegisterSize, NamedVectorConstant:$Constant": {

@@ -199,7 +199,7 @@ bool IRBuilder::INS_elt(uint32_t Word) {
 
 Ref IRBuilder::VectorConstant64(uint64_t Pattern) {
   if (Pattern == 0) {
-    return _VectorImm(OpSize::i128Bit, OpSize::i8Bit, 0);
+    return _VectorZero(OpSize::i128Bit);
   }
   if (Pattern == ~0ULL) {
     return _VectorImm(OpSize::i128Bit, OpSize::i8Bit, 0xFF);

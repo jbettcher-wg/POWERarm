@@ -142,7 +142,7 @@ Ref IRBuilder::FPMulXLanes(OpSize ES, Ref A, Ref B) {
   const auto RS = OpSize::i128Bit;
   const bool Is64 = ES == OpSize::i64Bit;
   Ref Inf = FPConstant(Is64 ? 0x7FF0000000000000ULL : 0x7F800000ULL, ES);
-  Ref Zero = _VectorImm(RS, OpSize::i8Bit, 0);
+  Ref Zero = _VectorZero(RS);
   Ref InfTimesZero = _VOr(RS, RS, _VAnd(RS, RS, _VFCMPEQ(RS, ES, _VFAbs(RS, ES, A), Inf), _VFCMPEQ(RS, ES, B, Zero)),
                           _VAnd(RS, RS, _VFCMPEQ(RS, ES, A, Zero), _VFCMPEQ(RS, ES, _VFAbs(RS, ES, B), Inf)));
   Ref Sign = _VAnd(RS, RS, _VXor(RS, RS, A, B), FPConstant(Is64 ? 0x8000000000000000ULL : 0x80000000ULL, ES));
@@ -262,7 +262,7 @@ bool IRBuilder::SIMDFloatCompare(uint32_t Word, FloatCompareKind Kind, bool Scal
   }
   const auto RS = OpSize::i128Bit;
   Ref A = LoadV(Bits(Word, 9, 5));
-  Ref Zero = _VectorImm(RS, OpSize::i8Bit, 0);
+  Ref Zero = _VectorZero(RS);
   Ref Result {};
   switch (Kind) {
   case FloatCompareKind::Eq: Result = _VFCMPEQ(RS, ES, A, LoadV(Bits(Word, 20, 16))); break;
@@ -364,7 +364,7 @@ bool IRBuilder::SIMDFloatToInt(uint32_t Word, uint8_t Rounding, bool Signed, boo
     StoreVQ(Bits(Word, 4, 0), Bit(Word, 30), _A64VecFloatToInt(RS, ES, V, Rounding, Signed));
     return true;
   }
-  Ref Result = _VInsGPR(RS, ES, 0, _VectorImm(RS, OpSize::i8Bit, 0), _A64FloatToGPR(ES, ES, V, Rounding, Signed));
+  Ref Result = _VInsGPR(RS, ES, 0, _VectorZero(RS), _A64FloatToGPR(ES, ES, V, Rounding, Signed));
   StoreV(Bits(Word, 4, 0), Result);
   return true;
 }
@@ -407,7 +407,7 @@ bool IRBuilder::SIMDFixedConvert(uint32_t Word, bool ToFloat, bool Signed, bool 
   const uint8_t Lanes = Scalar ? 1 : (Bit(Word, 30) ? 16 : 8) / IR::OpSizeToSize(ES);
   Ref V = LoadV(Bits(Word, 9, 5));
 
-  Ref Result = _VectorImm(RS, OpSize::i8Bit, 0);
+  Ref Result = _VectorZero(RS);
   if (ToFloat) {
     if (Lanes > 1) {
       Result = _A64VecIntToFloat(RS, ES, V, Signed);

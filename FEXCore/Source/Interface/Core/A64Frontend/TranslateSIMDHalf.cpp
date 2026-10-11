@@ -41,7 +41,7 @@ namespace {
 template<typename F>
 Ref IRBuilder::HalfLanes(uint32_t Lanes, std::array<Ref, 3> Operands, bool KeepSignalling, F&& Body) {
   const auto RS = OpSize::i128Bit;
-  Ref Result = _VectorImm(RS, OpSize::i8Bit, 0);
+  Ref Result = _VectorZero(RS);
   for (uint32_t i = 0; i < Lanes; ++i) {
     std::array<Ref, 3> D {};
     for (size_t k = 0; k < Operands.size(); ++k) {
@@ -237,7 +237,7 @@ bool IRBuilder::SIMDHalfCompare(uint32_t Word, FloatCompareKind Kind, bool Scala
   Ref A = LoadV(Bits(Word, 9, 5));
   Ref B = TwoOperands ? LoadV(Bits(Word, 20, 16)) : nullptr;
   StoreHalfLanes(Word, Scalar, HalfLanes(HalfLaneCount(Word, Scalar), {A, B, nullptr}, false, [&](const std::array<Ref, 3>& D) -> Ref {
-    Ref Zero = _VectorImm(RS, OpSize::i8Bit, 0);
+    Ref Zero = _VectorZero(RS);
     switch (Kind) {
     case FloatCompareKind::Eq: return _VFCMPEQ(RS, ES, D[0], D[1]);
     case FloatCompareKind::Ge: return _VFCMPLE(RS, ES, D[1], D[0]);
@@ -316,7 +316,7 @@ bool IRBuilder::SIMDHalfToInt(uint32_t Word, uint8_t Rounding, bool Signed, bool
   const auto RS = OpSize::i128Bit;
   const uint32_t Lanes = HalfLaneCount(Word, Scalar);
   Ref V = LoadV(Bits(Word, 9, 5));
-  Ref Result = _VectorImm(RS, OpSize::i8Bit, 0);
+  Ref Result = _VectorZero(RS);
   for (uint32_t i = 0; i < Lanes; ++i) {
     Ref D = HalfToDouble(i == 0 ? V : _VDupElement(RS, OpSize::i16Bit, V, i).Node, false, true);
     if (FBits) {
@@ -341,7 +341,7 @@ bool IRBuilder::SIMDIntToHalf(uint32_t Word, bool Signed, bool Scalar, uint32_t 
   const auto RS = OpSize::i128Bit;
   const uint32_t Lanes = HalfLaneCount(Word, Scalar);
   Ref V = LoadV(Bits(Word, 9, 5));
-  Ref Result = _VectorImm(RS, OpSize::i8Bit, 0);
+  Ref Result = _VectorZero(RS);
   for (uint32_t i = 0; i < Lanes; ++i) {
     Ref G = _VExtractToGPR(RS, OpSize::i16Bit, V, i);
     G = Signed ? _Sbfe(OpSize::i64Bit, 16, 0, G).Node : _Bfe(OpSize::i64Bit, 16, 0, G).Node;

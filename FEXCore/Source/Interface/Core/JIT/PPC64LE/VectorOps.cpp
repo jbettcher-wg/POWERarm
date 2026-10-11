@@ -198,6 +198,27 @@ DEF_OP(VectorImm) {
 }
 
 // ---------------------------------------------------------------------------
+// VectorZero — the all-zeroes vector, split out of VectorImm
+// ---------------------------------------------------------------------------
+// The one immediate whose lowering is VSX-form on both ISA levels, which is
+// why it is its own opcode: every other width either has no VSX splat at all
+// (halfword) or needs two VSX instructions where one VMX one does it
+// (vspltisw for a word in -16..15, xxspltib for a byte on 3.0 only), so
+// flagging VectorImm itself would grow a V0-V15 row. See IR.json.
+//
+// xxpermdi DM=0 takes dw0 of each operand, so this reads only the half of
+// VZERO_VSX that is guaranteed zero after an arbitrary host call -- the rule
+// stated at VZERO_VSX's declaration in PPC64Emitter.h, which a full-width
+// xxlor copy would break. It is also one instruction, the same as the
+// vspltisb #0 it replaces, so no bank gets more expensive; and unlike
+// `xxlxor Dst,Dst,Dst` it does not read Dst, so it carries no false
+// dependency on whatever the allocator last left there.
+DEF_OP_VSX(VectorZero) {
+  const auto Dst = GetVSXReg(Node);
+  xxpermdi(Dst, VZERO_VSX, VZERO_VSX, 0);
+}
+
+// ---------------------------------------------------------------------------
 // LoadNamedVectorConstant / LoadNamedVectorIndexedConstant — unhandled
 // ---------------------------------------------------------------------------
 DEF_OP(LoadNamedVectorConstant) {

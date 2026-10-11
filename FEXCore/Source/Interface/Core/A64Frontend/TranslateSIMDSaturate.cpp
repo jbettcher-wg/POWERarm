@@ -243,7 +243,7 @@ Ref IRBuilder::SaturateNarrow(Ref V, OpSize WideES, NarrowKind Kind, Ref* Satura
     break;
   case NarrowKind::UnsignedToUnsigned: Clamped = _VUMin(RS, WideES, V, LaneConstant(UMax, WideES)); break;
   case NarrowKind::SignedToUnsigned:
-    Clamped = _VUMin(RS, WideES, _VSMax(RS, WideES, V, _VectorImm(RS, OpSize::i8Bit, 0)), LaneConstant(UMax, WideES));
+    Clamped = _VUMin(RS, WideES, _VSMax(RS, WideES, V, _VectorZero(RS)), LaneConstant(UMax, WideES));
     break;
   }
   *Saturated = _VXor(RS, RS, Clamped, V);
@@ -1011,7 +1011,7 @@ bool IRBuilder::SIMDDotProduct(uint32_t Word, bool Signed, bool ByElement) {
     Ref Ones = LaneConstant(1, OpSize::i8Bit);
     Ref UA = _VXor(RS, RS, A, Flip);
     Ref UB = _VXor(RS, RS, B, Flip);
-    Ref Sums = _VUDot(RS, UB, Ones, _VUDot(RS, UA, Ones, _VectorImm(RS, OpSize::i8Bit, 0)));
+    Ref Sums = _VUDot(RS, UB, Ones, _VUDot(RS, UA, Ones, _VectorZero(RS)));
     Ref Products = _VUDot(RS, UA, UB, _VAdd(RS, OpSize::i32Bit, Acc, LaneConstant(4 * 128 * 128, OpSize::i32Bit)));
     Result = _VSub(RS, OpSize::i32Bit, Products, _VShlI(RS, OpSize::i32Bit, Sums, 7));
   }

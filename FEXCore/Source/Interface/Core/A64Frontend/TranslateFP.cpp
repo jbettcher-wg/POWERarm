@@ -433,7 +433,7 @@ bool IRBuilder::FCMP_float(uint32_t Word) {
   }
   const bool WithZero = Bit(Word, 3);
   Ref A = LoadV(Bits(Word, 9, 5));
-  Ref B = WithZero ? _VectorImm(OpSize::i128Bit, OpSize::i8Bit, 0).Node : LoadV(Bits(Word, 20, 16));
+  Ref B = WithZero ? _VectorZero(OpSize::i128Bit).Node : LoadV(Bits(Word, 20, 16));
   if (Size == OpSize::i16Bit) {
     A = HalfToDouble(A, false, true);
     B = HalfToDouble(B, false, true);
@@ -709,7 +709,7 @@ bool IRBuilder::SIMDConvertRoundToOdd(uint32_t Word, bool Scalar) {
   const auto RS = OpSize::i128Bit;
   const auto ES = OpSize::i64Bit;
   Ref V = LoadV(Bits(Word, 9, 5));
-  Ref Narrow = _VectorImm(RS, OpSize::i8Bit, 0);
+  Ref Narrow = _VectorZero(RS);
   const uint8_t Count = Scalar ? 1 : 2;
   for (uint8_t i = 0; i < Count; ++i) {
     Ref X = i == 0 ? V : _VDupElement(RS, ES, V, i).Node;
