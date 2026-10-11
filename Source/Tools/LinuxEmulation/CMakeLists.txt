@@ -55,6 +55,13 @@ target_compile_options(LinuxEmulation PRIVATE
   -Wno-trigraphs
   -fwrapv)
 
+# The syscall layer is the emulator's own code too: the file manager, the path
+# resolver, the signal delegator and the memory trackers run on every guest
+# syscall. Upstream scoped the tune flags to FEXCore and two tools, which left
+# this library built for a generic target even when the rest is tuned for the
+# host.
+target_compile_options(LinuxEmulation PRIVATE ${FEX_TUNE_COMPILE_FLAGS})
+
 set_target_properties(LinuxEmulation PROPERTIES
   C_VISIBILITY_PRESET hidden
   CXX_VISIBILITY_PRESET hidden
