@@ -945,6 +945,94 @@ if [ -f prfmhint ]; then
   fi
 fi
 
+# vcmpscan is the gate on the vector-scan fusion (TryFuseVectorScan): CMEQ,
+# UMAXP/ADDP, FMOV and CBZ/CBNZ collapse into one record-form vector compare
+# and the guest's own branch, so the mask never gets reduced through a GPR.
+# Three things are checked, and the second and third are the ones a
+# branch-direction test alone would miss.
+#
+#  1. The architecturally forced answer for every recognised shape: the lane
+#     mask, the pairwise reduction of it, the GPR the FMOV writes and the
+#     branch direction. All three registers are read AFTER THE JOIN, i.e. in
+#     a block the branch reaches from either side, because they are real
+#     guest registers that the fused branch itself does not write. They are
+#     poisoned beforehand, so a stale value is visible rather than
+#     accidentally equal to a zeroed buffer: before the no-match edge wrote
+#     its forced zeros, 578 of these checks failed.
+#  2. The switch changed nothing observable: the same binary with
+#     POWERARM_VCMPFUSION=0 must produce byte-identical output, which makes
+#     the fused and the unfused lowering differential against each other on
+#     every shape at once -- and the unfused one is the lowering the rest of
+#     this suite's goldens already pin.
+#  3. The fusion actually fired, counted in the IR dump, and did not fire
+#     with the switch. Under POWERARM_MAXINST=1 a block is one instruction,
+#     so the idiom is never the last four of one and NOTHING may fuse: that
+#     is the unit-boundary case, and firing there would be a fusion over
+#     operands it cannot see.
+#
+# The fused CondJump is the third arm of DEF_OP(CondJump) -- the one whose
+# CompareSize is Invalid, whose FromNZCV is clear and whose VCmpElementSize
+# is a real element size. 32 sites in the file fuse; `gap` (an instruction
+# between the compare and the reduction) and `fmov-w` (the 32-bit FMOV and
+# branch) are refused and keep the old lowering.
+if [ -f vcmpscan ]; then
+  vs_fail=0
+  vs_detail=""
+  "$emu" ./vcmpscan > vcmpscan.powerarm 2> /dev/null
+  vs_rc=$?
+  vs_bad=$(grep -c '^FAIL' vcmpscan.powerarm 2> /dev/null)
+  vs_checks=$(sed -n 's/^checks \([0-9]*\) failures 0$/\1/p' vcmpscan.powerarm)
+  vs_ctl=$(grep -c '^PASS control-detects-corruption$' vcmpscan.powerarm 2> /dev/null)
+  # A missing summary line means it died before printing one, which an rc
+  # check alone would miss if it died with status 0.
+  if [ "$vs_rc" != 0 ] || [ "$vs_bad" != 0 ] || [ "$vs_ctl" != 1 ] || [ -z "$vs_checks" ] || [ "$vs_checks" -lt 1700 ]; then
+    vs_fail=1
+    vs_detail="$vs_detail rc=$vs_rc fails=$vs_bad checks=${vs_checks:-none} control=$vs_ctl;"
+  fi
+  POWERARM_VCMPFUSION=0 "$emu" ./vcmpscan > vcmpscan.nofuse 2> /dev/null
+  vs_nf_rc=$?
+  if [ "$vs_nf_rc" != 0 ]; then
+    vs_fail=1
+    vs_detail="$vs_detail unfused run exited $vs_nf_rc;"
+  fi
+  if ! cmp -s vcmpscan.powerarm vcmpscan.nofuse; then
+    vs_fail=1
+    vs_detail="$vs_detail the switch changed the output: $(cmp vcmpscan.powerarm vcmpscan.nofuse 2>&1 | head -1);"
+  fi
+  POWERARM_ENABLECODECACHINGWIP=0 POWERARM_DUMPIR=stderr POWERARM_PASSMANAGERDUMPIR=afteropt \
+    "$emu" ./vcmpscan > /dev/null 2> vcmpscan.irdump
+  POWERARM_VCMPFUSION=0 POWERARM_ENABLECODECACHINGWIP=0 POWERARM_DUMPIR=stderr POWERARM_PASSMANAGERDUMPIR=afteropt \
+    "$emu" ./vcmpscan > /dev/null 2> vcmpscan.irdump.nofuse
+  vs_re=', Invalid, #0x0, i(8|16|32|64), #0x0, #0x0$'
+  vs_fused=$(grep -cE "$vs_re" vcmpscan.irdump 2> /dev/null)
+  vs_fused_off=$(grep -cE "$vs_re" vcmpscan.irdump.nofuse 2> /dev/null)
+  # One instruction per block leaves no four-instruction idiom to recognise,
+  # so the fusion must be absent rather than guessing across the boundary.
+  if [ -n "${POWERARM_MAXINST:-}" ] && [ "${POWERARM_MAXINST:-}" != 0 ]; then
+    vs_want=0
+  else
+    vs_want=32
+  fi
+  if [ "$vs_fused" -lt "$vs_want" ]; then
+    vs_fail=1
+    vs_detail="$vs_detail only $vs_fused of $vs_want fusable sites fused;"
+  fi
+  if [ "$vs_want" = 0 ] && [ "$vs_fused" != 0 ]; then
+    vs_fail=1
+    vs_detail="$vs_detail $vs_fused fused under MAXINST, where no block holds the idiom;"
+  fi
+  if [ "$vs_fused_off" != 0 ]; then
+    vs_fail=1
+    vs_detail="$vs_detail POWERARM_VCMPFUSION=0 still fused $vs_fused_off;"
+  fi
+  if [ "$vs_fail" = 0 ]; then
+    report PASS vcmpscan \
+      "$vs_checks scan checks clean, control FAILed as required; fused $vs_fused sites, none with the switch, output identical to the unfused run"
+  else
+    report FAIL vcmpscan "$vs_detail see $out/vcmpscan.powerarm"
+  fi
+fi
+
 # fcmp_denorm is the gate on the f32 compare arms having moved from the VMX
 # vcmpeqfp/vcmpgtfp/vcmpgefp to their VSX twins. The VMX ones flush denormal
 # inputs to zero when VSCR.NJ is set and the VSX ones never do, so the test

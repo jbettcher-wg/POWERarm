@@ -80,6 +80,13 @@ gcc -static -O2 -o vneg "$here/vneg.c"
 # (POWER-STRENGTHS.md 2.1), including the register state that fusion must
 # leave on both edges of the branch.
 gcc -static -O2 -o vlanetest "$here/vlanetest.c"
+# vcmpscan likewise: the lane mask of a CMEQ, the pairwise reduction of that
+# mask by itself, and the GPR the FMOV copies it into are all forced by the
+# architecture, and the file computes all three from the input bytes. It is
+# the gate on the vector-scan fusion (TryFuseVectorScan), and specifically on
+# the register state that fusion must leave on BOTH edges of the branch it
+# replaces the idiom with.
+gcc -static -O2 -o vcmpscan "$here/vcmpscan.c"
 
 # fcmp_denorm is self-checking and MUST stay that way: it asserts the
 # architecturally forced result of a float compare over denormal, NaN,
@@ -177,6 +184,15 @@ for src in *.S; do
   run_golden "./$t"
 done
 for t in $corpus; do
+  # `// NO-GOLDEN` in a C test means the same thing it means in an assembly
+  # one, and it is honoured here rather than only by omission from $corpus:
+  # that list is hand-maintained, and the cost of forgetting a name on it is
+  # a golden MANUFACTURED from the emulator under test, which compares equal
+  # to a failing run. The marker travels with the test, so it cannot be
+  # forgotten.
+  if [ -f "$here/$t.c" ] && grep -q '^// NO-GOLDEN' "$here/$t.c"; then
+    continue
+  fi
   run_golden "./$t"
 done
 t=rootfs_overlay

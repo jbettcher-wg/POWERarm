@@ -1133,6 +1133,13 @@ size_t IRBuilder::TryFuseVectorScan(const Decoder::DecodedBlocks& Block, size_t 
   if (Size1 != Size0) {
     return 0;
   }
+  // UMAXP has no .2D form -- SIMDPairwise refuses Size == 3 for everything
+  // but ADDP, because the encoding is unallocated. Fusing it would turn an
+  // undefined instruction into a taken branch, so this shape is refused and
+  // keeps the old lowering, which raises what it should.
+  if (IsUMAXP && Size0 == 3) {
+    return 0;
+  }
   const uint32_t Vn1 = Bits(Inst1.Word, 9, 5);
   const uint32_t Rm1 = Bits(Inst1.Word, 20, 16);
   if (Vn1 != Rm1 || Vn1 != Vd0) {
@@ -1208,17 +1215,40 @@ size_t IRBuilder::TryFuseVectorScan(const Decoder::DecodedBlocks& Block, size_t 
   CurrentPC = Inst3.PC;
   ExitToPC(MatchTarget);
 
-  // 6. Resolve NoMatch block (hot loop path / fallthrough)
-  Ref NoMatchBlock;
-  if (auto It = JumpTargets.find(NoMatchTarget); It != JumpTargets.end()) {
-    NoMatchBlock = It->second.BlockEntry;
-  } else {
-    auto BlockNode = CreateNewCodeBlockAtEnd();
-    SetCurrentCodeBlock(BlockNode);
-    CurrentPC = Inst3.PC;
-    ExitToPC(NoMatchTarget);
-    NoMatchBlock = BlockNode;
-  }
+  // 6. NoMatch edge (the hot loop path / fallthrough).
+  //
+  // The branch direction forces all three of the idiom's destinations here:
+  // no lane compared equal, so the CMEQ mask is all-zero in EVERY lane, the
+  // pairwise reduction of an all-zero mask by itself is all-zero whichever of
+  // UMAXP and ADDP did it, and the FMOV copies a zero doubleword out of it.
+  // Knowing those values is not writing them. Vd0, Vd1 and Rd2 are real guest
+  // registers: a guest that reads the mask, the reduction or the GPR after the
+  // branch, or a signal delivered on this edge, sees whatever they held before
+  // the idiom ran unless this block writes them (HANDOVER.md's rule that guest
+  // state is exact at every instruction boundary where a fault can be taken
+  // and resumed). It was latent only because glibc's strlen and memchr
+  // overwrite the mask on the next iteration.
+  //
+  // So this edge gets a block of its own and may NOT reuse an existing
+  // JumpTargets entry the way it used to: the back edge of a scan loop targets
+  // the top of the loop, which is already a block of this compile unit, and
+  // jumping straight there left all three stale on exactly the path the fusion
+  // exists for.
+  //
+  // Constants rather than a re-translation of the three instructions, which is
+  // what keeps the design intent of 11c5be45c -- this edge stays on the vector
+  // unit with no reduction and no vector-to-GPR crossing: two copies of the
+  // pinned zero vector and an `li`. Written in the guest's own order, because
+  // the mask and the reduction may be the same register and then the later
+  // write is the one that survives.
+  Ref NoMatchBlock = CreateNewCodeBlockAtEnd();
+  SetCurrentCodeBlock(NoMatchBlock);
+  Ref Zero = VectorConstant64(0);
+  StoreVQ(Vd0, Q0, Zero);
+  StoreVQ(Vd1, Q1, Zero);
+  StoreReg(Rd2, Sf2, Constant(0));
+  CurrentPC = Inst3.PC;
+  ExitToPC(NoMatchTarget);
 
   // 7. Wire targets on CondJump
   SetTrueJumpTarget(Jump, IsCBNZ ? MatchBlock : NoMatchBlock);
