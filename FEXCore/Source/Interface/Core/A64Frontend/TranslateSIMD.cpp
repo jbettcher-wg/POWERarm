@@ -1228,4 +1228,249 @@ size_t IRBuilder::TryFuseVectorScan(const Decoder::DecodedBlocks& Block, size_t 
   return 4;
 }
 
+// ---------------------------------------------------------------------------
+// "Any lane matched": the compare's record form and CR6
+// ---------------------------------------------------------------------------
+//
+// The compiler idiom for "does any lane of this compare match" is
+//
+//     cm<cc> v1.16b, v0.16b, v2.16b    ; or against #0
+//     umaxv  b1, v1.16b                ; uminv for "do ALL lanes match"
+//     fmov   w0, s1
+//     cbnz   w0, L                     ; or cbz
+//
+// and it is the exit test of every SIMD scan that is not the glibc strlen
+// family TryFuseVectorScan above already fuses: memchr, pixel scans, JSON and
+// string scanners, array searches. The reduction and the FMOV exist only to
+// get a scalar answer out of a NEON compare, which sets no flags. Every VMX
+// compare's record form sets CR6 from the whole result, so on this host the
+// answer is the compare plus the guest's own branch -- see
+// docs/powerarm/research/power-isa/POWER-STRENGTHS.md 2.1 and
+// DEF_OP(VLaneTestCR).
+//
+// The hazard is that v1 and w0 are REAL GUEST REGISTERS, not just branch
+// inputs: a lane mask is a value the guest may read after the branch. This
+// fusion never guesses at their liveness. Each of the two edges writes all
+// three destinations (the mask, the reduction, the GPR) exactly:
+//
+//   * On one edge their values are forced by the branch direction itself. "No
+//     lane matched" means the mask is all zeros, so the reduction and the GPR
+//     are zero; "every lane matched" means the mask is all ones, so the
+//     reduction is a lane of ones and the GPR is that, zero-extended. Lane
+//     masks are all-ones-or-all-zeros per lane, which is what makes the
+//     all-lanes case knowable too. That edge writes constants.
+//   * On the other edge nothing is known about the mask -- "not every lane
+//     matched" says nothing about which ones did -- so the three instructions
+//     are re-translated out of line and the edge pays the old sequence.
+//
+// What is refused, and why:
+//
+//   * Anything between the four instructions, and anything after the branch
+//     in the same block: recognition is strictly the last four of a decoded
+//     block. POWERARM_MAXINST=1 therefore switches the fusion off entirely
+//     rather than letting one straddle a unit boundary.
+//   * ADDV ("how many matched") and the `shrn`-based narrowing forms: a
+//     different reduction, worth a tenth of the sites.
+//   * A `cmp #0; b.ne` consumer in place of CBZ/CBNZ: that one also writes
+//     NZCV, which would have to be rematerialised as well.
+//   * Element size .2D and the 2S arrangement, because UMAXV/UMINV have no
+//     such form, and a reduction whose element size differs from the
+//     compare's.
+//   * CMTST, and every floating-point compare: a different lowering and, for
+//     the FP forms, NaN rules that are not the integer compare's.
+//   * FMOV to XZR (Rd == 31), and a branch whose target is its own next
+//     instruction.
+// ---------------------------------------------------------------------------
+
+namespace {
+struct LaneTestShape {
+  const char* Name;
+  IR::CondClass Cond; // the lane predicate, first operand against second
+  bool ZeroOperand;   // one operand is the zero vector, not a register
+  bool ZeroFirst;     // ... and it is the FIRST one
+};
+
+// The five predicates DEF_OP(VLaneTestCR) can reach, and the ten A64 forms
+// that map onto them. CMLT/CMLE are CMGT/CMGE with the zero first, which is
+// why the mapping is a table and not a chain of ifs: the operand order is
+// part of the predicate here, and getting it backwards is a wrong branch on
+// one form and nothing else.
+constexpr LaneTestShape LaneTestShapes[] = {
+  {"CMEQ_reg_2", IR::CondClass::EQ, false, false},
+  {"CMHI_2", IR::CondClass::UGT, false, false},
+  {"CMHS_2", IR::CondClass::UGE, false, false},
+  {"CMGT_reg_2", IR::CondClass::SGT, false, false},
+  {"CMGE_reg_2", IR::CondClass::SGE, false, false},
+  {"CMEQ_zero_2", IR::CondClass::EQ, true, false},
+  {"CMGT_zero_2", IR::CondClass::SGT, true, false},
+  {"CMGE_zero_2", IR::CondClass::SGE, true, false},
+  {"CMLT_2", IR::CondClass::SGT, true, true},
+  {"CMLE_2", IR::CondClass::SGE, true, true},
+};
+} // namespace
+
+size_t IRBuilder::TryFuseVectorLaneTest(const Decoder::DecodedBlocks& Block, size_t Index) {
+  if (!CTX->HostFeatures.SupportsVCmpFlagBranch || CTX->Config.DisableLaneTestFusion) {
+    return 0;
+  }
+
+  // Strictly the last four instructions of the block: CBZ/CBNZ ends a block,
+  // so a fifth instruction after them would mean they are not the branch.
+  if (Index + 4 != Block.NumInstructions) {
+    return 0;
+  }
+
+  const auto& Inst0 = Block.DecodedInstructions[Index];
+  const auto& Inst1 = Block.DecodedInstructions[Index + 1];
+  const auto& Inst2 = Block.DecodedInstructions[Index + 2];
+  const auto& Inst3 = Block.DecodedInstructions[Index + 3];
+  if (!Inst0.Matcher || !Inst1.Matcher || !Inst2.Matcher || !Inst3.Matcher) {
+    return 0;
+  }
+
+  // Instruction 0: a vector integer compare, register or against zero.
+  const LaneTestShape* Shape = nullptr;
+  for (const auto& Candidate : LaneTestShapes) {
+    if (strcmp(Inst0.Matcher->Name, Candidate.Name) == 0) {
+      Shape = &Candidate;
+      break;
+    }
+  }
+  if (!Shape) {
+    return 0;
+  }
+
+  const bool Q = Bit(Inst0.Word, 30);
+  const uint32_t Size = Bits(Inst0.Word, 23, 22);
+  // UMAXV/UMINV have no .2D and no 2S form, so neither has the fusion.
+  if (Size > 2 || (Size == 2 && !Q)) {
+    return 0;
+  }
+  const uint32_t Vd0 = Bits(Inst0.Word, 4, 0);
+  const uint32_t Vn0 = Bits(Inst0.Word, 9, 5);
+  const uint32_t Vm0 = Shape->ZeroOperand ? 0 : Bits(Inst0.Word, 20, 16);
+
+  // Instruction 1: the horizontal reduction of that mask. UMAXV asks "any
+  // lane", UMINV "every lane"; same arrangement as the compare, and its
+  // source must be the mask.
+  const bool IsUMAXV = strcmp(Inst1.Matcher->Name, "UMAXV") == 0;
+  const bool IsUMINV = strcmp(Inst1.Matcher->Name, "UMINV") == 0;
+  if (!IsUMAXV && !IsUMINV) {
+    return 0;
+  }
+  if (Bit(Inst1.Word, 30) != Q || Bits(Inst1.Word, 23, 22) != Size || Bits(Inst1.Word, 9, 5) != Vd0) {
+    return 0;
+  }
+  const uint32_t Vd1 = Bits(Inst1.Word, 4, 0);
+
+  // Instruction 2: FMOV out of the reduction's register. Both widths are
+  // sound here: the reduction writes one element and zeroes everything above
+  // it, so the 32-bit (w, s) and the 64-bit (x, d) read see the same value.
+  if (strcmp(Inst2.Matcher->Name, "FMOV_float_gen") != 0) {
+    return 0;
+  }
+  const bool Sf2 = Bit(Inst2.Word, 31);
+  const uint32_t Type2 = Bits(Inst2.Word, 23, 22);
+  const bool RMode2 = Bit(Inst2.Word, 19);
+  const bool ToFP2 = Bit(Inst2.Word, 16);
+  const uint32_t Rn2 = Bits(Inst2.Word, 9, 5);
+  const uint32_t Rd2 = Bits(Inst2.Word, 4, 0);
+  if (RMode2 || ToFP2 || !((!Sf2 && Type2 == 0b00) || (Sf2 && Type2 == 0b01))) {
+    return 0;
+  }
+  if (Rn2 != Vd1 || Rd2 >= 31) {
+    return 0;
+  }
+
+  // Instruction 3: CBZ/CBNZ on that GPR, either width, for the same reason.
+  const bool IsCBZ = strcmp(Inst3.Matcher->Name, "CBZ") == 0;
+  const bool IsCBNZ = strcmp(Inst3.Matcher->Name, "CBNZ") == 0;
+  if ((!IsCBZ && !IsCBNZ) || Bits(Inst3.Word, 4, 0) != Rd2) {
+    return 0;
+  }
+
+  const uint64_t TargetPC = Inst3.PC + SignExtend(Bits(Inst3.Word, 23, 5), 19) * 4;
+  const uint64_t NextPC = Inst3.PC + INSTRUCTION_SIZE;
+  if (TargetPC == NextPC || TargetPC == Inst3.PC) {
+    return 0;
+  }
+
+  const auto ES = ElementSizeFor(Size);
+  const bool AllLanes = IsUMINV;
+
+  // RIP-table markers for the three instructions Core.cpp did not emit one
+  // for (Inst0's is already there).
+  _GuestOpcode(Inst1.PC - Entry);
+  _GuestOpcode(Inst2.PC - Entry);
+  _GuestOpcode(Inst3.PC - Entry);
+
+  Ref VN = LoadV(Vn0);
+  Ref VM = Shape->ZeroOperand ? VectorConstant64(0) : LoadV(Vm0);
+  if (!Q) {
+    // The host compare reads all 16 bytes and CR6 reduces all of them, but a
+    // Q == 0 operand is only its low half. Duplicating that half upwards
+    // makes every upper lane repeat a lower one, which leaves both "any" and
+    // "all" exactly the 64-bit answer.
+    VN = LowHalves(this, VN, VN);
+    if (!Shape->ZeroOperand) {
+      VM = LowHalves(this, VM, VM);
+    }
+  }
+  Ref V1 = Shape->ZeroFirst ? VM : VN;
+  Ref V2 = Shape->ZeroFirst ? VN : VM;
+
+  // The predicate bit and the branch that reads it, adjacent and in this
+  // order -- DEF_OP(CondJump)'s FromChainCR arm asserts the adjacency. Emit
+  // them before switching blocks, so the cursor is at the end of this block
+  // rather than reset to the start of another.
+  _VLaneTestCR(ES, V1, V2, Shape->Cond, AllLanes);
+  auto Jump = _CondJump(InvalidNode, InvalidNode, InvalidNode, InvalidNode, CondClass::NEQ, OpSize::iInvalid, false,
+                        OpSize::iInvalid, false, true);
+
+  // One block per edge. Neither may reuse an existing JumpTargets entry: both
+  // have to write the idiom's three destinations before they leave.
+  auto MakeEdge = [&](bool PredTrue) -> Ref {
+    auto BlockNode = CreateNewCodeBlockAtEnd();
+    SetCurrentCodeBlock(BlockNode);
+    const uint64_t Target = (PredTrue == IsCBNZ) ? TargetPC : NextPC;
+    if (PredTrue == AllLanes) {
+      // This is the edge whose register state the branch direction forces.
+      // UMAXV took it when no lane matched, so the mask is zero; UMINV took
+      // it when every lane did, so the mask is all ones. Written in the
+      // guest's own order, because the three destinations may alias.
+      const uint64_t Lanes = AllLanes ? ~0ull : 0ull;
+      const uint32_t Bytes = 1u << Size;
+      StoreVQ(Vd0, Q, VectorConstant64(Lanes));
+      StoreVSized(Vd1, ES, VectorConstant64(Lanes));
+      StoreReg(Rd2, Sf2, Constant(AllLanes ? ((1ull << (8 * Bytes)) - 1) : 0));
+      CurrentPC = Inst3.PC;
+      ExitToPC(Target);
+    } else {
+      // Nothing is known about the mask on this edge, so the idiom is
+      // re-translated. It writes no flags and cannot fault, so running it
+      // after the branch instead of before is unobservable.
+      CurrentPC = Inst0.PC;
+      TranslateInstruction(Inst0);
+      CurrentPC = Inst1.PC;
+      TranslateInstruction(Inst1);
+      CurrentPC = Inst2.PC;
+      TranslateInstruction(Inst2);
+      CurrentPC = Inst3.PC;
+      ExitToPC(Target);
+    }
+    return BlockNode;
+  };
+
+  // The guest's fallthrough edge first, so the emitted blocks keep the
+  // guest's own straight-line order.
+  Ref Fallthrough = MakeEdge(!IsCBNZ);
+  Ref Taken = MakeEdge(IsCBNZ);
+
+  SetTrueJumpTarget(Jump, IsCBNZ ? Taken : Fallthrough);
+  SetFalseJumpTarget(Jump, IsCBNZ ? Fallthrough : Taken);
+
+  BlockSetPC = true;
+  return 4;
+}
+
 } // namespace FEXCore::A64

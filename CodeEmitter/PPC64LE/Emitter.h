@@ -1706,6 +1706,27 @@ public:
   void vcmpequw_(VR vrt, VR vra, VR vrb)  { EmitVX(vrt.idx, vra.idx, vrb.idx, 134 | 0x400); }
   void vcmpequd_(VR vrt, VR vra, VR vrb)  { EmitVX(vrt.idx, vra.idx, vrb.idx, 199 | 0x400); } // POWER8+
 
+  // The same Rc=1 twins of the ORDERING compares, which is what the A64
+  // frontend's lane-test fusion needs beyond CMEQ: CMHI is vcmpgtu*. and CMGT
+  // is vcmpgts*., and CMHS/CMGE/CMLT/CMLE reach the same two by swapping the
+  // operands and reading the other CR6 bit (there is no vcmpge* integer
+  // form). Same CR6 definition as above, with "compared equal" read as "the
+  // lane's comparison was true".
+  // Encodings diffed against `llvm-mc -triple=powerpc64le -mcpu=pwr9`:
+  //   vcmpgtub. 12,30,31 = 06 fe 9e 11    vcmpgtsb. 12,30,31 = 06 ff 9e 11
+  //   vcmpgtuh. 12,30,31 = 46 fe 9e 11    vcmpgtsh. 12,30,31 = 46 ff 9e 11
+  //   vcmpgtuw. 12,30,31 = 86 fe 9e 11    vcmpgtsw. 12,30,31 = 86 ff 9e 11
+  //   vcmpgtud. 12,30,31 = c7 fe 9e 11    vcmpgtsd. 12,30,31 = c7 ff 9e 11
+  // each the Rc=0 form plus 0x400, as for the equality forms.
+  void vcmpgtub_(VR vrt, VR vra, VR vrb)  { EmitVX(vrt.idx, vra.idx, vrb.idx, 518 | 0x400); }
+  void vcmpgtuh_(VR vrt, VR vra, VR vrb)  { EmitVX(vrt.idx, vra.idx, vrb.idx, 582 | 0x400); }
+  void vcmpgtuw_(VR vrt, VR vra, VR vrb)  { EmitVX(vrt.idx, vra.idx, vrb.idx, 646 | 0x400); }
+  void vcmpgtud_(VR vrt, VR vra, VR vrb)  { EmitVX(vrt.idx, vra.idx, vrb.idx, 711 | 0x400); } // POWER8+
+  void vcmpgtsb_(VR vrt, VR vra, VR vrb)  { EmitVX(vrt.idx, vra.idx, vrb.idx, 774 | 0x400); }
+  void vcmpgtsh_(VR vrt, VR vra, VR vrb)  { EmitVX(vrt.idx, vra.idx, vrb.idx, 838 | 0x400); }
+  void vcmpgtsw_(VR vrt, VR vra, VR vrb)  { EmitVX(vrt.idx, vra.idx, vrb.idx, 902 | 0x400); }
+  void vcmpgtsd_(VR vrt, VR vra, VR vrb)  { EmitVX(vrt.idx, vra.idx, vrb.idx, 967 | 0x400); } // POWER8+
+
   // FP vector compare
   void vcmpeqfp(VR vrt, VR vra, VR vrb)  { EmitVX(vrt.idx, vra.idx, vrb.idx, 198);  }
   void vcmpgefp(VR vrt, VR vra, VR vrb)  { EmitVX(vrt.idx, vra.idx, vrb.idx, 454);  }

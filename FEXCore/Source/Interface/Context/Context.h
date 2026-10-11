@@ -520,6 +520,7 @@ public:
     FEX_CONFIG_OPT(ShadowRetStack, SHADOWRETSTACK);
     FEX_CONFIG_OPT(MonoHacks, MONOHACKS);
     FEX_CONFIG_OPT(VCmpFusion, VCMPFUSION);
+    FEX_CONFIG_OPT(DisableLaneTestFusion, DISABLELANETESTFUSION);
     FEX_CONFIG_OPT(ExclusiveFusion, EXCLUSIVEFUSION);
   } Config;
 

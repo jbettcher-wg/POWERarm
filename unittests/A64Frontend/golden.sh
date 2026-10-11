@@ -74,6 +74,13 @@ gcc -static -O2 -o vins "$here/vins.c"
 # gate on the ISA 3.0 vnegw/vnegd arms agreeing with the pre-3.0 pair.
 gcc -static -O2 -o vneg "$here/vneg.c"
 
+# vlanetest likewise: the lane mask of a compare, its horizontal reduction and
+# the branch that reads it are all architecturally forced, and the file
+# computes all three. It is the gate on the record-form compare fusion
+# (POWER-STRENGTHS.md 2.1), including the register state that fusion must
+# leave on both edges of the branch.
+gcc -static -O2 -o vlanetest "$here/vlanetest.c"
+
 # fcmp_denorm is self-checking and MUST stay that way: it asserts the
 # architecturally forced result of a float compare over denormal, NaN,
 # signed-zero and infinity inputs, which is precisely what a reference run

@@ -1270,6 +1270,27 @@
           "of its own."
         ]
       },
+      "DisableLaneTestFusion": {
+        "Type": "bool",
+        "Default": "false",
+        "Desc": [
+          "Kill switch for the across-lanes vector lane-test fusion (POWERARM_DISABLELANETESTFUSION=1 turns it OFF), which the",
+          "A64 frontend forms (Core/A64Frontend/TranslateSIMD.cpp, TryFuseVectorLaneTest; the item is",
+          "docs/powerarm/research/power-isa/POWER-STRENGTHS.md 2.1). A64 'cm<cc> v1,v0,v2 ; umaxv b1,v1 ; fmov w0,s1 ;",
+          "cbnz w0' is the exit test of every SIMD scan outside the glibc strlen family, and lowering it literally costs a",
+          "9-11 instruction horizontal reduction and a vector-to-GPR crossing on the loop's own back edge, because a NEON",
+          "compare sets no flags. Every VMX compare's record form sets CR6 from the whole result, so the fused form is the",
+          "compare plus the guest's branch (VLaneTestCR + a FromChainCR CondJump), with no mask and no reduction anywhere.",
+          "The mask, the reduction and the GPR are still real guest registers: both edges write all three exactly -- as",
+          "constants on the edge the branch direction forces, by re-translating the idiom out of line on the other -- so",
+          "nothing here rests on a liveness guess. UMINV ('all lanes'), the ten register and against-zero compare forms and",
+          "both FMOV and CBZ widths are fused; ADDV, the shrn forms, a cmp/b.ne consumer, .2D and 2S arrangements, CMTST and",
+          "every floating-point compare are refused and keep the old lowering, as is any idiom that is not the last four",
+          "instructions of its block. A mis-fused lane test is a wrong-direction conditional jump, or a stale lane mask read",
+          "after it -- silent and data-dependent -- hence a field kill switch of its own.",
+          "Only forms when the host backend advertises HostFeatures.SupportsVCmpFlagBranch (ppc64le)."
+        ]
+      },
       "DisableScalarSplatChain": {
         "Type": "bool",
         "Default": "false",
