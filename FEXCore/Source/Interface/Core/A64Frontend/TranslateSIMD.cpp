@@ -93,8 +93,8 @@ namespace {
 
 // Builds a 128-bit value whose two halves are the low halves of Lower and
 // Upper: [Upper.low64 : Lower.low64].
-static IREmitter::IRPair<IROp_VInsElement> LowHalves(IRBuilder* B, Ref Lower, Ref Upper) {
-  return B->_VInsElement(OpSize::i128Bit, OpSize::i64Bit, 1, 0, Lower, Upper);
+static IREmitter::IRPair<IROp_VInsElementWide> LowHalves(IRBuilder* B, Ref Lower, Ref Upper) {
+  return B->_VInsElementWide(OpSize::i128Bit, OpSize::i64Bit, 1, 0, Lower, Upper);
 }
 
 // ---------------------------------------------------------------------------
@@ -107,7 +107,7 @@ bool IRBuilder::DUP_gen(uint32_t Word) {
   if (Size < 0 || (Size == 3 && !Q)) {
     return false;
   }
-  Ref Result = _VDupFromGPR(OpSize::i128Bit, ElementSizeFor(Size), LoadX(Bits(Word, 9, 5)));
+  Ref Result = DupFromGPR(OpSize::i128Bit, ElementSizeFor(Size), LoadX(Bits(Word, 9, 5)));
   StoreVQ(Bits(Word, 4, 0), Q, Result);
   return true;
 }
@@ -120,7 +120,7 @@ bool IRBuilder::DUP_elt_2(uint32_t Word) {
     return false;
   }
   const uint8_t Index = Imm5 >> (Size + 1);
-  Ref Result = _VDupElement(OpSize::i128Bit, ElementSizeFor(Size), LoadV(Bits(Word, 9, 5)), Index);
+  Ref Result = DupElement(OpSize::i128Bit, ElementSizeFor(Size), LoadV(Bits(Word, 9, 5)), Index);
   StoreVQ(Bits(Word, 4, 0), Q, Result);
   return true;
 }
@@ -136,7 +136,7 @@ bool IRBuilder::DUP_elt_1(uint32_t Word) {
     return false;
   }
   const uint8_t Index = Imm5 >> (Size + 1);
-  Ref Result = _VDupElement(OpSize::i128Bit, ElementSizeFor(Size), LoadV(Bits(Word, 9, 5)), Index);
+  Ref Result = DupElement(OpSize::i128Bit, ElementSizeFor(Size), LoadV(Bits(Word, 9, 5)), Index);
   StoreVSized(Bits(Word, 4, 0), ElementSizeFor(Size), Result);
   return true;
 }
@@ -176,7 +176,7 @@ bool IRBuilder::INS_gen(uint32_t Word) {
   }
   const uint32_t Rd = Bits(Word, 4, 0);
   const uint8_t Index = Imm5 >> (Size + 1);
-  StoreV(Rd, _VInsGPR(OpSize::i128Bit, ElementSizeFor(Size), Index, LoadV(Rd), LoadX(Bits(Word, 9, 5))));
+  StoreV(Rd, InsGPR(OpSize::i128Bit, ElementSizeFor(Size), Index, LoadV(Rd), LoadX(Bits(Word, 9, 5))));
   return true;
 }
 
@@ -189,7 +189,7 @@ bool IRBuilder::INS_elt(uint32_t Word) {
   const uint32_t Rd = Bits(Word, 4, 0);
   const uint8_t DestIndex = Imm5 >> (Size + 1);
   const uint8_t SrcIndex = Bits(Word, 14, 11) >> Size;
-  StoreV(Rd, _VInsElement(OpSize::i128Bit, ElementSizeFor(Size), DestIndex, SrcIndex, LoadV(Rd), LoadV(Bits(Word, 9, 5))));
+  StoreV(Rd, InsElement(OpSize::i128Bit, ElementSizeFor(Size), DestIndex, SrcIndex, LoadV(Rd), LoadV(Bits(Word, 9, 5))));
   return true;
 }
 
@@ -199,12 +199,12 @@ bool IRBuilder::INS_elt(uint32_t Word) {
 
 Ref IRBuilder::VectorConstant64(uint64_t Pattern) {
   if (Pattern == 0) {
-    return _VectorImm(OpSize::i128Bit, OpSize::i8Bit, 0);
+    return _VectorZero(OpSize::i128Bit);
   }
   if (Pattern == ~0ULL) {
     return _VectorImm(OpSize::i128Bit, OpSize::i8Bit, 0xFF);
   }
-  return _VDupFromGPR(OpSize::i128Bit, OpSize::i64Bit, Constant(Pattern));
+  return DupFromGPR(OpSize::i128Bit, OpSize::i64Bit, Constant(Pattern));
 }
 
 bool IRBuilder::MOVI(uint32_t Word) {
@@ -546,7 +546,7 @@ void IRBuilder::StoreNarrow(uint32_t Rd, bool Upper, Ref Narrow) {
     StoreVSized(Rd, OpSize::i64Bit, Narrow);
     return;
   }
-  StoreV(Rd, _VInsElement(OpSize::i128Bit, OpSize::i64Bit, 1, 0, LoadV(Rd), Narrow));
+  StoreV(Rd, InsElement(OpSize::i128Bit, OpSize::i64Bit, 1, 0, LoadV(Rd), Narrow));
 }
 
 bool IRBuilder::XTN(uint32_t Word) {
@@ -730,7 +730,7 @@ bool IRBuilder::EXT(uint32_t Word) {
   Ref Lo = LoadV(Bits(Word, 9, 5));
   Ref Hi = LoadV(Bits(Word, 20, 16));
   // VExtr's VectorUpper supplies the low result bytes: result = (Hi:Lo) >> 8*Index.
-  Ref Result = _VExtr(Q ? OpSize::i128Bit : OpSize::i64Bit, OpSize::i8Bit, Hi, Lo, Index);
+  Ref Result = Extr(Q ? OpSize::i128Bit : OpSize::i64Bit, OpSize::i8Bit, Hi, Lo, Index);
   StoreVQ(Bits(Word, 4, 0), Q, Result);
   return true;
 }
@@ -751,8 +751,8 @@ bool IRBuilder::SIMDPermute(uint32_t Word, PermuteOp Op) {
     switch (Op) {
     case PermuteOp::Uzp1: Result = _VUnZip(RS, ES, A, B); break;
     case PermuteOp::Uzp2: Result = _VUnZip2(RS, ES, A, B); break;
-    case PermuteOp::Zip1: Result = _VZip(RS, ES, A, B); break;
-    case PermuteOp::Zip2: Result = _VZip2(RS, ES, A, B); break;
+    case PermuteOp::Zip1: Result = Zip(RS, ES, A, B); break;
+    case PermuteOp::Zip2: Result = Zip2(RS, ES, A, B); break;
     case PermuteOp::Trn1: Result = _VTrn(RS, ES, A, B); break;
     case PermuteOp::Trn2: Result = _VTrn2(RS, ES, A, B); break;
     }
@@ -770,16 +770,16 @@ bool IRBuilder::SIMDPermute(uint32_t Word, PermuteOp Op) {
   case PermuteOp::Uzp1:
   case PermuteOp::Uzp2: {
     Ref C = LowHalves(this, A, B);
-    Result = Op == PermuteOp::Uzp1 ? _VUnZip(RS, ES, C, C).Node : _VUnZip2(RS, ES, C, C).Node;
+    Result = Op == PermuteOp::Uzp1 ? _VUnZip(RS, ES, C, C).Node : _VUnZip2(RS, ES, C, C);
     break;
   }
   case PermuteOp::Zip1:
   case PermuteOp::Zip2: {
     Ref X = LowHalves(this, A, A);
     Ref Y = LowHalves(this, B, B);
-    Result = _VZip2(RS, ES, X, Y);
+    Result = Zip2(RS, ES, X, Y);
     if (Op == PermuteOp::Zip2) {
-      Result = _VDupElement(RS, OpSize::i64Bit, Result, 1);
+      Result = DupElement(RS, OpSize::i64Bit, Result, 1);
     }
     break;
   }
@@ -976,7 +976,7 @@ bool IRBuilder::MUL_elt(uint32_t Word) {
   }
   const auto ES = ElementSizeFor(Size);
   const auto RS = OpSize::i128Bit;
-  Ref Element = _VDupElement(RS, ES, LoadV(Rm), Index);
+  Ref Element = DupElement(RS, ES, LoadV(Rm), Index);
   StoreVQ(Bits(Word, 4, 0), Q, _VMul(RS, ES, LoadV(Bits(Word, 9, 5)), Element));
   return true;
 }
@@ -990,7 +990,7 @@ bool IRBuilder::REV16_asimd(uint32_t Word) {
   Ref V = LoadV(Bits(Word, 9, 5));
   Ref Even = _VUnZip(RS, OpSize::i8Bit, V, V);
   Ref Odd = _VUnZip2(RS, OpSize::i8Bit, V, V);
-  StoreVQ(Bits(Word, 4, 0), Bit(Word, 30), _VZip(RS, OpSize::i8Bit, Odd, Even));
+  StoreVQ(Bits(Word, 4, 0), Bit(Word, 30), Zip(RS, OpSize::i8Bit, Odd, Even));
   return true;
 }
 

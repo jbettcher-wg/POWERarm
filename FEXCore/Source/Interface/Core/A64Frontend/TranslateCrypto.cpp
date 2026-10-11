@@ -104,7 +104,7 @@ bool IRBuilder::SHA1SU0(uint32_t Word) {
   Ref N = LoadV(Bits(Word, 9, 5));
   Ref M = LoadV(Bits(Word, 20, 16));
   // Shifted = [d.hi : n.lo] as a 128-bit value (low half d.hi, high half n.lo).
-  Ref Shifted = _VInsElement(RS, OpSize::i64Bit, 1, 0, _VDupElement(RS, OpSize::i64Bit, D, 1), N);
+  Ref Shifted = InsElement(RS, OpSize::i64Bit, 1, 0, DupElement(RS, OpSize::i64Bit, D, 1), N);
   StoreV(Rd, _VXor(RS, RS, _VXor(RS, RS, D, Shifted), M));
   return true;
 }
@@ -144,10 +144,10 @@ bool IRBuilder::SHA256SU1(uint32_t Word) {
   Ref D = LoadV(Rd);
   Ref N = LoadV(Bits(Word, 9, 5));
   Ref M = LoadV(Bits(Word, 20, 16));
-  Ref Addend = _VInsElement(RS, ES, 3, 0, _VExtr(RS, OpSize::i8Bit, N, N, 4), M);
+  Ref Addend = InsElement(RS, ES, 3, 0, Extr(RS, OpSize::i8Bit, N, N, 4), M);
   Ref DPrime = _VAdd(RS, ES, D, Addend);
-  Ref X = _VExtr(RS, OpSize::i8Bit, DPrime, DPrime, 12);
-  Ref Y = _VInsElement(RS, ES, 0, 3, M, DPrime);
+  Ref X = Extr(RS, OpSize::i8Bit, DPrime, DPrime, 12);
+  Ref Y = InsElement(RS, ES, 0, 3, M, DPrime);
   StoreV(Rd, _VSha256U1(X, Y));
   return true;
 }

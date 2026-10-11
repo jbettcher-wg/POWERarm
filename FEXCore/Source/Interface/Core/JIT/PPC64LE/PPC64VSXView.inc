@@ -413,6 +413,7 @@
   using PPC64JITCore::xxbrh;
   using PPC64JITCore::xxbrq;
   using PPC64JITCore::xxbrw;
+  using PPC64JITCore::xxinsertw;
   using PPC64JITCore::xxland;
   using PPC64JITCore::xxlandc;
   using PPC64JITCore::xxleqv;
@@ -421,6 +422,8 @@
   using PPC64JITCore::xxlor;
   using PPC64JITCore::xxlorc;
   using PPC64JITCore::xxlxor;
+  using PPC64JITCore::xxmrghw;
+  using PPC64JITCore::xxmrglw;
   using PPC64JITCore::xxpermdi;
   using PPC64JITCore::xxsel;
   using PPC64JITCore::xxsldwi;

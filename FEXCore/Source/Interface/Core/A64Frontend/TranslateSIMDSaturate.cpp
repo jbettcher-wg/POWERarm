@@ -243,7 +243,7 @@ Ref IRBuilder::SaturateNarrow(Ref V, OpSize WideES, NarrowKind Kind, Ref* Satura
     break;
   case NarrowKind::UnsignedToUnsigned: Clamped = _VUMin(RS, WideES, V, LaneConstant(UMax, WideES)); break;
   case NarrowKind::SignedToUnsigned:
-    Clamped = _VUMin(RS, WideES, _VSMax(RS, WideES, V, _VectorImm(RS, OpSize::i8Bit, 0)), LaneConstant(UMax, WideES));
+    Clamped = _VUMin(RS, WideES, _VSMax(RS, WideES, V, _VectorZero(RS)), LaneConstant(UMax, WideES));
     break;
   }
   *Saturated = _VXor(RS, RS, Clamped, V);
@@ -631,7 +631,7 @@ bool IRBuilder::IntElementOperand(uint32_t Word, Ref* Element) {
   } else {
     return false;
   }
-  *Element = _VDupElement(OpSize::i128Bit, LaneSize(Size), LoadV(Rm), Index);
+  *Element = DupElement(OpSize::i128Bit, LaneSize(Size), LoadV(Rm), Index);
   return true;
 }
 
@@ -654,7 +654,7 @@ Ref IRBuilder::DoublingMultiplyHigh(OpSize ES, Ref A, Ref B, bool Rounding, Ref*
   };
   Ref Low = HighHalf(_VSMull(RS, ES, A, B));
   Ref High = HighHalf(_VSMull2(RS, ES, A, B));
-  Ref Wrapped = _VInsElement(RS, OpSize::i64Bit, 1, 0, Low, High);
+  Ref Wrapped = InsElement(RS, OpSize::i64Bit, 1, 0, Low, High);
   Ref IsMin = _VCMPEQ(RS, ES, Wrapped, LaneConstant(1ULL << (W - 1), ES));
   *Saturated = IsMin;
   return _VXor(RS, RS, Wrapped, IsMin);
@@ -744,7 +744,7 @@ bool IRBuilder::SIMDDoublingMultiplyAccumulateHigh(uint32_t Word, bool Subtract,
                            : _VAdd(RS, WideES, _VSXTL2(RS, ES, D), TermHigh);
     Ref SatHigh {};
     Ref NarrowHigh = SaturateNarrow(AccHigh, WideES, NarrowKind::SignedToSigned, &SatHigh);
-    Ref Result = _VInsElement(RS, OpSize::i64Bit, 1, 0, NarrowLow, NarrowHigh);
+    Ref Result = InsElement(RS, OpSize::i64Bit, 1, 0, NarrowLow, NarrowHigh);
     Ref Sat = _VOr(RS, RS, SatLow, SatHigh);
     SetQCIfAny(Sat);
     StoreVQ(Rd, true, Result);
@@ -935,7 +935,7 @@ bool IRBuilder::SIMDSignedAcrossLanesMinMax(uint32_t Word, bool IsMax) {
   Ref Flip = LaneConstant(1ULL << (IR::OpSizeAsBits(ES) - 1), ES);
   Ref V = _VXor(RS, RS, LoadV(Bits(Word, 9, 5)), Flip);
   if (!Q) {
-    V = _VInsElement(RS, OpSize::i64Bit, 1, 0, V, V);
+    V = InsElement(RS, OpSize::i64Bit, 1, 0, V, V);
   }
   Ref Result = IsMax ? _VUMaxV(RS, ES, V).Node : _VUMinV(RS, ES, V).Node;
   StoreVSized(Bits(Word, 4, 0), ES, _VXor(RS, RS, Result, Flip));
@@ -1011,7 +1011,7 @@ bool IRBuilder::SIMDDotProduct(uint32_t Word, bool Signed, bool ByElement) {
     Ref Ones = LaneConstant(1, OpSize::i8Bit);
     Ref UA = _VXor(RS, RS, A, Flip);
     Ref UB = _VXor(RS, RS, B, Flip);
-    Ref Sums = _VUDot(RS, UB, Ones, _VUDot(RS, UA, Ones, _VectorImm(RS, OpSize::i8Bit, 0)));
+    Ref Sums = _VUDot(RS, UB, Ones, _VUDot(RS, UA, Ones, _VectorZero(RS)));
     Ref Products = _VUDot(RS, UA, UB, _VAdd(RS, OpSize::i32Bit, Acc, LaneConstant(4 * 128 * 128, OpSize::i32Bit)));
     Result = _VSub(RS, OpSize::i32Bit, Products, _VShlI(RS, OpSize::i32Bit, Sums, 7));
   }

@@ -90,7 +90,7 @@ Ref IRBuilder::FPConstant(uint64_t Bits, OpSize ElementSize) {
 
 Ref IRBuilder::FZ16Mask() {
   Ref FPCR = _LoadContext(OpSize::i32Bit, RegClass::GPR, offsetof(FEXCore::Core::CPUState, fpcr));
-  return _VDupFromGPR(OpSize::i128Bit, OpSize::i64Bit, _Neg(OpSize::i64Bit, _Bfe(OpSize::i64Bit, 1, 19, FPCR)));
+  return DupFromGPR(OpSize::i128Bit, OpSize::i64Bit, _Neg(OpSize::i64Bit, _Bfe(OpSize::i64Bit, 1, 19, FPCR)));
 }
 
 Ref IRBuilder::HalfToDouble(Ref V, bool KeepSignalling, bool ApplyFZ16) {
@@ -114,7 +114,7 @@ Ref IRBuilder::HalfToDouble(Ref V, bool KeepSignalling, bool ApplyFZ16) {
                          Constant(0x7C00), Constant(1), Constant(0));
   Ref Signalling = _Select(OpSize::i64Bit, OpSize::i64Bit, CondClass::NEQ, _And(OpSize::i64Bit, Bits16, Constant(0x1FF)), Constant(0),
                            TopMatch, Constant(0));
-  Ref ClearQuiet = _VDupFromGPR(RS, OpSize::i64Bit, _And(OpSize::i64Bit, _Neg(OpSize::i64Bit, Signalling), Constant(DOUBLE_QUIET_BIT)));
+  Ref ClearQuiet = DupFromGPR(RS, OpSize::i64Bit, _And(OpSize::i64Bit, _Neg(OpSize::i64Bit, Signalling), Constant(DOUBLE_QUIET_BIT)));
   return _VAndn(RS, RS, D, ClearQuiet);
 }
 
@@ -191,7 +191,7 @@ bool IRBuilder::FMOV_float_gen(uint32_t Word) {
     if (Index == 0) {
       StoreV(Rd, _VCastFromGPR(OpSize::i128Bit, Size, Src));
     } else {
-      StoreV(Rd, _VInsGPR(OpSize::i128Bit, OpSize::i64Bit, 1, LoadV(Rd), Src));
+      StoreV(Rd, InsGPR(OpSize::i128Bit, OpSize::i64Bit, 1, LoadV(Rd), Src));
     }
   } else {
     StoreReg(Rd, Sf, _VExtractToGPR(OpSize::i128Bit, Size, LoadV(Rn), Index));
@@ -433,7 +433,7 @@ bool IRBuilder::FCMP_float(uint32_t Word) {
   }
   const bool WithZero = Bit(Word, 3);
   Ref A = LoadV(Bits(Word, 9, 5));
-  Ref B = WithZero ? _VectorImm(OpSize::i128Bit, OpSize::i8Bit, 0).Node : LoadV(Bits(Word, 20, 16));
+  Ref B = WithZero ? _VectorZero(OpSize::i128Bit).Node : LoadV(Bits(Word, 20, 16));
   if (Size == OpSize::i16Bit) {
     A = HalfToDouble(A, false, true);
     B = HalfToDouble(B, false, true);
@@ -709,10 +709,10 @@ bool IRBuilder::SIMDConvertRoundToOdd(uint32_t Word, bool Scalar) {
   const auto RS = OpSize::i128Bit;
   const auto ES = OpSize::i64Bit;
   Ref V = LoadV(Bits(Word, 9, 5));
-  Ref Narrow = _VectorImm(RS, OpSize::i8Bit, 0);
+  Ref Narrow = _VectorZero(RS);
   const uint8_t Count = Scalar ? 1 : 2;
   for (uint8_t i = 0; i < Count; ++i) {
-    Ref X = i == 0 ? V : _VDupElement(RS, ES, V, i).Node;
+    Ref X = i == 0 ? V : DupElement(RS, ES, V, i);
     Ref Y = _A64FToF(OpSize::i32Bit, OpSize::i64Bit, X);
     Ref AbsX = _VFAbs(RS, ES, X);
     Ref AbsY = _VFAbs(RS, ES, _A64FToF(OpSize::i64Bit, OpSize::i32Bit, Y));
@@ -721,7 +721,7 @@ bool IRBuilder::SIMDConvertRoundToOdd(uint32_t Word, bool Scalar) {
     Ref Inexact = _VOr(RS, RS, Away, _VFCMPLT(RS, ES, AbsY, AbsX));
     Y = _VAdd(RS, OpSize::i32Bit, Y, Away);
     Y = _VOr(RS, RS, Y, _VAnd(RS, RS, Inexact, FPConstant(1, OpSize::i32Bit)));
-    Narrow = _VInsElement(RS, OpSize::i32Bit, i, 0, Narrow, Y);
+    Narrow = InsElement(RS, OpSize::i32Bit, i, 0, Narrow, Y);
   }
   if (Scalar) {
     StoreVSized(Bits(Word, 4, 0), OpSize::i32Bit, Narrow);

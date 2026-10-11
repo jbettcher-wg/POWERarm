@@ -722,6 +722,69 @@ if [ -f ld1r ]; then
   fi
 fi
 
+# vins runs in both switch states for the same reason ld1r does: the 4 and
+# 8-byte inserts are the ops the register classes moved, so with the switch on
+# a word insert into V16-V31 is the same xxinsertw (or xxspltw/xxsel pre-3.0)
+# that V0-V15 gets, and with it off the same instruction goes through a copy
+# out of the low bank. Both must give the same clean checks, and the suite's
+# disableisa30 mode supplies the other axis -- between the two suite runs this
+# covers all four combinations of switch and ISA level, which matters because
+# the pre-3.0 word insert is a different lowering (a splat and an xxsel
+# against a register-built word mask) rather than a twin of the 3.0 one.
+if [ -f vins ]; then
+  vi_fail=0
+  vi_detail=""
+  for vi_mode in on off; do
+    POWERARM_VSXCLASSES=$vi_mode "$emu" ./vins > "vins.vsx$vi_mode" 2> /dev/null
+    vi_rc=$?
+    vi_bad=$(grep -c '^FAIL' "vins.vsx$vi_mode" 2> /dev/null)
+    vi_checks=$(sed -n 's/^checks \([0-9]*\) failures 0$/\1/p' "vins.vsx$vi_mode")
+    vi_ctl=$(grep -c '^PASS control-detects-corruption$' "vins.vsx$vi_mode" 2> /dev/null)
+    # A missing summary line means it died before printing one, which an rc
+    # check alone would miss if it died with status 0.
+    if [ "$vi_rc" != 0 ] || [ "$vi_bad" != 0 ] || [ "$vi_ctl" != 1 ] || [ -z "$vi_checks" ] || [ "$vi_checks" -lt 200 ]; then
+      vi_fail=1
+      vi_detail="$vi_detail switch=$vi_mode rc=$vi_rc fails=$vi_bad checks=${vi_checks:-none} control=$vi_ctl;"
+    fi
+  done
+  if [ "$vi_fail" = 0 ]; then
+    report PASS vins "$vi_checks insert checks clean with VSXCLASSES off and on"
+  else
+    report FAIL vins "$vi_detail see $out/vins.vsxon"
+  fi
+fi
+
+# fcmp_denorm is the gate on the f32 compare arms having moved from the VMX
+# vcmpeqfp/vcmpgtfp/vcmpgefp to their VSX twins. The VMX ones flush denormal
+# inputs to zero when VSCR.NJ is set and the VSX ones never do, so the test
+# asserts the forced answer for denormal, NaN, signed-zero and infinity
+# inputs at BOTH element widths: the swap's whole premise is that the 4-byte
+# arm and the 8-byte arm of one IR op agree, and they are different host
+# instructions. Run in both switch states for the usual reason -- with it on,
+# a compare of V16-V31 is the same instruction V0-V15 gets.
+if [ -f fcmp_denorm ]; then
+  fd_fail=0
+  fd_detail=""
+  for fd_mode in on off; do
+    POWERARM_VSXCLASSES=$fd_mode "$emu" ./fcmp_denorm > "fcmp_denorm.vsx$fd_mode" 2> /dev/null
+    fd_rc=$?
+    fd_bad=$(grep -c '^FAIL' "fcmp_denorm.vsx$fd_mode" 2> /dev/null)
+    fd_checks=$(sed -n 's/^checks \([0-9]*\) failures 0$/\1/p' "fcmp_denorm.vsx$fd_mode")
+    fd_ctl=$(grep -c '^PASS control-detects-corruption$' "fcmp_denorm.vsx$fd_mode" 2> /dev/null)
+    # A missing summary line means it died before printing one, which an rc
+    # check alone would miss if it died with status 0.
+    if [ "$fd_rc" != 0 ] || [ "$fd_bad" != 0 ] || [ "$fd_ctl" != 1 ] || [ -z "$fd_checks" ] || [ "$fd_checks" -lt 350 ]; then
+      fd_fail=1
+      fd_detail="$fd_detail switch=$fd_mode rc=$fd_rc fails=$fd_bad checks=${fd_checks:-none} control=$fd_ctl;"
+    fi
+  done
+  if [ "$fd_fail" = 0 ]; then
+    report PASS fcmp_denorm "$fd_checks forced compare answers clean with VSXCLASSES off and on"
+  else
+    report FAIL fcmp_denorm "$fd_detail see $out/fcmp_denorm.vsxon"
+  fi
+fi
+
 if [ -f threadexit ]; then
   te_total=96
   te_batch=8

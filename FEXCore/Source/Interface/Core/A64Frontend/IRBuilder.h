@@ -455,6 +455,71 @@ private:
   // A 128-bit vector with Pattern in both 64-bit lanes.
   Ref VectorConstant64(uint64_t Pattern);
 
+  // Element insertion is two IR ops split by element width: the 4 and 8-byte
+  // forms are VSXClean and the 1 and 2-byte forms are not, because on PPC64LE
+  // only the wide ones have a lowering that can name a pinned low-bank
+  // register (IR.json, and the PPC64LE handlers). Every frontend site goes
+  // through these, so no caller has to remember which op it wants -- and a
+  // site whose width is only known at translate time, like the `ins`/`mov`
+  // element forms that read it out of the instruction, gets the right one
+  // without a second code path.
+  Ref InsElement(OpSize RegisterSize, OpSize ElementSize, uint8_t DestIdx, uint8_t SrcIdx, Ref DestVector, Ref SrcVector) {
+    if (ElementSize == OpSize::i32Bit || ElementSize == OpSize::i64Bit) {
+      return _VInsElementWide(RegisterSize, ElementSize, DestIdx, SrcIdx, DestVector, SrcVector);
+    }
+    return _VInsElement(RegisterSize, ElementSize, DestIdx, SrcIdx, DestVector, SrcVector);
+  }
+  Ref InsGPR(OpSize RegisterSize, OpSize ElementSize, uint8_t DestIdx, Ref DestVector, Ref Src) {
+    if (ElementSize == OpSize::i32Bit || ElementSize == OpSize::i64Bit) {
+      return _VInsGPRWide(RegisterSize, ElementSize, DestIdx, DestVector, Src);
+    }
+    return _VInsGPR(RegisterSize, ElementSize, DestIdx, DestVector, Src);
+  }
+
+  // The same width split, for the same reason, over the rest of the element
+  // movers: on PPC64LE the 4 and 8-byte forms of each have a lowering that is
+  // VSX-form in every arm and the 1 and 2-byte forms do not, because VSX has
+  // no byte or halfword splat and no byte or halfword merge at all.
+  static bool WideElement(OpSize ElementSize) {
+    return ElementSize == OpSize::i32Bit || ElementSize == OpSize::i64Bit;
+  }
+  Ref DupFromGPR(OpSize RegisterSize, OpSize ElementSize, Ref Src) {
+    if (WideElement(ElementSize)) {
+      return _VDupFromGPRWide(RegisterSize, ElementSize, Src);
+    }
+    return _VDupFromGPR(RegisterSize, ElementSize, Src);
+  }
+  Ref DupElement(OpSize RegisterSize, OpSize ElementSize, Ref Vector, uint8_t Index) {
+    if (WideElement(ElementSize)) {
+      return _VDupElementWide(RegisterSize, ElementSize, Vector, Index);
+    }
+    return _VDupElement(RegisterSize, ElementSize, Vector, Index);
+  }
+  Ref Zip(OpSize RegisterSize, OpSize ElementSize, Ref VectorLower, Ref VectorUpper) {
+    if (WideElement(ElementSize)) {
+      return _VZipWide(RegisterSize, ElementSize, VectorLower, VectorUpper);
+    }
+    return _VZip(RegisterSize, ElementSize, VectorLower, VectorUpper);
+  }
+  Ref Zip2(OpSize RegisterSize, OpSize ElementSize, Ref VectorLower, Ref VectorUpper) {
+    if (WideElement(ElementSize)) {
+      return _VZip2Wide(RegisterSize, ElementSize, VectorLower, VectorUpper);
+    }
+    return _VZip2(RegisterSize, ElementSize, VectorLower, VectorUpper);
+  }
+
+  // VExtr splits on the byte OFFSET rather than the element width: vsldoi
+  // shifts the concatenation by bytes and xxsldwi by whole words, so they
+  // agree only where the offset is a multiple of four. A 64-bit register size
+  // needs a zero-filled shift and stays on the general op.
+  Ref Extr(OpSize RegisterSize, OpSize ElementSize, Ref VectorLower, Ref VectorUpper, uint8_t Index) {
+    const unsigned Bytes = Index * IR::OpSizeToSize(ElementSize);
+    if (RegisterSize == OpSize::i128Bit && Bytes != 0 && Bytes < 16 && (Bytes % 4) == 0) {
+      return _VExtrWord(RegisterSize, ElementSize, VectorLower, VectorUpper, Index);
+    }
+    return _VExtr(RegisterSize, ElementSize, VectorLower, VectorUpper, Index);
+  }
+
   // Scalar FP shared bodies (TranslateFP.cpp).
   enum class FPUnaryOp { Abs, Neg, Sqrt };
   enum class FPBinaryOp { Add, Sub, Mul, Div, NMul, Min, Max, MinNum, MaxNum };

@@ -337,7 +337,7 @@ bool IRBuilder::LDx_STx_mult(uint32_t Word) {
       if (Interleave == 2) {
         // The two-register form is exactly an unzip of the memory image.
         Ref Upper = Q ? Chunk[1] : Chunk[0];
-        Values[s] = s == 0 ? _VUnZip(RS, ES, Chunk[0], Upper).Node : _VUnZip2(RS, ES, Chunk[0], Upper).Node;
+        Values[s] = s == 0 ? _VUnZip(RS, ES, Chunk[0], Upper).Node : _VUnZip2(RS, ES, Chunk[0], Upper);
         continue;
       }
       std::array<uint8_t, 16> Map {};
@@ -361,7 +361,7 @@ bool IRBuilder::LDx_STx_mult(uint32_t Word) {
     const uint64_t Bytes = std::min<uint64_t>(16, TotalBytes - 16 * c);
     Ref Image {};
     if (Interleave == 2) {
-      Image = c == 0 ? _VZip(RS, ES, Regs[0], Regs[1]).Node : _VZip2(RS, ES, Regs[0], Regs[1]).Node;
+      Image = c == 0 ? Zip(RS, ES, Regs[0], Regs[1]) : Zip2(RS, ES, Regs[0], Regs[1]);
     } else {
       std::array<uint8_t, 16> Map {};
       for (uint32_t b = 0; b < 16; ++b) {
@@ -471,9 +471,9 @@ bool IRBuilder::SIMDSingleStructure(uint32_t Word) {
       if (Replicate) {
         // Already a vector for a 4/8-byte element (VBroadcastFromMem above);
         // a 1/2-byte element still needs the dup off the GPR load.
-        StoreVQ(Reg, Q, ElementBytes >= 4 ? Loaded[s] : _VDupFromGPR(OpSize::i128Bit, ES, Loaded[s]).Node);
+        StoreVQ(Reg, Q, ElementBytes >= 4 ? Loaded[s] : DupFromGPR(OpSize::i128Bit, ES, Loaded[s]));
       } else {
-        StoreV(Reg, _VInsGPR(OpSize::i128Bit, ES, Index, LoadV(Reg), Loaded[s]));
+        StoreV(Reg, InsGPR(OpSize::i128Bit, ES, Index, LoadV(Reg), Loaded[s]));
       }
     }
   }

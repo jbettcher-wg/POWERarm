@@ -142,7 +142,7 @@ Ref IRBuilder::RecipSqrtEstimateTable(OpSize ES, Ref A) {
   Ref C0 = _Vector_FToI(RS, ES, Estimate, RoundMode::PosInfinity);
   Ref CM = _VFSub(RS, ES, C0, One);
   Ref Minus2p28 = FPConstant(FloatBits(-268435456.0, ES), ES);
-  Ref Zero = _VectorImm(RS, OpSize::i8Bit, 0);
+  Ref Zero = _VectorZero(RS);
   // c^2 is exact (c <= 1025); a' * c^2 - 2^28 is rounded once and never zero.
   Ref CMEnough = _VFCMPLE(RS, ES, Zero, _VFMLA(RS, ES, A, _VFMul(RS, ES, CM, CM), Minus2p28));
   Ref C0Enough = _VFCMPLE(RS, ES, Zero, _VFMLA(RS, ES, A, _VFMul(RS, ES, C0, C0), Minus2p28));
@@ -163,7 +163,7 @@ Ref IRBuilder::OverflowToInfinityMask(OpSize ES, Ref X) {
   // RMode is FPCR<23:22>: 00 RN, 01 RP, 10 RM, 11 RZ.
   Ref PosInf = _Sub(OpSize::i64Bit, _Bfe(OpSize::i64Bit, 1, 23, FPCR), Constant(1));
   Ref NegInf = _Sub(OpSize::i64Bit, _Bfe(OpSize::i64Bit, 1, 22, FPCR), Constant(1));
-  return _VBSL(RS, _VCMPLTZ(RS, ES, X), _VDupFromGPR(RS, ES, NegInf), _VDupFromGPR(RS, ES, PosInf));
+  return _VBSL(RS, _VCMPLTZ(RS, ES, X), DupFromGPR(RS, ES, NegInf), DupFromGPR(RS, ES, PosInf));
 }
 
 // X holds single or double operands in ES lanes, or with HalfInWord half
@@ -417,7 +417,7 @@ Ref IRBuilder::FPStepFusedLanes(OpSize ES, Ref Op1, Ref Op2, bool Sqrt) {
     Result = _VBSL(RS, UseMoved, Moved, Halved);
   }
   Ref Inf = FPConstant(FloatBits(__builtin_inf(), ES), ES);
-  Ref Zero = _VectorImm(RS, OpSize::i8Bit, 0);
+  Ref Zero = _VectorZero(RS);
   Ref InfTimesZero = _VOr(RS, RS, _VAnd(RS, RS, _VFCMPEQ(RS, ES, AbsN, Inf), _VFCMPEQ(RS, ES, M, Zero)),
                           _VAnd(RS, RS, _VFCMPEQ(RS, ES, N, Zero), _VFCMPEQ(RS, ES, AbsM, Inf)));
   Result = _VBSL(RS, InfTimesZero, FPConstant(FloatBits(Sqrt ? 1.5 : 2.0, ES), ES), Result);

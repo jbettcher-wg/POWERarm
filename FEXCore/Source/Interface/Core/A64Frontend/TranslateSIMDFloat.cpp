@@ -104,7 +104,7 @@ bool IRBuilder::FloatElementOperand(uint32_t Word, OpSize ES, Ref* Element) {
   } else {
     Index = (H << 1) | L;
   }
-  *Element = _VDupElement(OpSize::i128Bit, ES, LoadV(Rm), Index);
+  *Element = DupElement(OpSize::i128Bit, ES, LoadV(Rm), Index);
   return true;
 }
 
@@ -142,7 +142,7 @@ Ref IRBuilder::FPMulXLanes(OpSize ES, Ref A, Ref B) {
   const auto RS = OpSize::i128Bit;
   const bool Is64 = ES == OpSize::i64Bit;
   Ref Inf = FPConstant(Is64 ? 0x7FF0000000000000ULL : 0x7F800000ULL, ES);
-  Ref Zero = _VectorImm(RS, OpSize::i8Bit, 0);
+  Ref Zero = _VectorZero(RS);
   Ref InfTimesZero = _VOr(RS, RS, _VAnd(RS, RS, _VFCMPEQ(RS, ES, _VFAbs(RS, ES, A), Inf), _VFCMPEQ(RS, ES, B, Zero)),
                           _VAnd(RS, RS, _VFCMPEQ(RS, ES, A, Zero), _VFCMPEQ(RS, ES, _VFAbs(RS, ES, B), Inf)));
   Ref Sign = _VAnd(RS, RS, _VXor(RS, RS, A, B), FPConstant(Is64 ? 0x8000000000000000ULL : 0x80000000ULL, ES));
@@ -201,13 +201,13 @@ bool IRBuilder::SIMDFloatPairwise(uint32_t Word, FPBinaryOp Op, bool Scalar) {
   Ref A = LoadV(Bits(Word, 9, 5));
   if (Scalar) {
     // FADDP/FMAXP/... Sd/Dd, Vn.2<T>: the two lowest elements.
-    StoreFloatLanes(Word, true, ES, FPBinaryLanes(Op, ES, A, _VDupElement(RS, ES, A, 1)));
+    StoreFloatLanes(Word, true, ES, FPBinaryLanes(Op, ES, A, DupElement(RS, ES, A, 1)));
     return true;
   }
   Ref B = LoadV(Bits(Word, 20, 16));
   // Pairs of the concatenation B:A, as in SIMDPairwise.
   if (!Bit(Word, 30)) {
-    A = _VInsElement(RS, OpSize::i64Bit, 1, 0, A, B);
+    A = InsElement(RS, OpSize::i64Bit, 1, 0, A, B);
     B = A;
   }
   Ref Even = _VUnZip(RS, ES, A, B);
@@ -230,7 +230,7 @@ bool IRBuilder::SIMDFloatAcrossLanes(uint32_t Word, FPBinaryOp Op) {
   Ref V = LoadV(Bits(Word, 9, 5));
   // Lanes 0 and 1 of Pairs hold op(e0, e1) and op(e2, e3).
   Ref Pairs = FPBinaryLanes(Op, ES, _VUnZip(RS, ES, V, V), _VUnZip2(RS, ES, V, V));
-  StoreVSized(Bits(Word, 4, 0), ES, FPBinaryLanes(Op, ES, Pairs, _VDupElement(RS, ES, Pairs, 1)));
+  StoreVSized(Bits(Word, 4, 0), ES, FPBinaryLanes(Op, ES, Pairs, DupElement(RS, ES, Pairs, 1)));
   return true;
 }
 
@@ -262,7 +262,7 @@ bool IRBuilder::SIMDFloatCompare(uint32_t Word, FloatCompareKind Kind, bool Scal
   }
   const auto RS = OpSize::i128Bit;
   Ref A = LoadV(Bits(Word, 9, 5));
-  Ref Zero = _VectorImm(RS, OpSize::i8Bit, 0);
+  Ref Zero = _VectorZero(RS);
   Ref Result {};
   switch (Kind) {
   case FloatCompareKind::Eq: Result = _VFCMPEQ(RS, ES, A, LoadV(Bits(Word, 20, 16))); break;
@@ -364,7 +364,7 @@ bool IRBuilder::SIMDFloatToInt(uint32_t Word, uint8_t Rounding, bool Signed, boo
     StoreVQ(Bits(Word, 4, 0), Bit(Word, 30), _A64VecFloatToInt(RS, ES, V, Rounding, Signed));
     return true;
   }
-  Ref Result = _VInsGPR(RS, ES, 0, _VectorImm(RS, OpSize::i8Bit, 0), _A64FloatToGPR(ES, ES, V, Rounding, Signed));
+  Ref Result = InsGPR(RS, ES, 0, _VectorZero(RS), _A64FloatToGPR(ES, ES, V, Rounding, Signed));
   StoreV(Bits(Word, 4, 0), Result);
   return true;
 }
@@ -407,12 +407,12 @@ bool IRBuilder::SIMDFixedConvert(uint32_t Word, bool ToFloat, bool Signed, bool 
   const uint8_t Lanes = Scalar ? 1 : (Bit(Word, 30) ? 16 : 8) / IR::OpSizeToSize(ES);
   Ref V = LoadV(Bits(Word, 9, 5));
 
-  Ref Result = _VectorImm(RS, OpSize::i8Bit, 0);
+  Ref Result = _VectorZero(RS);
   if (ToFloat) {
     if (Lanes > 1) {
       Result = _A64VecIntToFloat(RS, ES, V, Signed);
     } else {
-      Result = _VInsElement(RS, ES, 0, 0, Result, _A64FloatFromGPR(ES, ES, _VExtractToGPR(RS, ES, V, 0), Signed));
+      Result = InsElement(RS, ES, 0, 0, Result, _A64FloatFromGPR(ES, ES, _VExtractToGPR(RS, ES, V, 0), Signed));
     }
     // One rounding in the conversion; the power-of-two scale is exact
     // (magnitudes stay at or above 2^-64).
@@ -426,7 +426,7 @@ bool IRBuilder::SIMDFixedConvert(uint32_t Word, bool ToFloat, bool Signed, bool 
     if (Lanes > 1) {
       Result = _A64VecFloatToInt(RS, ES, Scaled, ROUND_ZERO, Signed);
     } else {
-      Result = _VInsGPR(RS, ES, 0, Result, _A64FloatToGPR(ES, ES, Scaled, ROUND_ZERO, Signed));
+      Result = InsGPR(RS, ES, 0, Result, _A64FloatToGPR(ES, ES, Scaled, ROUND_ZERO, Signed));
     }
   }
   if (Scalar) {
