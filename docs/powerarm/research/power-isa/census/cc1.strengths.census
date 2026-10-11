@@ -1,0 +1,345 @@
+adc	14
+addp_scalar	2
+addp_v	2
+adds	583
+addv_v	32
+adr	946
+adrp	275463
+and	72055
+and_v	163
+ands	5821
+asr	4445
+autiasp	2
+b	243382
+bfi	2884
+bfxil	754
+bic	1345
+bic_v	30
+bif_v	1
+bit_v	1
+bl	435074
+blr	21452
+br	3051
+brk	1675
+bsl_v	4
+bti	2
+casal	3
+cbnz	51377
+cbz	156568
+ccmn	400
+ccmp	18230
+cinc	354
+cinv	5
+clz	1147
+cmeq_v	25
+cmge	732
+cmge_v	4
+cmgt_v	12
+cmhi_v	1
+cmhs_v	2
+cmlt_v	1
+cmn	3561
+cmp	360503
+cmtst_v	6
+cneg	277
+cnt_then_addv	17
+cnt_v	25
+cnt_vec	25
+csel	28467
+cset	14474
+csetm	237
+csinc	876
+csinv	14950
+csneg	40
+dmb	8
+dmb_ish	2
+dmb_ishld	6
+dot_mac_all	18
+dot_mac_saddl	4
+dot_mac_saddl2	4
+dot_mac_ssubw	8
+dot_mac_uaddlp	2
+dup_v	45
+eon	6
+eor	8744
+eor_v	29
+ext_v	149
+extr	33
+fadd	16
+fcmp	8
+fcmpe	38
+fcsel	10
+fcvt	21
+fcvtzs	19
+fdiv	82
+fmadd	10
+fmov	3167
+fmov_d_from_x	1703
+fmov_s_from_w	169
+fmov_then_cnt	6
+fmov_v	92
+fmov_w_from_s	185
+fmov_x_from_d	941
+fmsub	1
+fmul	69
+fneg	1
+fnmsub	1
+fsub	8
+ld1_v	145
+ld2_v	3
+ldaddal	1
+ldar	81
+ldarb	1
+ldaxr	5
+ldrsb	2656
+ldrsh	596
+ldrsw	3902
+ldursb	4
+ldursh	11
+ldursw	38
+ldxr	2
+lsl	24050
+lsr	20986
+madd	464
+mls_v	2
+mov	1105944
+mov_v	1151
+movi	62
+movi_v	1715
+movk	7151
+movz	2
+mrs	6
+mrs_gcspr_el0	2
+mrs_tpidr2_el0	2
+mrs_tpidr_el0	2
+msr	1
+msr_tpidr2_el0	1
+msub	4774
+mul	1227
+mvn	872
+mvn_v	9
+mvni_v	110
+neg	1380
+neg_v	39
+neg_vec	39
+nop	78750
+orn	138
+orn_v	12
+orr	14449
+orr_v	119
+paciasp	2
+popcnt_idiom	2
+prfm	16
+prfm_pldl1strm	15
+prfm_pstl1keep	1
+rbit	887
+ret	62332
+rev	20
+rev16	2
+rev64_v	8
+rev_gpr	22
+rev_gpr_rev	20
+rev_gpr_rev16	2
+rev_vec	8
+ror	84
+sbc	7
+sbfiz	2335
+sbfx	147
+scalarfp_all	432
+scalarfp_fadd	16
+scalarfp_fcmp	8
+scalarfp_fcmpe	38
+scalarfp_fcvt	21
+scalarfp_fcvtzs	1
+scalarfp_fdiv	82
+scalarfp_fmadd	10
+scalarfp_fmsub	1
+scalarfp_fmul	69
+scalarfp_fneg	1
+scalarfp_fnmsub	1
+scalarfp_fsub	8
+scalarfp_scvtf	105
+scalarfp_ucvtf	71
+scvtf	105
+sdiv	391
+shl	5
+shl_v	31
+shrn2_v	1
+shrn_v	1
+smaddl	412
+smulh	18
+smull	637
+sshl_v	3
+sshll2_v	16
+sshll_v	17
+sshr	4
+sshr_v	3
+st1_v	199
+st3_v	1
+st4_v	2
+stlr	15
+stlxr	6
+stxr	1
+subs	25873
+swpa	1
+swpal	2
+sxtb	21
+sxth	33
+sxtw	3534
+tbnz	55021
+tbz	91960
+total	6302726
+tst	35437
+uaddlp_v	2
+ubfiz	13100
+ubfx	12675
+ucvtf	71
+udiv	1354
+umaddl	3668
+umov_v	1
+umsubl	16
+umulh	111
+umull	5301
+umull_v	4
+uqsub	1
+ushl_v	122
+ushll2_v	1
+ushll_v	5
+ushr	5
+ushr_v	15
+uzp1_v	207
+uzp2_v	4
+widen_all	39
+widen_sshll2_2d	1
+widen_sshll2_4s	8
+widen_sshll2_8h	7
+widen_sshll_2d	4
+widen_sshll_4s	6
+widen_sshll_8h	7
+widen_ushll2_2d	1
+widen_ushll_2d	5
+xpaclri	6
+xtn_v	32
+zip1_v	73
+zip2_v	3
+--- bl targets, top 120
+BL	__stack_chk_fail	22056
+BL	_Z11do_valueizePFP9tree_nodeS0_ES0_	14898
+BL	free	13421
+BL	_Z11fancy_abortPKciS0_	13003
+BL	_Z15operand_equal_pPK9tree_nodeS1_j	12674
+BL	_Z10expand_rtxPKhPP7rtx_def	9734
+BL	_Z11rtx_equal_pPK7rtx_defS1_PFbPS1_S2_PPS_S4_E	8415
+BL	_Z14start_sequencev	8211
+BL	fwrite	7961
+BL	_Z16register_operandP7rtx_def12machine_mode	7442
+BL	xrealloc	5229
+BL	__fprintf_chk	4988
+BL	_Z7dbg_cnt13debug_counter	4494
+BL	_ZN15gimple_match_op10resimplifyEPP6gimplePFP9tree_nodeS4_E	4358
+BL	_Z9emit_insnP7rtx_def	4286
+BL	_Z25useless_type_conversion_pP9tree_nodeS0_	3794
+BL	xmalloc	3532
+BL	_ZdlPvm	2780
+BL	_Z13integer_zeropPK9tree_node	2765
+BL	_Znwm	2726
+BL	_Z15fold_build2_locm9tree_codeP9tree_nodeS1_S1_	2609
+BL	_Z20tree_swap_operands_pPK9tree_nodeS1_	2504
+BL	_Z33gt_ggc_mx_vec_const_char_p_va_gc_Pv	2471
+BL	_Z16vector_type_modePK9tree_node	2466
+BL	_ZN2wi5lts_pI16generic_wide_intI20wide_int_ref_storageILb0ELb0EEES4_EEbRKT_RKT0_	2314
+BL	_Z21maybe_push_res_to_seqP15gimple_match_opPP6gimpleP9tree_node	2274
+BL	_Z16gimple_dump_logsPKciS0_ib	2265
+BL	_Z9pp_stringP14pretty_printerPKc	2177
+BL	_Z12complete_seqPKhPP7rtx_def	2023
+BL	_ZN10vec_prefix22calculate_allocation_1Ejj	1909
+BL	_Z19aarch64_reg_or_zeroP7rtx_def12machine_mode	1684
+BL	xcalloc	1610
+BL	_Z17generic_dump_logsPKciS0_ib	1606
+BL	_Z24aarch64_simd_reg_or_zeroP7rtx_def12machine_mode	1569
+BL	_Z9rtx_alloc8rtx_code	1533
+BL	_Z8copy_rtxP7rtx_def	1502
+BL	_Z16fold_convert_locmP9tree_nodeS0_	1422
+BL	_Z13build_int_cstP9tree_node8poly_intILj2ElE	1386
+BL	memcpy	1354
+BL	_Z8ggc_freePv	1350
+BL	_Z11gen_reg_rtx12machine_mode	1346
+BL	_Z29hash_table_higher_prime_indexm	1330
+BL	_Z8error_atmPKcz	1316
+BL	_ZN2wi3addI16generic_wide_intI20wide_int_ref_storageILb0ELb0EEEmEENS_13binary_traitsIT_T0_XsrNS_10int_traitsIS6_EE14precision_typeEXsrNS8_IS7_EE14precision_typeEE11result_typeERKS6_RKS7_	1304
+BL	_Z12end_sequencev	1300
+BL	_Z12pp_characterP14pretty_printeri	1197
+BL	fputc	1172
+BL	_Z24generic_simplify_GE_EXPRm9tree_codeP9tree_nodeS1_S1_	1161
+BL	strcmp	1160
+BL	_ZN17bbitmap_operatorsILi2EE6binaryI7bbitmapILi2EEPFmmmES3_JEEET_T0_RKT1_SA_DpT2_	1153
+BL	ggc_internal_cleared_alloc_	1149
+BL	_Z15fold_build1_locm9tree_codeP9tree_nodeS1_	1130
+BL	_Z37gt_pch_p_26omp_attribute_pragma_statePvS_PFvS_S_S_ES_	1101
+BL	_Z16tree_fits_uhwi_pPK9tree_node	1100
+BL	_Z6build29tree_codeP9tree_nodeS1_S1_	1077
+BL	_Z14emit_move_insnP7rtx_defS0_	1069
+BL	_Z14bitmap_set_bitP11bitmap_headi	1059
+BL	_ZN13profile_count14from_gcov_typeEl15profile_quality	1046
+BL	__memcpy_chk	1026
+BL	_Z5errorPKcz	1021
+BL	_Z16make_ssa_name_fnP8functionP9tree_nodeP6gimplej	1017
+BL	_Z12bitmap_bit_pPK11bitmap_headi	935
+BL	_Z17gen_rtx_CONST_INT12machine_model	927
+BL	_Z15dump_printf_locRK15dump_metadata_tRK20dump_user_location_tPKcz	861
+BL	_Z23is_gimple_min_invariantPK9tree_node	835
+BL	_Z17gsi_insert_beforeP20gimple_stmt_iteratorP6gimple19gsi_iterator_update	806
+BL	_Z33aarch64_sve_same_pred_for_ptest_pPP7rtx_defS1_	805
+BL	_Z18gimple_nop_convertP9tree_nodePS0_PFS0_S0_E	755
+BL	memset	727
+BL	_Z34linux_fortify_source_default_levelv	726
+BL	_Z14build_zero_cstP9tree_node	715
+BL	_Z22c_parser_consume_tokenP8c_parser	715
+BL	_Z9force_reg12machine_modeP7rtx_def	700
+BL	_Z12unshare_exprP9tree_node	688
+BL	_Z23gimple_call_combined_fnPK6gimple	684
+BL	_Z19gimple_build_assignP9tree_nodeS0_	681
+BL	_ZN2wi9div_truncI16generic_wide_intI16wide_int_storageES3_EENS_13binary_traitsIT_T0_XsrNS_10int_traitsIS5_EE14precision_typeEXsrNS7_IS6_EE14precision_typeEE11result_typeERKS5_RKS6_6signopPNS_13overflow_typeE	653
+BL	_Z12copy_warningmm	652
+BL	_Z11gen_rtx_REG12machine_modej	639
+BL	_Z19fold_ignored_resultP9tree_node	628
+BL	_Z18print_generic_exprP8_IO_FILEP9tree_node9dump_flag	622
+BL	_Z12gen_int_mode8poly_intILj2ElE12machine_mode	617
+BL	_Z12bitmap_clearP11bitmap_head	613
+BL	_Z24private_lookup_attributePKcmP9tree_node	610
+BL	strlen	609
+BL	_Z17aarch64_ptrue_reg12machine_mode	602
+BL	_Z10warning_atmN11diagnostics9option_idEPKcz	601
+BL	_ZN2wi7arshiftI16generic_wide_intI16wide_int_storageES3_EENS_13binary_traitsIT_S5_XsrNS_10int_traitsIS5_EE14precision_typeEXsrS7_14precision_typeEE11result_typeERKS5_RKT0_	599
+BL	_Z9pp_printfP14pretty_printerPKcz	598
+BL	_ZN16wide_int_storageC2I16generic_wide_intI20wide_int_ref_storageILb0ELb0EEEEERKT_	593
+BL	_Z12ggc_set_markPKv	579
+BL	_Z11gen_rtx_MEM12machine_modeP7rtx_def	576
+BL	_Z23aarch64_endian_lane_rtx12machine_modej	569
+BL	_Z10pp_newlineP14pretty_printer	568
+BL	_Z12integer_onepPK9tree_node	553
+BL	_Z19bp_pack_var_len_intP9bitpack_dl	546
+BL	_Z19gimple_seq_add_stmtPP6gimpleS0_	545
+BL	_Z21bp_unpack_var_len_intP9bitpack_d	545
+BL	_Z38c_parser_next_tokens_start_declarationP8c_parserj	542
+BL	_Z16wide_int_to_treeP9tree_nodeRK8poly_intILj2E16generic_wide_intI20wide_int_ref_storageILb0ELb1EEEE	531
+BL	_Z5zeropPK9tree_node	524
+BL	_Z13size_int_kind8poly_intILj2ElE14size_type_kind	510
+BL	_ZN2wi11lts_p_largeEPKljjS1_j	510
+BL	_Z13is_gimple_regP9tree_node	507
+BL	_Z14dominated_by_p13cdi_directionPK15basic_block_defS2_	503
+BL	_Z19gimple_build_assignP9tree_node9tree_codeS0_S0_	502
+BL	_ZN2wi7lrshiftI16generic_wide_intI20wide_int_ref_storageILb0ELb0EEES1_I16wide_int_storageEEENS_13binary_traitsIT_S8_XsrNS_10int_traitsIS8_EE14precision_typeEXsrSA_14precision_typeEE11result_typeERKS8_RKT0_	501
+BL	_Z20generic_simplify_472mP9tree_nodeS0_S0_PS0_9tree_codeS2_	486
+BL	_Z18gt_pch_note_objectPvS_PFvS_S_PFvS_S_S_ES_Em	475
+BL	_Z29extract_constrain_insn_cachedP8rtx_insn	474
+BL	_ZN8opt_pass14set_pass_paramEjb	473
+BL	_Z12bitmap_allocP14bitmap_obstack	468
+BL	_Z28iterative_hash_host_wide_intlj	468
+BL	_Z6build19tree_codeP9tree_nodeS1_	466
+BL	_Z17element_precisionPK9tree_node	459
+BL	_Z18streamer_read_uhwiP15lto_input_block	446
+BL	_ZN5va_gc7reserveI14dw_attr_structS_EEvRP3vecIT_T0_8vl_embedEjb	438
+BL	_Z17raw_optab_handlerj	435
+BL	_Z6informmPKcz	420
+BL	_Z14get_identifierPKc	419

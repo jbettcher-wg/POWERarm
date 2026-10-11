@@ -1,0 +1,515 @@
+abs_v	81
+adc	147
+adcs	378
+addp_scalar	48
+addp_v	53
+addp_vec	5
+adds	11808
+addv_v	234
+adr	17357
+adrp	312933
+aesd_v	44
+aese_v	77
+aesimc_v	41
+aesmc_v	62
+and	62680
+and_v	2134
+ands	1889
+asr	23691
+autiasp	3264
+b	458777
+bfi	1632
+bfxil	1610
+bic	1427
+bic_v	479
+bif_v	239
+bit_v	166
+bl	704271
+bl_libml_all	5
+bl_libml_floorl	2
+bl_libml_fmodl	3
+bl_tf___addtf3	3
+bl_tf___divtf3	4
+bl_tf___extenddftf2	13
+bl_tf___fixtfsi	3
+bl_tf___floatditf	1
+bl_tf___floatsitf	4
+bl_tf___gttf2	1
+bl_tf___lttf2	6
+bl_tf___multf3	1
+bl_tf___netf2	4
+bl_tf___subtf3	1
+bl_tf___trunctfdf2	3
+bl_tf_all	44
+blr	130099
+br	6195
+brk	14673
+bsl_v	277
+bti	3727
+casal	2
+cbnz	76247
+cbz	276891
+ccmn	81
+ccmp	7140
+cinc	1327
+cinv	18
+clz	1747
+clz_v	10
+cmeq_v	427
+cmge	1
+cmge_v	28
+cmgt_v	59
+cmhi	2
+cmhi_v	242
+cmhs_v	54
+cmle_v	1
+cmlt_v	283
+cmn	13131
+cmp	612835
+cmp_then_addv	33
+cmp_then_reduce	165
+cmp_then_shrn	3
+cmp_then_umaxv	123
+cmp_then_uminv	9
+cmtst_v	134
+cneg	1221
+cnt_then_addv	5
+cnt_v	6
+cnt_vec	6
+csel	87742
+cset	23757
+csetm	147
+csinc	8653
+csinv	1573
+csneg	112
+dmb	23
+dmb_ish	1
+dmb_ishld	22
+dot_mac_all	533
+dot_mac_pmull	59
+dot_mac_pmull2	29
+dot_mac_sabal	5
+dot_mac_saddl	6
+dot_mac_saddl2	6
+dot_mac_saddw	24
+dot_mac_smlal	20
+dot_mac_smlal2	17
+dot_mac_smlsl	1
+dot_mac_smlsl2	1
+dot_mac_ssubl	9
+dot_mac_ssubl2	8
+dot_mac_ssubw	4
+dot_mac_uabdl	18
+dot_mac_uaddl	13
+dot_mac_uaddw	92
+dot_mac_umlal	115
+dot_mac_umlal2	50
+dot_mac_usubl	14
+dot_mac_usubl2	1
+dot_mac_usubw	41
+dup_v	13694
+eon	103
+eor	14325
+eor_v	1877
+ext_v	1418
+extr	73
+fabd	608
+fabd_v	246
+fabs	564
+fabs_v	19
+fadd	10660
+fadd_v	3786
+fccmp	352
+fcmeq_v	130
+fcmge_v	17
+fcmgt_v	297
+fcmlt_v	71
+fcmp	21875
+fcmpe	1
+fcsel	4562
+fcvt	5693
+fcvtas	234
+fcvtau	5
+fcvtl2_v	30
+fcvtl_v	148
+fcvtms	252
+fcvtmu	266
+fcvtn2_v	54
+fcvtn_v	173
+fcvtps	238
+fcvtpu	64
+fcvtzs	6617
+fcvtzs_v	991
+fcvtzu	953
+fcvtzu_v	9
+fdiv	4570
+fdiv_v	234
+fmadd	2
+fmaxnm	1681
+fmaxnm_v	74
+fminnm	1575
+fminnm_v	69
+fmls_v	6
+fmov	38961
+fmov_d_from_x	8396
+fmov_s_from_w	2903
+fmov_then_cnt	5
+fmov_v	1163
+fmov_w_from_s	1773
+fmov_x_from_d	3094
+fmul	19562
+fmul_v	8413
+fneg	794
+fneg_v	133
+fnmul	176
+frinta	152
+frinta_v	4
+frintm	1229
+frintm_v	53
+frintp	202
+frintp_v	15
+frintx	1
+frintz	49
+frintz_v	7
+fsqrt	635
+fsqrt_v	25
+fsub	5149
+fsub_v	1028
+ld1_v	1678
+ld1r_v	271
+ld2_v	153
+ld3_v	35
+ld4_v	56
+ld_then_rev	250
+ldadd	2
+ldaddal	2
+ldaddl	1
+ldar	2052
+ldarb	8833
+ldaxr	6
+ldrsb	692
+ldrsh	1701
+ldrsw	10401
+ldursb	133
+ldursh	131
+ldursw	4088
+ldxr	5
+lsl	23321
+lsr	41552
+madd	7922
+mla_v	579
+mls_v	1
+mov	1543440
+mov_v	11596
+movi	5992
+movi_v	14028
+movk	61253
+movz	3
+mrs	312
+mrs_cntvct_el0	1
+mrs_fpcr	10
+mrs_fpsr	5
+mrs_tpidr2_el0	2
+mrs_tpidr_el0	294
+msr	1
+msr_tpidr2_el0	1
+msub	1646
+mul	14830
+mul_v	327
+mvn	3322
+mvn_v	218
+mvni_v	313
+neg	2985
+neg_v	106
+neg_vec	106
+ngc	2
+nop	17988
+orn	200
+orr	41450
+orr_v	1737
+paciasp	2602
+pmull2_v	29
+pmull_v	59
+popcnt_idiom	5
+prfm	722
+prfm_pldl1keep	692
+prfm_pldl1strm	19
+prfm_pldl2keep	2
+prfm_pstl1keep	1
+prfm_pstl1strm	8
+rbit	1038
+rbit_v	2
+ret	87670
+rev	1182
+rev16	126
+rev16_v	32
+rev32	8
+rev32_v	74
+rev64_v	327
+rev_gpr	1316
+rev_gpr_rev	1182
+rev_gpr_rev16	126
+rev_gpr_rev32	8
+rev_then_st	57
+rev_vec	433
+ror	982
+rshrn_v	9
+saba_v	3
+sabd_v	10
+sbc	45
+sbcs	81
+sbfiz	810
+sbfx	261
+scalarfp_all	89995
+scalarfp_fabs	564
+scalarfp_fadd	10660
+scalarfp_fcmp	21875
+scalarfp_fcmpe	1
+scalarfp_fcvt	5693
+scalarfp_fcvtzs	596
+scalarfp_fcvtzu	39
+scalarfp_fdiv	4570
+scalarfp_fmadd	2
+scalarfp_fmaxnm	1681
+scalarfp_fminnm	1575
+scalarfp_fmul	19562
+scalarfp_fneg	794
+scalarfp_fsqrt	635
+scalarfp_fsub	5149
+scalarfp_scvtf	9637
+scalarfp_ucvtf	6962
+scvtf	9637
+scvtf_v	1336
+sdiv	861
+sha1c_v	5
+sha1h	21
+sha1m_v	5
+sha1p_v	10
+sha1su0_v	16
+sha1su1_v	16
+sha256h2_v	16
+sha256h_v	16
+sha256su0_v	13
+sha256su1_v	12
+shadd_v	8
+shl_v	829
+shrn2_v	33
+shrn_v	115
+sli_v	131
+smaddl	745
+smax_v	339
+smaxv_v	10
+smin_v	296
+sminv_v	9
+smlal2_v	17
+smlal_v	20
+smlsl_v	1
+smov_v	2
+smsubl	9
+smulh	179
+smull	1979
+smull_v	45
+sqadd_v	8
+sqsub_v	3
+sqxtn_v	9
+sshl_v	9
+sshll2_v	69
+sshll_v	967
+sshr_v	349
+ssra_v	32
+st1_v	217
+st2_v	152
+st3_v	31
+st4_v	143
+stlr	102
+stlrb	299
+stlxr	8
+stxr	3
+subs	27337
+swpal	2
+swpl	1
+sxtb	318
+sxth	573
+sxtw	3103
+tbl_v	408
+tbnz	42938
+tbz	37246
+total	10398128
+trn1_v	43
+trn2_v	77
+tst	12873
+uaba_v	1
+uabd_v	33
+ubfiz	1309
+ubfx	6021
+ucvtf	6962
+ucvtf_v	344
+udiv	2276
+uhadd_v	46
+umaddl	3609
+umax_v	44
+umaxv_v	157
+umin_v	315
+uminv_v	31
+umlal2_v	50
+umlal_v	115
+umov_v	736
+umsubl	5
+umulh	1728
+umull	1306
+umull_v	204
+uqsub_v	23
+uqxtn_v	1
+urhadd_v	9
+ushl	3
+ushl_v	2867
+ushll2_v	171
+ushll_v	1291
+ushr_v	1089
+usra_v	960
+uxtb	1
+uxth	9
+uzp1_v	857
+uzp2_v	112
+vrot_idiom	1
+vrot_idiom_usra	2
+widen_all	2498
+widen_sshll2_2d	33
+widen_sshll2_4s	31
+widen_sshll2_8h	5
+widen_sshll_2d	880
+widen_sshll_4s	74
+widen_sshll_8h	13
+widen_ushll2_2d	57
+widen_ushll2_4s	76
+widen_ushll2_8h	38
+widen_ushll_2d	192
+widen_ushll_4s	576
+widen_ushll_8h	523
+xpaclri	6
+xtn2_v	4
+xtn_v	1118
+yield	7
+zip1_v	595
+zip2_v	363
+--- bl targets, top 120
+BL	_ZdlPvm	132018
+BL	_Znwm	39607
+BL	__clang_call_terminate	24022
+BL	_Unwind_Resume	23964
+BL	memcpy	18900
+BL	_ZSt20__throw_length_errorPKc	10523
+BL	memcmp	8583
+BL	lua_traceandabort	8033
+BL	__cxa_atexit	7775
+BL	__cxa_guard_acquire	7765
+BL	__cxa_guard_release	7701
+BL	_Z20luaD_rawrunprotectedP9lua_StatePFvS0_PvES1_	7285
+BL	_ZN12Deserialiser11readOrThrowEPvm	5548
+BL	__cxa_allocate_exception	4777
+BL	_ZN24PrototypeExplorerWidgets18demangleMemberNameB5cxx11ESt17basic_string_viewIcSt11char_traitsIcEE	4597
+BL	__cxa_throw	4425
+BL	_ZNK12PropertyTree11requireDictEv	4283
+BL	_ZSt17__throw_bad_allocv	4277
+BL	_ZNK23ImmutableStringTemplateILm17EEeqERKSt17basic_string_viewIcSt11char_traitsIcEE	4115
+BL	_ZN13GlobalContext8localiseB5cxx11ESt17basic_string_viewIcSt11char_traitsIcEESt16initializer_listIS3_E	3576
+BL	_Z8ssprintfB5cxx11PKcz	3392
+BL	lua_setlfield	3278
+BL	strlen	3024
+BL	__cxa_free_exception	3023
+BL	__cxa_end_catch	3013
+BL	_ZN7Logging18logAndAbortOrThrowEPKcj8LogLevelS1_z	2908
+BL	SDL_SetError_REAL	2866
+BL	ERR_put_error	2844
+BL	_Z19ReleaseAssertFailedPKcjS0_	2782
+BL	_ZN6SpriteD2Ev	2774
+BL	_ZN6Values12recordManualEPKcRKNSt7__cxx1112basic_stringIcSt11char_traitsIcESaIcEEEmmR24PrototypeExplorerWidgets	2756
+BL	__cxa_begin_catch	2659
+BL	_ZN4agui5LabelC2EONSt7__cxx1112basic_stringIcSt11char_traitsIcESaIcEEEPKNS_10LabelStyleE	2583
+BL	memmove	2418
+BL	__aarch64_ldadd4_acq_rel	2371
+BL	_ZN7Logging3logEPKcj8LogLevelS1_z	2291
+BL	_ZSt18_Rb_tree_decrementPSt18_Rb_tree_node_base	2198
+BL	_ZNKSt10filesystem7__cxx114path5_List13_Impl_deleterclEPNS2_5_ImplE	2133
+BL	_ZN12PropertyTreeixESt17basic_string_viewIcSt11char_traitsIcEE	2046
+BL	_ZNSt7__cxx1112basic_stringIcSt11char_traitsIcESaIcEE9_M_assignERKS4_	1998
+BL	free	1982
+BL	_ZN4agui5Label7setTextEONSt7__cxx1112basic_stringIcSt11char_traitsIcESaIcEEE	1974
+BL	_ZN4agui5LabelC2EPKNS_10LabelStyleE	1951
+BL	_ZN11InputAction12destroyValueEv	1900
+BL	_ZNK12PropertyTreeixESt17basic_string_viewIcSt11char_traitsIcEE	1881
+BL	bcmp	1871
+BL	_ZN4agui6WidgetD2Ev	1824
+BL	_ZN12PropertyTreeD2Ev	1809
+BL	_ZNSt7__cxx1112basic_stringIcSt11char_traitsIcESaIcEEC2IS3_EEPKcRKS3_	1797
+BL	_ZN4agui6Widget13triggerResizeEv	1744
+BL	_ZN9HyperLinkD2Ev	1733
+BL	_ZN4Util8demangleERKNSt7__cxx1112basic_stringIcSt11char_traitsIcESaIcEEE	1728
+BL	_ZSt18_Rb_tree_incrementPSt18_Rb_tree_node_base	1721
+BL	_ZNK12PropertyTree17requireListOrDictEv	1712
+BL	_ZN12PropertyTree5clearEv	1705
+BL	_ZNSt7__cxx1112basic_stringIcSt11char_traitsIcESaIcEE9_M_mutateEmmPKcm	1669
+BL	_ZSt29_Rb_tree_insert_and_rebalancebPSt18_Rb_tree_node_baseS0_RS_	1655
+BL	_ZNSt12_Destroy_auxILb0EE9__destroyIP15LocalisedStringEEvT_S4_	1575
+BL	memset	1444
+BL	luaL_argerror	1407
+BL	SDL_GetErrBuf	1365
+BL	_ZSt25__throw_bad_function_callv	1304
+BL	strcmp$pltgot	1298
+BL	SDL_InitDynamicAPI	1270
+BL	_ZN4agui6Widget10setVisibleEb	1266
+BL	lua_createtable	1238
+BL	__cxa_rethrow	1229
+BL	_ZN18DeserialiserHelperI15MapDeserialiserE15loadFundamentalIbEEvRS0_RT_	1208
+BL	_ZN4agui5FrameD2Ev	1201
+BL	_ZSt18_Rb_tree_incrementPKSt18_Rb_tree_node_base	1179
+BL	_ZNSt7__cxx1112basic_stringIcSt11char_traitsIcESaIcEE10_M_replaceEmmPKcm	1117
+BL	lua_pushfstring	1114
+BL	_ZN4agui11EmptyWidgetC2EPKNS_16EmptyWidgetStyleE	1102
+BL	_ZNK15LocalisedString25updateTranslationIfNeededEPK14LocaleProvider	1061
+BL	_ZNSt16_Sp_counted_baseILN9__gnu_cxx12_Lock_policyE2EE24_M_release_last_use_coldEv	1041
+BL	lua_getlfield	1039
+BL	_ZNSt6chrono3_V212system_clock3nowEv	1031
+BL	pthread_mutex_unlock	1017
+BL	_ZN12RuntimeErrorC2ERKNSt7__cxx1112basic_stringIcSt11char_traitsIcESaIcEEE	994
+BL	ossl_statem_fatal	984
+BL	_ZN14ConfigItemBaseD2Ev	984
+BL	_ZN15LocalisedStringD2Ev	973
+BL	_ZNK12PropertyTree3getIbEET_v	941
+BL	_ZNK12PropertyTree13getStringTypeEb	933
+BL	CRYPTO_free	928
+BL	_ZN15IDConnectorBaseD2Ev	927
+BL	_ZN15ScriptExceptionC2ERKNSt7__cxx1112basic_stringIcSt11char_traitsIcESaIcEEE	883
+BL	_ZSt12__str_concatINSt7__cxx1112basic_stringIcSt11char_traitsIcESaIcEEEET_PKNS6_10value_typeENS6_9size_typeES9_SA_RKNS6_14allocator_typeE	861
+BL	_ZNSt10filesystem7__cxx114pathD2Ev	851
+BL	_ZSt28__throw_bad_array_new_lengthv	844
+BL	_ZN4agui6Widget29applySizeRestrictionsInternalERKNS_5StyleE	842
+BL	_ZdaPv	827
+BL	__dynamic_cast	803
+BL	_ZNK12PropertyTree3getImEET_v	798
+BL	SDL_FindInHashTable	793
+BL	_ZN12TargeterBaseD2Ev	780
+BL	_ZN17GameNotifications5queueE16GameNotification	769
+BL	pthread_mutex_lock	766
+BL	_ZSt19__throw_logic_errorPKc	759
+BL	_ZNK6Player15sendToListenersEO11InputAction	700
+BL	strstr	695
+BL	_ZN9LuaHelper8argCheckEP9lua_Statei	677
+BL	_ZN4agui11ButtonStyleD2Ev	671
+BL	_ZN4agui5LabelD2Ev	667
+BL	lua_pushstring	664
+BL	_ZNK12PropertyTree3getIfEET_v	661
+BL	_ZN9LuaHelper8toDoubleEP9lua_StateiPKcb	641
+BL	_ZN9LuaBinderI18LuaEntityPrototypeE15registerHandlerER7FlatMapINSt7__cxx1112basic_stringIcSt11char_traitsIcESaIcEEENS1_11FuncWrapperESt4lessIvEEOS8_MS0_FiP9lua_StateEbb	639
+BL	_ZN15ElementImageSet5LayerD2Ev	618
+BL	_Znam	613
+BL	SDL_LoadFunction_REAL	603
+BL	SDL_SendJoystickButton	602
+BL	_ZNK23ImmutableStringTemplateILm24EE3strB5cxx11Ev	599
+BL	__errno_location	597
+BL	_ZN4agui5FrameC2ENS_12GuiDirectionEPKNS_10FrameStyleERKNSt7__cxx1112basic_stringIcSt11char_traitsIcESaIcEEE	596
+BL	lua_pushvalue	584
+BL	index2addr	559
+BL	__cxa_thread_atexit	556
+BL	lua_pushcclosure	556
+BL	_ZNK17LuaBindableObject4failEv	555
