@@ -1,0 +1,65 @@
+# ctrlisync.map is the REJECTED ctrl+isync acquire-load proposal (POWER-STRENGTHS.md item
+# 10): keep LDAR's leading hwsync, but replace the TRAILING lwsync on LDAR and LDAPR with
+# `cmpw %r,%r; bne lbl; lbl: isync` -- the self-compare, never-taken branch and isync that
+# GCC's rs6000 backend and LLVM's PPC backend both emit for a C++ acquire load.
+#
+# This is NOT trailing.map. The store side does not move, LDAR keeps its leading hwsync, and
+# SC-IRIW1 -- the all-seq_cst IRIW that killed trailing-sync -- stays FORBIDDEN here. The
+# proposal fails for a different and previously unrecorded reason.
+#
+#   current    1052 translated,  6 UNSOUND   (all six listed in current.known)
+#   ctrlisync  1052 translated, 10 UNSOUND   (those six, plus the four below)
+#
+#     IRWIW008  RfePA PodRWAP Coe RfePA PodRWAP Coe
+#     IRWIW012  RfePQ PodRWQP Coe RfePQ PodRWQP Coe
+#     WWC012    RfePA PodRWAP RfePA PodRWAP Coe
+#     WWC018    RfePQ PodRWQP RfePQ PodRWQP Coe
+#
+# WHY. All four are read->write: an acquire load, then a later plain store, with the cycle
+# closed by coherence. The acquire load must not merely be ordered before that store on its
+# own thread -- the write it READ FROM must also propagate before that store. That is
+# A-cumulativity, and it is the one thing ctrl+isync does not have.
+#
+# It is not a missing local edge. ctrl+isync does order read->write on the executing thread:
+# LB with ctrl+isync on both threads is Never, LB with plain program order is Sometimes
+# (diyone7 -arch PPC, `Rfe DpCtrlIsyncdW` twice). ppc.cat puts ctrlisync in `ci0` only, so it
+# reaches `ppo` and `hb` and stops there, while ppc-checks.cat's
+#
+#     let fence = strong|light           (* sync | lwsync | eieio *)
+#     let propbase = (fence|(rfe;fence));hbstar
+#     let prop = propbase & (W * W) | (chapo? ; propbase*; strong; hbstar)
+#     acyclic co|prop as propagation
+#
+# can only build a W*W propagation edge out of a FENCE. `rfe;fence` is the cumulative term,
+# and ctrl+isync is not a fence, so there is no edge to build. lwsync gives the same local
+# read->write ordering AND that term, which is the entire difference between the two columns.
+# The leading hwsync cannot stand in for it: it is po-BEFORE the load, so `rfe;fence` never
+# matches it.
+#
+# Nor is a bare isync a cheaper route to the same place: 35f48f28b recorded that the
+# pre-147903303 `lwsync; isync` lowering had exactly current's six divergences, because isync
+# without a control dependency adds no ordering in the Power model at all. Confirmed again
+# here (`ISyncdRR`: MP Sometimes; `DpCtrlIsyncdR`: MP Never).
+#
+# WHY TWO COMPILERS STILL CHOOSE IT. GCC and LLVM are compiling C and C++, where an acquire
+# load only has to synchronize with a RELEASE store, so the cumulativity it needs arrives
+# through the release side. AArch64's LDAR/LDAPR promise more than C++ acquire: the model is
+# other-multi-copy-atomic, so a write an LDAR has read is visible to everyone, and every
+# later access is ordered after it whether the writer released or not. An emulator owes the
+# guest the architecture, not the source language. ctrl+isync is sound for the contract the
+# two compilers are keeping and unsound for the one POWERarm has to keep.
+#
+# FOR THE RECORD, because it is the first question anyone will ask: all four ARE outside what
+# a C or C++ program can rely on, which is the test current.known applies to its six. Both
+# shapes transcribed into C with every plain access a relaxed atomic are Sometimes under
+# rc11.cat. So the four could be argued into a .known file. They are not listed below, for
+# two reasons. The six in current.known are read->read multi-copy-atomicity, reachable only
+# by hand-written assembly relying on it; these four give up a cumulative fence's propagation
+# in the read->write direction, which is the ordering a JIT-emitted guest (V8, JSC) gets from
+# LDAR without any release store in sight. And accepting them would be deciding that
+# POWERarm's acquire load implements C++ acquire rather than AArch64 LDAR -- a policy change,
+# on by default for 126,727 sites in libxul, which is the owner's call and not a map file's.
+#
+# Nothing is listed below on purpose, so `check.sh ctrlisync` reports every divergence and
+# exits 1. Kept, like trailing.map, as the record of why the acquire load keeps its trailing
+# lwsync. No backend code was written for this proposal.

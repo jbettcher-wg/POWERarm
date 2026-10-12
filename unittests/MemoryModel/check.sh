@@ -9,6 +9,7 @@
 #
 #   check.sh [MAP...]            default: current acqrel none
 #   check.sh trailing            the rejected trailing-sync proposal (see trailing.known)
+#   check.sh ctrlisync           the rejected ctrl+isync acquire load (see ctrlisync.known)
 #
 # 1. diy7 generates a family of AArch64 litmus tests: every shape up to 4 threads
 #    and 6 edges (MP, SB, LB, R, S, 2+2W, IRIW, WRC, ISA2, RWC, WWC, Z6, ...)

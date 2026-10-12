@@ -48,10 +48,13 @@ check (§2.7). The leads that die, with reasons, are in §4: binary128 hardware 
 sites in Factorio and none anywhere else; `cmpeqb`/`cmprb` are reachable only through a
 redirect that would call a host glibc already using them; `vexts*2*` is not SXTL; `vbpermq`
 buys nothing the CR6 fusion does not; DMB ISHST's `hwsync` is model-pinned by cumulativity;
-and `scv` is already what glibc issues. The ordering lever that remains -- the ctrl+`isync`
-acquire that GCC and LLVM both choose for their own code against the `lwsync` this port
-emits after every LDAR, at 126,727 sites in libxul -- is a measurement, not a design, and
-§6 says how to take it.
+and `scv` is already what glibc issues. The ordering lever this document hoped for -- the
+ctrl+`isync` acquire that GCC and LLVM both choose for their own code against the `lwsync`
+this port emits after every LDAR, at 126,727 sites in libxul -- **is dead: the model rejected
+it** (§2.9). ctrl+`isync` is a ppo relation and not a cumulative fence, so it loses the
+read->write cumulativity `lwsync` carries, and `check.sh ctrlisync` is 10 unsound against
+`current`'s 6. The two compilers can take that form because C++ acquire gets its
+cumulativity from the release store; AArch64's LDAR does not get to assume one.
 
 ## 0. The ranked conclusions
 
@@ -71,7 +74,7 @@ suite gates a `disableisa30` mode, so every item names its 2.07 fallback.
 | 7 | **FMAXNM/FMINNM through the hardware maxNum rule: one result check instead of two input checks** (§2.7) | 5 | 3 | 2.06 | scalar: libxul 5,328, Factorio 3,256, VS Code 652, Claude 137; vector `fmaxnm`/`fminnm` 456/502/143/18 | medium: the both-NaN order and FPCR.DN are exactly what the result check must route to the stub | hours to 1 day |
 | 8 | **`vnegw`/`vnegd` for NEG.4S/.2D** (§2.8) | 2 | 1 | 3.0 (2.07 stays 2) | libxul 979, VS Code 868, Claude 249, Factorio 106, cc1 39 | none | hours |
 | 9 | **CRC32: hoist the two Barrett constants out of the pool** (§3, already-there family) | ~22, 6 of them two `ld; li; lvx` pool loads | ~16 | 2.07 | Claude 143 sites, VS Code 168, libxul 7; zero in the A64Bench `crc32`, which is table-driven | none | hours; only if a CRC-bound workload appears |
-| 10 | **Acquire load as ctrl+`isync` instead of trailing `lwsync`** (§2.9) | `sync; ld; lwsync` | `sync; ld; cmp; bne-; isync` | base | libxul 126,727 LDAR-family sites, VS Code 49,453, Factorio 10,885, Claude 9,068 | model-gated (herd7 first), then a measurement; GCC and LLVM both chose this form for their own acquire loads | a map file and one run; not a design item until measured |
+| ~~10~~ | ~~**Acquire load as ctrl+`isync` instead of trailing `lwsync`**~~ -- **REJECTED by the model** (§2.9): `check.sh ctrlisync` is 10 UNSOUND against `current`'s 6. ctrl+`isync` is a ppo relation, not a cumulative fence, and the four new failures are all read->write cumulativity (`WWC012/018`, `IRWIW008/012`). SC-IRIW1 stays forbidden, so this is not trailing-sync; it is a different hole. Record in `unittests/MemoryModel/ctrlisync.known`. | `sync; ld; lwsync` | unchanged | -- | libxul 126,727 LDAR-family sites, VS Code 49,453, Factorio 10,885, Claude 9,068 -- all moot | -- | none; closed |
 
 **Not levers** (§4): binary128 in hardware, `cmpeqb`/`cmprb`, `vexts*2*`, `vbpermq`/`vgbbd`
 for movemask, `vmsum*` beyond UDOT, `dcbt` stream hints for the emulator's own paths, DMB
@@ -92,8 +95,9 @@ no.
 static density they are each 0.01-0.05% of a binary's instructions, so on the integer
 workloads they are each a fraction of a percent of executed host instructions, and item 1
 is the one with a 13-instruction delta per site. Item 5 touches no emitted byte and is the
-only item that reaches every native path. Items 6 and 10 are the two whose dynamic weight
-nobody has counted and whose upside is largest if it is high: §6 names the counts.
+only item that reaches every native path. Item 6 is the one whose dynamic weight nobody has
+counted and whose upside is largest if it is high: §6 names the count. Item 10 was the other
+one and is now closed unsound, so its 126,727 sites buy nothing.
 
 ## 1. Method
 
@@ -490,12 +494,33 @@ on this hardware. herd7's `ppc.cat` knows the shape as `ctrlisync`.
 `Atomic<T>` defaults to SeqCst loads), 49,453 in VS Code, 10,885 in Factorio (8,833 of them
 `ldarb`, spin flags), 9,068 in the Claude CLI; 0 in cc1 and libc. Executed share unknown.
 
-**What this document asks for.** Not a change: a map file `ctrlisync.map` with
-`LDAR = sync; ld; cmp; bne; isync` and `LDAPR = ld; cmp; bne; isync`, run through
-`unittests/MemoryModel/check.sh` to establish soundness against `aarch64.cat` (it should be,
-and the SC-IRIW1 shape must stay forbidden because the leading `sync` is untouched), and then
-one counted run (§6). The leading `sync` stays whatever the answer; nothing on the store
-side moves.
+**What this document asked for, and the answer.** It asked for a map file `ctrlisync.map`
+with `LDAR = sync; ld; cmp; bne; isync` and `LDAPR = ld; cmp; bne; isync`, run through
+`unittests/MemoryModel/check.sh`, and said it should come out sound. **It does not, and the
+item is closed as rejected** [MEASURED, `check.sh ctrlisync` at `0f50cc889`]:
+
+```
+current     1052 translated,  6 UNSOUND
+ctrlisync   1052 translated, 10 UNSOUND
+```
+
+The six are current's accepted divergences unchanged; the four new ones are `WWC012`,
+`WWC018`, `IRWIW008` and `IRWIW012`. The prediction above was right about SC-IRIW1 -- it
+stays forbidden, the leading `sync` is untouched, and this is **not** trailing-sync again --
+but wrong about soundness, for a reason the document did not consider: ctrl+`isync` is a
+**ppo relation, not a fence**. All four new failures are read->write, where the write the
+acquire load read from must also propagate before a later store. That is A-cumulativity;
+`ppc-checks.cat` builds it only from `(rfe;fence)` with `fence = sync|lwsync|eieio`, and
+`ctrlisync` lives in `ci0`, reaching `ppo` and `hb` and no further. The local edge is not the
+problem -- LB with ctrl+`isync` on both threads is forbidden. `lwsync` supplies the same
+local ordering *and* the cumulative term, which is the whole of the difference. GCC and LLVM
+can choose this form because C++ acquire only has to synchronize with a *release* store, so
+its cumulativity comes from the other side; AArch64's LDAR is other-multi-copy-atomic and
+promises more. The full argument, the rc11 check showing all four are nonetheless outside
+what C or C++ can rely on, and why they were still not written into a `.known` file, are in
+`unittests/MemoryModel/ctrlisync.known`. No backend code exists for this; the trailing
+`lwsync` stays, and §6's counted run is moot. The leading `sync` stays whatever the answer;
+nothing on the store side moves.
 
 ## 3. The leads from the brief, each answered
 
@@ -622,10 +647,10 @@ already exists or a throwaway counter, not a campaign.
    code-server session and one `claude --version` each way, timed once. Positive or flat: ship
    on. Negative: ship off and record the number. This is the only item whose direction is in
    doubt.
-2. **Item 10, soundness then cost.** `check.sh ctrlisync` with the map in §2.9; if sound,
-   build the acquire form behind an env toggle and read `pm_cmplu_stall_any_sync` and cycles
-   once each way on a minute of Firefox browsing (HANDOVER item 21's pages): libxul is the
-   only binary where LDAR is dense enough to show.
+2. ~~**Item 10, soundness then cost.**~~ **Done, and it stopped at the first gate.**
+   `check.sh ctrlisync` is 10 UNSOUND against `current`'s 6 (§2.9,
+   `unittests/MemoryModel/ctrlisync.known`), so there is nothing to build and nothing to
+   count. Nobody needs to read `pm_cmplu_stall_any_sync` for this.
 3. **Item 6, the dynamic weight.** Count `CacheLineZero` executions (one counter in the
    existing stats path) over a code-server start and a Factorio benchmark. Below a few
    million it is hours of hygiene; above, it is the item -- or the argument for the memset

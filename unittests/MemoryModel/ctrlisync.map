@@ -1,0 +1,41 @@
+AArch64 to PPC
+
+# POWER-STRENGTHS.md item 10: the acquire half of an acquire load as a control
+# dependency plus `isync` instead of a trailing `lwsync`. Everything else here is
+# current.map verbatim, so the only delta this file measures is what follows the
+# load. In particular LDAR KEEPS ITS LEADING `sync` -- this is NOT the rejected
+# trailing-sync proposal (trailing.map / trailing.known), which moved that fence
+# to the store side and died on SC-IRIW1. Here the store side does not move and
+# SC-IRIW1 stays forbidden by the second LDAR's leading `sync`.
+#
+# `cmpw %r,%r; bne lbl; lbl: isync` is what GCC's rs6000 backend and LLVM's PPC
+# backend both emit for a C++ acquire load: the self-compare is always equal, so
+# the branch is never taken, and its target is the `isync` itself, so the `isync`
+# executes on both edges. herd7 sees the shape as `ctrlisync`
+# (ppcfences.cat: `ctrlcfence(ctrl,ISYNC)`), which ppc.cat puts in `ci0`, so it
+# orders the load before every later access. A bare `isync` does NOT -- that is
+# the lowering from before 147903303, and 35f48f28b's findings record that it
+# added no ordering at all. The dependency is the entire mechanism.
+#
+# Confirmed on a known case before this file was trusted on the suite
+# (diyone7 -arch PPC, Rfe <dep> Fre SyncdWW): MP is Never with
+# `cmpw;b;isync`, Sometimes with the ctrl dependency alone (DpCtrldR) and
+# Sometimes with a bare `isync` (ISyncdRR).
+"MOV %r,&c" -> "li %r,&c"
+"STR %r,[%a]" -> "stw %r,0(%a)"
+"LDR %r,[%a]" -> "lwz %r,0(%a)"
+"STLR %r,[%a]" -> "sync; stw %r,0(%a)"
+"LDAR %r,[%a]" -> "sync; lwz %r,0(%a); cmpw %r,%r; bne xa; xa: isync"
+"LDAPR %r,[%a]" -> "lwz %r,0(%a); cmpw %r,%r; bne xa; xa: isync"
+"DMB SY" -> "sync"
+"DMB LD" -> "lwsync"
+# DMB ST is `sync`, not `lwsync`, for the reason current.map gives: AArch64
+# barriers are cumulative over coherence order and lwsync's cumulativity is not.
+"DMB ST" -> "sync"
+# The exclusive pairs are current.map's rules UNCHANGED. This item is about
+# acquire loads only; the acquire-only / release-only RMW question is a separate
+# track (HANDOVER item 4), and moving both at once would make neither readable.
+"LDXR %r,[%a]; STXR W%s,W%v,[%a]" -> "lwarx %r,r0,%a; li %s,1; stwcx. %v,r0,%a; bne xd; li %s,0; xd:"
+"LDAXR %r,[%a]; STXR W%s,W%v,[%a]" -> "sync; lwarx %r,r0,%a; lwsync; li %s,1; stwcx. %v,r0,%a; bne xd; li %s,0; xd:"
+"LDXR %r,[%a]; STLXR W%s,W%v,[%a]" -> "sync; lwarx %r,r0,%a; li %s,1; stwcx. %v,r0,%a; bne xd; li %s,0; xd:"
+"LDAXR %r,[%a]; STLXR W%s,W%v,[%a]" -> "sync; lwarx %r,r0,%a; lwsync; li %s,1; stwcx. %v,r0,%a; bne xd; li %s,0; xd:"

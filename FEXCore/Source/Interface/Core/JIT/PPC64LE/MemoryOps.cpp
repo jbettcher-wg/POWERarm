@@ -1106,16 +1106,32 @@ DEF_OP(LoadMemTSO) {
 
   // Acquire barrier: `lwsync` AFTER the load.
   //
-  // This is kept on ARCHITECTURAL grounds, not measured ones. `lwsync` after a
-  // load is the plainest correct load-acquire on POWER, and it is the simpler of
-  // two valid constructs. It replaced a self-compare / never-taken-branch /
-  // `isync` sequence — also a documented and valid load-acquire, and cheaper,
-  // which is why the port originally chose it. Per-load acquire cost is real —
+  // This is now kept on MODEL grounds. It replaced a self-compare /
+  // never-taken-branch / `isync` sequence, which the port originally chose
+  // because it is cheaper and because GCC's rs6000 backend and LLVM's PPC
+  // backend both emit it for a C++ acquire load. Per-load acquire cost is real —
   // it "cumulatively dominates runtime in libc / pthread tight loops" — so the
-  // cheap construct had a real motivation. `LockOnlyTSO` also exists in the
-  // config for that reason, but it is NOT an alternative to getting this right:
-  // it is measurably unsound (see the block at the end of this function), and
-  // must not be treated as a way to buy back the cost of a barrier here.
+  // cheap construct had a real motivation.
+  //
+  // IT IS NOT A VALID SUBSTITUTE HERE, and an earlier version of this comment
+  // was wrong to call it one. [MEASURED, `unittests/MemoryModel/check.sh
+  // ctrlisync`]: the ctrl+`isync` mapping is 10 UNSOUND where today's is 6. The
+  // four extra are read->write shapes (`WWC012/018`, `IRWIW008/012`) in which
+  // the write the acquire load READ FROM must propagate before a later store.
+  // That is A-cumulativity; `ppc-checks.cat` builds it only from `(rfe;fence)`
+  // with `fence = sync|lwsync|eieio`, and ctrl+`isync` is a ppo relation, not a
+  // fence. The local read->write edge is fine — it is the cumulativity that is
+  // missing, and `lwsync` is carrying it. The two compilers can take the cheap
+  // form because C++ acquire only synchronizes with a *release* store, so its
+  // cumulativity arrives from the other side; AArch64's LDAR/LDAPR is
+  // other-multi-copy-atomic and promises it unconditionally. The full argument is
+  // in `unittests/MemoryModel/ctrlisync.known`. A bare `isync` is not a route
+  // either: per 35f48f28b it adds no ordering at all without the dependency.
+  //
+  // `LockOnlyTSO` also exists in the config for the cost reason, but it is NOT an
+  // alternative to getting this right: it is measurably unsound (see the block at
+  // the end of this function), and must not be treated as a way to buy back the
+  // cost of a barrier here.
   //
   // HONEST STATUS OF THE EVIDENCE, because an earlier version of this comment
   // overstated it twice and the corrections matter more than the conclusion:
@@ -1139,8 +1155,12 @@ DEF_OP(LoadMemTSO) {
   //   1. Re-measure with a workload that actually runs, now that the rootfs
   //      library gap is closed. That decides whether either construct matters.
   //   2. Get a recipe-compliant benchmark (SMT2, node-pinned) for the cost of
-  //      `lwsync` per guest load. If it is significant and neither construct
-  //      affects correctness, the cheap one should come back.
+  //      `lwsync` per guest load. That number is still worth having — but it can
+  //      no longer be spent on the cheap construct, because the premise this item
+  //      used to carry ("neither construct affects correctness") is false: see the
+  //      model result above. Any replacement has to clear `check.sh` at 6 unsound
+  //      or better first, and a cheaper lowering that is still a cumulative fence
+  //      is the only shape that can.
   //   3. Do not accept a zero-event run as proof of anything: at these rates 15
   //      trials cannot establish a zero, and 30 only rules out a true rate above
   //      about 10%.
