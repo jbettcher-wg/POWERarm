@@ -825,17 +825,43 @@ if [ -f vneg ]; then
 fi
 
 # vlanetest is the gate on the vector lane-test fusion (POWER-STRENGTHS.md
-# 2.1): a compare, UMAXV/UMINV, FMOV and CBZ/CBNZ become a record-form compare
-# and the guest's own branch. Three things are checked, and the second and
-# third are the ones a value test alone would miss.
+# 2.1): a compare, UMAXV/UMINV/ADDV, FMOV and CBZ/CBNZ become a record-form
+# compare and the guest's own branch. Three things are checked, and the second
+# and third are the ones a value test alone would miss.
 #
-#  1. The architecturally forced answer, for all 200 recognised shapes: the
+#  1. The architecturally forced answer, for all 300 recognised shapes: the
 #     lane mask, the reduction, the GPR and the branch direction. The mask and
 #     the GPR are read AFTER the join, i.e. in a block the branch reaches from
 #     either side, because they are real guest registers that the fused path
 #     does not write where the unfused one does. Deliberately breaking the
 #     fused edge's register writes takes this from 0 to 1,914 failures, and
 #     taking the wrong CR6 bit to 1,870.
+#
+#     The ADDV arm is the one whose reduction is not a lane of ones: the lane
+#     sum is -k modulo the element for k matching lanes, so sixteen matching
+#     byte lanes give 0xf0 and not 0xff. That value is what separates a correct
+#     ADDV lowering from one copied from UMAXV, and it is hand-computed in the
+#     test's anchors rather than modelled. The file also covers the shapes the
+#     ADDV arm must REFUSE, arranged so that fusing them answers differently:
+#     a Q-mismatched, an other-source and a WZR-destination shape all branch
+#     the OTHER WAY, and the two unallocated arrangements (2S and .2D, written
+#     as .inst because the assembler will not encode them) must raise SIGILL
+#     rather than take a branch.
+#
+#     Measured, by breaking the ADDV arm one way at a time and reverting each:
+#     dropping its forced-edge register writes gives 779 failures, every one on
+#     the MASK, every one in an addv shape, none in a umaxv or uminv one, and
+#     the branch direction untouched -- the c511d41c2 bug class, one arm later.
+#     Giving ADDV the "all lanes" predicate, so CR6 is read from the wrong bit,
+#     gives 2,326, split 1,233 branch and 1,093 reduction. Dropping the
+#     reduction's Q match gives 12, all of them the branch DIRECTION of
+#     addv-qmix. Dropping the element-size match gives exactly one, the .2D
+#     unallocated case, and dropping the compare's 2S refusal exactly one, the
+#     2S case -- so each unallocated arrangement is the sole witness for one
+#     check, which is why both are here and why their inputs make no lane
+#     match: with every lane matching, a wrongly-fused idiom re-translates the
+#     bad word on its other edge and faults anyway, and both breaks go
+#     unnoticed.
 #  2. The switch changed nothing observable: the same binary with
 #     POWERARM_DISABLELANETESTFUSION=1 must produce byte-identical output,
 #     which makes the fused and the unfused lowering differential against each
@@ -855,7 +881,7 @@ if [ -f vlanetest ]; then
     vl_bad=$(grep -c '^FAIL' "vlanetest.vsx$vl_mode" 2> /dev/null)
     vl_checks=$(sed -n 's/^checks \([0-9]*\) failures 0$/\1/p' "vlanetest.vsx$vl_mode")
     vl_ctl=$(grep -c '^PASS control-detects-corruption$' "vlanetest.vsx$vl_mode" 2> /dev/null)
-    if [ "$vl_rc" != 0 ] || [ "$vl_bad" != 0 ] || [ "$vl_ctl" != 1 ] || [ -z "$vl_checks" ] || [ "$vl_checks" -lt 6000 ]; then
+    if [ "$vl_rc" != 0 ] || [ "$vl_bad" != 0 ] || [ "$vl_ctl" != 1 ] || [ -z "$vl_checks" ] || [ "$vl_checks" -lt 9000 ]; then
       vl_fail=1
       vl_detail="$vl_detail switch=$vl_mode rc=$vl_rc fails=$vl_bad checks=${vl_checks:-none} control=$vl_ctl;"
     fi
@@ -881,7 +907,7 @@ if [ -f vlanetest ]; then
   if [ -n "${POWERARM_MAXINST:-}" ] && [ "${POWERARM_MAXINST:-}" != 0 ]; then
     vl_want=0
   else
-    vl_want=200
+    vl_want=300
   fi
   if [ "$vl_fused" -lt "$vl_want" ]; then
     vl_fail=1

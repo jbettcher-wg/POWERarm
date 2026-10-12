@@ -1265,9 +1265,10 @@ size_t IRBuilder::TryFuseVectorScan(const Decoder::DecodedBlocks& Block, size_t 
 // The compiler idiom for "does any lane of this compare match" is
 //
 //     cm<cc> v1.16b, v0.16b, v2.16b    ; or against #0
-//     umaxv  b1, v1.16b                ; uminv for "do ALL lanes match"
+//     umaxv  b1, v1.16b                ; uminv for "do ALL lanes match",
+//                                      ; addv for "any" by the lane sum
 //     fmov   w0, s1
-//     cbnz   w0, L                     ; or cbz
+//     cbnz   w0, L                      ; or cbz
 //
 // and it is the exit test of every SIMD scan that is not the glibc strlen
 // family TryFuseVectorScan above already fuses: memchr, pixel scans, JSON and
@@ -1285,13 +1286,43 @@ size_t IRBuilder::TryFuseVectorScan(const Decoder::DecodedBlocks& Block, size_t 
 //
 //   * On one edge their values are forced by the branch direction itself. "No
 //     lane matched" means the mask is all zeros, so the reduction and the GPR
-//     are zero; "every lane matched" means the mask is all ones, so the
-//     reduction is a lane of ones and the GPR is that, zero-extended. Lane
-//     masks are all-ones-or-all-zeros per lane, which is what makes the
-//     all-lanes case knowable too. That edge writes constants.
+//     are zero -- the max of no ones is zero, and so is their sum; "every
+//     lane matched" means the mask is all ones, so the reduction is a lane of
+//     ones and the GPR is that, zero-extended. Lane masks are
+//     all-ones-or-all-zeros per lane, which is what makes the all-lanes case
+//     knowable too. That edge writes constants.
 //   * On the other edge nothing is known about the mask -- "not every lane
-//     matched" says nothing about which ones did -- so the three instructions
-//     are re-translated out of line and the edge pays the old sequence.
+//     matched" says nothing about which ones did, and "some lane matched"
+//     says nothing about how many -- so the three instructions are
+//     re-translated out of line and the edge pays the old sequence.
+//
+// The three reductions, over lanes that are each 0 or all-ones:
+//
+//   * UMAXV: the unsigned max is all-ones iff ANY lane matched. "any".
+//   * UMINV: the unsigned min is all-ones iff EVERY lane matched. "all".
+//   * ADDV: the lane sum, which is zero iff NO lane matched. "any". This is
+//     the form the browser is actually built out of -- 2,427 sites in
+//     Chrome's own text against 113 umaxv and 31 uminv.
+//
+// The ADDV argument in full, because it is the one that is not obvious. A
+// compare's lane is exactly 0 or 2^esize - 1, and the architecture takes
+// ADDV's sum modulo the element width (ARM ARM: `bits(esize) sum`; ADDV()
+// above stores the result at ES, so everything above the element is cleared).
+// With k of the lanes matching,
+//
+//     k * (2^esize - 1)  ==  -k   (mod 2^esize)
+//
+// so the sum is zero iff k == 0 (mod 2^esize). k is bounded by the lane
+// count, so "sum is zero" is "no lane matched" exactly when the lane count is
+// strictly below 2^esize. Every arrangement ADDV allocates clears that by a
+// wide margin -- 16B is 16 lanes against a modulus of 256, and 8B, 4H, 8H and
+// 4S only improve the ratio -- but the matcher CHECKS it rather than assuming
+// it, so a shape whose lanes could sum back onto zero is refused instead of
+// branching the wrong way.
+//
+// ADDV therefore carries "any" and never "all": the sum pins the mask down
+// only when it is zero, so an ADDV idiom's forced edge is always the no-match
+// one, where all three destinations are zero.
 //
 // What is refused, and why:
 //
@@ -1299,13 +1330,25 @@ size_t IRBuilder::TryFuseVectorScan(const Decoder::DecodedBlocks& Block, size_t 
 //     in the same block: recognition is strictly the last four of a decoded
 //     block. POWERARM_MAXINST=1 therefore switches the fusion off entirely
 //     rather than letting one straddle a unit boundary.
-//   * ADDV ("how many matched") and the `shrn`-based narrowing forms: a
-//     different reduction, worth a tenth of the sites.
+//   * The `shrn`-based narrowing forms, and UADDLV/SADDLV. The widening
+//     pair is sound on the same modular argument -- a widened sum of 16 lanes
+//     cannot reach 2^16 at all -- but it writes an element TWICE the
+//     compare's, so neither the forced edge's reduction write nor the FMOV's
+//     width reasoning is this shape's bookkeeping. Refused as out of scope,
+//     not as unsafe, and refused by exact matcher name rather than by the
+//     element-size check, which compares the SOURCE size field and would let
+//     them through.
+//   * SMAXV/SMINV, which are sound over a lane mask with the roles swapped --
+//     the signed max of 0 and -1 is 0, so SMAXV is the "all" predicate and
+//     SMINV the "any" one. No site count has been measured for them, so they
+//     stay unfused rather than being added on the strength of the shape
+//     alone.
 //   * A `cmp #0; b.ne` consumer in place of CBZ/CBNZ: that one also writes
 //     NZCV, which would have to be rematerialised as well.
-//   * Element size .2D and the 2S arrangement, because UMAXV/UMINV have no
-//     such form, and a reduction whose element size differs from the
-//     compare's.
+//   * Element size .2D and the 2S arrangement, because none of the three
+//     reductions has such a form -- all three refuse Size == 3 and Size == 2
+//     with Q == 0 as unallocated -- and a reduction whose element size
+//     differs from the compare's.
 //   * CMTST, and every floating-point compare: a different lowering and, for
 //     the FP forms, NaN rules that are not the integer compare's.
 //   * FMOV to XZR (Rd == 31), and a branch whose target is its own next
@@ -1372,7 +1415,10 @@ size_t IRBuilder::TryFuseVectorLaneTest(const Decoder::DecodedBlocks& Block, siz
 
   const bool Q = Bit(Inst0.Word, 30);
   const uint32_t Size = Bits(Inst0.Word, 23, 22);
-  // UMAXV/UMINV have no .2D and no 2S form, so neither has the fusion.
+  // UMAXV, UMINV and ADDV all have no .2D and no 2S form -- ADDV() and
+  // SIMDAcrossLanesMinMax() above refuse Size == 3 and Size == 2 with Q == 0
+  // as unallocated -- so the fusion has no such form either. Accepting one
+  // would turn an undefined instruction into a taken branch.
   if (Size > 2 || (Size == 2 && !Q)) {
     return 0;
   }
@@ -1381,17 +1427,39 @@ size_t IRBuilder::TryFuseVectorLaneTest(const Decoder::DecodedBlocks& Block, siz
   const uint32_t Vm0 = Shape->ZeroOperand ? 0 : Bits(Inst0.Word, 20, 16);
 
   // Instruction 1: the horizontal reduction of that mask. UMAXV asks "any
-  // lane", UMINV "every lane"; same arrangement as the compare, and its
-  // source must be the mask.
+  // lane", UMINV "every lane", ADDV "any lane" by the lane sum; same
+  // arrangement as the compare, and its source must be the mask. Exact names
+  // only -- UADDLV and SADDLV reduce the same mask to the same answer but
+  // into an element twice as wide, and the element-size check below compares
+  // the SOURCE size field, which is equal for them, so the name is the only
+  // thing refusing them.
   const bool IsUMAXV = strcmp(Inst1.Matcher->Name, "UMAXV") == 0;
   const bool IsUMINV = strcmp(Inst1.Matcher->Name, "UMINV") == 0;
-  if (!IsUMAXV && !IsUMINV) {
+  const bool IsADDV = strcmp(Inst1.Matcher->Name, "ADDV") == 0;
+  if (!IsUMAXV && !IsUMINV && !IsADDV) {
     return 0;
   }
   if (Bit(Inst1.Word, 30) != Q || Bits(Inst1.Word, 23, 22) != Size || Bits(Inst1.Word, 9, 5) != Vd0) {
     return 0;
   }
   const uint32_t Vd1 = Bits(Inst1.Word, 4, 0);
+
+  // ADDV's precondition, checked rather than assumed. The sum of k matching
+  // lanes is -k modulo the element width, so it can only land back on zero
+  // with k >= 1 if the lane count reaches the modulus. It never does for an
+  // arrangement that gets this far -- at most 16 lanes against a modulus of
+  // at least 256 -- and an element of 32 bits or more cannot be reached by
+  // the 16 lanes a 128-bit vector holds at all, which is why that case needs
+  // no shift. A shape that ever did reach it would branch the wrong way on a
+  // mask whose lanes summed to zero, so it is refused here.
+  if (IsADDV) {
+    const uint32_t LaneCount = (Q ? 16u : 8u) >> Size;
+    const uint32_t ElemBits = 8u << Size;
+    const bool SumCanWrapToZero = ElemBits < 32 && LaneCount >= (1u << ElemBits);
+    if (SumCanWrapToZero) {
+      return 0;
+    }
+  }
 
   // Instruction 2: FMOV out of the reduction's register. Both widths are
   // sound here: the reduction writes one element and zeroes everything above
@@ -1426,6 +1494,8 @@ size_t IRBuilder::TryFuseVectorLaneTest(const Decoder::DecodedBlocks& Block, siz
   }
 
   const auto ES = ElementSizeFor(Size);
+  // Only UMINV carries "all". ADDV's sum pins the mask down only when it is
+  // zero, so its predicate is "any", like UMAXV's.
   const bool AllLanes = IsUMINV;
 
   // RIP-table markers for the three instructions Core.cpp did not emit one
@@ -1465,9 +1535,12 @@ size_t IRBuilder::TryFuseVectorLaneTest(const Decoder::DecodedBlocks& Block, siz
     const uint64_t Target = (PredTrue == IsCBNZ) ? TargetPC : NextPC;
     if (PredTrue == AllLanes) {
       // This is the edge whose register state the branch direction forces.
-      // UMAXV took it when no lane matched, so the mask is zero; UMINV took
-      // it when every lane did, so the mask is all ones. Written in the
-      // guest's own order, because the three destinations may alias.
+      // UMAXV and ADDV took it when no lane matched, so the mask is zero in
+      // every lane and so is the reduction -- the unsigned max of no ones is
+      // zero, and so is their sum. UMINV took it when every lane matched, so
+      // the mask is all ones and the reduction is a lane of ones. Written in
+      // the guest's own order, because the three destinations may alias and
+      // the guest's own later write is the one that has to survive.
       const uint64_t Lanes = AllLanes ? ~0ull : 0ull;
       const uint32_t Bytes = 1u << Size;
       StoreVQ(Vd0, Q, VectorConstant64(Lanes));

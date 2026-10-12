@@ -79,6 +79,12 @@ gcc -static -O2 -o vneg "$here/vneg.c"
 # computes all three. It is the gate on the record-form compare fusion
 # (POWER-STRENGTHS.md 2.1), including the register state that fusion must
 # leave on both edges of the branch.
+#
+# It covers all three reductions -- UMAXV, UMINV and ADDV -- and ADDV's answer
+# is the lane sum taken modulo the element, which the file computes from the
+# lane count rather than assuming it is a lane of ones. It also hand-assembles
+# the two arrangements ADDV does not allocate (2S and .2D) with .inst, so it
+# installs a SIGILL handler; that is self-contained and leaves no golden.
 gcc -static -O2 -o vlanetest "$here/vlanetest.c"
 # vcmpscan likewise: the lane mask of a CMEQ, the pairwise reduction of that
 # mask by itself, and the GPR the FMOV copies it into are all forced by the
