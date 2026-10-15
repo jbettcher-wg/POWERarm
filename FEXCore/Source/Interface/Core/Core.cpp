@@ -1101,6 +1101,24 @@ ContextImpl::GenerateIR(FEXCore::Core::InternalThreadState* Thread, uint64_t Gue
           Thread->OpDispatcher->StartContinuationBlock();
         }
 
+        // The libc mem-routine redirect's size gate (THUNKS-DESIGN.md 4.2).
+        // Emitted only at the unit's own entry instruction: a hooked routine
+        // that a multiblock unit reaches as an interior branch target keeps the
+        // plain translation, which is correct, just not accelerated.
+        //
+        // After the full-SMC validate above, deliberately. Under
+        // SMCChecks=full the question "are these still the bytes we decoded"
+        // has to be settled before anything decides what to do with them; the
+        // gate then redirects away from executing a routine whose bytes are
+        // confirmed unchanged.
+        //
+        // The gate is a prefix, so HasCustomIR stays false and
+        // NeedsAddGuestCodeRanges below stays true -- the routine's own bytes
+        // go on being tracked exactly as they are today.
+        if (i == 0 && InstAddress == GuestRIP) [[unlikely]] {
+          Thread->OpDispatcher->EmitMemRedirectGate(GuestRIP);
+        }
+
         // A two-instruction guest peephole that fuses into one IR op and then
         // CONTINUES in the same block -- unlike the two fusions below, which
         // swallow the rest of it. Excluded under full SMC validation for the
@@ -1978,6 +1996,69 @@ void ContextImpl::AddThunkTrampolineIRHandler(uintptr_t Entrypoint, uintptr_t Gu
       LogMan::Msg::EFmt("Input address for AddThunkTrampoline is already linked elsewhere");
     }
   }
+}
+
+void ContextImpl::AddMemRedirect(uint64_t Entrypoint, FEXCore::Context::MemRedirectKind Kind) {
+  if (!Config.MemRedirect() || Kind == FEXCore::Context::MemRedirectKind::None || Entrypoint == 0) {
+    return;
+  }
+
+  std::unique_lock lk(MemRedirectMutex);
+  auto [It, Inserted] = MemRedirects.emplace(Entrypoint, Kind);
+  if (!Inserted) {
+    // Two names for one address is the normal case, not an error: glibc's
+    // internal hidden aliases point at the same bytes as the exported name
+    // (__GI_memcpy and memcpy), which is exactly why hooking the exported
+    // address catches glibc's own internal callers too. Only a DISAGREEMENT
+    // about which routine it is would matter, and that would mean the symbol
+    // table said memcpy and memset share an address.
+    if (It->second != Kind) {
+      LogMan::Msg::EFmt("MemRedirect: {:#x} is claimed as two different routines ({} and {}); keeping the first", Entrypoint,
+                        static_cast<unsigned>(It->second), static_cast<unsigned>(Kind));
+    }
+    return;
+  }
+  HasMemRedirects.store(true, std::memory_order_release);
+
+  // Deliberately NO code invalidation here, and it is not an oversight.
+  //
+  // Nothing can be compiled at Entrypoint yet. The resolver runs from the
+  // FIRST PROT_READ mapping of the file that contains the routine, and guest
+  // code cannot have executed out of a mapping that did not exist; a reuse of
+  // the same addresses by an earlier mapping was invalidated by its munmap.
+  //
+  // It also must not happen here: AddMemRedirect is called from inside
+  // TrackMmap, which holds VMATracking's write lock, and
+  // InvalidateGuestCodeRange takes CodeInvalidationMutex. That is the lock
+  // order RemoveCustomIREntrypoint below had to be restructured to avoid, in
+  // the opposite direction. Taking it here would invert it against every
+  // concurrent compile.
+}
+
+void ContextImpl::RemoveMemRedirectRange(uint64_t Start, uint64_t Length) {
+  if (!HasMemRedirects.load(std::memory_order_acquire) || !Length) {
+    return;
+  }
+
+  std::unique_lock lk(MemRedirectMutex);
+  const uint64_t End = Start + Length;
+  for (auto It = MemRedirects.begin(); It != MemRedirects.end();) {
+    It = (It->first >= Start && It->first < End) ? MemRedirects.erase(It) : std::next(It);
+  }
+  HasMemRedirects.store(!MemRedirects.empty(), std::memory_order_release);
+
+  // No invalidation needed, and none wanted here for the same lock-order reason
+  // AddMemRedirect gives: the caller is unmapping this range, and unmapping
+  // already invalidates every block compiled from it.
+}
+
+FEXCore::Context::MemRedirectKind ContextImpl::LookupMemRedirect(uint64_t Entrypoint) {
+  if (!HasMemRedirects.load(std::memory_order_acquire)) {
+    return FEXCore::Context::MemRedirectKind::None;
+  }
+  std::shared_lock lk(MemRedirectMutex);
+  auto It = MemRedirects.find(Entrypoint);
+  return It == MemRedirects.end() ? FEXCore::Context::MemRedirectKind::None : It->second;
 }
 
 void ContextImpl::AddForceTSOInformation(const IntervalList<uint64_t>& ValidRanges, fextl::set<uint64_t>&& Instructions) {

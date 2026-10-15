@@ -1354,6 +1354,50 @@
         ]
       },
 
+      "MemRedirect": {
+        "Type": "bool",
+        "Default": "false",
+        "Desc": [
+          "Redirect the guest's memset/memcpy/memmove to the HOST's, instead of translating glibc's vectorised loops",
+          "(POWERARM_MEMREDIRECT=1 turns it ON; DEFAULT OFF for its first landing -- it is a new mechanism sitting on the",
+          "fault path and earns its default after a soak, not before). The design is docs/powerarm/THUNKS-DESIGN.md 4.2;",
+          "4.1 is why a full libc thunk is refused instead. CHANGES EMITTED CODE, so it is hashed into the code-cache",
+          "config id together with MemRedirectThreshold.",
+          "The guest and the host share one address space (DESIGN.md 4.8), so a guest pointer IS a host pointer and the",
+          "host routine can be handed guest pointers unchanged. Resolution is by SYMBOL, not by library thunk: the first",
+          "PROT_READ mapping of a code-holding ELF (the main executable included -- the loader routes through",
+          "TrackFileBackedCopy -> TrackMmap) has its .dynsym/.symtab walked for memcpy/memmove/memset, and each resolved",
+          "guest address gets a gate emitted ahead of the routine's own translation. glibc's internal hidden aliases point",
+          "at the same addresses, so internal callers are hooked too; compiler-inlined small copies never call and are",
+          "unaffected either way. An IFUNC symbol is NOT hooked at the resolver's address -- that address is the resolver,",
+          "not the routine -- so static glibc, where all three are IFUNCs, is covered by hooking the concrete",
+          "__memcpy_*/__memmove_*/__memset_* implementations instead (the _chk variants are excluded: different signature).",
+          "A redirected call is NOT a thunk over a library boundary: nothing of glibc's state (TLS, the allocator, FILE *,",
+          "the unwinder) crosses, which is exactly the property 4.1 says a full libc thunk cannot have.",
+          "SMC: under the default SMCChecks=icache nothing is write-protected and the guest itself owes the IC IVAU for any",
+          "code it wrote, so a host copy owes no invalidation. Under mtrack the destination granules are unprotected and",
+          "invalidated BEFORE the copy (UnprotectGuestRangeForHostWrite, the same call the syscall side uses for host",
+          "writes into guest memory), so correctness does not rest on taking a write fault inside host libc. Under full,",
+          "every block revalidates its own bytes at entry. Preceded by GuestRangeProvablyHasNoCode, so the common copy",
+          "into non-code memory pays nothing."
+        ]
+      },
+      "MemRedirectThreshold": {
+        "Type": "uint32",
+        "Default": "256",
+        "Desc": [
+          "Byte count at or above which MemRedirect hands a call to the host routine; below it the call falls through to the",
+          "JIT's own translation of the guest routine. Only meaningful with MemRedirect enabled, and hashed into the",
+          "code-cache config id with it.",
+          "A small copy is cheaper in JIT'd code than a host call plus frame setup: the crossing spills for an ABI call and",
+          "refills the 16 volatile vector registers unconditionally (BranchOps.cpp DEF_OP(Thunk)), which costs about what a",
+          "short copy costs emulated. The default 256 is THUNKS-DESIGN.md 4.4's starting point and is NOT a measured",
+          "optimum -- the sweep is the owner's (4.4, 6.4). Both sides of the gate are correct, so this only ever trades",
+          "speed.",
+          "0 redirects every call whose size the gate can see, which is a test setting rather than a useful one."
+        ]
+      },
+
       "ShadowRetStack": {
         "Type": "bool",
         "Default": "true",

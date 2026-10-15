@@ -348,6 +348,11 @@ public:
   std::atomic<bool> GuestCodeRetired {false};
   FEX_CONFIG_OPT(SMCMarkMemo, SMCMARKMEMO);
   FEX_CONFIG_OPT(SMCStoreEmulation, SMCSTOREEMULATION);
+  // The libc mem-routine redirect's master switch (THUNKS-DESIGN.md 4.2).
+  // Lives here rather than beside the resolver because a config Getter's
+  // constructor reads the config, and a file-scope one in LinuxEmulation runs
+  // before the config layers exist.
+  FEX_CONFIG_OPT(MemRedirect, MEMREDIRECT);
   FEX_CONFIG_OPT(SMCStoreBackpatch, SMCSTOREBACKPATCH);
   FEX_CONFIG_OPT(SMCMprotectDefer, SMCMPROTECTDEFER);
   FEX_CONFIG_OPT(SMCSoftInvalidate, SMCSOFTINVALIDATE);

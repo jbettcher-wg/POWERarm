@@ -627,6 +627,15 @@ uint64_t ComputeCodeCacheConfigId() {
     // block with a host-level back edge, so it changes block shape too.
     HASH_OPT(EXCLUSIVEFUSION);
 
+    // The libc mem-routine redirect prefixes a hooked routine's entry block
+    // with a size gate and a Thunk exit, so it changes block shape outright --
+    // and the threshold is baked into the gate's compare as an immediate, so
+    // two different thresholds are two different blocks. Both are hashed: a
+    // block compiled with the redirect on must never be served with it off,
+    // or at another threshold.
+    HASH_OPT(MEMREDIRECT);
+    HASH_OPT(MEMREDIRECTTHRESHOLD);
+
     // Lookup-cache shape: the dispatcher's inlined L1 probe is emitted into
     // every block exit on this backend.
     HASH_OPT(DISABLEL2CACHE);

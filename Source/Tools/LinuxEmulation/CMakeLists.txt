@@ -2,6 +2,7 @@
 add_compile_options(-fno-operator-names)
 
 add_library(LinuxEmulation STATIC
+  MemRedirectSymbols.cpp
   VDSO_Emulation.cpp
   Thunks.cpp
   GdbServer/Info.cpp

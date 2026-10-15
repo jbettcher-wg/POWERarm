@@ -21,7 +21,9 @@ $end_info$
 #include <FEXCore/fextl/string.h>
 #include <FEXCore/fextl/unordered_map.h>
 
+#include <algorithm>
 #include <cstdint>
+#include <cstring>
 #include <dlfcn.h>
 
 #include <malloc.h>
@@ -208,6 +210,13 @@ namespace ThunkFunctions {
   void AllocateHostTrampolineForGuestFunction(void* ArgsRV);
   void RegisterCallbackUnpacker(void* argsv);
   void CallbackSelftest(void* ArgsRV);
+  // The libc mem-routine redirect's host half. Two parameters, not one: these
+  // read their AAPCS64 arguments out of the CpuStateFrame that DEF_OP(Thunk)
+  // passes as the second ELFv2 argument (r4). See the definitions below and the
+  // cast at the registration table.
+  void Memset(void* ArgPtr, FEXCore::Core::CpuStateFrame* Frame);
+  void Memcpy(void* ArgPtr, FEXCore::Core::CpuStateFrame* Frame);
+  void Memmove(void* ArgPtr, FEXCore::Core::CpuStateFrame* Frame);
 } // namespace ThunkFunctions
 
 struct ThunkHandler_impl final : public FEX::HLE::ThunkHandler {
@@ -309,6 +318,31 @@ private:
      {0xa1, 0xe7, 0xfc, 0xbd, 0x77, 0x1c, 0xd0, 0x3f, 0x15, 0xca, 0xcf, 0xe5, 0x75, 0x87, 0x1b, 0x83,
       0x47, 0x66, 0xe2, 0xa0, 0xa7, 0xfd, 0x4a, 0xa4, 0xf4, 0x96, 0x50, 0x0e, 0xa5, 0x82, 0xa4, 0xa1},
      &ThunkFunctions::CallbackSelftest},
+
+    // The libc mem-routine redirect (THUNKS-DESIGN.md 4.2). Registered
+    // unconditionally so that the frontend's gate can prove the host half
+    // exists before it emits a relocation to it; nothing reaches these unless
+    // the MemRedirect config option is on AND the symbol resolver hooked an
+    // address, so an always-present table entry costs nothing.
+    //
+    // The cast is the ABI contract, and it is sound in ELFv2 rather than merely
+    // tolerated: a ThunkedFunction is entered with ArgPtr in r3 and the
+    // CpuStateFrame in r4 (BranchOps.cpp DEF_OP(Thunk) does `mr(TMP2, STATE)`
+    // for exactly this), so a callee declared with that second parameter reads
+    // a register the caller really did set. These three need three argument
+    // registers and a return value, which no single void* can carry.
+    {// sha256(powerarm:memset)
+     {0xc9, 0xa3, 0xc6, 0xdb, 0xfc, 0x26, 0xf3, 0x09, 0x58, 0x72, 0xb2, 0x5a, 0x5c, 0xa3, 0xd6, 0x7d,
+      0xc6, 0xd1, 0x75, 0x82, 0x05, 0x98, 0x21, 0x95, 0x7c, 0x81, 0xa1, 0x7e, 0xf2, 0x95, 0x7d, 0xcf},
+     reinterpret_cast<FEXCore::ThunkedFunction*>(&ThunkFunctions::Memset)},
+    {// sha256(powerarm:memcpy)
+     {0x02, 0x9a, 0x39, 0xf6, 0x36, 0xed, 0xf1, 0x18, 0x23, 0x33, 0xb9, 0x41, 0xf2, 0xd4, 0xbd, 0xb0,
+      0x8d, 0x33, 0xc8, 0xd7, 0x08, 0x7d, 0x22, 0x24, 0x2b, 0x52, 0x03, 0x11, 0x4e, 0xf2, 0x71, 0x97},
+     reinterpret_cast<FEXCore::ThunkedFunction*>(&ThunkFunctions::Memcpy)},
+    {// sha256(powerarm:memmove)
+     {0x18, 0x4e, 0x38, 0x29, 0xd7, 0x10, 0x39, 0xec, 0xba, 0x20, 0xf2, 0x4a, 0x97, 0xa1, 0x5d, 0xfe,
+      0xf2, 0xc3, 0x58, 0x0c, 0xe1, 0x11, 0x19, 0x47, 0x69, 0x1b, 0x87, 0x94, 0xe5, 0xc1, 0xb2, 0x3a},
+     reinterpret_cast<FEXCore::ThunkedFunction*>(&ThunkFunctions::Memmove)},
   };
 
   FEX_CONFIG_OPT(ThunkHostLibsPath, THUNKHOSTLIBS);
@@ -643,6 +677,175 @@ namespace ThunkFunctions {
       ThunkHandler_impl::CallCallback(reinterpret_cast<void*>(Fn), reinterpret_cast<void*>(Arg0), reinterpret_cast<void*>(Arg1 + i));
     }
     args->rv = Count;
+  }
+
+  // --- The libc mem-routine redirect's host half -----------------------------
+  //
+  // Design: docs/powerarm/THUNKS-DESIGN.md 4.2. The guest half is the size gate
+  // in FEXCore A64Frontend/MemRedirect.cpp; the config switch is MemRedirect
+  // (default OFF) with MemRedirectThreshold.
+  //
+  // ABI. These three are reached through DEF_OP(Thunk), which puts ArgPtr in r3
+  // and the CpuStateFrame in r4 (BranchOps.cpp: "Second C argument: the
+  // CpuStateFrame"). Taking the frame as a second parameter is the whole reason
+  // these can stay inside ThunkedFunction's void(void*) shape while reading
+  // three AAPCS64 argument registers: DEF_OP(Thunk)'s SpillForABICall has
+  // already published the live guest register file into that frame, so X0/X1/X2
+  // are there to be read and X0 is there to be written. The cast at the
+  // registration table is what pins this; r3 carries X0 and is ignored.
+  //
+  // What is NOT here, deliberately: no argument packing, no guest stub, no
+  // rootfs change, no library boundary. The guest and host share one address
+  // space (DESIGN.md 4.8), so a guest pointer IS a host pointer and goes to the
+  // host routine unchanged. None of glibc's state -- TLS, the allocator,
+  // FILE *, the unwinder -- crosses here, which is exactly the property
+  // THUNKS-DESIGN.md 4.1 says a full libc thunk cannot have.
+  //
+  // A fault inside the host routine is already a guest fault, and needs nothing
+  // from this file: the fatal-host-fault gate in SignalDelegator deliberately
+  // does not claim a SIGSEGV/SIGBUS in a thunk's host library, si_addr comes
+  // through verbatim from the kernel (and is a guest address because the address
+  // space is shared), and the gate's State.pc store gives the frame the
+  // routine's own PC.
+  namespace MemRedirect {
+    // Chunk size for a redirected copy: the answer to "bound the size you
+    // redirect, or chunk the copy". Chunked, not bounded, because bounding would
+    // mean refusing exactly the largest copies, which are the ones a host
+    // routine wins most on, and because a cap cannot be enforced from here
+    // anyway -- once this function is entered there is no way back to the JIT's
+    // translation.
+    //
+    // What the chunking is NOT for: guest signal delivery. The worry that a long
+    // host copy is a window in which the guest cannot take a signal turns out
+    // not to hold, and it is worth writing down why, because it is not obvious.
+    // An async guest signal that arrives while a thunk callee is running is not
+    // deferred -- DEF_OP(Thunk) arms no DeferredSignalRefCount, so the signal
+    // delegator's deferred-section gate does not fire -- so it is delivered to
+    // the guest's handler there and then, and the host copy resumes from the
+    // kernel's own restore when the handler returns. The guest's registers were
+    // published to the frame by DEF_OP(Thunk)'s SpillForABICall, and the gate
+    // stored the routine's PC, so the handler sees a consistent guest context
+    // while the copy is in flight. Chunking would not improve any of that.
+    //
+    // What it IS for: bounding the work inside one host libc call, so a
+    // redirected copy of arbitrary size is still a sequence of bounded calls
+    // rather than a single unbounded one. That is a structural bound, not a
+    // measured win -- no threshold or chunk size here has been measured, and
+    // measuring them is the owner's (THUNKS-DESIGN.md 4.4, 6.4).
+    constexpr uint64_t ChunkSize = 1 * 1024 * 1024;
+
+    // SMC: nothing is announced here, and that is a correctness decision rather
+    // than an omission.
+    //
+    //   icache  (the default) nothing is write-protected, and the architecture
+    //           makes the WRITER announce new instructions (IC IVAU). A guest
+    //           that memcpy's code and then executes it issues that IC IVAU
+    //           itself and POWERarm invalidates on it. Nothing is owed -- and
+    //           this is not a weakening, because the JIT's own translation of
+    //           guest memcpy emits plain guest stores, which announce nothing
+    //           either. Both sides of the gate behave identically.
+    //   mtrack  pages a block was compiled from are write-protected, so a host
+    //           store into one faults; SyscallHandler::HandleSegfault claims
+    //           that fault, invalidates the granule, unprotects, and the kernel
+    //           retries the store. Identical in kind to what a guest store from
+    //           the JIT's own translation would have done.
+    //   full    every block revalidates its own decoded bytes at entry.
+    //   none    nothing owed either way.
+    //
+    // An earlier version of this file pre-announced the destination with
+    // UnprotectGuestRangeForHostWrite before each chunk, to save the per-page
+    // faults under mtrack. That was WRONG and the fault tests caught it: that
+    // call mprotects the range R+W unconditionally, and it cannot tell a page
+    // POWERarm write-protected for SMC tracking from a page the GUEST made
+    // PROT_NONE on purpose. A redirected copy into a guard page therefore
+    // silently made the guard writable and completed, so the guest never took
+    // the fault it had asked for -- the guard-page and GC-write-barrier patterns
+    // broken outright, and only under mtrack.
+    //
+    // HandleSegfault does not have that defect: it services a fault only after
+    // checking VMA tracking says the page is guest-writable, and declines
+    // otherwise, which is what lets the guest's own PROT_NONE still fault. So
+    // the fault path is both the cheaper change and the correct one.
+
+    struct Args {
+      uint64_t Dest;
+      uint64_t SrcOrFill;
+      uint64_t Length;
+    };
+
+    Args Read(FEXCore::Core::CpuStateFrame* Frame) {
+      return Args {Frame->State.x[0], Frame->State.x[1], Frame->State.x[2]};
+    }
+
+    // All three routines return their destination pointer.
+    void Return(FEXCore::Core::CpuStateFrame* Frame, uint64_t Dest) {
+      Frame->State.x[0] = Dest;
+    }
+  } // namespace MemRedirect
+
+  void Memset(void* /*ArgPtr, == X0*/, FEXCore::Core::CpuStateFrame* Frame) {
+    const auto A = MemRedirect::Read(Frame);
+    // AAPCS64/C: the fill value is an int, and memset uses only its low byte.
+    const int Fill = static_cast<int>(static_cast<uint32_t>(A.SrcOrFill));
+
+    for (uint64_t Done = 0; Done < A.Length;) {
+      const uint64_t Chunk = std::min<uint64_t>(MemRedirect::ChunkSize, A.Length - Done);
+      std::memset(reinterpret_cast<void*>(A.Dest + Done), Fill, Chunk);
+      Done += Chunk;
+    }
+
+    MemRedirect::Return(Frame, A.Dest);
+  }
+
+  void Memcpy(void* /*ArgPtr, == X0*/, FEXCore::Core::CpuStateFrame* Frame) {
+    const auto A = MemRedirect::Read(Frame);
+
+    // Overlapping memcpy is undefined in C and is NOT quietly given memmove
+    // semantics here. The host's implementation may copy in a different
+    // direction than guest glibc's would have, so an overlapping call can
+    // produce a different -- equally undefined -- result with the redirect on
+    // than with it off. Chunking forward does not change that: it is the same
+    // direction the host routine already uses.
+    for (uint64_t Done = 0; Done < A.Length;) {
+      const uint64_t Chunk = std::min<uint64_t>(MemRedirect::ChunkSize, A.Length - Done);
+      std::memcpy(reinterpret_cast<void*>(A.Dest + Done), reinterpret_cast<const void*>(A.SrcOrFill + Done), Chunk);
+      Done += Chunk;
+    }
+
+    MemRedirect::Return(Frame, A.Dest);
+  }
+
+  void Memmove(void* /*ArgPtr, == X0*/, FEXCore::Core::CpuStateFrame* Frame) {
+    const auto A = MemRedirect::Read(Frame);
+
+    // memmove's contract is "as if through a temporary buffer", and chunking is
+    // only allowed to keep it if the chunk order matches the overlap direction:
+    //
+    //   dest < src   front to back. Each chunk writes BEHIND the source bytes
+    //                still to be read, so a write can never clobber them.
+    //   dest > src   back to front, for the mirror reason: each chunk writes
+    //                BEYOND the source bytes still to be read.
+    //
+    // Within a chunk the host memmove handles the overlap, which is what covers
+    // a shift smaller than the chunk size. Non-overlapping ranges are correct
+    // in either order and fall out of the same two cases.
+    if (A.Dest > A.SrcOrFill) {
+      uint64_t Remaining = A.Length;
+      while (Remaining) {
+        const uint64_t Chunk = std::min<uint64_t>(MemRedirect::ChunkSize, Remaining);
+        const uint64_t Offset = Remaining - Chunk;
+        std::memmove(reinterpret_cast<void*>(A.Dest + Offset), reinterpret_cast<const void*>(A.SrcOrFill + Offset), Chunk);
+        Remaining = Offset;
+      }
+    } else {
+      for (uint64_t Done = 0; Done < A.Length;) {
+        const uint64_t Chunk = std::min<uint64_t>(MemRedirect::ChunkSize, A.Length - Done);
+        std::memmove(reinterpret_cast<void*>(A.Dest + Done), reinterpret_cast<const void*>(A.SrcOrFill + Done), Chunk);
+        Done += Chunk;
+      }
+    }
+
+    MemRedirect::Return(Frame, A.Dest);
   }
 } // namespace ThunkFunctions
 

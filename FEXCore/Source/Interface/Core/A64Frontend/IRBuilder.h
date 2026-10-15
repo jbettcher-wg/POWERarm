@@ -60,6 +60,14 @@ public:
   // A new IR block that continues the current guest block (SMC full-validation split).
   void StartContinuationBlock() {}
 
+  // The libc mem-routine redirect's size gate (MemRedirect.cpp; design is
+  // docs/powerarm/THUNKS-DESIGN.md 4.2). Emits nothing and returns false unless
+  // RoutinePC is a hooked memset/memcpy/memmove. On true it has emitted a
+  // conditional prologue and left the current block positioned so that the
+  // caller's normal decode of the SAME address becomes the below-threshold
+  // fall-through, so the caller needs no other change.
+  bool EmitMemRedirectGate(uint64_t RoutinePC);
+
   // Translates one decoded instruction. Returns false if the instruction could
   // not be handled at all (the caller abandons the compile).
   bool TranslateInstruction(const Decoder::DecodedInst& Inst);

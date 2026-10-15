@@ -40,6 +40,19 @@ using CodeRangeInvalidationFn = std::function<void(uint64_t start, uint64_t Leng
 
 using CustomIREntrypointHandler = std::function<void(uintptr_t Entrypoint, IR::IREmitter*)>;
 
+/**
+ * Which guest libc memory routine a MemRedirect hook stands in for
+ * (THUNKS-DESIGN.md 4.2). The kind picks both the host routine the thunk calls
+ * and the AAPCS64 reading of the argument registers, so it is NOT interchangeable:
+ * memset's X1 is an int fill value, memcpy's and memmove's X1 is a source pointer.
+ */
+enum class MemRedirectKind : uint8_t {
+  None = 0,
+  Memset,
+  Memcpy,
+  Memmove,
+};
+
 using ExitHandler = std::function<void(Core::InternalThreadState* Thread)>;
 
 /**
@@ -307,6 +320,31 @@ public:
    * @param GuestThunkEntrypoint The thunk entrypoint that the IR handler will redirect to.
    */
   FEX_DEFAULT_VISIBILITY virtual void AddThunkTrampolineIRHandler(uintptr_t Entrypoint, uintptr_t GuestThunkEntrypoint) = 0;
+
+  /**
+   * @brief Hooks a guest libc memory routine, so that calls to it at or above the
+   * MemRedirectThreshold are handed to the HOST routine instead of being translated.
+   *
+   * The hook is a PREFIX on the routine's own translation, not a replacement for it:
+   * a call below the threshold falls through into the normal decode of the same
+   * address, so both sides of the gate are the guest's own observable semantics.
+   * No-op unless the MemRedirect config option is enabled.
+   *
+   * @param Entrypoint Guest address of the routine. Must be the routine itself --
+   *        never an IFUNC symbol's value, which is the resolver, not the routine.
+   * @param Kind Which routine this address is.
+   */
+  FEX_DEFAULT_VISIBILITY virtual void AddMemRedirect(uint64_t Entrypoint, MemRedirectKind Kind) = 0;
+
+  /**
+   * @brief Drops every mem-routine hook inside [Start, Start+Length).
+   *
+   * Must be called when guest memory holding hooked routines goes away, because a
+   * hook is keyed by ADDRESS: if the range were later reused by unrelated code, a
+   * surviving hook would gate that code and hand calls to the host's memcpy. That
+   * is silent wrong code, so the hook has to die with its mapping.
+   */
+  FEX_DEFAULT_VISIBILITY virtual void RemoveMemRedirectRange(uint64_t Start, uint64_t Length) = 0;
 
   /**
    * @brief Adds additional per-instruction granularity TSO enable/disable information for the given range.

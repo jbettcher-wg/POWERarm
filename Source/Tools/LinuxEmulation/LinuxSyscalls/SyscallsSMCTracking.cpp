@@ -39,6 +39,7 @@ $end_info$
 #include "Common/FDUtils.h"
 #include "Common/FEXServerClient.h"
 #include "Common/FileMappingBaseAddress.h"
+#include "MemRedirectSymbols.h"
 
 #include <algorithm>
 #include <climits>
@@ -484,8 +485,33 @@ bool SyscallHandler::HandleSegfault(FEXCore::Core::InternalThreadState* Thread, 
     // "the overlap test is too coarse" (fixable, Idea 3) from "the store form
     // isn't decoded" (fixable, widen the decoder) from "these are all shared
     // mappings" (out of scope for v1).
-    if (_SyscallHandler->SMCStoreEmulation()) {
-      const uint64_t StorePC = ArchHelpers::Context::GetPc(ucontext);
+    // Only ever emulate a store this JIT emitted -- the IsAddressInCodeBuffer
+    // half of the condition below.
+    //
+    // Everything below decodes the faulting host instruction as a ppc64le GPR
+    // store and completes it by hand (pwrite through /proc/self/mem, then NIP
+    // += 4). That is sound for JIT-emitted code, whose store forms this
+    // decoder was written against, and unsound for anything else: a HOST
+    // routine's store would be decoded with the same table and single-stepped
+    // by the emulator, inheriting the non-atomic-pwrite caveat documented
+    // above for a routine that never agreed to it.
+    //
+    // Before the libc mem-routine redirect this was unreachable in practice
+    // -- a host store into a write-protected guest code page needed a thunk
+    // writing into guest memory, which nothing did. The redirect makes host
+    // libc store into guest memory by design, so this is now a real path, and
+    // THUNKS-DESIGN.md 4.3 names discharging it as a gate before that lands.
+    // The store-backpatch helper already has the identical guard, for the
+    // identical reason (SMCStoreBackpatch.cpp, "not-in-codebuffer").
+    //
+    // Declining here is not a loss of function: the fault falls through to
+    // the legacy invalidate-unprotect-retry path below, which is correct for
+    // any store from anywhere, and the kernel simply retries it.
+    //
+    // This also makes the raw read of StorePC below safe by construction: it
+    // is now only reached for a PC inside a JIT code buffer.
+    const uint64_t StorePC = ArchHelpers::Context::GetPc(ucontext);
+    if (_SyscallHandler->SMCStoreEmulation() && Thread->CTX->IsAddressInCodeBuffer(Thread, StorePC)) {
       const uint32_t RawInsn = *reinterpret_cast<const uint32_t*>(StorePC);
       DecodedStore Store {};
 
@@ -3039,6 +3065,23 @@ SyscallHandler::TrackMmap(FEXCore::Core::InternalThreadState* Thread, uint64_t a
         Resource->MappedFile->Filename = fextl::string(Tmp, PathLength);
         Resource->MappedFile->FileId = CTX->GetCodeCache().ComputeCodeMapId(Resource->MappedFile->Filename, fd);
 
+        // The libc mem-routine redirect's symbol resolution (THUNKS-DESIGN.md
+        // 4.2). This is the one hook site that covers both cases: POWERarm's
+        // own ELF loader reaches here through TrackFileBackedCopy for the main
+        // executable, and the guest's ld.so reaches here through its own mmap
+        // for every shared library.
+        //
+        // This mapping is the one that CREATED the resource, so it is the first
+        // time this image has been seen. Nothing can be compiled at the
+        // addresses about to be hooked, because guest code cannot have run out
+        // of a mapping that did not exist -- which is what lets AddMemRedirect
+        // install a hook without invalidating anything, and it must not
+        // invalidate: VMATracking's write lock is held right here, and
+        // CodeInvalidationMutex is ordered the other way round.
+        //
+        // No-op unless the MemRedirect option is on; it reads nothing first.
+        FEX::HLE::MemRedirectSymbols::ScanMappedELF(CTX, MemRedirect(), fd, addr, static_cast<uint64_t>(offset), std::string_view(Tmp, PathLength));
+
         // Read ELF headers if applicable and needed for code caching.
         // For performance, skip ELF checks if we're not mapping the file header
         bool CheckForElfFile = (offset == 0) && EnableCodeCaching;
@@ -3145,6 +3188,12 @@ SyscallHandler::TrackMmap(FEXCore::Core::InternalThreadState* Thread, uint64_t a
 
 void SyscallHandler::TrackMunmap(FEXCore::Core::InternalThreadState* Thread, void* addr, size_t length) {
   uint64_t Size = FEXCore::AlignUp(length, FEXCore::Utils::FEX_GUEST_PAGE_SIZE);
+  // A mem-routine hook is keyed by address, so it must not outlive the mapping
+  // that justified it: a dlclose followed by a mapping reused at the same
+  // address would otherwise leave the new code gated, and calls into it handed
+  // to the host's memcpy. Cheap -- the table holds a handful of entries per
+  // image and is empty unless MemRedirect is on.
+  CTX->RemoveMemRedirectRange(reinterpret_cast<uintptr_t>(addr), Size);
   VMATracking.DeleteVMARange(CTX, reinterpret_cast<uintptr_t>(addr), Size);
 }
 
@@ -3181,6 +3230,11 @@ void SyscallHandler::TrackMremap(FEXCore::Core::InternalThreadState* Thread, uin
 #define MREMAP_DONTUNMAP 4
 #endif
     if (!(flags & MREMAP_DONTUNMAP)) {
+      // Same reason as TrackMunmap: the old range is going away, so any
+      // mem-routine hook keyed on an address inside it must go with it. The
+      // hooks are NOT re-registered at the new address -- a routine that moved
+      // is simply not redirected any more, which costs speed and nothing else.
+      CTX->RemoveMemRedirectRange(OldAddress, OldSize);
       VMATracking.DeleteVMARange(CTX, OldAddress, OldSize, OldResource);
     }
 
