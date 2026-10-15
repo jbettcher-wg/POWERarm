@@ -5602,6 +5602,274 @@ DEF_OP(Vector_FToZS) {
   Op_Unhandled(IROp, Node);
 }
 
+// ===========================================================================
+// ARMv8.2 FP16 <-> FP32 vector conversion without ISA 3.0 (POWER8)
+// ===========================================================================
+//
+// ISA 3.0 has xvcvhpsp/xvcvsphp. ISA 2.07 has no half-precision anything, and
+// this used to go out to a C helper through the FABI bridge: 246 host
+// instructions per convert, measured statically on the emitted block
+// (VSX-STAGE2-AND-VECTOR-CACHE.md §8 put it at "about 240"). The sequences
+// below replace that with straight-line vector code.
+//
+// Both are checked exhaustively against the HARDWARE instruction they stand
+// in for -- xvcvhpsp over all 2^16 halves, xvcvsphp over all 2^32 singles,
+// each in all four rounding modes -- because that is what the ISA 3.0 arm of
+// this very op emits, and the arm the Pi-5 golden agrees with. That sweep
+// also found the C helper it replaces to be WRONG on an f32 strictly between
+// 2^-25 and 2^-24: it returned +0 where the architecture (and the hardware)
+// round to nearest and give the smallest f16 denormal. See
+// unittests/A64Frontend/vcvtf16.c, which pins the case.
+//
+// STICKY BITS, measured on this POWER9 against the instructions these stand in
+// for (vsx-probes style, by clearing FPSCR and reading it back per input):
+//
+//   * Widening. xvcvhpsp raises VXSNAN on a signalling NaN and nothing on any
+//     other input. The sequence below MATCHES that exactly -- its multiply and
+//     compare are exact and ordered on non-NaN operands, and the quieting add
+//     is the only thing that sees a NaN.
+//   * Narrowing. xvcvsphp raises VXSNAN on a signalling NaN, XX when the
+//     conversion is inexact, OX with it on overflow and UX with it on a tiny
+//     inexact result. The sequence MATCHES VXSNAN (the quieting multiply
+//     raises it) and XX (xvrspic raises it exactly when the rounding is
+//     inexact, which is exactly when the conversion is). It does NOT raise OX
+//     or UX -- there is no integer-domain step that could -- and it raises
+//     VXIMZ, which the real instruction does not, on an infinite input.
+//
+// None of those three divergences is observable through the guest: FPSR's
+// cumulative exception bits are not emulated at all (LoadFPSR builds the guest
+// FPSR from CPUState.fpsr and VSCR.SAT, the A64 frontend never asks for
+// IOC/IXC, the backend's only host-FPSCR reads are of the RN field, and
+// FPSCR.VE is 0 so nothing traps). If cumulative FPSR is ever implemented,
+// these three are the rows this lowering owes it.
+//
+// REGISTER BUDGET, which shapes everything here: VTMP1 and VTMP2 are the only
+// writable VMX temporaries, VTMP3_VSX (vs12) is VSX-form-only (no vspltis*,
+// no v-form shift, compare, min/max or add), and VZERO_VSX must not be read
+// full-width. So each sequence has exactly three VMX registers (VTMP1, VTMP2
+// and the destination, once the source is dead) plus vs12, and the ordering
+// below is chosen to keep no more than that live. Constants are materialised
+// per use; a pooled slot (JITClass.h PPC64VConstIndex, four words per 16-byte
+// entry) would fold several of them into one load, but that table is not this
+// change's to grow.
+
+// Splat an arbitrary 32-bit value across all four words of Dst.
+//
+// mtvsrd defines BE doubleword 0 and leaves BE doubleword 1 UNDEFINED per the
+// ISA (the hazard BuildSplatDW documents), so the GPR's low word is BE word 1
+// and xxspltw from there reads only the defined half -- no xxpermdi needed.
+// Three instructions, or two when the value fits an `li`/`lis`; no memory, so
+// none of the store-hit-load the FABI bounce paid.
+static void SplatWord32(PPC64JITCore* j, VSXR Dst, uint32_t Val) {
+  j->LoadConstant(TMP1, Val);
+  j->mtvsrd(Dst, TMP1);
+  j->xxspltw(Dst, Dst, 1);
+}
+
+// f16x4 -> f32x4. `Upper` selects the source half (FCVTL2 vs FCVTL).
+//
+// The whole conversion is one exact multiply. Take the half's 15 low bits
+// (exponent and significand, sign dropped) and place them where an f32's
+// exponent and significand go:
+//
+//     S = (h & 0x7FFF) << 13
+//
+// Read as an f32, S is the right significand against the wrong exponent bias:
+// a normal half with exponent e reads as 2^(e-127)*1.f, and a DENORMAL half
+// reads as an f32 denormal of value f*2^-136. One multiply by 2^112 fixes
+// both at once -- 2^(e-127+112) = 2^(e-15) for the normal, f*2^-24 for the
+// denormal, which is exactly the half's value. It renormalises the denormals
+// for free, and it is exact for every input, so it sets no sticky bit.
+//
+// Only exponent 31 is left. Those land at 2^16*1.f, and nothing finite can:
+// the largest half is 65504 < 65536. So one compare against 2^16 names them,
+// and because their bit pattern is already 0x47800000|payload, OR-ing
+// 0x38000000 turns it into 0x7F800000|payload -- Inf when the payload is
+// zero, a NaN carrying the half's low 9 payload bits otherwise.
+//
+// That NaN still needs quieting, and a half's quiet bit (bit 9) lands at f32
+// bit 22, which is exactly the bit Power sets when an operation quiets an
+// SNaN. So `+0.0` does it: an SNaN comes back quiet with its payload intact
+// and VXSNAN set -- which is what xvcvhpsp does, verified on this POWER9 --
+// a QNaN and an Inf pass through, and every finite lane is exact.
+// 26 host instructions, against 246 for the helper call it replaces.
+static void EmitHalfToSingleVec(PPC64JITCore* j, VR Dst, VR Src, bool Upper) {
+  // VTMP1 = the half, zero-extended into each word. Src is read for the last
+  // time here, so Dst is free scratch from this point even when it aliases
+  // Src. (vmrghh takes the halves FCVTL2 wants, vmrglh the ones FCVTL does.)
+  j->vspltisw(VTMP1, 0);
+  if (Upper) {
+    j->vmrghh(VTMP1, VTMP1, Src);
+  } else {
+    j->vmrglh(VTMP1, VTMP1, Src);
+  }
+
+  // The sign has to come out first: VTMP1 is the only copy of the half, and
+  // the multiply below needs its register. Park it in Dst, which is where it
+  // ends up anyway. Shift counts come from vspltisw's low 5 bits, so -1 is 31.
+  j->vspltisw(VTMP2, 15);
+  j->vsrw(Dst, VTMP1, VTMP2);
+  j->vspltisw(VTMP2, -1);
+  j->vslw(Dst, Dst, VTMP2);
+
+  // VTMP1 = S = (h & 0x7FFF) << 13, as (h << 17) >>u 4 -- the left shift
+  // pushes the sign off the top of the word, so no mask constant is needed
+  // (-15 & 31 == 17).
+  j->vspltisw(VTMP2, -15);
+  j->vslw(VTMP1, VTMP1, VTMP2);
+  j->vspltisw(VTMP2, 4);
+  j->vsrw(VTMP1, VTMP1, VTMP2);
+
+  // VTMP1 = S * 2^112: the answer for every finite half, denormals included,
+  // and exact, so no sticky bit moves.
+  SplatWord32(j, AsVSX(VTMP2), 0x77800000);
+  j->xvmulsp(AsVSX(VTMP1), AsVSX(VTMP1), AsVSX(VTMP2));
+
+  // VTMP2 = the lanes that reached 2^16 == exponent 31. Nothing finite can:
+  // the largest half is 65504. VTMP1 is non-negative and not a NaN here, so
+  // the ordered compare raises nothing.
+  SplatWord32(j, AsVSX(VTMP2), 0x47800000);
+  j->xvcmpgesp(AsVSX(VTMP2), AsVSX(VTMP1), AsVSX(VTMP2));
+
+  // Those lanes hold 0x47800000|payload; +0x38000000 makes 0x7F800000|payload,
+  // i.e. Inf for a zero payload and a (possibly signalling) NaN otherwise.
+  SplatWord32(j, VTMP3_VSX, 0x38000000);
+  j->xxland(AsVSX(VTMP2), AsVSX(VTMP2), VTMP3_VSX);
+  j->xxlor(AsVSX(VTMP1), AsVSX(VTMP1), AsVSX(VTMP2));
+
+  // Quiet it. A half's quiet bit lands at f32 bit 22, which is the bit Power
+  // sets when it quiets an SNaN, so adding zero both quiets the NaN keeping
+  // its payload and raises VXSNAN -- matching xvcvhpsp. Every other lane is
+  // finite and non-negative, so the add is exact and +0 stays +0.
+  j->xxlxor(VTMP3_VSX, VTMP3_VSX, VTMP3_VSX);
+  j->xvaddsp(AsVSX(VTMP1), AsVSX(VTMP1), VTMP3_VSX);
+
+  j->vor(Dst, VTMP1, Dst);
+}
+
+// f32x4 -> f16x4, one half per WORD of `Out` (the caller packs them down).
+//
+// Rounding is the hard part: ARM rounds with FPCR.RMode, all four modes, and
+// the halfway cases have to be ties-to-even. Rather than open-code four
+// rounding rules, this uses the one instruction that already obeys the guest's
+// mode -- xvrspic, "round to integer using FPSCR.RN", which checklist F7 keeps
+// equal to FPCR.RMode -- and arranges for the half's significand to BE that
+// integer. For |x| with unbiased exponent e, let
+//
+//     k = max(e, -14)          and      M = rint(x * 2^(10-k))
+//
+// Then |M| is the half's significand: in [2^10, 2^11) for a normal result and
+// below 2^10 for a denormal one, because k bottoms out at the denormal
+// exponent. The encoding falls out of one add,
+//
+//     h = ((k + 15) << 10) + M - 1024
+//
+// which needs no case split: at k == -14 the leading term is exactly 1024 and
+// cancels, leaving h == M with a zero exponent field, which is the denormal
+// encoding; and when rounding carries M up to 2^11 the carry walks into the
+// exponent field on its own, so "0x3FF rounds up to the next binade" and
+// "0x7BFF rounds up to Inf" need no code either.
+//
+// Overflow is handled by CLAMPING the magnitude to 65520.0 -- the round-half
+// point between the largest half and 2^16. Every mode then lands where the
+// architecture says: nearest ties up to Inf, toward-zero and toward-nearer
+// stop at 0x7BFF, and the signs follow because the clamp keeps the sign and
+// xvrspic rounds the signed value. That is why the input is not made positive
+// first: |x| would turn "toward +Inf" into "away from zero".
+//
+// Inf and NaN are selected in separately, from a 0x7C00|payload built out of
+// the f32's own bits, and their magnitude is forced to zero so the arithmetic
+// path contributes nothing -- which also keeps xvrspic from setting a bogus
+// inexact for them. The input is quieted up front by multiplying by 1.0,
+// which Power turns an SNaN into the matching QNaN with (verified on this
+// POWER9) the payload kept and VXSNAN raised, exactly as xvcvsphp does; a
+// multiply rather than an add because -0.0 + 0.0 is +0.0 in three of the four
+// modes and the sign of zero has to survive.
+//
+// 62 host instructions, against 246 for the helper call it replaces. Over
+// half of that is materialising eight word-splat constants; a single pooled
+// 16-byte slot holds four of them and would cut about a dozen instructions,
+// but PPC64VConstIndex is not this change's table to grow.
+static void EmitSingleToHalfVec(PPC64JITCore* j, VR Out, VR Src) {
+  // VTMP1 = the quieted input. Src is read for the last time here.
+  SplatWord32(j, VTMP3_VSX, 0x3F800000);
+  j->xvmulsp(AsVSX(VTMP1), AsVSX(Src), VTMP3_VSX);
+
+  // Out = sign<<15, from bit 31. Built first because it is the only thing
+  // below that still needs a second VMX register for a shift count.
+  j->vspltisw(VTMP2, -1); // 31
+  j->vsrw(Out, VTMP1, VTMP2);
+  j->vspltisw(VTMP2, 15);
+  j->vslw(Out, Out, VTMP2);
+
+  // VTMP2 = 0x7C00 | ((bits >> 13) & 0x3FF): the half-precision image of an
+  // f32 Inf or NaN. Taking the payload from the already-quieted bits is what
+  // makes the half's quiet bit come out right -- f32 bit 22 is half bit 9.
+  j->vspltisw(VTMP2, 13);
+  j->vsrw(VTMP2, VTMP1, VTMP2);
+  SplatWord32(j, VTMP3_VSX, 0x3FF);
+  j->xxland(AsVSX(VTMP2), AsVSX(VTMP2), VTMP3_VSX);
+  SplatWord32(j, VTMP3_VSX, 0x7C00);
+  j->xxlor(AsVSX(VTMP2), AsVSX(VTMP2), VTMP3_VSX);
+  j->xxlor(AsVSX(Out), AsVSX(Out), AsVSX(VTMP2)); // Out = sign<<15 | that
+
+  // VTMP2 = the finite lanes. x*0 is a zero for anything finite and a NaN for
+  // an Inf (and for a NaN), so one compare-with-self names them; cheaper than
+  // an Inf constant, and it needs no VMX register. It raises VXIMZ on an Inf,
+  // which nothing in this tree reads (same argument as the FPSCR note on the
+  // VFCMP f32 arms earlier in this file).
+  j->xxlxor(VTMP3_VSX, VTMP3_VSX, VTMP3_VSX);
+  j->xvmulsp(AsVSX(VTMP2), AsVSX(VTMP1), VTMP3_VSX);
+  j->xvcmpeqsp(AsVSX(VTMP2), AsVSX(VTMP2), AsVSX(VTMP2));
+
+  // Drop the Inf/NaN image again on the finite lanes, but only its low 15
+  // bits -- the sign in bit 15 has to survive on every lane.
+  SplatWord32(j, VTMP3_VSX, 0x7FFF);
+  j->xxland(VTMP3_VSX, AsVSX(VTMP2), VTMP3_VSX);
+  j->xxlandc(AsVSX(Out), AsVSX(Out), VTMP3_VSX);
+
+  // VTMP3 = the magnitude, zeroed on the Inf/NaN lanes and clamped to the
+  // overflow round-half point, with the input's sign copied back on. The sign
+  // survives the zeroing, so a negative NaN still reports negative.
+  j->xvabssp(VTMP3_VSX, AsVSX(VTMP1));
+  j->xxland(VTMP3_VSX, VTMP3_VSX, AsVSX(VTMP2));
+  SplatWord32(j, AsVSX(VTMP2), 0x477FF000); // 65520.0f
+  j->xvminsp(VTMP3_VSX, VTMP3_VSX, AsVSX(VTMP2));
+  j->xvcpsgnsp(VTMP3_VSX, AsVSX(VTMP1), VTMP3_VSX);
+
+  // VTMP1 = (k + 127) << 23, the clamped magnitude's exponent floored at the
+  // denormal exponent: k = max(e, -14).
+  SplatWord32(j, AsVSX(VTMP1), 0x7F800000);
+  j->xxland(AsVSX(VTMP1), VTMP3_VSX, AsVSX(VTMP1));
+  SplatWord32(j, AsVSX(VTMP2), 0x38800000); // (-14 + 127) << 23
+  j->vmaxuw(VTMP1, VTMP1, VTMP2);
+
+  // VTMP2 = 2^(10-k), and then VTMP3 = x * 2^(10-k). Subtracting the exponent
+  // field from (10 + 127 + 127) << 23 negates it in place; the result is
+  // always a normal power of two, so the multiply is exact.
+  SplatWord32(j, AsVSX(VTMP2), 0x84000000); // 264 << 23
+  j->vsubuwm(VTMP2, VTMP2, VTMP1);
+  j->xvmulsp(VTMP3_VSX, VTMP3_VSX, AsVSX(VTMP2));
+
+  // VTMP1 = k_biased << 10, the leading term of the encoding.
+  j->vspltisw(VTMP2, -19); // 13
+  j->vsrw(VTMP1, VTMP1, VTMP2);
+
+  // VTMP2 = |rint(x * 2^(10-k))| as an integer. This is the only rounding
+  // step, and the only place a sticky bit is meant to move: xvrspic sets XX
+  // exactly when the conversion is inexact.
+  j->xvrspic(AsVSX(VTMP2), VTMP3_VSX);
+  j->xvabssp(AsVSX(VTMP2), AsVSX(VTMP2));
+  j->xvcvspuxws(AsVSX(VTMP2), AsVSX(VTMP2));
+
+  // Out = (k_biased << 10) + M - (113 << 10), plus the sign and the Inf/NaN
+  // image already sitting in Out.
+  j->vadduwm(VTMP1, VTMP1, VTMP2);
+  j->vadduwm(Out, Out, VTMP1);
+  SplatWord32(j, AsVSX(VTMP2), 113u << 10);
+  j->vsubuwm(Out, Out, VTMP2);
+}
+
 // Vector_FToF: packed float widening (f32→f64, lower half) or narrowing
 // (f64→f32, into low half).  Implemented via per-lane fpr roundtrip — POWER8's
 // xvcvspdp / xvcvdpsp use BE word indexing which doesn't line up with FEX's
@@ -5645,6 +5913,9 @@ DEF_OP(Vector_FToF) {
         xvcvhpsp(Dst, VTMP1);
         return;
       }
+      // ISA 2.07: the vector sequence above, not the 246-instruction helper.
+      EmitHalfToSingleVec(this, Dst, Src, false);
+      return;
     } else { // Conv == 0x0204
       if (EmitterCTX->HostFeatures.SupportsISA30) {
         vspltisw(VTMP2, 0);
@@ -5652,6 +5923,12 @@ DEF_OP(Vector_FToF) {
         vpkuwum(Dst, VTMP2, VTMP1);
         return;
       }
+      // ISA 2.07: one half per word in Dst, then the same pack. Dst is only
+      // written after Src's last read, so the two may alias.
+      EmitSingleToHalfVec(this, Dst, Src);
+      vspltisw(VTMP1, 0);
+      vpkuwum(Dst, VTMP1, Dst);
+      return;
     }
     // F16C: f16x4↔f32x4 packed conversion via software FABI helper (ISA 2.07 fallback).
     // Conv 0x0402: src f16 (i16) → dst f32 (i32) — VCVTPH2PS.
@@ -5706,24 +5983,8 @@ DEF_OP(VFCVTL2) {
       xvcvhpsp(Dst, VTMP1);
       return;
     }
-    // f16→f32 from the upper half of Src — software path via FABI helper (ISA 2.07 fallback).
-    const int CryptoSpillSaveSize = static_cast<int>(a64::kDynRegSaveSize);
-    const auto PostSpill = [&](int Off) { return Off + CryptoSpillSaveSize; };
-    stdu(r1, -CryptoMiniFrameSize, r1);
-    mflr(r(0)); std(r(0), 16, r1);
-    LoadConstant(TMP1, CryptoSlotA); stvx(Src, r1, TMP1);
-    SpillForABICall(TMP1);
-    addi(r3, r1, PostSpill(CryptoSlotA));
-    addi(r4, r1, PostSpill(CryptoSlotA));
-    EmitLoadPPC64Helper(r(12), PPC64_HELPER_F16HiToF32x4);
-    std(r2, PostSpill(24), r1);
-    mtctr(r(12)); bctrl();
-    ld(r2, PostSpill(24), r1);
-    FillForABICall();
-    LoadConstant(TMP1, CryptoSlotA); lvx(Dst, r1, TMP1);
-    ld(r(0), 16, r1); mtlr(r(0));
-    addi(r1, r1, CryptoMiniFrameSize);
-    li(r(0), 0);
+    // ISA 2.07: the same vector sequence, reading the upper half.
+    EmitHalfToSingleVec(this, Dst, Src, true);
     return;
   }
   Op_Unhandled(IROp, Node);
@@ -5758,26 +6019,18 @@ DEF_OP(VFCVTN2) {
       xxpermdi(AsVSX(Dst), AsVSX(VTMP1), AsVSX(VL), 0b11);
       return;
     }
-    // f32→f16 narrow: write 4 f16 from VU into upper half of dst,
-    // preserve VL's low half (ISA 2.07 fallback).
-    const int CryptoSpillSaveSize = static_cast<int>(a64::kDynRegSaveSize);
-    const auto PostSpill = [&](int Off) { return Off + CryptoSpillSaveSize; };
-    stdu(r1, -CryptoMiniFrameSize, r1);
-    mflr(r(0)); std(r(0), 16, r1);
-    LoadConstant(TMP1, CryptoSlotA); stvx(VL, r1, TMP1);  // dst seed
-    LoadConstant(TMP1, CryptoSlotB); stvx(VU, r1, TMP1);  // f32 source
-    SpillForABICall(TMP1);
-    addi(r3, r1, PostSpill(CryptoSlotA));   // dst (= VL spill, helper writes upper half)
-    addi(r4, r1, PostSpill(CryptoSlotB));   // f32 source (VU)
-    EmitLoadPPC64Helper(r(12), PPC64_HELPER_F32x4ToF16Hi);
-    std(r2, PostSpill(24), r1);
-    mtctr(r(12)); bctrl();
-    ld(r2, PostSpill(24), r1);
-    FillForABICall();
-    LoadConstant(TMP1, CryptoSlotA); lvx(Dst, r1, TMP1);
-    ld(r(0), 16, r1); mtlr(r(0));
-    addi(r1, r1, CryptoMiniFrameSize);
-    li(r(0), 0);
+    // ISA 2.07. The narrowing sequence needs all three VMX registers it can
+    // get -- VTMP1, VTMP2 and the destination -- so VL's half cannot be kept
+    // in a vector register across it, and Dst may BE VL. Park the doubleword
+    // this op has to preserve in a GPR instead; TMP2 is untouched by the
+    // sequence (SplatWord32 only ever writes TMP1).
+    xxpermdi(VTMP3_VSX, AsVSX(VL), AsVSX(VL), 0b11); // guest low dw -> dw0
+    mfvsrd(TMP2, VTMP3_VSX);
+    EmitSingleToHalfVec(this, Dst, VU);
+    vspltisw(VTMP1, 0);
+    vpkuwum(VTMP1, VTMP1, Dst);   // the four halves land in VTMP1's dw1
+    mtvsrd(AsVSX(VTMP2), TMP2);   // VL's preserved doubleword, now in dw0
+    xxpermdi(AsVSX(Dst), AsVSX(VTMP1), AsVSX(VTMP2), 0b10);
     return;
   }
   Op_Unhandled(IROp, Node);

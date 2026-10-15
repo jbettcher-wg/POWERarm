@@ -112,6 +112,19 @@ gcc -static -O2 -o vcmpscan "$here/vcmpscan.c"
 # taken from the emulator under test could not tell you.
 gcc -static -O2 -o fcmp_denorm "$here/fcmp_denorm.c"
 
+# vcvtf16 is self-checking and MUST stay that way, for the same reason
+# fcmp_denorm is, and with a sharper edge: it asserts the forced result of
+# FCVTL/FCVTL2/FCVTN/FCVTN2 between FP16 and FP32 over denormals, NaN payloads,
+# signed zeros, infinities, every rounding mode (with FPCR.FZ16 both ways,
+# which these conversions must ignore) and the round-to-nearest-even and
+# overflow boundaries, computing each answer from the input bits itself. It is
+# the gate on the ISA 2.07 arm of those four conversions, which is a vector
+# sequence rather than hardware -- and a reference taken from the emulator is
+# precisely what could not tell you those answers: the software helper that arm
+# used to call was wrong on every f32 strictly between 2^-25 and 2^-24, which
+# this test catches and no golden did.
+gcc -march=armv8.2-a+fp16 -static -O2 -o vcvtf16 "$here/vcvtf16.c"
+
 # sigvcache likewise: self-checking, no golden. It installs its own SIGSEGV
 # handler on a PROT_NONE page, so it needs no privileges and no timer.
 gcc -static -O2 -o sigvcache "$here/sigvcache.c"
