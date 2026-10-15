@@ -1125,6 +1125,55 @@ if [ -f fcmp_denorm ]; then
   fi
 fi
 
+# vcvtf16 is the gate on the FP16 vector conversions. On ISA 3.0 they are
+# xvcvhpsp/xvcvsphp; on 2.07 there is no half-precision instruction at all and
+# they are a branch-free vector sequence (VectorOps.cpp EmitHalfToSingleVec /
+# EmitSingleToHalfVec). Every answer it checks is architecturally forced and
+# the test computes all of them, so it needs no reference implementation.
+#
+# Unlike every other block here it forces its own host-feature mode, and that
+# is the point: the 2.07 arm is the one with the arithmetic in it, and a suite
+# run in the default mode never executes a single instruction of it. Forcing
+# disableisa30 for the second run makes this test mean the same thing in all
+# four suite modes instead of only one of them.
+#
+# Two checks, and the second is the sharper one. Each run's own arithmetic has
+# to come out -- every check clean, the positive control present -- AND on a
+# host that has ISA 3.0 the two runs' output has to be IDENTICAL, which is the
+# software sequence agreeing with the hardware instruction value for value on
+# this machine. On a real POWER8 both runs take the same path and the
+# comparison is vacuous rather than wrong.
+if [ -f vcvtf16 ]; then
+  vc_fail=0
+  vc_detail=""
+  for vc_mode in ambient isa207; do
+    if [ "$vc_mode" = isa207 ]; then
+      POWERARM_HOSTFEATURES=disableisa30 "$emu" ./vcvtf16 > "vcvtf16.$vc_mode" 2> /dev/null
+    else
+      "$emu" ./vcvtf16 > "vcvtf16.$vc_mode" 2> /dev/null
+    fi
+    vc_rc=$?
+    vc_bad=$(grep -c '^FAIL' "vcvtf16.$vc_mode" 2> /dev/null)
+    vc_checks=$(sed -n 's/^checks \([0-9]*\) failures 0$/\1/p' "vcvtf16.$vc_mode")
+    vc_ctl=$(grep -c '^PASS control-detects-corruption$' "vcvtf16.$vc_mode" 2> /dev/null)
+    # A missing summary line means it died before printing one, which an rc
+    # check alone would miss if it died with status 0.
+    if [ "$vc_rc" != 0 ] || [ "$vc_bad" != 0 ] || [ "$vc_ctl" != 1 ] || [ -z "$vc_checks" ] || [ "$vc_checks" -lt 4000 ]; then
+      vc_fail=1
+      vc_detail="$vc_detail mode=$vc_mode rc=$vc_rc fails=$vc_bad checks=${vc_checks:-none} control=$vc_ctl;"
+    fi
+  done
+  if ! cmp -s vcvtf16.ambient vcvtf16.isa207; then
+    vc_fail=1
+    vc_detail="$vc_detail the ISA 3.0 and ISA 2.07 paths disagreed;"
+  fi
+  if [ "$vc_fail" = 0 ]; then
+    report PASS vcvtf16 "$vc_checks forced FP16 conversion answers clean, ISA 3.0 and ISA 2.07 paths identical"
+  else
+    report FAIL vcvtf16 "$vc_detail see $out/vcvtf16.isa207"
+  fi
+fi
+
 # flaglive is the guest-visible half of the flag-liveness permissions
 # (ISA-OPPORTUNITIES.md §3.5): Ashr/Sbfe reaching sradi/srad/srawi/sraw and a
 # TBZ reaching rldicl., each only where DFCE proved the flag it destroys is
