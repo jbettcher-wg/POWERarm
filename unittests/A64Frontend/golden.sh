@@ -68,6 +68,18 @@ gcc -static -O2 -o ld1r "$here/ld1r.c"
 # itself. Built here only so the same binary runs on both sides.
 gcc -static -O2 -o vins "$here/vins.c"
 
+# memredirect is self-checking and marked NO-GOLDEN, so no golden is captured:
+# it computes every expected value out of its own byte loops (memmove's
+# reference IS a byte loop through a temporary), and its whole claim is that the
+# redirect is invisible, which run.sh tests by requiring byte-identical output
+# with POWERARM_MEMREDIRECT off and on at several thresholds.
+#
+# STATIC on purpose, and load-bearing: in a static glibc memcpy/memmove/memset
+# are IFUNC symbols, so this is the binary that exercises the resolver refusing
+# an IFUNC's address and hooking the concrete __memcpy_*/__memset_*/__memmove_*
+# implementations instead. A dynamically linked build would test the easy path.
+gcc -static -O2 -o memredirect "$here/memredirect.c"
+
 # vneg is self-checking: NEG is 0 - lane in the lane's own width, which the
 # architecture forces for every value including the minimum, so the file
 # computes its own answers. No golden, and it must stay that way -- it is the

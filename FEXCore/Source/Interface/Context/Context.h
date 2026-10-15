@@ -462,6 +462,19 @@ public:
 
   void AddThunkTrampolineIRHandler(uintptr_t Entrypoint, uintptr_t GuestThunkEntrypoint) override;
 
+  // The libc mem-routine redirect (THUNKS-DESIGN.md 4.2; Config MemRedirect).
+  // Registered by the symbol resolver when a code-holding ELF is first mapped,
+  // consulted once per compile unit by GenerateIR. Deliberately NOT built on
+  // AddCustomIREntrypoint: a custom IR handler IS the whole block and suppresses
+  // NeedsAddGuestCodeRanges, and this hook needs the opposite of both -- it is a
+  // PREFIX on the routine's own translation, which must still be decoded and
+  // must still register its guest code ranges so mtrack keeps covering it.
+  void AddMemRedirect(uint64_t Entrypoint, FEXCore::Context::MemRedirectKind Kind) override;
+  void RemoveMemRedirectRange(uint64_t Start, uint64_t Length) override;
+  // MemRedirectKind::None when this address is not hooked. Lock-free in the
+  // overwhelmingly common no-hooks case, like HasCustomIRHandlers.
+  FEXCore::Context::MemRedirectKind LookupMemRedirect(uint64_t Entrypoint);
+
   void AddForceTSOInformation(const IntervalList<uint64_t>& ValidRanges, fextl::set<uint64_t>&& Instructions) override;
 
   void RemoveForceTSOInformation(uint64_t Address, uint64_t Size) override;
@@ -523,6 +536,8 @@ public:
     FEX_CONFIG_OPT(DisableLaneTestFusion, DISABLELANETESTFUSION);
     FEX_CONFIG_OPT(ExclusiveFusion, EXCLUSIVEFUSION);
     FEX_CONFIG_OPT(GuestPrefetch, GUESTPREFETCH);
+    FEX_CONFIG_OPT(MemRedirect, MEMREDIRECT);
+    FEX_CONFIG_OPT(MemRedirectThreshold, MEMREDIRECTTHRESHOLD);
   } Config;
 
   FEXCore::Utils::WritePriorityMutex::Mutex CodeInvalidationMutex {};
@@ -744,6 +759,12 @@ private:
     void* Data;
   };
   fextl::unordered_map<uint64_t, CustomIRHandlerEntry> CustomIRHandlers;
+
+  // libc mem-routine redirect hook table. Shares no lock with CustomIRHandlers:
+  // writers are the symbol resolver at ELF-map time, readers are every compile.
+  std::shared_mutex MemRedirectMutex;
+  std::atomic<bool> HasMemRedirects {};
+  fextl::unordered_map<uint64_t, FEXCore::Context::MemRedirectKind> MemRedirects;
   // ForceTSO metadata has its own lock. Readers are CompileBlock's per-block
   // lookups (shared, for the length of the block loop); writers are the
   // Add/RemoveForceTSOInformation calls from guest mmap/munmap. These used to

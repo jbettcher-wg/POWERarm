@@ -797,6 +797,67 @@ if [ -f vins ]; then
 fi
 
 
+# memredirect: the libc mem-routine redirect (POWERARM_MEMREDIRECT /
+# POWERARM_MEMREDIRECTTHRESHOLD; docs/powerarm/THUNKS-DESIGN.md 4.2).
+#
+# The claim under test is that the redirect is INVISIBLE, so this does not just
+# require the test to pass -- it requires the OUTPUT to be byte-identical with
+# the switch off and with it on at four thresholds. Both sides of the gate are
+# therefore checked against each other rather than against a recorded run, which
+# is also why the test mints no golden.
+#
+# The thresholds are chosen so that every length the test uses lands on both
+# sides of the gate across the five runs: 0 redirects every call the gate can
+# see, 1 redirects all but the empty ones, the default (256) is the shipping
+# configuration, and 65536 is above every length in the test so nothing is
+# redirected at all and the run must match the switch-off run exactly.
+#
+# What is deliberately NOT compared: the guest PC reported for a fault taken
+# inside a redirected copy. With the redirect on, the frame carries the hooked
+# routine's own entry address (the gate stores State.pc before the host call);
+# with it off it carries wherever inside the routine the faulting instruction
+# was. The test asserts si_addr and that the guest's handler ran -- which must
+# match -- and never looks at the PC.
+if [ -f memredirect ]; then
+  mr_fail=0
+  mr_detail=""
+  mr_base=""
+  for mr_mode in off on t0 t1 tbig; do
+    case $mr_mode in
+    off) mr_env="" ;;
+    on) mr_env="POWERARM_MEMREDIRECT=1" ;;
+    t0) mr_env="POWERARM_MEMREDIRECT=1 POWERARM_MEMREDIRECTTHRESHOLD=0" ;;
+    t1) mr_env="POWERARM_MEMREDIRECT=1 POWERARM_MEMREDIRECTTHRESHOLD=1" ;;
+    tbig) mr_env="POWERARM_MEMREDIRECT=1 POWERARM_MEMREDIRECTTHRESHOLD=65536" ;;
+    esac
+    # shellcheck disable=SC2086
+    env $mr_env "$emu" ./memredirect > "memredirect.$mr_mode" 2> /dev/null
+    mr_rc=$?
+    mr_bad=$(grep -c '^FAIL' "memredirect.$mr_mode" 2> /dev/null)
+    mr_checks=$(sed -n 's/^checks \([0-9]*\) failures 0$/\1/p' "memredirect.$mr_mode")
+    mr_ctl=$(grep -c '^PASS control-detects-corruption$' "memredirect.$mr_mode" 2> /dev/null)
+    # A missing summary line means it died before printing one, which an rc
+    # check alone would miss if it died with status 0.
+    if [ "$mr_rc" != 0 ] || [ "$mr_bad" != 0 ] || [ "$mr_ctl" != 1 ] || [ -z "$mr_checks" ] || [ "$mr_checks" -lt 13 ]; then
+      mr_fail=1
+      mr_detail="$mr_detail switch=$mr_mode rc=$mr_rc fails=$mr_bad checks=${mr_checks:-none} control=$mr_ctl;"
+      continue
+    fi
+    # Every run must agree with the switch-off run, byte for byte.
+    if [ -z "$mr_base" ]; then
+      mr_base="memredirect.$mr_mode"
+    elif ! cmp -s "$mr_base" "memredirect.$mr_mode"; then
+      mr_fail=1
+      mr_detail="$mr_detail switch=$mr_mode output differs from switch-off;"
+    fi
+  done
+  if [ "$mr_fail" = 0 ]; then
+    report PASS memredirect "$mr_checks checks clean and output identical with MEMREDIRECT off and on at thresholds 0/1/default/65536"
+  else
+    report FAIL memredirect "$mr_detail see $out/memredirect.t0"
+  fi
+fi
+
 # vneg runs in both switch states for the same reason vins does, and the
 # suite's disableisa30 mode supplies the other axis: NEG.4S and NEG.2D are one
 # `vnegw`/`vnegd` on an ISA 3.0 host and the `vspltisw 0 ; vsubu{w,d}m` pair
