@@ -42,14 +42,22 @@ if [ "${1:-}" = --threadexit-loop ]; then
       # (The braces keep the shell's own "Segmentation fault" notice off the output.)
       { (
         ulimit -c 0 2> /dev/null
-        # Bounded per run, not per batch. A threadexit that hangs leaves one
-        # thread in a futex forever: unbounded, the `wait' below never
-        # returns and the whole suite stops, and the emulator is orphaned to
-        # init for the rest of the box's uptime (seven of those were alive
-        # here on 2026-10-15, the oldest from four days earlier). 60s against
-        # a run that normally takes well under a second, so a timeout means
-        # the hang and not a loaded machine; it lands in codes as 124 and
-        # fails the test, which is the right answer.
+        # Bounded per run so a hang in the process this loop waits on fails
+        # the test instead of blocking the batch forever. 60s against a run
+        # that normally takes well under a second, so a timeout means a hang
+        # and not a loaded machine; it lands in codes as 124.
+        #
+        # It does NOT catch the leaked emulators this test leaves behind, and
+        # cannot: those are the code cache's forked save writer, which
+        # deadlocks inside fork(2) and reparents to init, so the process this
+        # loop launched has already exited cleanly and nothing in its lifetime
+        # bounds the orphan (HANDOVER item 42's last bullet; the `setsid'
+        # above does not cover it either). Measured here 2026-10-15: 40 exits
+        # leave 4 survivors with the writer on and 0 with
+        # POWERARM_CODECACHEFORKWRITER=0. They accumulate for the box's
+        # uptime -- 257 were cleared by hand that day -- so if this box is
+        # suddenly full of ./threadexit processes, that is what they are and
+        # they are not this test failing.
         timeout -k 5 60 "$te_emu" ./threadexit > /dev/null 2>&1
         echo $? >> "$te_work/codes"
       ) & } 2> /dev/null
@@ -729,16 +737,20 @@ fi
 # children went unannounced, 3 of them with that bail line on stderr and one
 # swallowed silently by the deferred-signal queue.
 #
-# Wrapped in a timeout, and the timeout is not belt-and-braces. This test and
-# threadexit below are the two that race a thread's teardown, and that race
-# has a THIRD outcome besides pass and fail: the process stops making progress
-# with one thread left blocked in a futex nobody will post, and never exits.
-# Observed on 2026-10-15, on a build carrying the UninstallTLSState fix, with
-# seven such processes still alive on this box from gate runs days earlier. An
-# unwrapped run of either test turns that into an indefinitely wedged suite --
-# which it did, for ten minutes, before this went in. A hang IS a failure, so
-# a timeout here does not weaken the test; it is what lets the suite say so
-# instead of stopping. 124 is timeout's own exit status for a kill.
+# Wrapped in a timeout, because this run has a THIRD outcome besides pass and
+# fail: on 2026-10-15 it stopped making progress for ten minutes with the child
+# in futex_do_wait and the parent in do_wait, pids unchanging, and an unwrapped
+# run makes that an indefinitely wedged suite rather than a failure. A hang IS
+# a failure, so the timeout does not weaken the test; it is what lets the suite
+# say so instead of stopping. 124 is timeout's own exit status for a kill.
+#
+# Most likely the parent-side face of the known code-cache fork-writer deadlock
+# (HANDOVER, item 42's last bullet: "can deadlock inside fork(2), reparent to
+# init and hang forever"), which has the same futex signature -- but unproven,
+# because it has never reproduced on a quiet box: 0 hangs in 72 standalone runs
+# and 48 parallel ones, against 2 in 13 full suite runs on a box that was also
+# building. If this fires, re-run with POWERARM_CODECACHEFORKWRITER=0 before
+# looking anywhere else.
 if [ -f sigchildteardown ]; then
   timeout -k 10 300 "$emu" ./sigchildteardown > sigchildteardown.powerarm 2> sigchildteardown.stderr
   sct_rc=$?
