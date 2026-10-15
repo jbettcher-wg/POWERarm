@@ -285,23 +285,37 @@ the frame in `r4` today (`BranchOps.cpp:1732-1735`), reads `X0..X2` from it, cal
 untouched. The guest and host share one address space, so guest pointers are host pointers
 (`DESIGN.md` §4.8 last bullet).
 
-Two mechanism extensions are needed:
+**Landed 2026-10-15** behind `POWERARM_MEMREDIRECT` (default off) with
+`POWERARM_MEMREDIRECTTHRESHOLD` (default 256, unmeasured — §4.4/§6.4 is still the owner's).
+Two things about the shape above turned out differently in the building, and both made it
+smaller:
 
-1. **Prefix hooks.** `CompileBlock` today treats a custom IR handler as the *whole* block
-   (`Core.cpp:928`, `if (!HasCustomIR) DecodeInstructionsAtEntry`). A size gate needs the
-   handler to emit a prologue and then let the decoder continue at the same address into the
-   fall-through block. That is a small change to the `HasCustomIR` contract (return
-   "handled" vs "prefixed"), and `NeedsAddGuestCodeRanges` (`Core.cpp:1050`) must stay true
-   for prefixed blocks so mtrack keeps covering the routine's own bytes.
-2. **Symbol resolution.** Resolve `memcpy`/`memmove`/`memset` when the guest maps
-   `libc.so.6` (the `FileManager` knows the path; the ELF symbol walker in
-   `VDSO_Emulation.cpp:519-560` is reusable) and, for static binaries, from the main ELF's
-   `.symtab` in the loader. **[guest view]** ALARM glibc 2.43 exports `memcpy@@GLIBC_2.17`,
-   `memmove`, `memset`, `strlen`, `strcmp`, `memchr` as plain `FUNC` symbols; the whole
-   `libc.so.6` has only two `IFUNC`s (`gettimeofday`, `__gettimeofday`) (`readelf -Ws`). So
-   there is no resolver to chase: the exported address *is* the routine, and glibc's internal
-   hidden aliases point at the same address, so internal callers are hooked too. Compiler-inlined
-   small copies never call and are unaffected either way.
+1. **No `AddCustomIREntrypoint`, and no change to the `HasCustomIR` contract.** The
+   "handled vs prefixed" extension is not needed: the block shape a conditional prefix wants
+   already exists in the tree as the full-SMC validate/continue pair, so the gate is emitted
+   inside the normal decode loop at the unit's entry instruction. `HasCustomIR` stays false,
+   `NeedsAddGuestCodeRanges` stays true, and nothing in that contract moved. `AddCustomIREntrypoint`
+   therefore *still has no users* — and the reason is worth keeping: a custom IR handler **is**
+   the whole block and suppresses guest code ranges, which is the opposite of what a size gate
+   needs on both counts.
+2. **Symbol resolution runs from `TrackMmap`, and IFUNCs are most of the work.** One hook site
+   covers both cases: POWERarm's own ELF loader reaches it through `TrackFileBackedCopy` for the
+   main executable, and the guest's `ld.so` reaches it through its own `mmap` for every shared
+   library. Hooks are keyed by address, so they are pruned in `TrackMunmap`/`TrackMremap` — one
+   that outlived a `dlclose` would gate whatever got mapped there next and hand its calls to host
+   `memcpy`.
+
+   **The "no IFUNCs" premise above holds only for the shared libc.** It is true of
+   `libc.so.6`, as `readelf -Ws` said. But in a **statically linked** binary — which is every
+   binary in the `A64Frontend` corpus — all three are `IFUNC`, and an IFUNC's `st_value` is its
+   *resolver*, not the routine; the resolved pointer lives in a GOT slot written at startup and
+   cannot be read at map time either. So an IFUNC is refused and the concrete
+   `__memcpy_*`/`__memmove_*`/`__memset_*` implementations are hooked instead: whichever one the
+   resolver picks is the address the IPLT stub branches to, and the rest are unreachable. Without
+   that, the feature would have been untestable by this suite. The `_chk` variants are refused by
+   name — fourth argument, different contract. An address claimed as two different routines is
+   refused outright rather than resolved to the first, because gating a `memmove` as a `memcpy`
+   loses the overlap guarantee silently.
 
 ### 4.3 Correctness, head on
 
@@ -313,12 +327,25 @@ Two mechanism extensions are needed:
   guest-writable, invalidates the granule and unprotects (`:293-330`, granule rule in
   `SMCHostGranule.h:4-34`), returns true, and the kernel retries the host store. The only
   branch that requires a JIT PC is the call-return-stack guard (`:258`). So the fault path
-  already services host stores at zero cost on the non-SMC path; this is also what
-  `UnprotectGuestRangeForHostWrite` (`:206-225`) exists for on the syscall side. **Gate before
-  landing:** confirm the store-emulation and store-backpatch branches (`:477-510`, `:868-872`;
-  the latter checks `IsAddressInCodeBuffer`) can never act on a host-libc instruction. Vector
-  stores already decline emulation (`:187`). Lazy invalidation (`FEX_SMCLAZYINVAL`) defers to
-  the next block entry, which is where the routine's `ExitFunction(X30)` lands.
+  already services host stores at zero cost on the non-SMC path. **That gate is discharged
+  (2026-10-15):** store-backpatch was already guarded by `IsAddressInCodeBuffer`;
+  store-emulation was **not**, and decoded and hand-completed the faulting host instruction
+  (pwrite via `/proc/self/mem`, NIP += 4) with no check that the JIT emitted it. It was
+  unreachable in practice only because nothing wrote into guest memory from host code — which
+  is precisely what this feature does by design. It now carries the same guard, which also
+  makes the previously unguarded raw read of the faulting PC safe by construction. Declining
+  there is not a loss of function: the fault falls through to the invalidate-unprotect-retry
+  path, which is correct for a store from anywhere. Vector stores already decline emulation
+  (`:187`). Lazy invalidation (`FEX_SMCLAZYINVAL`) defers to the next block entry, which is
+  where the routine's `ExitFunction(X30)` lands.
+  **What must not be done:** pre-announcing the destination with
+  `UnprotectGuestRangeForHostWrite` (`:206-225`) to save the per-page faults. It mprotects the
+  range R+W unconditionally and cannot distinguish a page POWERarm write-protected for SMC
+  tracking from one the *guest* made `PROT_NONE` on purpose, so a redirected copy into a guard
+  page silently makes the guard writable and completes — guard-page and GC-write-barrier
+  patterns broken outright, and only under mtrack. `HandleSegfault` has no such defect: it
+  services a fault only after VMA tracking says the page is guest-writable. The fault path is
+  both the cheaper change and the correct one.
 - **Guest SIGSEGV with a PC inside libc.** A fault inside the host routine reaches
   `HandleGuestSignal` outside JIT code; that delivery path is the one thunk host libraries
   already use, and it reports `State.pc` as "block-boundary value, may be stale"
@@ -343,9 +370,23 @@ Two mechanism extensions are needed:
 - **Code cache.** Entries are validated by guest bytes, emulator build id and host features
   (`CodeCache.cpp:292-348`). A hooked block's host code depends on the hook set, not on the
   guest bytes, so hooked entries must either be excluded from the cache or the key must
-  include the redirect configuration. **[unverified which is cheaper; decide at landing.]**
+  include the redirect configuration. **Answered (2026-10-15): the key.** Hashing
+  `MEMREDIRECT` and `MEMREDIRECTTHRESHOLD` into the config id is sufficient and costs nothing
+  at runtime — the threshold is baked into the gate's compare as an immediate, so two
+  thresholds are two different blocks. A *stale hook set* against a cached block is safe in
+  both directions and needs no exclusion: a cached gated block whose hook no longer exists
+  still just compares and falls through, and a hook with an ungated cached block is merely
+  slower.
 - **Signals during the host routine.** Async guest signals arriving while in host code are
-  handled as for any thunk (deferred or delivered outside JIT). No new state.
+  handled as for any thunk (deferred or delivered outside JIT). No new state. **Measured at
+  landing: there is no latency window to bound.** `DEF_OP(Thunk)` arms no
+  `DeferredSignalRefCount`, so the delegator's deferred-section gate does not fire and the
+  signal is delivered to the guest's handler there and then, with the copy resuming from the
+  kernel's own restore. The guest context the handler sees is consistent: `SpillForABICall`
+  published the register file and the gate stored the routine's PC. Copies are still chunked
+  (1 MiB), but that is a structural bound on one host libc call, not a signal-latency fix —
+  and chunked rather than size-*capped*, because a cap would refuse exactly the largest copies
+  and cannot be enforced from the host half anyway.
 
 ### 4.4 Which routines, and the honest expectation
 
@@ -367,6 +408,15 @@ lengths 0–129 and 16 alignments (`golden.sh:35-37` builds it `gcc -static -O2`
 lengths across `T` and page-crossing copies, and add a copy into a page that holds executed code
 (a self-modifying-caller test in the style of `callret.c`). Since it is static, the hook must
 resolve from the main ELF's `.symtab` for the test to exercise the redirect at all.
+
+**Landed as its own test instead** (`unittests/A64Frontend/memredirect.c`, self-checking and
+`NO-GOLDEN`): `strmem.c` is goldened against real hardware and could not be extended without
+minting a new golden, which this box cannot do. It computes every expectation from its own byte
+loops and `run.sh` requires its output to be **byte-identical** with the switch off and on at
+thresholds 0/1/default/65536, so both sides of the gate are checked against each other rather
+than against a recorded run. `strmem.c` is still the redirect's other witness: it is static, so
+it exercises the IFUNC path, and at the default threshold its copies are all under the gate
+while 6244 of its `memset` calls are over it. The threshold sweep itself is still open.
 
 ## 5. Later candidates
 
@@ -452,7 +502,7 @@ slice does not move, the row is closed with that number.
 | **0. Core ABI + libVDSO** (first landing) | A64 decode of `HLT #0x0F3F`+hash → `Thunk`, `HLT #0x0F3E` → `CallbackReturn`; X30 callback return in dispatcher/`CallbackReturn`/JIT sentinel; X16/X17 linked callee; `long double` refusal + aarch64 target in the generator; aarch64 guest stub build; `libVDSO-guest.so` (`libVDSO_Guest.cpp` rewritten without x86 asm; `__kernel_rt_sigreturn` already exists at `VDSO_Emulation.cpp:629-645`); thunk/callback counters | Pi goldens: a `clock_gettime`/`gettimeofday` monotonicity and `CLOCK_*` coverage test next to `cntvct.c`; `sigill_udf`-style test that a bare `HLT` still SIGILLs; `unittests/ThunkLibs/{abi,generator}.cpp` extended with an aarch64 layout case; all three suite modes; `a64diff` | vDSO clocks without syscalls (V8, code-server, Claude CLI); proves the whole crossing on something deterministic |
 | **1. Vulkan + wayland-client + drm + xshmfence** | guest stubs for the four; `SP == 0 mod 16` in the bump allocator; discovery/preflight per `DESIGN.md` §6.2b (at least the fail-loud path) | `vkcube` on Hyprland; §6.2 thresholds; validation clean | Zed, Godot, Vulkan games |
 | **2. EGL/GL for Wayland** | new EGL interface entries (§3.4), `eglGetProcAddress` through host EGL, `libwayland-egl`; then GLX/X11 via Xwayland | `eglgears_wayland`/`glmark2-wayland` from `mesa-demos`; SuperTuxKart GL renderer | Electron/Chromium GPU process, GL games, terminals |
-| **3. libc redirect** (parallel track; needs no stubs) | prefix hooks, symbol resolution, `memcpy`/`memmove`/`memset` with `T`, cache keying | `strmem` extended, SMC self-modifying-caller test, all modes | measured on code-server and the slice; kept only if the slice or a real app moves |
+| **3. libc redirect** (parallel track; needs no stubs) | **LANDED 2026-10-15, default off** — the gate, symbol resolution, `memcpy`/`memmove`/`memset`, cache keying. `T` is unmeasured and the default-on decision is still open, pending a threshold sweep and a soak | `memredirect` (new, self-checking, five switch states) + `strmem` across the gate, all modes, `check-code-cache.sh` | measured on code-server and the slice; kept only if the slice or a real app moves |
 | **4.** asound, SDL2, zlib/`libnxz`, OpenSSL | as value appears | per library | |
 
 Stage 0 is independently valuable and independently testable; nothing in it needs the host GPU

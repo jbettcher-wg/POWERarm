@@ -2013,8 +2013,16 @@ void ContextImpl::AddMemRedirect(uint64_t Entrypoint, FEXCore::Context::MemRedir
     // about which routine it is would matter, and that would mean the symbol
     // table said memcpy and memset share an address.
     if (It->second != Kind) {
-      LogMan::Msg::EFmt("MemRedirect: {:#x} is claimed as two different routines ({} and {}); keeping the first", Entrypoint,
+      // Keeping the first would be a coin flip between two different contracts
+      // -- a memmove call gated as a memcpy loses the overlap guarantee, which
+      // is silent wrong code, and the bail line announcing it goes to a stderr
+      // no desktop launch holds open. So neither is hooked: the address drops
+      // out of the table and both routines get their own translation, which
+      // costs speed and nothing else.
+      LogMan::Msg::EFmt("MemRedirect: {:#x} is claimed as two different routines ({} and {}); hooking neither", Entrypoint,
                         static_cast<unsigned>(It->second), static_cast<unsigned>(Kind));
+      MemRedirects.erase(It);
+      HasMemRedirects.store(!MemRedirects.empty(), std::memory_order_release);
     }
     return;
   }

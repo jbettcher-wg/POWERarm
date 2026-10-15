@@ -778,6 +778,16 @@ namespace ThunkFunctions {
     }
 
     // All three routines return their destination pointer.
+    //
+    // Writing the frame is correct here only because that value is the X0 the
+    // call came in with. DEF_OP(Thunk)'s FillForABICallChecked elides the
+    // non-volatile SRA GPR reloads when its sentinel survives the call, so a
+    // frame write is not guaranteed to reach the physical register the JIT
+    // reads X0 out of -- and the block's exit spill then writes the physical
+    // register back over it. Both values are the same here, so both orders give
+    // the same answer. A routine whose return value is NOT its incoming X0
+    // (memchr, strlen) cannot return it this way and would need the sentinel
+    // broken, or the value handed back through the op.
     void Return(FEXCore::Core::CpuStateFrame* Frame, uint64_t Dest) {
       Frame->State.x[0] = Dest;
     }

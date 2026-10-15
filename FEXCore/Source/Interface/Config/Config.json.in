@@ -1374,12 +1374,14 @@
           "__memcpy_*/__memmove_*/__memset_* implementations instead (the _chk variants are excluded: different signature).",
           "A redirected call is NOT a thunk over a library boundary: nothing of glibc's state (TLS, the allocator, FILE *,",
           "the unwinder) crosses, which is exactly the property 4.1 says a full libc thunk cannot have.",
-          "SMC: under the default SMCChecks=icache nothing is write-protected and the guest itself owes the IC IVAU for any",
-          "code it wrote, so a host copy owes no invalidation. Under mtrack the destination granules are unprotected and",
-          "invalidated BEFORE the copy (UnprotectGuestRangeForHostWrite, the same call the syscall side uses for host",
-          "writes into guest memory), so correctness does not rest on taking a write fault inside host libc. Under full,",
-          "every block revalidates its own bytes at entry. Preceded by GuestRangeProvablyHasNoCode, so the common copy",
-          "into non-code memory pays nothing."
+          "SMC: nothing is announced, and under the default SMCChecks=icache nothing is owed -- the architecture makes the",
+          "WRITER announce new instructions, so a guest that copies code issues the IC IVAU itself, and the JIT's own",
+          "translation of guest memcpy emits plain guest stores that announce nothing either. Both sides of the gate behave",
+          "identically. Under mtrack the host store faults and HandleSegfault invalidates, unprotects and lets the kernel",
+          "retry it; under full every block revalidates its own bytes at entry. The destination is deliberately NOT",
+          "pre-unprotected: UnprotectGuestRangeForHostWrite mprotects R+W unconditionally and cannot tell a page POWERarm",
+          "write-protected for SMC tracking from one the GUEST made PROT_NONE on purpose, so pre-announcing silently made a",
+          "guard page writable and completed the copy. Taking the fault is both cheaper and the only correct form."
         ]
       },
       "MemRedirectThreshold": {
