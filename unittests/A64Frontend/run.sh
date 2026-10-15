@@ -42,7 +42,15 @@ if [ "${1:-}" = --threadexit-loop ]; then
       # (The braces keep the shell's own "Segmentation fault" notice off the output.)
       { (
         ulimit -c 0 2> /dev/null
-        "$te_emu" ./threadexit > /dev/null 2>&1
+        # Bounded per run, not per batch. A threadexit that hangs leaves one
+        # thread in a futex forever: unbounded, the `wait' below never
+        # returns and the whole suite stops, and the emulator is orphaned to
+        # init for the rest of the box's uptime (seven of those were alive
+        # here on 2026-10-15, the oldest from four days earlier). 60s against
+        # a run that normally takes well under a second, so a timeout means
+        # the hang and not a loaded machine; it lands in codes as 124 and
+        # fails the test, which is the right answer.
+        timeout -k 5 60 "$te_emu" ./threadexit > /dev/null 2>&1
         echo $? >> "$te_work/codes"
       ) & } 2> /dev/null
       te_i=$((te_i + 1))
@@ -720,9 +728,23 @@ fi
 # syscall, this failed on the first handful of rounds: 4 of the first 5
 # children went unannounced, 3 of them with that bail line on stderr and one
 # swallowed silently by the deferred-signal queue.
+#
+# Wrapped in a timeout, and the timeout is not belt-and-braces. This test and
+# threadexit below are the two that race a thread's teardown, and that race
+# has a THIRD outcome besides pass and fail: the process stops making progress
+# with one thread left blocked in a futex nobody will post, and never exits.
+# Observed on 2026-10-15, on a build carrying the UninstallTLSState fix, with
+# seven such processes still alive on this box from gate runs days earlier. An
+# unwrapped run of either test turns that into an indefinitely wedged suite --
+# which it did, for ten minutes, before this went in. A hang IS a failure, so
+# a timeout here does not weaken the test; it is what lets the suite say so
+# instead of stopping. 124 is timeout's own exit status for a kill.
 if [ -f sigchildteardown ]; then
-  "$emu" ./sigchildteardown > sigchildteardown.powerarm 2> sigchildteardown.stderr
+  timeout -k 10 300 "$emu" ./sigchildteardown > sigchildteardown.powerarm 2> sigchildteardown.stderr
   sct_rc=$?
+  if [ "$sct_rc" = 124 ]; then
+    report FAIL sigchildteardown "HUNG: no exit within 300s, killed. A thread stuck in teardown is the teardown-race hang, not a slow machine; see $out/sigchildteardown.powerarm"
+  else
   sct_pass=$(grep -c '^PASS' sigchildteardown.powerarm 2> /dev/null)
   sct_fail=$(grep -c '^FAIL' sigchildteardown.powerarm 2> /dev/null)
   sct_drop=$(grep -c 'action=drop-process-aimed' sigchildteardown.stderr 2> /dev/null)
@@ -731,6 +753,7 @@ if [ -f sigchildteardown ]; then
     report PASS sigchildteardown "${sct_rounds:-0} children announced through a thread teardown, no process-aimed drop"
   else
     report FAIL sigchildteardown "rc=$sct_rc passes=$sct_pass fails=$sct_fail process-aimed-drops=$sct_drop; see $out/sigchildteardown.powerarm and .stderr"
+  fi
   fi
 fi
 
@@ -1398,7 +1421,10 @@ if [ -f threadexit ]; then
   if [ "$te_bad" = 0 ] && [ "$te_ran" = "$te_total" ]; then
     report PASS threadexit_loop "$te_total exits with threads mid-teardown, all clean"
   else
-    report FAIL threadexit_loop "$te_bad of $te_ran (of $te_total) did not exit 0: $(sort -n "$te_work/codes" | uniq -c | tr '\n' ' ')"
+    # 124 in the list is timeout's: that run hung with a thread stuck in
+    # teardown rather than crashing. 139 is the old SIGSEGV mode, 191 the old
+    # SIG_DFL-on-signal-63 mode.
+    report FAIL threadexit_loop "$te_bad of $te_ran (of $te_total) did not exit 0 (124 = hung, killed): $(sort -n "$te_work/codes" | uniq -c | tr '\n' ' ')"
   fi
   rm -rf "$te_work"
 fi
