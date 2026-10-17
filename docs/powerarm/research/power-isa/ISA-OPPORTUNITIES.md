@@ -666,6 +666,28 @@ helpers (`__aarch64_ldadd4_acq_rel` and friends), which is how V8, Factorio and 
 them. **Not a lever**; `mcrf` is hours of hygiene. The inline LDXR/STXR loops are the
 different, Firefox-sized story in §3.16.
 
+**AMO availability and the register constraint, checked 2026-10-17.** Two facts the row needed
+and did not have:
+
+1. **All four of `lwat`/`ldat`/`stwat`/`stdat` execute on this POWER9** and really do modify
+   memory (tried under a SIGILL/SIGBUS handler). The row is not blocked on the hardware, which
+   was the first thing that could have killed it.
+2. **`ldat` and `lwat` require an EVEN RT.** The assembler rejects an odd one (`ldat 4,7,0` and
+   `ldat 6,7,0` assemble; `ldat 5,7,0` and `ldat 9,7,0` do not), because some function codes use
+   the `RT:RT+1` pair for compare-and-swap. `stdat`/`stwat` have no such constraint, RS being a
+   pure source.
+
+The constraint is the real cost of this row. `RegisterAllocationPass.cpp:645-659` does know about
+even registers -- it has `EVEN_BITS` and an `AllocateGPR ... ForPair` path -- but that path is
+commented as "just a heuristic to remove some moves": it falls through to ordinary allocation when
+no aligned pair is free, it is confined to the `PairRegs` region, and it has **no users in the
+PPC64LE backend at all**. A missed even register is a lost optimisation there and an assembler
+error here, so the AMO lowering needs either a hard even constraint in the allocator or a fixed
+even register with the value moved in and out around it. The second costs two `mr` on the
+operation's own dependency chain, which is a real fraction of what the AMO is supposed to save --
+so the comparison that decides this row is the AMO *plus those two moves* against the
+`larx`/`stcx.` loop, not the bare instruction against the loop.
+
 ### 3.15 FPSR IEEE flags from FPSCR on `MRS FPSR`
 
 `DEF_OP(LoadFPSR)` (`ALUOps.cpp:4240`) returns the stored word plus VSCR.SAT as QC;

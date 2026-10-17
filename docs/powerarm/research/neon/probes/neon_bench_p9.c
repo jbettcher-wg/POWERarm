@@ -185,7 +185,7 @@ BENCH(xxlor_move_halves, 2, "xxlor 1,%x[a],%x[a]\n\txxlor %x[a],1,1")
  */
 #define OPSG(acc) [a] "+r"(acc), [t1] "=&r"(h1), [t2] "=&r"(h2), [t3] "=&r"(h3)
 #define INSG [b] "r"(hb), [c] "r"(hc), [p] "r"(p)
-#define GCLOB "cr0", "cr1", "cr6", "cr7", "xer", "memory"
+#define GCLOB "cr0", "cr1", "cr6", "cr7", "xer", "r8", "memory"
 #define BENCHG(name, ninsn, str) \
 static double lat_##name(void) { uint64_t a = 0x0123456789ABCDEFULL, hb = 0x1357ULL, hc = 0x2468ACE1ULL, h1, h2, h3; unsigned char* p = scratch; \
   uint64_t t0 = tb(); for (int i = 0; i < ITER; i++) { __asm__ volatile(str : OPSG(a) : INSG : GCLOB); __asm__ volatile(str : OPSG(a) : INSG : GCLOB); __asm__ volatile(str : OPSG(a) : INSG : GCLOB); __asm__ volatile(str : OPSG(a) : INSG : GCLOB); } \
@@ -217,6 +217,43 @@ BENCHG(threeway_isel, 6, "cmpd 0,%[a],%[c]\n\tli %[t1],1\n\tli %[t2],-1\n\tli %[
 BENCHG(stp_preindex_addi, 3, "addi %[t1],%[p],64\n\taddi %[t1],%[t1],-16\n\tstd %[b],0(%[t1])\n\tstd %[c],8(%[t1])\n\tadd %[a],%[a],%[t1]")
 BENCHG(stp_preindex_stdu, 2, "addi %[t1],%[p],64\n\tstdu %[b],-16(%[t1])\n\tstd %[c],8(%[t1])\n\tadd %[a],%[a],%[t1]")
 
+
+/* ---- atomics and barriers ---------------------------------------------------
+ * Checklist P7 and ISA-OPPORTUNITIES 3.14/3.16. The cycle figures those carry
+ * ("larx/stcx. 74 vs 23 cycles", "sync +42, lwsync +14") come from the pipeline
+ * guide, not from this machine, and every one of them is load-bearing for a
+ * fence decision. These rows are that machine.
+ *
+ * The larx/stcx. loops are UNCONTENDED: the reservation always survives and the
+ * loop runs once, which is the common case and the one the lowering is built for.
+ * A contended cost needs two threads and is a different harness.
+ *
+ * A barrier has no data dependency, so it is followed by the chained `add`: the
+ * fence must complete before that add issues, which is what puts it on the chain.
+ */
+BENCHG(fence_sync, 1, "sync\n\tadd %[a],%[a],%[b]")
+BENCHG(fence_lwsync, 1, "lwsync\n\tadd %[a],%[a],%[b]")
+BENCHG(fence_isync, 1, "isync\n\tadd %[a],%[a],%[b]")
+BENCHG(fence_eieio, 1, "eieio\n\tadd %[a],%[a],%[b]")
+
+/* A release store is a store followed by the fence, which is the shape that
+ * actually appears; a bare fence with no pending store understates the cost. */
+BENCHG(store_then_sync, 2, "std %[b],0(%[p])\n\tsync\n\tadd %[a],%[a],%[b]")
+BENCHG(store_then_lwsync, 2, "std %[b],0(%[p])\n\tlwsync\n\tadd %[a],%[a],%[b]")
+
+/* ISA-OPPORTUNITIES 3.16 (landed): the native exclusive pair. */
+BENCHG(ldarx_stdcx_loop, 4, "1:\n\tldarx %[t1],0,%[p]\n\tadd %[t2],%[t1],%[b]\n\tstdcx. %[t2],0,%[p]\n\tbne- 0,1b\n\tadd %[a],%[a],%[t1]")
+BENCHG(lwarx_stwcx_loop, 4, "1:\n\tlwarx %[t1],0,%[p]\n\tadd %[t2],%[t1],%[b]\n\tstwcx. %[t2],0,%[p]\n\tbne- 0,1b\n\tadd %[a],%[a],%[t1]")
+
+/* ISA-OPPORTUNITIES 3.14 first half (landed): preserving CR0 across the stcx.
+ * The mfocrf form is two SPR moves plus a store-forward; mcrf is two CR moves. */
+BENCHG(cr0_save_mfocrf, 4, "mfocrf %[t1],0x80\n\tstd %[t1],16(%[p])\n\tld %[t2],16(%[p])\n\tmtocrf 0x80,%[t2]\n\tadd %[a],%[a],%[t2]")
+BENCHG(cr0_save_mcrf, 2, "mcrf 5,0\n\tmcrf 0,5\n\tadd %[a],%[a],%[b]")
+
+/* The fetch-and-add the AMO would replace: the same operation as amo_ldat_add
+ * below, written as an exclusive loop, so the two rows are directly comparable. */
+BENCHG(rmw_fetchadd_larx, 4, "1:\n\tldarx %[t1],0,%[p]\n\tadd %[t2],%[t1],%[a]\n\tstdcx. %[t2],0,%[p]\n\tbne- 0,1b\n\tmr %[a],%[t1]")
+
 #if P9
 BENCH(vabsdub, 1, "vabsdub %[a],%[a],%[b]")
 BENCH(vpermr, 1, "vpermr %[a],%[a],%[b],%[c]")
@@ -244,6 +281,23 @@ BENCHG(g_maddld, 1, "maddld %[t1],%[a],%[b],%[c]\n\tadd %[a],%[a],%[t1]")
 BENCHG(g_cnttzd, 1, "cnttzd %[t1],%[a]\n\tadd %[a],%[a],%[t1]")
 BENCHG(rem_modsd, 1, "modsd %[t1],%[a],%[c]\n\tadd %[a],%[a],%[t1]")
 BENCHG(threeway_setb, 2, "cmpd 0,%[a],%[c]\n\tsetb %[t1],0\n\tadd %[a],%[a],%[t1]")
+
+/* ISA-OPPORTUNITIES 3.14 second half: the ISA 3.0 atomic memory operations.
+ * All four of lwat/ldat/stwat/stdat EXECUTE on this POWER9 and do modify memory
+ * (checked under a SIGILL handler), so the row is not blocked on availability.
+ * RT carries the addend in and the previous value out, so the accumulator is RT
+ * and the chain runs through the memory operation itself. */
+/* ldat/lwat require an EVEN RT -- the assembler rejects an odd one, because some
+ * function codes use the RT:RT+1 pair for compare-and-swap. Inline asm cannot ask
+ * for "an even register", so RT is pinned to r8 and the accumulator is moved in and
+ * out around it. That costs this row two extra `mr` (about 2 cycles) that the
+ * larx/stcx. row it is compared against does not pay, so amo_ldat_add is reported
+ * slightly WORSE than the instruction really is.
+ *
+ * The constraint is the finding, not the workaround: a JIT using these would need a
+ * register allocator that can demand an even GPR, and ConstrainedRAPass cannot. */
+BENCHG(amo_ldat_add, 1, "mr 8,%[a]\n\tldat 8,%[p],0\n\tmr %[a],8")
+BENCHG(amo_stdat_add, 1, "stdat %[b],%[p],0\n\tadd %[a],%[a],%[b]")
 #endif
 
 int main(void) {
@@ -270,9 +324,12 @@ int main(void) {
     &udot_1_ent, &sdot_6_ent, &pmull_2_ent, &aese_3_ent, &aes_round_fused_2_ent, &fmla_gated_3_ent, &fcvtzs_3_ent, &rbit_8_ent, &zip1_1_ent, &uzp2_3_ent, &ext_1_ent, &rev32_p8_2_ent,
     &xxland_lowhalf_ent, &xxlor_move_halves_ent,
     &g_add_ent, &g_mulld_ent, &g_popcntd_ent, &g_divd_ent, &rem_divd_mulld_subf_ent, &threeway_isel_ent, &stp_preindex_addi_ent, &stp_preindex_stdu_ent,
+    &fence_sync_ent, &fence_lwsync_ent, &fence_isync_ent, &fence_eieio_ent, &store_then_sync_ent, &store_then_lwsync_ent,
+    &ldarx_stdcx_loop_ent, &lwarx_stwcx_loop_ent, &cr0_save_mfocrf_ent, &cr0_save_mcrf_ent, &rmw_fetchadd_larx_ent,
 #if P9
     &vabsdub_ent, &vpermr_ent, &xxperm_ent, &xxspltib_ent, &mtvsrws_ent, &mtvsrdd_ent, &vextubrx_ent, &vctzlsbb_ent, &vclzlsbb_ent, &xxbrq_ent, &xxbrw_ent, &vinsertb_ent, &vextsb2w_ent, &lxv_const_ent, &tbl1_p9_3_ent, &tbl1_p9_4_ent, &ctx_roundtrip_stxv_lxv_ent, &xscvhpdp_ent, &xvcvsphp_ent,
     &g_maddld_ent, &g_cnttzd_ent, &rem_modsd_ent, &threeway_setb_ent,
+    &amo_ldat_add_ent, &amo_stdat_add_ent,
 #endif
   };
   for (size_t i = 0; i < sizeof all / sizeof all[0]; i++) {
