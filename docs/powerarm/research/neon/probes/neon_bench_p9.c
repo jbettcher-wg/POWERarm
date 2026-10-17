@@ -160,6 +160,31 @@ BENCH(rev32_p8_2, 2, "vspltisw %[t1],-16\n\tvrlw %[a],%[a],%[t1]\n\tvspltish %[t
 BENCH(xxland_lowhalf, 3, "xxlor 0,%x[a],%x[a]\n\txxland 0,0,%x[b]\n\txxlor %x[a],0,0")
 BENCH(xxlor_move_halves, 2, "xxlor 1,%x[a],%x[a]\n\txxlor %x[a],1,1")
 
+/* ---- FMAXNM/FMINNM: POWER-STRENGTHS 2.7 ------------------------------------
+ * Transcribed from DEF_OP_VSX(A64FMinMax), A64FPOps.cpp:629-680, rather than
+ * invented: the branch condition is that function's own CondSomeLaneNaN {4,24},
+ * "branch when not all lanes compared equal", i.e. when an input is a NaN.
+ *
+ * cur: check each INPUT for NaN, branch to the cold stub, then the hardware max.
+ *      Five instructions, two branches.
+ * new: hardware max first, then check the RESULT for NaN and branch. A NaN result
+ *      means both inputs were NaN or one was an SNaN -- exactly the cases where the
+ *      hardware rule and A64's may differ -- so the stub recomputes only those, and
+ *      a single QNaN input never reaches it. Three instructions, one branch.
+ *
+ * No operand here is a NaN, so the branches are never taken: this measures the
+ * common path, which is the point. The branches are also perfectly predicted, so
+ * the saving is issue slots and fetch rather than mispredicts -- read `tp`. On
+ * `lat` both forms collapse to the max's own latency, because the branch is a
+ * control dependency the core speculates past, not a data dependency.
+ */
+BENCH(fmaxnm_cur_dp, 5, "xvcmpeqdp. %x[t1],%x[a],%x[a]\n\tbc 4,24,1f\n\txvcmpeqdp. %x[t1],%x[c],%x[c]\n\tbc 4,24,1f\n\txvmaxdp %x[a],%x[a],%x[c]\n1:")
+BENCH(fmaxnm_new_dp, 3, "xvmaxdp %x[a],%x[a],%x[c]\n\txvcmpeqdp. %x[t1],%x[a],%x[a]\n\tbc 4,24,1f\n1:")
+BENCH(fmaxnm_cur_sp, 5, "xvcmpeqsp. %x[t1],%x[a],%x[a]\n\tbc 4,24,1f\n\txvcmpeqsp. %x[t1],%x[c],%x[c]\n\tbc 4,24,1f\n\txvmaxsp %x[a],%x[a],%x[c]\n1:")
+BENCH(fmaxnm_new_sp, 3, "xvmaxsp %x[a],%x[a],%x[c]\n\txvcmpeqsp. %x[t1],%x[a],%x[a]\n\tbc 4,24,1f\n1:")
+/* The max alone, as the floor both forms are paying on top of. */
+BENCH(xvmaxdp_alone, 1, "xvmaxdp %x[a],%x[a],%x[c]")
+
 /* ---- integer / GPR sequences ------------------------------------------------
  * BENCH above chains through a VECTOR accumulator, so the integer side of
  * ISA-OPPORTUNITIES (items 1, 2, 4, 5, 8, 10, 11, 14, 15, 16 -- most of the
@@ -329,6 +354,7 @@ int main(void) {
     &shrn_cur4_ent, &srshr_imm5_ent, &sqshl_imm8_ent, &sshl_reg13_ent, &tbl1_p8_6_ent, &uqadd64_3_ent, &sqadd64_9_ent, &sqdmulh16_2_ent, &sqdmulh32_9_ent, &smull8_3_ent, &mul8_5_ent, &mul64_8_ent, &uabd_p8_3_ent,
     &udot_1_ent, &sdot_6_ent, &pmull_2_ent, &aese_3_ent, &aes_round_fused_2_ent, &fmla_gated_3_ent, &fcvtzs_3_ent, &rbit_8_ent, &zip1_1_ent, &uzp2_3_ent, &ext_1_ent, &rev32_p8_2_ent,
     &xxland_lowhalf_ent, &xxlor_move_halves_ent,
+    &fmaxnm_cur_dp_ent, &fmaxnm_new_dp_ent, &fmaxnm_cur_sp_ent, &fmaxnm_new_sp_ent, &xvmaxdp_alone_ent,
     &g_add_ent, &g_mulld_ent, &g_popcntd_ent, &g_divd_ent, &rem_divd_mulld_subf_ent, &threeway_isel_ent, &stp_preindex_addi_ent, &stp_preindex_stdu_ent,
     &fence_sync_ent, &fence_lwsync_ent, &fence_isync_ent, &fence_eieio_ent, &store_then_sync_ent, &store_then_lwsync_ent,
     &ldarx_stdcx_loop_ent, &lwarx_stwcx_loop_ent, &cr0_save_mfocrf_ent, &cr0_save_mcrf_ent, &rmw_fetchadd_larx_ent,
