@@ -761,8 +761,15 @@ public:
   // replaces (LT=SO, GT=OV, EQ=CA). CA stays in EQ, but OV moves from GT to
   // LT and SO is not projected at all — a consumer that keeps reading GT for
   // "overflow" silently gets OV32, which is wrong for every 64-bit op.
-  // CAUTION: gas assembles `mcrxrx` at -mcpu=power8 with no diagnostic, so the
-  // assembler accepting it is not evidence about ISA level.
+  // gas IS evidence about ISA level, with the right flag: `-mpower8` REJECTS
+  // mcrxrx and `-mpower9` accepts it. The earlier caution here said otherwise
+  // because it tested `-mcpu=power8`, which is clang's spelling and not a gas
+  // option at all -- gas takes -mpower8/-mpwr8 -- so that run failed on the
+  // unrecognised OPTION and was read as the instruction being accepted.
+  // Scripts/powerarm/gen-isa30-list.py uses the host gas to classify every
+  // instruction here, and check-isa30-guards.py gates the result.
+  // (clang is genuinely no evidence: it assembles mcrxrx and lxv at
+  // -mcpu=power8 silently, and llvm-objdump decodes them at --mcpu=pwr8.)
   // Verified against powerpc64le-linux-gnu-as: mcrxrx 1 = 0x7C800480,
   // mcrxrx 0 = 0x7C000480, mcrxrx 7 = 0x7F800480.
   void mcrxrx(uint32_t bf) {
