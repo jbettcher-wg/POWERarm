@@ -404,7 +404,7 @@ up) with a threshold `T` to be measured (start at 256 bytes and sweep). Leave
 `strlen`/`strchr`/`memchr`/`strcmp` to N1, which attacks exactly their loop idiom in the JIT.
 
 Goldens: `unittests/A64Frontend/strmem.c` already hashes `memcpy`/`memmove`/`memset` over
-lengths 0–129 and 16 alignments (`golden.sh:35-37` builds it `gcc -static -O2`). Extend it with
+lengths 0–129 and 16 alignments (`golden.sh` builds it `-static -O2` as part of `$corpus`). Extend it with
 lengths across `T` and page-crossing copies, and add a copy into a page that holds executed code
 (a self-modifying-caller test in the style of `callret.c`). Since it is static, the hook must
 resolve from the main ELF's `.symtab` for the test to exercise the redirect at all.

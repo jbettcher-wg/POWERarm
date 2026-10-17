@@ -1,10 +1,32 @@
 #!/bin/sh
 # SPDX-License-Identifier: MIT
 #
-# Pi side: generate, build and run the A64Frontend tests natively.
+# Generate, build and run the A64Frontend tests natively.
 #   golden.sh OUTDIR
 # Writes OUTDIR/<test> binaries, OUTDIR/<test>.golden (stdout) and
-# OUTDIR/<test>.rc (exit status). Run on an AArch64 Linux machine with gcc.
+# OUTDIR/<test>.rc (exit status).
+#
+# WHICH COMPILER. Every build here targets AArch64, so $CC must be an AArch64
+# compiler. On the POWER9 development box there are TWO toolchains and they are
+# easy to mix up, because both answer to the name `gcc`:
+#
+#   * The host console's `gcc` is NATIVE ppc64le. It cannot build these at all --
+#     it rejects AArch64 asm mnemonics (`prfm`) and AArch64 register constraints
+#     ("w"), and it supplies PowerPC signal headers where the tests expect
+#     AArch64's. That is what this script now refuses up front instead of failing
+#     28 compiles later with "impossible constraint in asm".
+#   * A shell running UNDER POWERarm sees the rootfs's `gcc`, which IS AArch64.
+#     That is the one these builds want.
+#
+# The mirror image applies to the host-side probes: research/neon/probes builds
+# with `clang`, which on this box is the native ppc64le compiler, and must NOT be
+# built with the rootfs's aarch64 gcc. Each half wants the other half's shell.
+#
+# RUNNING THIS AT ALL. It builds AND RUNS each test to capture a golden, so on a
+# box whose only AArch64 execution is POWERarm itself it would mint goldens from
+# the emulator under test -- which compare equal to a failing run. Tests marked
+# `// NO-GOLDEN` are built but not run for exactly that reason; the rest of this
+# script is for a real AArch64 machine.
 #
 # Optional corpus inputs (skipped when unset):
 #   MUSL_ROOT  a directory holding usr/include/aarch64-linux-musl and
@@ -15,6 +37,28 @@ set -eu
 here=$(cd "$(dirname "$0")" && pwd)
 out=${1:?usage: golden.sh OUTDIR}
 mkdir -p "$out"
+
+# Refuse a non-AArch64 compiler before building anything. $CC may be a cross
+# compiler (CC=aarch64-linux-gnu-gcc) as long as it can link -static.
+CC=${CC:-gcc}
+cc_target=$("$CC" -dumpmachine 2>/dev/null || echo unknown)
+case $cc_target in
+aarch64* | arm64*) ;;
+*)
+  echo "golden.sh: \$CC is '$CC', which targets '$cc_target' -- these tests are AArch64." >&2
+  echo "" >&2
+  echo "  On the POWER9 box the host console's gcc is native ppc64le and cannot build" >&2
+  echo "  them: it rejects AArch64 mnemonics and the \"w\" register constraint, and" >&2
+  echo "  supplies PowerPC signal headers. Build from a shell running UNDER POWERarm," >&2
+  echo "  where gcc is the rootfs's AArch64 one, or set CC to a cross compiler:" >&2
+  echo "" >&2
+  echo "      CC=aarch64-linux-gnu-gcc sh golden.sh OUTDIR" >&2
+  echo "" >&2
+  echo "  (The host-side probes under docs/powerarm/research/neon/probes are the" >&2
+  echo "  opposite case and want this console's native clang, not the rootfs gcc.)" >&2
+  exit 2
+  ;;
+esac
 
 python3 "$here/gen.py" "$out"
 python3 "$here/gen_simd.py" "$out"
@@ -30,43 +74,43 @@ for src in *.S; do
   # below; building it alone here would produce a stray static binary.
   [ "$src" = common.S ] && continue
   [ "$src" = madvfile.S ] && continue
-  gcc -march=armv8.2-a+fp16+crypto+crc+dotprod -nostdlib -static $(sed -n 's|^// LDFLAGS: ||p' "$src") -o "${src%.S}" "$src"
+  "$CC" -march=armv8.2-a+fp16+crypto+crc+dotprod -nostdlib -static $(sed -n 's|^// LDFLAGS: ||p' "$src") -o "${src%.S}" "$src"
 done
-gcc -O2 -o madvfile "$here/madvfile.c" "$here/madvfile.S"
+"$CC" -O2 -o madvfile "$here/madvfile.c" "$here/madvfile.S"
 
 # Static libc programs.
 corpus="hello printf_float strmem fpmath lse lseminmax lsecasp litmus nosve cntvct vdso vdso_syscalls hlt thunk_callback hoststack procdirfd dcmaint forkexec hostfault exclusive_pair icflush icpartial icfresh"
 for t in $corpus; do
-  gcc -static -O2 -o "$t" "$here/$t.c" -lm
+  "$CC" -static -O2 -o "$t" "$here/$t.c" -lm
 done
 if [ -n "${MUSL_ROOT:-}" ]; then
   sed "s#/usr/include/aarch64-linux-musl#$MUSL_ROOT/usr/include/aarch64-linux-musl#g; s#/usr/lib/aarch64-linux-musl#$MUSL_ROOT/usr/lib/aarch64-linux-musl#g" \
     "$MUSL_ROOT/usr/lib/aarch64-linux-musl/musl-gcc.specs" > musl.specs
   for t in $corpus; do
-    gcc -specs="$out/musl.specs" -static -O2 -o "musl_$t" "$here/$t.c" -lm
+    "$CC" -specs="$out/musl.specs" -static -O2 -o "musl_$t" "$here/$t.c" -lm
   done
   corpus="$corpus musl_hello musl_printf_float musl_strmem musl_fpmath"
 fi
 # glibc only (ucontext): guest call/return shapes for the link-stack pairing,
 # signal handlers that move the guest PC, and handlers that edit the
 # interrupted registers.
-gcc -static -O2 -o callret "$here/callret.c"
-gcc -static -O2 -o sigpreempt "$here/sigpreempt.c"
-gcc -static -O2 -o sigedit "$here/sigedit.c"
+"$CC" -static -O2 -o callret "$here/callret.c"
+"$CC" -static -O2 -o sigpreempt "$here/sigpreempt.c"
+"$CC" -static -O2 -o sigedit "$here/sigedit.c"
 # A signal taken with the live floating-point state in D16-D31, whose handler
 # reads and edits the frame's fpsimd_context. Those guest registers are pinned
 # in the host's FPR-aliased low bank, so this is the frame test for the VSX
 # register-class work (VSX-REGISTER-CLASSES.md).
-gcc -static -O2 -o sigfploop "$here/sigfploop.c"
+"$CC" -static -O2 -o sigfploop "$here/sigfploop.c"
 
 # ld1r is self-checking, so no golden is captured for it -- it is built here
 # only so the Pi runs the same binary the POWER host does.
-gcc -static -O2 -o ld1r "$here/ld1r.c"
+"$CC" -static -O2 -o ld1r "$here/ld1r.c"
 
 # vins is self-checking for the same reason: the architectural result of an
 # INS is the destination with one element replaced, which the test computes
 # itself. Built here only so the same binary runs on both sides.
-gcc -static -O2 -o vins "$here/vins.c"
+"$CC" -static -O2 -o vins "$here/vins.c"
 
 # memredirect is self-checking and marked NO-GOLDEN, so no golden is captured:
 # it computes every expected value out of its own byte loops (memmove's
@@ -78,13 +122,13 @@ gcc -static -O2 -o vins "$here/vins.c"
 # are IFUNC symbols, so this is the binary that exercises the resolver refusing
 # an IFUNC's address and hooking the concrete __memcpy_*/__memset_*/__memmove_*
 # implementations instead. A dynamically linked build would test the easy path.
-gcc -static -O2 -o memredirect "$here/memredirect.c"
+"$CC" -static -O2 -o memredirect "$here/memredirect.c"
 
 # vneg is self-checking: NEG is 0 - lane in the lane's own width, which the
 # architecture forces for every value including the minimum, so the file
 # computes its own answers. No golden, and it must stay that way -- it is the
 # gate on the ISA 3.0 vnegw/vnegd arms agreeing with the pre-3.0 pair.
-gcc -static -O2 -o vneg "$here/vneg.c"
+"$CC" -static -O2 -o vneg "$here/vneg.c"
 
 # vlanetest likewise: the lane mask of a compare, its horizontal reduction and
 # the branch that reads it are all architecturally forced, and the file
@@ -97,20 +141,20 @@ gcc -static -O2 -o vneg "$here/vneg.c"
 # lane count rather than assuming it is a lane of ones. It also hand-assembles
 # the two arrangements ADDV does not allocate (2S and .2D) with .inst, so it
 # installs a SIGILL handler; that is self-contained and leaves no golden.
-gcc -static -O2 -o vlanetest "$here/vlanetest.c"
+"$CC" -static -O2 -o vlanetest "$here/vlanetest.c"
 # vcmpscan likewise: the lane mask of a CMEQ, the pairwise reduction of that
 # mask by itself, and the GPR the FMOV copies it into are all forced by the
 # architecture, and the file computes all three from the input bytes. It is
 # the gate on the vector-scan fusion (TryFuseVectorScan), and specifically on
 # the register state that fusion must leave on BOTH edges of the branch it
 # replaces the idiom with.
-gcc -static -O2 -o vcmpscan "$here/vcmpscan.c"
+"$CC" -static -O2 -o vcmpscan "$here/vcmpscan.c"
 
 # fcmp_denorm is self-checking and MUST stay that way: it asserts the
 # architecturally forced result of a float compare over denormal, NaN,
 # signed-zero and infinity inputs, which is precisely what a reference run
 # taken from the emulator under test could not tell you.
-gcc -static -O2 -o fcmp_denorm "$here/fcmp_denorm.c"
+"$CC" -static -O2 -o fcmp_denorm "$here/fcmp_denorm.c"
 
 # vcvtf16 is self-checking and MUST stay that way, for the same reason
 # fcmp_denorm is, and with a sharper edge: it asserts the forced result of
@@ -123,11 +167,11 @@ gcc -static -O2 -o fcmp_denorm "$here/fcmp_denorm.c"
 # precisely what could not tell you those answers: the software helper that arm
 # used to call was wrong on every f32 strictly between 2^-25 and 2^-24, which
 # this test catches and no golden did.
-gcc -march=armv8.2-a+fp16 -static -O2 -o vcvtf16 "$here/vcvtf16.c"
+"$CC" -march=armv8.2-a+fp16 -static -O2 -o vcvtf16 "$here/vcvtf16.c"
 
 # sigvcache likewise: self-checking, no golden. It installs its own SIGSEGV
 # handler on a PROT_NONE page, so it needs no privileges and no timer.
-gcc -static -O2 -o sigvcache "$here/sigvcache.c"
+"$CC" -static -O2 -o sigvcache "$here/sigvcache.c"
 
 # sigchildteardown is self-checking and MUST stay that way. It asserts that
 # every child it reaped was announced to the process by a SIGCHLD, which it
@@ -136,7 +180,7 @@ gcc -static -O2 -o sigvcache "$here/sigvcache.c"
 # emulator under test could not tell you. The marker in the file is what
 # enforces it; this line only builds the binary so the same one can run on
 # both sides.
-gcc -static -O2 -pthread -o sigchildteardown "$here/sigchildteardown.c"
+"$CC" -static -O2 -pthread -o sigchildteardown "$here/sigchildteardown.c"
 
 # memrev and prfmhint are self-checking and MUST stay that way, like
 # fcmp_denorm. memrev asserts the byte order of a load-and-reverse and a
@@ -150,32 +194,32 @@ gcc -static -O2 -pthread -o sigchildteardown "$here/sigchildteardown.c"
 # FPMinNum from the pseudocode and compares, so a golden taken from the emulator
 # would be comparing the thing under test against itself on exactly the NaN rows
 # that matter (POWER-STRENGTHS.md 2.7).
-gcc -static -O2 -o fminmaxnm "$here/fminmaxnm.c"
-gcc -static -O2 -o memrev "$here/memrev.c"
-gcc -static -O2 -o prfmhint "$here/prfmhint.c"
+"$CC" -static -O2 -o fminmaxnm "$here/fminmaxnm.c"
+"$CC" -static -O2 -o memrev "$here/memrev.c"
+"$CC" -static -O2 -o prfmhint "$here/prfmhint.c"
 # Threaded: a guest signal handler returning through rt_sigreturn while its
 # thread is torn down.
-gcc -static -O2 -pthread -o sigteardown "$here/sigteardown.c"
+"$CC" -static -O2 -pthread -o sigteardown "$here/sigteardown.c"
 # A fault-shaped siginfo the program queued at itself. Natively it prints two
 # lines and dies of SIGILL (rc 132); an emulator that mistakes si_code > 0 for
 # "the CPU raised this here" swallows it and keeps running. See sigqueued.c.
-gcc -static -O2 -o sigqueued "$here/sigqueued.c"
+"$CC" -static -O2 -o sigqueued "$here/sigqueued.c"
 # Threads leaving through a raw SYS_exit while main leaves through
 # exit_group. One run proves nothing on its own (it is a race); run.sh loops
 # it. Natively it is silent and exits 0, and so is the golden.
-gcc -static -O2 -pthread -o threadexit "$here/threadexit.c"
+"$CC" -static -O2 -pthread -o threadexit "$here/threadexit.c"
 # A dead thread must not cost the process anything permanent: create and join
 # threads in a loop and watch the process's own mapped footprint, then fork.
 # Natively there are no emulator mappings to grow, so the golden is the two
 # "ok" lines and rc 0; under POWERarm a leaked per-thread LookupCache makes the
 # first line differ. See threadleak.c.
-gcc -static -O2 -pthread -o threadleak "$here/threadleak.c"
+"$CC" -static -O2 -pthread -o threadleak "$here/threadleak.c"
 # LDXR/STXR retry loops under contention, the shape TryFuseExclusiveLoop lowers
 # onto lwarx/stwcx. Every assertion is architecturally forced (N threads x M
 # increments leave exactly N*M), so the interleaving differing wildly between a
 # 4-core Pi and a 176-thread POWER9 cannot move the output. Nothing
 # CONSTRAINED UNPREDICTABLE is asserted -- that stays in exclusive_pair.
-gcc -static -O2 -pthread -o exclusive_contend "$here/exclusive_contend.c"
+"$CC" -static -O2 -pthread -o exclusive_contend "$here/exclusive_contend.c"
 corpus="$corpus callret sigpreempt sigedit sigteardown sigqueued threadexit threadleak exclusive_contend"
 # POWERarm configuration for run.sh (<test>.env): vdso_syscalls counts
 # syscalls with a seccomp filter, and seccomp emulation is opt-in there.
@@ -186,14 +230,14 @@ echo THUNK_CALLBACK_REQUIRE_HOST=1 > thunk_callback.env
 # The rootfs overlay test: natively it runs inside a scratch copy of its own
 # fixture (OVT_ROOT); run.sh runs it under POWERarm with that fixture as the
 # base rootfs.
-gcc -static -O2 -o rootfs_overlay "$here/rootfs_overlay.c"
+"$CC" -static -O2 -o rootfs_overlay "$here/rootfs_overlay.c"
 # readlink(2)/readlinkat(2) errno and target fidelity over a fixture tree.
 # Natively it runs against its own fixture under OUTDIR (RLFIX_ROOT); run.sh
 # runs it twice under POWERarm, once with the fixture as the rootfs so
 # FileManager::Readlink{,at}'s openat2(RESOLVE_IN_ROOT) trampoline answers it
 # and once against a host path, and requires the two to agree. Every answer is
 # architecturally forced, so the golden is also all-PASS.
-gcc -static -O2 -o readlinkerr "$here/readlinkerr.c"
+"$CC" -static -O2 -o readlinkerr "$here/readlinkerr.c"
 
 run_golden() {
   set +e

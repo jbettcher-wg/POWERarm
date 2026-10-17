@@ -7,11 +7,37 @@ layer beyond those two.
 
 ## How to run
 
-On an AArch64 Linux machine with gcc (the reference is a Raspberry Pi 5):
+On an AArch64 Linux machine with gcc (the reference was a Raspberry Pi 5):
 
 ```sh
 unittests/A64Frontend/golden.sh OUTDIR
 ```
+
+**Which compiler.** Everything here targets AArch64, so `$CC` must be an AArch64
+compiler; `golden.sh` checks `$CC -dumpmachine` and refuses up front otherwise.
+On the POWER9 development box this is the easiest thing to get wrong, because two
+different compilers both answer to `gcc`:
+
+| shell | `gcc` is | use it for |
+|---|---|---|
+| the host console | native **ppc64le** | the host-side probes under `docs/powerarm/research/neon/probes` (via `clang`) |
+| running under POWERarm | the rootfs's **aarch64** | everything in this directory |
+
+The host console's gcc does not merely produce the wrong binary, it cannot
+compile these at all: it rejects AArch64 mnemonics such as `prfm`, rejects the
+`"w"` register constraint, and supplies PowerPC signal headers where the tests
+expect AArch64's. A cross compiler works too:
+
+```sh
+CC=aarch64-linux-gnu-gcc unittests/A64Frontend/golden.sh OUTDIR
+```
+
+**And note what `golden.sh` does.** It builds *and runs* each test to capture its
+golden. On a machine whose only AArch64 execution is POWERarm itself that would
+mint goldens from the emulator under test, which compare equal to a failing run.
+Tests marked `// NO-GOLDEN` are built but never run for that reason; to add one
+test's binary to an existing corpus, compile just that file rather than running
+this script.
 
 This generates the differential programs (`gen.py`, `gen_simd.py`), builds
 them with `gcc -nostdlib -static` and the C corpus with `gcc -static`, runs
