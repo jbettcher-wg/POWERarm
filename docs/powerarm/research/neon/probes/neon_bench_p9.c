@@ -183,8 +183,14 @@ BENCH(xxlor_move_halves, 2, "xxlor 1,%x[a],%x[a]\n\txxlor %x[a],1,1")
  * ninsn counts the sequence under test and EXCLUDES the trailing instruction
  * that closes the dependency chain, matching the vector entries above.
  */
-#define OPSG(acc) [a] "+r"(acc), [t1] "=&r"(h1), [t2] "=&r"(h2), [t3] "=&r"(h3)
-#define INSG [b] "r"(hb), [c] "r"(hc), [p] "r"(p)
+/* "b" not "r" for anything that can land in a base-register position: the "r"
+ * constraint permits r0, and `0(r0)` encodes as LITERAL ZERO rather than "register
+ * r0", so a store through an r0 base silently becomes a store to address 0. This
+ * cost a crash: the latency variant got r10 and worked, the throughput variant has
+ * four accumulators live and clang reached for r0. "b" is exactly "any GPR but
+ * r0", so it is the constraint for a temporary that might be addressed through. */
+#define OPSG(acc) [a] "+r"(acc), [t1] "=&b"(h1), [t2] "=&b"(h2), [t3] "=&b"(h3)
+#define INSG [b] "r"(hb), [c] "r"(hc), [p] "b"(p)
 #define GCLOB "cr0", "cr1", "cr6", "cr7", "xer", "r8", "memory"
 #define BENCHG(name, ninsn, str) \
 static double lat_##name(void) { uint64_t a = 0x0123456789ABCDEFULL, hb = 0x1357ULL, hc = 0x2468ACE1ULL, h1, h2, h3; unsigned char* p = scratch; \

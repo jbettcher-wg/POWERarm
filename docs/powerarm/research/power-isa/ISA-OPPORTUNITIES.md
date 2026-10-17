@@ -47,7 +47,7 @@ argument for each rank is in §3; this table is the conclusion.
 | 13 | **ADDP/UZP2 without pool-constant `vperm`** (§3.11) | 9 / 4 | 6 / 3 | 2.07 | reductions, N1 exit paths | none | hours |
 | ~~14~~ | ~~**Three-way compare idiom -> `setb`**~~ (§3.12) -- **REJECTED on measurement**: 2 instructions are slower than 6 on both latency and throughput | ~9 | 2, and slower | 3.0 | comparators; rare | -- | none; closed |
 | ~~15~~ | ~~**Pre-index STP -> `stdu`**~~ (§3.13) -- **REJECTED on measurement**: the crack costs more than the instruction saves, 2.37 -> 2.45 tp | 3 | 2, and slower | base | prologues; cracked on POWER9, fetch only | -- | none; closed |
-| 16 | **LSE atomics: CR0 save via `mcrf`; AMOs (`ldat`/`lwat`)** (§3.14) | 12 + a store-forward | 8 / 4 | base / 3.0 | negligible: LSE ops sit only in the outline-atomics helpers, ~2.5 M per V8 run | low | hours / 2 days |
+| 16 | **LSE atomics: CR0 save via `mcrf`** (§3.14) -- done, measured at 20.59 -> 10.07 cycles. ~~**AMOs (`ldat`/`lwat`)**~~ -- **REJECTED on measurement**: 70 -> 796 cycles, unpipelined, assisted rather than native | 12 + a store-forward | 8; the AMO is 11x WORSE | base / 3.0 | negligible: LSE ops sit only in the outline-atomics helpers, ~2.5 M per V8 run | -- | mcrf done; AMO closed |
 | 17 | **FPSR IEEE flags from FPSCR on `MRS FPSR`** (§3.15) | flags never set | `mffs` on the rare read | 2.06 | fidelity, not speed | low | hours |
 
 **Not levers** (§4): `lxvl`/`stxvl`, `lxvwsx`, `cmpb`, `addex`, `bpermd`, `darn`, `vcmpnezb`
@@ -687,6 +687,18 @@ even register with the value moved in and out around it. The second costs two `m
 operation's own dependency chain, which is a real fraction of what the AMO is supposed to save --
 so the comparison that decides this row is the AMO *plus those two moves* against the
 `larx`/`stcx.` loop, not the bare instruction against the loop.
+
+**The AMO half is REJECTED on measurement, 2026-10-17** (`../neon/probes/RESULTS-p9.txt`).
+`ldat` fetch-and-add is **796 cycles** and `stdat` **505**, against **70** for the
+`ldarx`/`add`/`stdcx.`/`bne` loop they would replace: 11x slower, not faster. For both AMO rows
+`lat` equals `tp` (796/800 and 505/501), so they are wholly unpipelined, and that together with
+the magnitude is the signature of a firmware or hypervisor assist rather than a hardware atomic.
+They are architecturally present on this part -- all four execute and do modify memory -- and
+practically unusable. The two `mr` the even-RT workaround costs are irrelevant at this scale.
+
+**The `mcrf` half, already landed, is confirmed and quantified:** the `mfocrf`/store/load/`mtocrf`
+form is **20.59** cycles against **10.07** for the two `mcrf`, so it was worth about 10.5 cycles
+per atomic, 15% of the 70-cycle unfenced pair.
 
 ### 3.15 FPSR IEEE flags from FPSCR on `MRS FPSR`
 

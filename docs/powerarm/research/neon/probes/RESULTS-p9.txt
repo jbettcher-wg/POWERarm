@@ -1,181 +1,222 @@
-# neon_bench_p9 output. 2026-10-17, POWER9 (44 cores, SMT4), pinned to CPU 108.
-# Emulator tree at a570a7552; the probe is native and does not run under POWERarm.
+# neon_bench_p9 output. 2026-10-17, POWER9 (44 cores, SMT4), pinned to CPU 108, box idle.
+# The probe is native ppc64le and does not run under POWERarm.
 # Built: clang -O2 -mcpu=power9 -DP9=1 -o neon_bench_p9 neon_bench_p9.c
 #   (clang is the NATIVE ppc64le compiler on this box; the host gcc is ppc64le too,
 #    but a shell running under POWERarm sees the rootfs's aarch64 gcc instead.)
-# Run:   taskset -c 108 ./neon_bench_p9
+# Run:   taskset -c 108 ./neon_bench_p9      -- two runs agreed to three decimals.
 #
-# lat = one dependency chain; tp = four independent chains. Core cycles are derived
-# from the time base against a calibrated dependent-add chain, so they do not depend
-# on the governor -- which is why this is the one measurement here that does not need
-# a quiet box (see docs/powerarm/MEASUREMENT-METHOD.md 1).
+# VALIDITY GATE: g_add must read ~2.0 cycles, matching the calibration chain. It reads
+# 2.01 here. A run where it drifts was taken on a contended box and is void -- which is
+# what makes this measurement safe to take without reserving the machine.
 #
-# WHAT THIS MEASURES: one sequence in isolation. It therefore says nothing about
-# register pressure or icache footprint, which is why it can rank a lowering but
-# cannot speak to checklist P1 (pressure) or P4/P6 (fetch).
+# lat = one dependency chain; tp = four independent chains. Core cycles come from the
+# time base against a calibrated dependent-add chain, so they do not depend on the
+# governor -- the one measurement here that needs no quiet box for its UNITS, though
+# the figures below were taken on an idle one anyway.
 #
-# FINDINGS THAT CHANGED A DECISION
+# WHAT THIS MEASURES: one sequence in isolation. Silent about register pressure and
+# I-cache footprint, so it can rank a lowering but cannot speak to checklist P1
+# (pressure) or P4/P6 (fetch).
+#
+# ATOMICS AND BARRIERS -- the numbers checklist P7 had been quoting from the pipeline
+# guide rather than from this machine:
+#   sync 53.40   lwsync 12.09   isync 10.06   eieio 53.41
+#   larx/stcx. uncontended pair 69.49 (identical at both widths)
+#   * eieio costs the SAME as a full hwsync here, so there is no cheap ordering
+#     primitive below lwsync on this part. lwsync at 12.09 is the floor.
+#   * A fence's cost depends on what is pending behind it: lwsync alone is 12.09, but
+#     behind a store -- the shape a release actually takes -- it is 32.26. The guide's
+#     "+14" understates the release-store case by 2.3x.
+#   * So a fenced RMW is roughly 53.4 (leading hwsync) + 69.5 (the pair) + 10.1
+#     (trailing isync) = about 133 cycles, and an acquire load about 67. P7 established
+#     that the LEADING hwsync cannot move (herd7 rejected trailing-sync, and separately
+#     rejected ctrl+isync), which leaves the trailing isync -- 10.1 of those 133, under
+#     8%. That is the whole size of the remaining fence lever.
+#   * ISA-OPPORTUNITIES 3.14's mcrf half, already landed, is worth 20.59 -> 10.07: about
+#     10.5 cycles, 15% of an unfenced atomic.
+#
+# ISA 3.0 AMOs: REJECTED, 11x SLOWER than the loop they would replace.
+#   amo_ldat_add 796.23   amo_stdat_add 504.69   against rmw_fetchadd_larx 70.23.
+#   All four of lwat/ldat/stwat/stdat do execute here and do modify memory, so this is
+#   not an availability problem. lat == tp for both (796/800 and 505/501), i.e. wholly
+#   unpipelined, which together with the magnitude is the signature of a firmware or
+#   hypervisor assist rather than a hardware atomic. Architecturally present, and
+#   practically unusable. Subtracting the two `mr` the even-RT workaround costs changes
+#   nothing at this scale.
+#
+# OTHER FINDINGS THAT CHANGED A DECISION
 #   * Static instruction count can invert. sshl_reg13 is 13 instructions and 9.22
-#     cycles; xscvhpdp is 1 instruction and 40.66. addv32_rot4 uses MORE
-#     instructions than addv16_3 and is cheaper on both columns.
+#     cycles; xscvhpdp is 1 instruction and 40.66. addv32_rot4 uses MORE instructions
+#     than addv16_3 and is cheaper on both columns.
 #   * ISA-OPPORTUNITIES 3.12 (three-way compare -> setb) is a REGRESSION on both
-#     columns: threeway_isel 8.07/2.19 against threeway_setb 10.21/2.78. setb reads
-#     a whole CR field; isel reads one bit and its two li's sit off the chain.
-#   * ISA-OPPORTUNITIES 3.13 (pre-index STP -> stdu) is a small throughput
-#     regression, 2.37 -> 2.45, confirming that doc's own "cracked on POWER9" note.
+#     columns: threeway_isel 8.05/2.18 against threeway_setb 10.20/2.77.
+#   * ISA-OPPORTUNITIES 3.13 (pre-index STP -> stdu) is a small throughput regression,
+#     2.37 -> 2.45, confirming that doc's own "cracked on POWER9" note.
 #   * ISA-OPPORTUNITIES 3.9 (remainder via modsd) is a real win: modsd costs exactly
-#     what divd alone costs (21.19 vs 21.18 lat), so the mulld+subf it replaces are
-#     pure added latency -- 28.24 -> 21.19 lat, 9.93 -> 8.08 tp.
-#   * The lane-test fusion, already landed, measures 27.23 -> 1.25 cycles: 21.8x,
-#     not the 5x its 10->2 instruction count implies. Its value is in staying in CR;
+#     what divd alone costs (21.16 vs 21.14 lat), so the mulld+subf it replaces are pure
+#     added latency -- 28.22 -> 21.16 lat, 9.93 -> 8.05 tp.
+#   * The lane-test fusion, already landed, measures 27.23 -> 1.25 cycles: 21.8x, not
+#     the 5x its 10->2 instruction count implies. Its value is in staying in CR;
 #     vcmpequb_rc_mfocrf, which routes through a GPR, is 14.17.
 #   * ISA 3.0 buys nothing for a vector context spill: ctx_roundtrip_stxv_lxv 15.20
-#     against ctx_roundtrip_stxvd2x_lxvd2x 15.21. Store-forward bound, not
-#     instruction bound -- and 15.2 cycles per avoided spill prices checklist P1(b).
-#   * mfvscr/mtvscr are 1 instruction, 16.15 cycles, with tp == lat: wholly
-#     unpipelined. The FP16 work routed around VSCR on instinct and was right.
+#     against ctx_roundtrip_stxvd2x_lxvd2x 15.21. Store-forward bound, not instruction
+#     bound -- and 15.2 cycles per avoided spill prices checklist P1(b).
+#   * mfvscr/mtvscr are 1 instruction, 16.15 cycles, with tp == lat: wholly unpipelined.
 #
-# time-base ticks per dependent add: 0.2716 = 0.530 ns; cpufreq says 3.80 GHz -> a dependent add is 2.02 core cycles
+# time-base ticks per dependent add: 0.2718 = 0.531 ns; cpufreq says 3.80 GHz -> a dependent add is 2.02 core cycles
 # sequence                       insns   lat ns    tp ns  lat cyc   tp cyc  (lat/tp in ns per sequence and in core cycles at the cpufreq clock; thruput = 4 independent chains)
-vaddubm                              1    0.528    0.138     2.01     0.52
-vand                                 1    0.528    0.138     2.01     0.53
-xxland                               1    0.530    0.138     2.01     0.53
-vor                                  1    0.531    0.138     2.02     0.53
-xxlor                                1    0.531    0.138     2.02     0.53
-vsel                                 1    0.528    0.138     2.01     0.53
-xxsel                                1    0.531    0.132     2.02     0.50
-vperm                                1    0.794    0.198     3.02     0.75
+vaddubm                              1    0.530    0.138     2.01     0.53
+vand                                 1    0.530    0.132     2.01     0.50
+xxland                               1    0.528    0.138     2.01     0.53
+vor                                  1    0.529    0.138     2.01     0.53
+xxlor                                1    0.529    0.132     2.01     0.50
+vsel                                 1    0.531    0.138     2.02     0.53
+xxsel                                1    0.529    0.132     2.01     0.50
+vperm                                1    0.793    0.198     3.01     0.75
 vsldoi                               1    0.794    0.198     3.02     0.75
-xxpermdi                             1    0.795    0.198     3.02     0.75
-vpkuhum                              1    0.794    0.198     3.02     0.75
+xxpermdi                             1    0.794    0.198     3.02     0.75
+vpkuhum                              1    0.793    0.198     3.01     0.75
 vmrglb                               1    0.794    0.198     3.02     0.75
-vspltb                               1    0.794    0.198     3.02     0.75
-vmaxub                               1    0.794    0.198     3.02     0.75
+vspltb                               1    0.793    0.198     3.01     0.75
+vmaxub                               1    0.793    0.198     3.02     0.75
 vcmpequb                             1    0.794    0.198     3.02     0.75
-vcmpgtub                             1    0.794    0.198     3.02     0.75
+vcmpgtub                             1    0.793    0.198     3.01     0.75
 vaddubs_sat                          1    0.794    0.198     3.02     0.75
-vslb                                 1    0.529    0.132     2.01     0.50
-vsrab                                1    0.530    0.132     2.01     0.50
-vsld                                 1    0.530    0.132     2.02     0.50
+vslb                                 1    0.530    0.132     2.01     0.50
+vsrab                                1    0.528    0.138     2.00     0.52
+vsld                                 1    0.529    0.132     2.01     0.50
 vrlw                                 1    0.530    0.132     2.01     0.50
-vmladduhm                            1    1.857    0.462     7.06     1.75
-vmuluwm                              1    1.857    0.462     7.06     1.75
-vmulesb                              1    1.857    0.462     7.06     1.75
-vmsumubm                             1    1.858    0.462     7.06     1.75
-vmhraddshs                           1    1.858    0.462     7.06     1.75
-vsum4ubs                             1    1.857    0.462     7.06     1.75
-vsumsws                              1    1.858    0.465     7.06     1.77
-vpopcntb                             1    0.528    0.138     2.01     0.53
-vclzb                                1    0.794    0.198     3.02     0.75
-vbpermq                              1    0.794    0.198     3.02     0.75
-vpmsumd                              1    1.590    0.398     6.04     1.51
-vpmsumb                              1    1.590    0.396     6.04     1.50
-vcipher                              1    1.588    0.401     6.04     1.52
-vcipherlast                          1    1.594    0.396     6.06     1.50
-vncipher                             1    1.591    0.396     6.05     1.50
-vshasigmaw                           1    0.797    0.198     3.03     0.75
-xvaddsp                              1    1.676    0.400     6.37     1.52
-xvmulsp                              1    1.679    0.403     6.38     1.53
-xvmaddasp                            1    1.675    0.399     6.36     1.52
-xvcmpeqsp                            1    0.794    0.198     3.02     0.75
-xvcmpeqsp_rc                         1    0.794    0.204     3.02     0.77
-xvmaxsp                              1    0.796    0.198     3.02     0.75
-xvcvspsxws                           1    6.290    2.812    23.90    10.68
-xvcvsxwsp                            1    6.140    2.811    23.33    10.68
-xvrspi                               1    1.654    0.407     6.29     1.55
-vrfin                                1    1.682    0.402     6.39     1.53
-xvresp                               1    1.679    0.391     6.38     1.48
-xvdivsp                              1    6.901    2.784    26.22    10.58
-xvsqrtsp                             1    7.689    3.184    29.22    12.10
-xvdivdp                              1    7.694    3.184    29.24    12.10
-xvnegsp                              1    0.528    0.138     2.01     0.53
+vmladduhm                            1    1.856    0.462     7.05     1.75
+vmuluwm                              1    1.854    0.462     7.05     1.75
+vmulesb                              1    1.858    0.463     7.06     1.76
+vmsumubm                             1    1.854    0.462     7.04     1.75
+vmhraddshs                           1    1.854    0.462     7.05     1.75
+vsum4ubs                             1    1.853    0.463     7.04     1.76
+vsumsws                              1    1.854    0.462     7.05     1.75
+vpopcntb                             1    0.529    0.138     2.01     0.53
+vclzb                                1    0.792    0.198     3.01     0.75
+vbpermq                              1    0.796    0.198     3.02     0.75
+vpmsumd                              1    1.589    0.396     6.04     1.50
+vpmsumb                              1    1.589    0.398     6.04     1.51
+vcipher                              1    1.589    0.396     6.04     1.50
+vcipherlast                          1    1.589    0.398     6.04     1.51
+vncipher                             1    1.592    0.396     6.05     1.50
+vshasigmaw                           1    0.793    0.198     3.01     0.75
+xvaddsp                              1    1.679    0.395     6.38     1.50
+xvmulsp                              1    1.674    0.411     6.36     1.56
+xvmaddasp                            1    1.676    0.400     6.37     1.52
+xvcmpeqsp                            1    0.793    0.198     3.01     0.75
+xvcmpeqsp_rc                         1    0.793    0.204     3.01     0.77
+xvmaxsp                              1    0.796    0.198     3.03     0.75
+xvcvspsxws                           1    6.287    2.810    23.89    10.68
+xvcvsxwsp                            1    6.259    2.810    23.79    10.68
+xvrspi                               1    1.667    0.410     6.34     1.56
+vrfin                                1    1.625    0.405     6.17     1.54
+xvresp                               1    1.677    0.401     6.37     1.52
+xvdivsp                              1    6.891    2.784    26.19    10.58
+xvsqrtsp                             1    7.689    3.181    29.22    12.09
+xvdivdp                              1    7.687    3.178    29.21    12.08
+xvnegsp                              1    0.529    0.132     2.01     0.50
 mfvsrd                               1    0.132    0.132     0.50     0.50
-mfvsrd_mtvsrd                        2    1.061    0.287     4.03     1.09
-mtvsrd_xxpermdi_vspltb               3    3.082    0.952    11.71     3.62
-vextract_umov_b_p8                   3    2.933    0.857    11.15     3.26
-vspltisb                             1    0.636    0.305     2.42     1.16
-const_gpr_splat                      4    0.928    0.890     3.53     3.38
-const_pool_lvx                       2    0.530    0.416     2.01     1.58
-const_pool_lxvd2x                    3    0.678    0.618     2.58     2.35
-const_lvsl_vslb                      3    0.840    0.813     3.19     3.09
-stvx_lvx_fwd                         2    4.002    1.901    15.21     7.23
-std_lvx_partial                      3    4.791    2.360    18.20     8.97
-std_std_lvx                          4    4.632    2.636    17.60    10.02
-stvx_ld_mtvsrd                       3    4.569    1.594    17.36     6.06
-ctx_roundtrip_stxvd2x_lxvd2x         2    3.997    1.904    15.19     7.23
-mfvscr                               1    4.245    4.245    16.13    16.13
-vaddubs_mfvscr                       2    5.577    4.774    21.19    18.14
-mtvscr                               1    4.244    4.245    16.13    16.13
-vcmpequb_rc_bc                       2    0.332    0.330     1.26     1.25
-vcmpequb_rc_mfocrf                   4    3.733    1.040    14.18     3.95
-movemask_bpermq                      3    2.330    0.895     8.86     3.40
-cmhi_1                               1    0.795    0.198     3.02     0.75
-cmhi_cur3                            3    2.121    0.649     8.06     2.47
-cmtst_2                              3    1.333    0.510     5.06     1.94
-cmtst_cur                            4    1.857    0.682     7.06     2.59
-vmov64_cur3                          3    1.587    0.452     6.03     1.72
-vmov64_xxpermdi                      2    0.794    0.282     3.02     1.07
-umaxp_cur6                           6    2.709    0.903    10.29     3.43
-umaxp_same4                          4    2.121    0.755     8.06     2.87
-umaxv16_fold10                      10    7.165    1.958    27.23     7.44
-addv16_3                             3    3.714    0.929    14.11     3.53
-addv32_rot4                          4    2.652    0.823    10.08     3.13
-shrn_cur4                            4    1.386    0.644     5.27     2.45
-srshr_imm5                           5    1.986    1.072     7.55     4.07
-sqshl_imm8                           8    2.611    1.324     9.92     5.03
-sshl_reg13                          13    2.427    1.901     9.22     7.22
-tbl1_p8_6                            6    1.460    0.971     5.55     3.69
-uqadd64_3                            3    1.931    0.604     7.34     2.29
-sqadd64_9                            9    2.758    1.363    10.48     5.18
-sqdmulh16_2                          2    1.858    0.462     7.06     1.75
-sqdmulh32_9                          9    3.738    1.555    14.20     5.91
-smull8_3                             3    2.778    0.749    10.56     2.85
-mul8_5                               5    3.049    0.994    11.59     3.78
-mul64_8                              8    3.980    1.367    15.12     5.20
-uabd_p8_3                            3    1.504    0.515     5.72     1.96
-udot_1                               1    1.858    0.462     7.06     1.75
-sdot_6                               6    3.286    1.189    12.49     4.52
-pmull_2                              2    2.386    0.600     9.07     2.28
-aese_3                               3    2.920    0.848    11.09     3.22
-aes_round_fused_2                    2    2.120    0.530     8.06     2.01
-fmla_gated_3                         3    1.622    0.464     6.16     1.76
-fcvtzs_3                             3    2.512    0.732     9.55     2.78
-rbit_8                               8    2.721    1.158    10.34     4.40
-zip1_1                               1    0.794    0.198     3.02     0.75
-uzp2_3                               3    1.384    0.647     5.26     2.46
-ext_1                                1    0.795    0.198     3.02     0.75
-rev32_p8_2                           2    1.244    0.613     4.73     2.33
-xxland_lowhalf                       3    1.588    0.484     6.03     1.84
-xxlor_move_halves                    2    1.060    0.319     4.03     1.21
-g_add                                1    0.530    0.139     2.01     0.53
-g_mulld                              1    1.857    0.488     7.06     1.85
-g_popcntd                            1    1.365    0.366     5.19     1.39
-g_divd                               1    5.575    2.123    21.18     8.07
-rem_divd_mulld_subf                  3    7.432    2.613    28.24     9.93
-threeway_isel                        6    2.123    0.576     8.07     2.19
-stp_preindex_addi                    3    0.618    0.624     2.35     2.37
-stp_preindex_stdu                    2    0.642    0.645     2.44     2.45
-vabsdub                              1    0.794    0.198     3.02     0.75
+mfvsrd_mtvsrd                        2    1.057    0.287     4.02     1.09
+mtvsrd_xxpermdi_vspltb               3    3.079    0.950    11.70     3.61
+vextract_umov_b_p8                   3    2.927    0.856    11.12     3.25
+vspltisb                             1    0.635    0.304     2.41     1.16
+const_gpr_splat                      4    0.930    0.885     3.53     3.36
+const_pool_lvx                       2    0.529    0.416     2.01     1.58
+const_pool_lxvd2x                    3    0.677    0.618     2.57     2.35
+const_lvsl_vslb                      3    0.839    0.814     3.19     3.09
+stvx_lvx_fwd                         2    3.994    1.899    15.18     7.22
+std_lvx_partial                      3    4.794    2.356    18.22     8.95
+std_std_lvx                          4    4.624    2.642    17.57    10.04
+stvx_ld_mtvsrd                       3    4.567    1.593    17.35     6.05
+ctx_roundtrip_stxvd2x_lxvd2x         2    3.997    1.939    15.19     7.37
+mfvscr                               1    4.243    4.244    16.13    16.13
+vaddubs_mfvscr                       2    5.566    4.772    21.15    18.13
+mtvscr                               1    4.243    4.238    16.12    16.10
+vcmpequb_rc_bc                       2    0.396    0.330     1.50     1.25
+vcmpequb_rc_mfocrf                   4    3.730    1.036    14.17     3.94
+movemask_bpermq                      3    2.332    0.889     8.86     3.38
+cmhi_1                               1    0.796    0.198     3.03     0.75
+cmhi_cur3                            3    2.119    0.647     8.05     2.46
+cmtst_2                              3    1.337    0.506     5.08     1.92
+cmtst_cur                            4    1.855    0.683     7.05     2.59
+vmov64_cur3                          3    1.590    0.452     6.04     1.72
+vmov64_xxpermdi                      2    0.796    0.281     3.02     1.07
+umaxp_cur6                           6    2.702    0.902    10.27     3.43
+umaxp_same4                          4    2.119    0.755     8.05     2.87
+umaxv16_fold10                      10    7.157    1.957    27.20     7.44
+addv16_3                             3    3.709    0.926    14.09     3.52
+addv32_rot4                          4    2.649    0.822    10.07     3.12
+shrn_cur4                            4    1.388    0.643     5.27     2.44
+srshr_imm5                           5    1.984    1.072     7.54     4.07
+sqshl_imm8                           8    2.608    1.323     9.91     5.03
+sshl_reg13                          13    2.422    1.900     9.20     7.22
+tbl1_p8_6                            6    1.460    0.970     5.55     3.69
+uqadd64_3                            3    1.940    0.601     7.37     2.29
+sqadd64_9                            9    2.758    1.361    10.48     5.17
+sqdmulh16_2                          2    1.854    0.462     7.04     1.75
+sqdmulh32_9                          9    3.733    1.554    14.18     5.91
+smull8_3                             3    2.776    0.749    10.55     2.85
+mul8_5                               5    3.046    0.989    11.58     3.76
+mul64_8                              8    3.975    1.362    15.11     5.17
+uabd_p8_3                            3    1.498    0.517     5.69     1.96
+udot_1                               1    1.854    0.464     7.04     1.76
+sdot_6                               6    3.310    1.190    12.58     4.52
+pmull_2                              2    2.386    0.601     9.07     2.29
+aese_3                               3    2.914    0.851    11.07     3.24
+aes_round_fused_2                    2    2.118    0.529     8.05     2.01
+fmla_gated_3                         3    1.688    0.461     6.42     1.75
+fcvtzs_3                             3    2.512    0.732     9.54     2.78
+rbit_8                               8    2.720    1.156    10.34     4.39
+zip1_1                               1    0.793    0.198     3.01     0.75
+uzp2_3                               3    1.384    0.646     5.26     2.46
+ext_1                                1    0.793    0.198     3.01     0.75
+rev32_p8_2                           2    1.284    0.613     4.88     2.33
+xxland_lowhalf                       3    1.589    0.485     6.04     1.84
+xxlor_move_halves                    2    1.060    0.318     4.03     1.21
+g_add                                1    0.529    0.139     2.01     0.53
+g_mulld                              1    1.855    0.490     7.05     1.86
+g_popcntd                            1    1.378    0.366     5.24     1.39
+g_divd                               1    5.564    2.122    21.14     8.06
+rem_divd_mulld_subf                  3    7.426    2.613    28.22     9.93
+threeway_isel                        6    2.119    0.575     8.05     2.18
+stp_preindex_addi                    3    0.620    0.623     2.36     2.37
+stp_preindex_stdu                    2    0.641    0.645     2.44     2.45
+fence_sync                           1   14.053   14.055    53.40    53.41
+fence_lwsync                         1    3.182    3.180    12.09    12.08
+fence_isync                          1    2.648    2.651    10.06    10.08
+fence_eieio                          1   14.056   14.052    53.41    53.40
+store_then_sync                      2   15.930   15.923    60.53    60.51
+store_then_lwsync                    2    8.490    8.494    32.26    32.28
+ldarx_stdcx_loop                     4   18.287   18.288    69.49    69.49
+lwarx_stwcx_loop                     4   18.287   18.286    69.49    69.49
+cr0_save_mfocrf                      4    5.420    5.417    20.59    20.58
+cr0_save_mcrf                        2    2.651    2.649    10.07    10.07
+rmw_fetchadd_larx                    4   18.481   18.306    70.23    69.56
+vabsdub                              1    0.797    0.198     3.03     0.75
 vpermr                               1    0.794    0.198     3.02     0.75
 xxperm                               1    0.794    0.198     3.02     0.75
-xxspltib                             1    0.630    0.304     2.40     1.16
-mtvsrws                              2    1.727    0.477     6.56     1.81
-mtvsrdd                              2    1.495    0.416     5.68     1.58
-vextubrx                             2    1.591    0.447     6.05     1.70
-vctzlsbb                             1    1.587    0.448     6.03     1.70
-vclzlsbb                             1    1.588    0.451     6.03     1.71
-xxbrq                                1    0.795    0.198     3.02     0.75
-xxbrw                                1    0.794    0.198     3.02     0.75
-vinsertb                             2    2.265    0.680     8.61     2.58
-vextsb2w                             1    0.530    0.132     2.02     0.50
-lxv_const                            1    0.530    0.439     2.01     1.67
-tbl1_p9_3                            3    0.794    0.448     3.02     1.70
-tbl1_p9_4                            4    1.454    0.648     5.52     2.46
-ctx_roundtrip_stxv_lxv               2    3.999    1.901    15.20     7.22
-xscvhpdp                             1   10.510    3.636    39.94    13.82
-xvcvsphp                             1    6.441    2.808    24.48    10.67
-g_maddld                             1    1.854    0.490     7.05     1.86
-g_cnttzd                             1    1.360    0.369     5.17     1.40
-rem_modsd                            1    5.576    2.125    21.19     8.08
-threeway_setb                        2    2.686    0.731    10.21     2.78
+xxspltib                             1    0.624    0.304     2.37     1.16
+mtvsrws                              2    1.725    0.480     6.55     1.82
+mtvsrdd                              2    1.493    0.416     5.67     1.58
+vextubrx                             2    1.592    0.447     6.05     1.70
+vctzlsbb                             1    1.591    0.448     6.04     1.70
+vclzlsbb                             1    1.590    0.448     6.04     1.70
+xxbrq                                1    0.796    0.198     3.03     0.75
+xxbrw                                1    0.793    0.198     3.01     0.75
+vinsertb                             2    2.274    0.679     8.64     2.58
+vextsb2w                             1    0.530    0.132     2.01     0.50
+lxv_const                            1    0.529    0.439     2.01     1.67
+tbl1_p9_3                            3    0.793    0.447     3.01     1.70
+tbl1_p9_4                            4    1.451    0.648     5.51     2.46
+ctx_roundtrip_stxv_lxv               2    3.995    1.903    15.18     7.23
+xscvhpdp                             1   10.683    3.570    40.60    13.57
+xvcvsphp                             1    6.377    2.808    24.23    10.67
+g_maddld                             1    1.854    0.489     7.04     1.86
+g_cnttzd                             1    1.379    0.367     5.24     1.40
+rem_modsd                            1    5.568    2.119    21.16     8.05
+threeway_setb                        2    2.684    0.729    10.20     2.77
+amo_ldat_add                         1  209.534  210.586   796.23   800.23
+amo_stdat_add                        1  132.813  131.784   504.69   500.78
 # cpufreq at end: 3.80 GHz
