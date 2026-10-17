@@ -71,7 +71,7 @@ suite gates a `disableisa30` mode, so every item names its 2.07 fallback.
 | 4 | **Scalar popcount idiom -> `popcntd`** (`fmov d,x; cnt; addv; fmov w,s`) (§2.3) | 9-11 | 2-3 | 2.06 (`mtvsrdd` 3.0 for the V rematerialisation; 2.07 +1) | VS Code 778, Claude 75, libxul 66, libc 7, Factorio 5, cc1 2 | low | hours to 1 day |
 | 5 | **Build the emulator's own binary for POWER9** (§2.5) | native text has 0 ISA 3.0 instructions; 750 `xxswapd`, 9,734 `lxvd2x`/`stxvd2x` | the compiler's P9 codegen for the decoder, IR passes, RA, dispatcher, cache | 3.0 (native; a packaging decision, not a `disableisa30` one) | every cold-translation path; Firefox's hitching is cold translation (HANDOVER item 10) | low technically; packaging must say which hosts the package runs on | hours + one packaging decision |
 | 6 | **DC ZVA on a 128-byte-line host** (§2.6): `CacheLineZero` as `clrrdi; stxv x4` against the pinned zero, or DZP=1 | 9 (`clrrdi` + 8 `std`), 8 store slots | 5, 4 store slots (DZP=1: glibc's own `stp q` loop, 7 per 64 B) | 3.0 `stxv` (2.07: `stxvd2x` + `addi`, 8) | `memset` of 128+ bytes of zero in every guest: calloc, V8/JSC heap clearing; libc 2 sites, Claude 1 | low | hours; bounded by the memset redirect (THUNKS §4), which would use the host's `dcbz` natively |
-| 7 | **FMAXNM/FMINNM through the hardware maxNum rule: one result check instead of two input checks** (§2.7) | 5 | 3 | 2.06 | scalar: libxul 5,328, Factorio 3,256, VS Code 652, Claude 137; vector `fmaxnm`/`fminnm` 456/502/143/18 | medium: the both-NaN order and FPCR.DN are exactly what the result check must route to the stub | hours to 1 day |
+| 7 | **FMAXNM/FMINNM through the hardware maxNum rule: one result check instead of two input checks** (§2.7) -- **DONE**, measured 2.26 -> 1.30 cycles throughput | 5 | 3 (4 where the RA ties Dst to a source) | 2.06 | scalar: libxul 5,328, Factorio 3,256, VS Code 652, Claude 137; vector `fmaxnm`/`fminnm` 456/502/143/18 | medium: the both-NaN order and FPCR.DN are exactly what the result check must route to the stub | done |
 | 8 | **`vnegw`/`vnegd` for NEG.4S/.2D** (§2.8) | 2 | 1 | 3.0 (2.07 stays 2) | libxul 979, VS Code 868, Claude 249, Factorio 106, cc1 39 | none | hours |
 | 9 | **CRC32: hoist the two Barrett constants out of the pool** (§3, already-there family) | ~22, 6 of them two `ld; li; lvx` pool loads | ~16 | 2.07 | Claude 143 sites, VS Code 168, libxul 7; zero in the A64Bench `crc32`, which is table-driven | none | hours; only if a CRC-bound workload appears |
 | ~~10~~ | ~~**Acquire load as ctrl+`isync` instead of trailing `lwsync`**~~ -- **REJECTED by the model** (§2.9): `check.sh ctrlisync` is 10 UNSOUND against `current`'s 6. ctrl+`isync` is a ppo relation, not a cumulative fence, and the four new failures are all read->write cumulativity (`WWC012/018`, `IRWIW008/012`). SC-IRIW1 stays forbidden, so this is not trailing-sync; it is a different hole. Record in `unittests/MemoryModel/ctrlisync.known`. | `sync; ld; lwsync` | unchanged | -- | libxul 126,727 LDAR-family sites, VS Code 49,453, Factorio 10,885, Claude 9,068 -- all moot | -- | none; closed |
@@ -460,6 +460,56 @@ that the self-checking test must now cover from the architecture: the test imple
 (QNaN,QNaN) with distinct payloads, (SNaN,x), (x,SNaN), (SNaN,QNaN), (+0,-0), (-0,+0),
 (+Inf,x), denormals under FZ, each with DN=0 and DN=1, scalar and vector, f32 and f64, and
 compares the emulator's result with it. 2.06 throughout.
+
+**DONE, 2026-10-17.** `DEF_OP_VSX(A64FMinMax)` now takes the hardware max/min first and
+branches to the stub only when the RESULT is a NaN, for the NUMBER forms. The propagating forms
+keep their input checks, because A64 wants the NaN back where hardware hands back the number, so
+a result check would see a number and never branch.
+
+**The ISA-book claim was checked against the chip first** (`maxnan.c`), because it is what the
+whole change rests on and because a wrong answer here would be silent -- the single-QNaN case
+stops reaching the stub entirely:
+
+| inputs | `xvmaxdp` | `xvmindp` | A64 wants |
+|---|---|---|---|
+| (QNaN, 5.0) and (5.0, QNaN) | 5.0 | 5.0 | the number |
+| (-QNaN, 5.0) | 5.0 | 5.0 | the number |
+| (QNaN_A, QNaN_B) | QNaN_A -> a NaN, so the stub still runs | | stub |
+| (SNaN, 5.0) | quieted NaN, so the stub still runs | | stub |
+| (+0, -0) and (-0, +0) | +0 both orders | -0 both orders | +0 / -0 |
+
+So every case the result check stops sending to the stub is one where the hardware answer already
+IS the architectural answer, at f32 and f64, in either operand order and either NaN sign. The ±0
+rows also show this shape neither fixes nor breaks ±0: it is the same `xvmaxdp` either way.
+
+**Cost.** 2.26 -> 1.30 cycles throughput, 1.74x (`../neon/probes/RESULTS-p9.txt`), identical at
+f32 and f64. Latency barely moves, 3.50 -> 3.33, which is the expected shape rather than a
+disappointment: the branches are control dependencies the core speculates past, so what the
+shorter form buys is issue slots. Three instructions where the result register is distinct from
+both sources; four where it is not, since an aliased source must be stashed for the stub, exactly
+as `DEF_OP_VSX(A64FArith)` already does -- and at most one stash is ever needed, because Dst
+aliasing both sources means the two sources are the same register. One degenerate shape,
+`fmaxnm d0, d1, d1`, was 3 instructions before and can be 4 now; compilers do not emit it.
+
+**Test.** `unittests/A64Frontend/fminmaxnm.c`, self-checking and `// NO-GOLDEN`: it computes
+FPUnpack, FPProcessNaNs, FPMax/FPMin and FPMaxNum/FPMinNum from the pseudocode, bit for bit with
+NaN payloads, over 25 operand pairs x 4 FPCR modes x scalar, accumulator-shaped, and vector
+forms. 614 checks, 0 failures. Two controls, because a self-checking FP test can pass vacuously
+in two different ways: `control-reference-pinned` asserts the reference itself against 13
+architecturally-known values (a reference that returned the NaN for (QNaN,num) would agree with
+precisely the lowering bug this test exists to catch), and the suite runs it a second time under
+`POWERARM_FPCOLD=0`, where the cold path is unreachable and a clean run would mean the test never
+exercises it -- so zero failures there is itself a failure.
+
+**Two things the test turned up.** FPCR.DN and FZ are stored but not emulated (COLD-BLOCK-DESIGN
+§53), so 120 rows cannot give the architectural answer; they are bucketed and reported rather
+than skipped, and a DN/FZ row still FAILS if its answer is neither architectural nor the
+documented DN=0,FZ=0 one. The bucket also reports when a row starts giving the architectural
+answer, so it cannot silently rot once DN/FZ lands. And under `POWERARM_FPCOLD=0` only the
+propagating `fmax`/`fmin` rows fail, never the NM ones: across this matrix, in the modes this port
+implements, the hardware answer alone is already ARM-exact for FMAXNM/FMINNM, so the stub is
+DN insurance for them rather than load-bearing today. That is 25 pairs and not a proof over all
+inputs, and the stub stays.
 
 ### 2.8 `vnegw`/`vnegd`
 

@@ -638,6 +638,76 @@ DEF_OP_VSX(A64FMinMax) {
   const auto V1 = GetVSXReg(Op->Vector1);
   const auto V2 = GetVSXReg(Op->Vector2);
 
+  // The NUMBER forms (FMAXNM/FMINNM) check the RESULT, not both inputs: take the
+  // hardware max/min first, and go to the stub only if what came back is a NaN.
+  // Three instructions and one branch, against five and two for the input checks
+  // (POWER-STRENGTHS.md 2.7; measured 2.26 -> 1.30 cycles throughput in
+  // research/neon/probes/RESULTS-p9.txt).
+  //
+  // Sound because of what stops reaching the stub, which is exactly the
+  // single-QNaN case -- and this POWER9 was asked directly rather than taken from
+  // the ISA book (research/power-isa/maxnan.c):
+  //
+  //   (QNaN,5.0) and (5.0,QNaN) -> 5.0, for max and min, either operand order,
+  //   either NaN sign, f32 and f64. That IS A64's FMAXNM/FMINNM answer, and it
+  //   stays the answer under FPCR.DN=1, which substitutes the default NaN only
+  //   when the result is a NaN.
+  //   (QNaN,QNaN) -> a NaN, and any SNaN -> a quieted NaN, so both still branch
+  //   and the stub computes the ARM-exact result for them.
+  //   (+0,-0) and (-0,+0) -> +0 for max and -0 for min, which is already A64's
+  //   rule, and is the same xvmaxdp either way, so this shape neither fixes nor
+  //   breaks it.
+  //
+  // The PROPAGATING forms (FMAX/FMIN) must keep the input checks: A64 wants the
+  // NaN back, hardware hands back the number, so a result check would see a
+  // number and never branch.
+  if (Op->IsNumber) {
+    // The RA prefers the SRA register the result is next stored to, so
+    // `fmaxnm d0, d0, d1` routinely ties Dst to a source and the max would
+    // destroy an operand the stub still needs. Stash it, exactly as
+    // DEF_OP_VSX(A64FArith) does; at most one stash is needed, because Dst
+    // aliasing BOTH sources means the two sources are the same register.
+    PPC64Emitter::VSXR A = V1, B = V2;
+    if (Dst == V1 || Dst == V2) {
+      const auto Aliased = (Dst == V1) ? V1 : V2;
+      xxlor(VTMP2_VSX, Aliased, Aliased);
+      if (Dst == V1) {
+        A = VTMP2_VSX;
+      }
+      if (Dst == V2) {
+        B = VTMP2_VSX;
+      }
+    }
+
+    if (Op->IsMax) {
+      Is64 ? xvmaxdp(Dst, V1, V2) : xvmaxsp(Dst, V1, V2);
+    } else {
+      Is64 ? xvmindp(Dst, V1, V2) : xvminsp(Dst, V1, V2);
+    }
+    Is64 ? xvcmpeqdp_(VTMP1_VSX, Dst, Dst) : xvcmpeqsp_(VTMP1_VSX, Dst, Dst);
+
+    if (!FPColdEnabled()) {
+      // Positive control, as in A64FArith: the check is emitted and the branch
+      // is not, so the ARM-exact NaN rows must FAIL.
+      return;
+    }
+
+    FPNaNFixBodyUsed[Is64] = true;
+    FPNMPrepBodyUsed[Is64] = true;
+    auto& Stub = FPColdStubs.emplace_back();
+    Stub.Kind = FPColdStub::Kind::MinMax;
+    Stub.SiteOffset = GetOffset();
+    Stub.Dst = Dst;
+    Stub.A = A;
+    Stub.B = B;
+    Stub.IsMax = Op->IsMax;
+    Stub.IsNumber = true;
+    Stub.Is64 = Is64;
+    bc(CondSomeLaneNaN, &Stub.Entry);
+    Bind(&Stub.Join);
+    return;
+  }
+
   Is64 ? xvcmpeqdp_(VTMP1_VSX, V1, V1) : xvcmpeqsp_(VTMP1_VSX, V1, V1);
 
   if (!FPColdEnabled()) {
@@ -652,10 +722,8 @@ DEF_OP_VSX(A64FMinMax) {
     return;
   }
 
+  // Only the propagating forms reach here now, so no FPNMPrepBody is needed.
   FPNaNFixBodyUsed[Is64] = true;
-  if (Op->IsNumber) {
-    FPNMPrepBodyUsed[Is64] = true;
-  }
   auto& Stub = FPColdStubs.emplace_back();
   Stub.Kind = FPColdStub::Kind::MinMax;
   Stub.SiteOffset = GetOffset();

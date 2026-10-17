@@ -1024,6 +1024,53 @@ if [ -f vlanetest ]; then
   fi
 fi
 
+# fminmaxnm is the gate on FMAXNM/FMINNM taking the hardware answer. The NUMBER
+# forms check their RESULT for NaN rather than both INPUTS (POWER-STRENGTHS.md
+# 2.7), so a single-QNaN input no longer reaches the ARM-exact cold stub. The test
+# computes FPMaxNum/FPMinNum from the ARM pseudocode -- not from the lowering --
+# and compares bit for bit including NaN payloads.
+#
+# It runs twice. The second run is POWERARM_FPCOLD=0, which emits the NaN check and
+# never the branch, so the cold path is unreachable and the PROPAGATING fmax/fmin
+# rows must FAIL. A clean FPCOLD=0 run would mean the test is not reaching the cold
+# path at all and proves nothing, so a zero there is itself a failure.
+#
+# FPCR.DN and FZ are stored but not emulated here (COLD-BLOCK-DESIGN.md 53), so the
+# test buckets those rows as a known gap and says so; it still FAILS a DN/FZ row
+# whose answer is neither architectural nor the documented DN=0,FZ=0 one.
+if [ -f fminmaxnm ]; then
+  fmm_fail=0
+  fmm_detail=""
+  "$emu" ./fminmaxnm > fminmaxnm.out 2> /dev/null
+  fmm_bad=$(grep -c '^FAIL' fminmaxnm.out 2> /dev/null)
+  fmm_checks=$(sed -n 's/^checks \([0-9]*\) failures 0$/\1/p' fminmaxnm.out)
+  fmm_ref=$(grep -c '^PASS control-reference-pinned$' fminmaxnm.out 2> /dev/null)
+  fmm_fpcr=$(grep -c '^PASS fpcr-restored$' fminmaxnm.out 2> /dev/null)
+  if [ "$fmm_bad" != 0 ] || [ -z "$fmm_checks" ]; then
+    fmm_fail=1
+    fmm_detail="$fmm_detail $fmm_bad failing rows;"
+  fi
+  if [ "$fmm_ref" != 1 ]; then
+    fmm_fail=1
+    fmm_detail="$fmm_detail the reference itself was not pinned, so a pass means nothing;"
+  fi
+  if [ "$fmm_fpcr" != 1 ]; then
+    fmm_fail=1
+    fmm_detail="$fmm_detail FPCR was left modified;"
+  fi
+  POWERARM_FPCOLD=0 "$emu" ./fminmaxnm > fminmaxnm.fpcold0 2> /dev/null
+  fmm_cold=$(grep -c '^FAIL' fminmaxnm.fpcold0 2> /dev/null)
+  if [ "$fmm_cold" = 0 ]; then
+    fmm_fail=1
+    fmm_detail="$fmm_detail FPCOLD=0 produced no failures, so the cold path is never exercised;"
+  fi
+  if [ "$fmm_fail" = 0 ]; then
+    report PASS fminmaxnm "$fmm_checks FPMaxNum/FPMinNum checks clean, $fmm_cold rows fail with the cold path disabled"
+  else
+    report FAIL fminmaxnm "$fmm_detail see $out/fminmaxnm.out"
+  fi
+fi
+
 # memrev is the gate on the load+REV / REV+store fusion (TryFuseMemRev):
 # every width at every alignment, every addressing form the fusion accepts
 # and the ones it refuses, the store direction's register result, and the

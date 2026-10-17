@@ -146,6 +146,11 @@ gcc -static -O2 -pthread -o sigchildteardown "$here/sigchildteardown.c"
 # so no golden is captured for either: a reference taken from the emulator
 # under test is precisely what could not tell you these answers. Built here
 # only so the same binary runs on both sides.
+# fminmaxnm is self-checking and MUST stay that way: it computes A64's FPMaxNum /
+# FPMinNum from the pseudocode and compares, so a golden taken from the emulator
+# would be comparing the thing under test against itself on exactly the NaN rows
+# that matter (POWER-STRENGTHS.md 2.7).
+gcc -static -O2 -o fminmaxnm "$here/fminmaxnm.c"
 gcc -static -O2 -o memrev "$here/memrev.c"
 gcc -static -O2 -o prfmhint "$here/prfmhint.c"
 # Threaded: a guest signal handler returning through rt_sigreturn while its
