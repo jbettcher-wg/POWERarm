@@ -45,8 +45,8 @@ argument for each rank is in §3; this table is the conclusion.
 | 11 | **SDIV/UDIV without the double-select scaffold; `modsw`/`modsd` for the MSUB idiom** (§3.9) | UDIV 8-13, SDIV 12-18 | 3-4 / 6-7 | 2.07 (+3.0 for mod) | rare in hot code | low | 1 day |
 | 12 | **Scalar-FP chain hygiene: dirty upper lane between scalar ops, `lxvdsx` for single-use loads** (§3.10) | 5 per scalar op, 2 per load | 4, 1 | 2.06 | Factorio (0.44% static scalar FP), Firefox (0.28%), JS numerics | medium | 2-3 days |
 | 13 | **ADDP/UZP2 without pool-constant `vperm`** (§3.11) | 9 / 4 | 6 / 3 | 2.07 | reductions, N1 exit paths | none | hours |
-| 14 | **Three-way compare idiom -> `setb`** (§3.12) | ~9 | 2 | 3.0 | comparators; rare | low | half a day |
-| 15 | **Pre-index STP -> `stdu`** (§3.13) | 3 | 2 | base | prologues; cracked on POWER9, fetch only | medium | 1 day |
+| ~~14~~ | ~~**Three-way compare idiom -> `setb`**~~ (§3.12) -- **REJECTED on measurement**: 2 instructions are slower than 6 on both latency and throughput | ~9 | 2, and slower | 3.0 | comparators; rare | -- | none; closed |
+| ~~15~~ | ~~**Pre-index STP -> `stdu`**~~ (§3.13) -- **REJECTED on measurement**: the crack costs more than the instruction saves, 2.37 -> 2.45 tp | 3 | 2, and slower | base | prologues; cracked on POWER9, fetch only | -- | none; closed |
 | 16 | **LSE atomics: CR0 save via `mcrf`; AMOs (`ldat`/`lwat`)** (§3.14) | 12 + a store-forward | 8 / 4 | base / 3.0 | negligible: LSE ops sit only in the outline-atomics helpers, ~2.5 M per V8 run | low | hours / 2 days |
 | 17 | **FPSR IEEE flags from FPSCR on `MRS FPSR`** (§3.15) | flags never set | `mffs` on the rare read | 2.06 | fidelity, not speed | low | hours |
 
@@ -516,6 +516,13 @@ subf` and the scaffold). Skip the remainder in `Div`/`UDiv` when `OutRemainder` 
 **Correctness.** Low; the special cases keep their `isel`s. Gate: the `gen.py` SDIV/UDIV sweep.
 **Size.** One day.
 
+**CONFIRMED on measurement, 2026-10-17** (`../neon/probes/RESULTS-p9.txt`, rows `g_divd`,
+`rem_divd_mulld_subf`, `rem_modsd`). `modsd` costs exactly what `divd` alone costs -- 21.19
+against 21.18 cycles latency, 8.08 against 8.07 throughput -- so the `mulld ; subf` it replaces
+are pure added serial latency on top of the divide, not work that overlapped it. The remainder
+idiom goes **28.24 -> 21.19 lat (-25%) and 9.93 -> 8.08 tp (-19%)**. The rank stands (divides are
+rare in hot code) but the per-site saving is larger than the 3 -> 1 instruction count suggests.
+
 ### 3.10 Scalar-FP chain hygiene: a dirty upper lane between scalar ops, `lxvdsx` for single-use loads
 
 **Today.** `fadd d0, d1, d2` is `xvadddp ; xvcmpeqdp. ; bc ; vspltisw ; xxpermdi` (5, 4 after
@@ -622,6 +629,13 @@ instructions. ISA 3.0 `setb rD, crN` returns -1/0/+1 from LT/EQ/GT: `cmpw cr7 ; 
 frontend peephole after a fusable compare; the 2.07 fallback is today's code. Comparators only;
 **low**, half a day.
 
+**REJECTED on measurement, 2026-10-17** (`../neon/probes/RESULTS-p9.txt`, rows `threeway_isel`
+and `threeway_setb`). It is slower on **both** columns: 8.07 lat / 2.19 tp for the six-instruction
+`isel` form against **10.21 lat / 2.78 tp** for the two-instruction `setb` form. `setb` reads a
+whole CR field, while `isel` reads one bit and the two `li` that feed it sit off the dependency
+chain, so the instruction count was measuring the wrong thing. Two instructions, 27% more
+latency. Do not implement.
+
 ### 3.13 Pre-index STP -> `stdu`
 
 `stp x29, x30, [sp, #-32]!` (`STP_LDP_gen`, `TranslateLoadStore.cpp:205-262`) is `addi ; std ;
@@ -629,6 +643,13 @@ std` (3); `stdu x29,-32(sp) ; std x30,8(sp)` is 2 and keeps the store-before-wri
 order. Static: pre-index pairs are 0.42% of cc1, 0.35% of Factorio. POWER9 cracks update
 forms into two internal ops, so the saving is fetch and I-cache only; a backend peephole across
 two IR ops with the base's writeback. **Low**; not before the items ranked above it.
+
+**REJECTED on measurement, 2026-10-17** (`../neon/probes/RESULTS-p9.txt`, rows
+`stp_preindex_addi` and `stp_preindex_stdu`). The cracking costs more than the instruction
+saves: **2.37 tp for the three-instruction form against 2.45 for the two-instruction `stdu`
+form**, both writing the same two doublewords to the same addresses. The suspicion recorded
+above was correct, and it is now a number. Read only the `tp` column here -- a store produces no
+value, so these two rows' `lat` is just the chain's closing `add`. Do not implement.
 
 ### 3.14 LSE atomics: save CR0 with `mcrf`; AMOs for LSE RMWs
 

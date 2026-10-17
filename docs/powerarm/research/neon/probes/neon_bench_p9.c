@@ -159,6 +159,64 @@ BENCH(rev32_p8_2, 2, "vspltisw %[t1],-16\n\tvrlw %[a],%[a],%[t1]\n\tvspltish %[t
 /* register-half placement: the same chain entirely in the FPR half (vs0-31) via VSX forms */
 BENCH(xxland_lowhalf, 3, "xxlor 0,%x[a],%x[a]\n\txxland 0,0,%x[b]\n\txxlor %x[a],0,0")
 BENCH(xxlor_move_halves, 2, "xxlor 1,%x[a],%x[a]\n\txxlor %x[a],1,1")
+
+/* ---- integer / GPR sequences ------------------------------------------------
+ * BENCH above chains through a VECTOR accumulator, so the integer side of
+ * ISA-OPPORTUNITIES (items 1, 2, 4, 5, 8, 10, 11, 14, 15, 16 -- most of the
+ * list) could not be expressed here at all.  BENCHG chains through a GPR and
+ * offers three GPR temporaries plus CR0/CR1/XER as clobbers.
+ *
+ * Seeds are deliberately large: `divd` on POWER9 has data-dependent latency and
+ * exits early on small operands, so a 3/5 chain would time the fast path and
+ * report a divide as cheap.
+ *
+ * For a STORE sequence the `lat` column is MEANINGLESS and is left in only so the
+ * table stays rectangular: a store produces no value, the base address is
+ * loop-invariant, and so the only thing on the dependency chain is the closing
+ * `add` -- both store rows duly report about one `add`.  Read `tp` for those two,
+ * which is what the "cracked on POWER9, fetch only" question in
+ * ISA-OPPORTUNITIES 3.13 is actually about.
+ *
+ * Every other row puts the accumulator on the chain, so both columns are real.
+ * A sequence whose `lat` equals `g_add` has been written wrong, not found fast.
+ *
+ * ninsn counts the sequence under test and EXCLUDES the trailing instruction
+ * that closes the dependency chain, matching the vector entries above.
+ */
+#define OPSG(acc) [a] "+r"(acc), [t1] "=&r"(h1), [t2] "=&r"(h2), [t3] "=&r"(h3)
+#define INSG [b] "r"(hb), [c] "r"(hc), [p] "r"(p)
+#define GCLOB "cr0", "cr1", "cr6", "cr7", "xer", "memory"
+#define BENCHG(name, ninsn, str) \
+static double lat_##name(void) { uint64_t a = 0x0123456789ABCDEFULL, hb = 0x1357ULL, hc = 0x2468ACE1ULL, h1, h2, h3; unsigned char* p = scratch; \
+  uint64_t t0 = tb(); for (int i = 0; i < ITER; i++) { __asm__ volatile(str : OPSG(a) : INSG : GCLOB); __asm__ volatile(str : OPSG(a) : INSG : GCLOB); __asm__ volatile(str : OPSG(a) : INSG : GCLOB); __asm__ volatile(str : OPSG(a) : INSG : GCLOB); } \
+  uint64_t t1_ = tb(); __asm__ volatile("" :: "r"(a)); return (double)(t1_ - t0) / (4.0 * ITER) / tb_per_add; } \
+static double tp_##name(void) { uint64_t a0 = 0x0123456789ABCDEFULL, a1 = a0, a2 = a0, a3 = a0, hb = 0x1357ULL, hc = 0x2468ACE1ULL, h1, h2, h3; unsigned char* p = scratch; \
+  uint64_t t0 = tb(); for (int i = 0; i < ITER; i++) { __asm__ volatile(str : OPSG(a0) : INSG : GCLOB); __asm__ volatile(str : OPSG(a1) : INSG : GCLOB); __asm__ volatile(str : OPSG(a2) : INSG : GCLOB); __asm__ volatile(str : OPSG(a3) : INSG : GCLOB); } \
+  uint64_t t1_ = tb(); __asm__ volatile("" :: "r"(a0), "r"(a1), "r"(a2), "r"(a3)); return (double)(t1_ - t0) / (4.0 * ITER) / tb_per_add; } \
+static const struct benchent name##_ent = { #name, ninsn, lat_##name, tp_##name };
+
+/* Reference points: `g_add` must land on the same ~2 cycles the calibration
+ * chain does, which is the check that BENCHG itself is not adding overhead. */
+BENCHG(g_add, 1, "add %[a],%[a],%[b]")
+BENCHG(g_mulld, 1, "mulld %[t1],%[a],%[b]\n\tadd %[a],%[a],%[t1]")
+BENCHG(g_popcntd, 1, "popcntd %[t1],%[a]\n\tadd %[a],%[a],%[t1]")
+BENCHG(g_divd, 1, "divd %[t1],%[a],%[c]\n\tadd %[a],%[a],%[t1]")
+
+/* ISA-OPPORTUNITIES 3.9: the SDIV+MSUB remainder idiom. The question is not
+ * whether two instructions beat three, it is whether the mod shares the
+ * divider's latency with the divide or serialises behind it. */
+BENCHG(rem_divd_mulld_subf, 3, "divd %[t1],%[a],%[c]\n\tmulld %[t2],%[t1],%[c]\n\tsubf %[t3],%[t2],%[a]\n\tadd %[a],%[a],%[t3]")
+
+/* ISA-OPPORTUNITIES 3.12: the three-way compare idiom, branchless both ways.
+ * `isel` is the form available without ISA 3.0. */
+BENCHG(threeway_isel, 6, "cmpd 0,%[a],%[c]\n\tli %[t1],1\n\tli %[t2],-1\n\tli %[t3],0\n\tisel %[t3],%[t1],%[t3],1\n\tisel %[t3],%[t2],%[t3],0\n\tadd %[a],%[a],%[t3]")
+
+/* ISA-OPPORTUNITIES 3.13: pre-index STP. Both forms write the same two
+ * doublewords at the same addresses inside `scratch`; the first `addi` is
+ * shared setup and is excluded from ninsn for both. */
+BENCHG(stp_preindex_addi, 3, "addi %[t1],%[p],64\n\taddi %[t1],%[t1],-16\n\tstd %[b],0(%[t1])\n\tstd %[c],8(%[t1])\n\tadd %[a],%[a],%[t1]")
+BENCHG(stp_preindex_stdu, 2, "addi %[t1],%[p],64\n\tstdu %[b],-16(%[t1])\n\tstd %[c],8(%[t1])\n\tadd %[a],%[a],%[t1]")
+
 #if P9
 BENCH(vabsdub, 1, "vabsdub %[a],%[a],%[b]")
 BENCH(vpermr, 1, "vpermr %[a],%[a],%[b],%[c]")
@@ -180,6 +238,12 @@ BENCH(vmulld_p10_unavailable, 0, "nop")
 BENCH(ctx_roundtrip_stxv_lxv, 2, "stxv %x[a],0(%[p])\n\tlxv %x[a],0(%[p])")
 BENCH(xscvhpdp, 1, "xscvhpdp %x[a],%x[a]")
 BENCH(xvcvsphp, 1, "xvcvsphp %x[a],%x[a]")
+
+/* ISA-OPPORTUNITIES 3.10 (landed) and the two open ISA 3.0 integer rows. */
+BENCHG(g_maddld, 1, "maddld %[t1],%[a],%[b],%[c]\n\tadd %[a],%[a],%[t1]")
+BENCHG(g_cnttzd, 1, "cnttzd %[t1],%[a]\n\tadd %[a],%[a],%[t1]")
+BENCHG(rem_modsd, 1, "modsd %[t1],%[a],%[c]\n\tadd %[a],%[a],%[t1]")
+BENCHG(threeway_setb, 2, "cmpd 0,%[a],%[c]\n\tsetb %[t1],0\n\tadd %[a],%[a],%[t1]")
 #endif
 
 int main(void) {
@@ -205,8 +269,10 @@ int main(void) {
     &shrn_cur4_ent, &srshr_imm5_ent, &sqshl_imm8_ent, &sshl_reg13_ent, &tbl1_p8_6_ent, &uqadd64_3_ent, &sqadd64_9_ent, &sqdmulh16_2_ent, &sqdmulh32_9_ent, &smull8_3_ent, &mul8_5_ent, &mul64_8_ent, &uabd_p8_3_ent,
     &udot_1_ent, &sdot_6_ent, &pmull_2_ent, &aese_3_ent, &aes_round_fused_2_ent, &fmla_gated_3_ent, &fcvtzs_3_ent, &rbit_8_ent, &zip1_1_ent, &uzp2_3_ent, &ext_1_ent, &rev32_p8_2_ent,
     &xxland_lowhalf_ent, &xxlor_move_halves_ent,
+    &g_add_ent, &g_mulld_ent, &g_popcntd_ent, &g_divd_ent, &rem_divd_mulld_subf_ent, &threeway_isel_ent, &stp_preindex_addi_ent, &stp_preindex_stdu_ent,
 #if P9
     &vabsdub_ent, &vpermr_ent, &xxperm_ent, &xxspltib_ent, &mtvsrws_ent, &mtvsrdd_ent, &vextubrx_ent, &vctzlsbb_ent, &vclzlsbb_ent, &xxbrq_ent, &xxbrw_ent, &vinsertb_ent, &vextsb2w_ent, &lxv_const_ent, &tbl1_p9_3_ent, &tbl1_p9_4_ent, &ctx_roundtrip_stxv_lxv_ent, &xscvhpdp_ent, &xvcvsphp_ent,
+    &g_maddld_ent, &g_cnttzd_ent, &rem_modsd_ent, &threeway_setb_ent,
 #endif
   };
   for (size_t i = 0; i < sizeof all / sizeof all[0]; i++) {

@@ -172,6 +172,35 @@ the configuration you ran before building a story on it.*
 
 ---
 
+## 5a. Costing a lowering before implementing it
+
+`research/neon/probes/neon_bench_p9.c` times a host instruction sequence on this POWER9 in core
+cycles -- latency down one dependency chain, throughput across four independent ones, both
+against a calibrated dependent-`add` reference. A candidate lowering is one `BENCH()` (vector
+accumulator) or `BENCHG()` (GPR accumulator) line, so a sequence can be **costed before it is
+implemented**. Build it with `clang` -- on this box that is the native ppc64le compiler, while a
+shell running under POWERarm sees the rootfs's aarch64 `gcc` instead -- and run it under
+`taskset`. Cycles are derived from the time base against the calibration chain, so this is the
+one measurement here that does not need a quiet box or a settled governor.
+
+`research/power-isa/census/bench_join.py` joins those cycle counts to the static site counts in
+`research/power-isa/census/*.strengths.census` and ranks candidates by cycles times sites.
+
+**Static instruction count is a proxy that inverts.** This instrument exists because
+ISA-OPPORTUNITIES.md and POWER-STRENGTHS.md both rank by "today N host instructions, after M",
+and measurement has now killed two rows that looked like wins on that basis: §3.12's `setb` turns
+six instructions into two and is slower on **both** columns, and §3.13's `stdu` turns three into
+two and is slower on throughput. In the same table a 13-instruction sequence costs 9.22 cycles
+while a 1-instruction one costs 40.66. **[MEASURED]**
+
+**What it cannot answer.** It measures a sequence in isolation, so it is blind to register
+pressure and to I-cache footprint. That makes it the right instrument for every "N -> M
+instructions" row and the wrong one for checklist P1 (pressure) and P4/P6 (fetch). It did
+usefully price P1 from the side: a vector context spill-and-reload round trip is 15.2 cycles, and
+ISA 3.0 does not improve it, because it is store-forward bound rather than instruction bound.
+
+---
+
 ## 6. Correctness evidence is not performance evidence, and has its own rules
 
 - **No new goldens can be minted.** The Pi 5 is gone. The goldens on disk stay
