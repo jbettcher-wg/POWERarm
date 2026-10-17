@@ -185,6 +185,124 @@ BENCH(fmaxnm_new_sp, 3, "xvmaxsp %x[a],%x[a],%x[c]\n\txvcmpeqsp. %x[t1],%x[a],%x
 /* The max alone, as the floor both forms are paying on top of. */
 BENCH(xvmaxdp_alone, 1, "xvmaxdp %x[a],%x[a],%x[c]")
 
+/* ---- scalar half converts on POWER8 -----------------------------------------
+ * The last place a pre-ISA-3.0 host pays an order of magnitude. Transcribed from
+ * EmitHalfToDouble (A64FPOps.cpp:279) rather than invented.
+ *
+ * The "43 host instructions" in the notes is the STATIC size of that function's
+ * whole decision tree. A normal half executes 17 of it -- NotSpecial then Normal,
+ * both branches taken -- and a denormal about 26, through a cntlzd renormalise.
+ * So the question is not 43 against 4, it is whether a branch-free sequence beats
+ * 17 instructions and two well-predicted branches, and the answer turns on how
+ * the three word constants are materialised: const_gpr_splat above is 3.39 tp and
+ * lxv_const is 1.67, and this needs three of them.
+ *
+ * h2d_id_* are the identity EmitHalfToSingleVec uses (VectorOps.cpp:5696),
+ * narrowed to one lane and finished with xscvspdp, which is exact: every f16
+ * value is representable in f32 and in f64.
+ */
+static const uint32_t HalfConsts[4] __attribute__((aligned(16))) = {
+  0x77800000u, /* 2^112 */
+  0x47800000u, /* 2^16, the exponent-31 boundary */
+  0x38000000u, /* the Inf/NaN fixup */
+  0u,
+};
+
+#define OPSM(acc) [a] "+v"(acc), [t1] "=&v"(t1), [t2] "=&v"(t2), [t3] "=&v"(t3), \
+                  [g1] "=&b"(h1), [g2] "=&b"(h2), [g3] "=&b"(h3), [g4] "=&b"(h4)
+#define INSM [b] "v"(b), [q] "b"(HalfConsts)
+#define MCLOB "cr0", "cr1", "cr6", "cr7", "xer", "memory"
+#define BENCHM(name, ninsn, str) \
+static double lat_##name(void) { v16 a = {0,0,0,0,0,0,0,0,0,0,0,0,0,0,0x55,0x3C}, b = {0}, t1, t2, t3; uint64_t h1, h2, h3, h4; \
+  uint64_t t0 = tb(); for (int i = 0; i < ITER; i++) { __asm__ volatile(str : OPSM(a) : INSM : MCLOB); __asm__ volatile(str : OPSM(a) : INSM : MCLOB); __asm__ volatile(str : OPSM(a) : INSM : MCLOB); __asm__ volatile(str : OPSM(a) : INSM : MCLOB); } \
+  uint64_t t1_ = tb(); __asm__ volatile("" :: "v"(a)); return (double)(t1_ - t0) / (4.0 * ITER) / tb_per_add; } \
+static double tp_##name(void) { v16 a0 = {0,0,0,0,0,0,0,0,0,0,0,0,0,0,0x55,0x3C}, a1 = a0, a2 = a0, a3 = a0, b = {0}, t1, t2, t3; uint64_t h1, h2, h3, h4; \
+  uint64_t t0 = tb(); for (int i = 0; i < ITER; i++) { __asm__ volatile(str : OPSM(a0) : INSM : MCLOB); __asm__ volatile(str : OPSM(a1) : INSM : MCLOB); __asm__ volatile(str : OPSM(a2) : INSM : MCLOB); __asm__ volatile(str : OPSM(a3) : INSM : MCLOB); } \
+  uint64_t t1_ = tb(); __asm__ volatile("" :: "v"(a0), "v"(a1), "v"(a2), "v"(a3)); return (double)(t1_ - t0) / (4.0 * ITER) / tb_per_add; } \
+static const struct benchent name##_ent = { #name, ninsn, lat_##name, tp_##name };
+
+/* The executed path for a NORMAL half: both compares fall through to Normal. */
+BENCHM(h2d_cur_normal, 17,
+  "xxpermdi %x[t1],%x[a],%x[a],3\n\t"
+  "mfvsrd %[g1],%x[t1]\n\t"
+  "rldicl %[g4],%[g1],0,54\n\t"
+  "rldicl %[g3],%[g1],54,59\n\t"
+  "rldicl %[g2],%[g1],49,63\n\t"
+  "sldi %[g2],%[g2],63\n\t"
+  "cmpldi 1,%[g3],0x1F\n\t"
+  "bc 4,6,1f\n1:\n\t"
+  "cmpldi 1,%[g3],0\n\t"
+  "bc 4,6,2f\n2:\n\t"
+  "addi %[g3],%[g3],1008\n\t"
+  "sldi %[g3],%[g3],52\n\t"
+  "or %[g2],%[g2],%[g3]\n\t"
+  "sldi %[g1],%[g4],42\n\t"
+  "or %[g2],%[g2],%[g1]\n\t"
+  "mtvsrd %x[t1],%[g2]\n\t"
+  "xxpermdi %x[a],%x[b],%x[t1],0")
+
+/* The executed path for a DENORMAL half: the cntlzd renormalise. */
+BENCHM(h2d_cur_denorm, 26,
+  "xxpermdi %x[t1],%x[a],%x[a],3\n\t"
+  "mfvsrd %[g1],%x[t1]\n\t"
+  "rldicl %[g4],%[g1],0,54\n\t"
+  "rldicl %[g3],%[g1],54,59\n\t"
+  "rldicl %[g2],%[g1],49,63\n\t"
+  "sldi %[g2],%[g2],63\n\t"
+  "cmpldi 1,%[g3],0x1F\n\t"
+  "bc 4,6,1f\n1:\n\t"
+  "cmpldi 1,%[g3],0\n\t"
+  "cmpldi 1,%[g4],0\n\t"
+  "cntlzd %[g3],%[g4]\n\t"
+  "addi %[g3],%[g3],-63\n\t"
+  "neg %[g3],%[g3]\n\t"
+  "li %[g1],52\n\t"
+  "subf %[g1],%[g3],%[g1]\n\t"
+  "sld %[g1],%[g4],%[g1]\n\t"
+  "clrldi %[g1],%[g1],12\n\t"
+  "or %[g2],%[g2],%[g1]\n\t"
+  "addi %[g3],%[g3],999\n\t"
+  "sldi %[g3],%[g3],52\n\t"
+  "or %[g2],%[g2],%[g3]\n\t"
+  "mtvsrd %x[t1],%[g2]\n\t"
+  "xxpermdi %x[a],%x[b],%x[t1],0")
+
+/* Branch-free, constants built through a GPR as SplatWord32 does today. */
+BENCHM(h2d_id_gprconst, 24,
+  "vspltisw %[t2],15\n\tvsrw %[t3],%[a],%[t2]\n\t"
+  "vspltisw %[t2],-1\n\tvslw %[t3],%[t3],%[t2]\n\t"
+  "vspltisw %[t2],-15\n\tvslw %[t1],%[a],%[t2]\n\t"
+  "vspltisw %[t2],4\n\tvsrw %[t1],%[t1],%[t2]\n\t"
+  "lis %[g1],0x7780\n\tmtvsrd %x[t2],%[g1]\n\txxpermdi %x[t2],%x[t2],%x[t2],0\n\tvspltw %[t2],%[t2],1\n\t"
+  "xvmulsp %x[t1],%x[t1],%x[t2]\n\t"
+  "lis %[g1],0x4780\n\tmtvsrd %x[t2],%[g1]\n\txxpermdi %x[t2],%x[t2],%x[t2],0\n\tvspltw %[t2],%[t2],1\n\t"
+  "xvcmpgesp %x[t2],%x[t1],%x[t2]\n\t"
+  "lis %[g1],0x3800\n\tmtvsrd %x[t3],%[g1]\n\txxpermdi %x[t3],%x[t3],%x[t3],0\n\tvspltw %[t3],%[t3],1\n\t"
+  "xxland %x[t2],%x[t2],%x[t3]\n\txxlor %x[t1],%x[t1],%x[t2]\n\t"
+  "xxlxor %x[t3],%x[t3],%x[t3]\n\txvaddsp %x[t1],%x[t1],%x[t3]\n\t"
+  "xscvspdp %x[a],%x[t1]")
+
+/* The same, with the three constants in one pooled 16-byte slot, loaded with
+ * lvx and NOT lxv: lxv is ISA 3.0, i.e. absent from the very host this whole
+ * path exists for. const_pool_lvx above measures that load at 2.02/1.58.
+ *
+ * Note that `clang -mcpu=power8` does NOT catch such a mistake -- it assembles
+ * lxv without complaint, so neither build here is an ISA-level audit. Anything
+ * claiming to be a 2.07 path has to be checked against the ISA by hand. */
+BENCHM(h2d_id_poolconst, 15,
+  "vspltisw %[t2],15\n\tvsrw %[t3],%[a],%[t2]\n\t"
+  "vspltisw %[t2],-1\n\tvslw %[t3],%[t3],%[t2]\n\t"
+  "vspltisw %[t2],-15\n\tvslw %[t1],%[a],%[t2]\n\t"
+  "vspltisw %[t2],4\n\tvsrw %[t1],%[t1],%[t2]\n\t"
+  "lvx %[t2],0,%[q]\n\tvspltw %[t2],%[t2],3\n\t"
+  "xvmulsp %x[t1],%x[t1],%x[t2]\n\t"
+  "lvx %[t2],0,%[q]\n\tvspltw %[t2],%[t2],2\n\t"
+  "xvcmpgesp %x[t2],%x[t1],%x[t2]\n\t"
+  "lvx %[t3],0,%[q]\n\tvspltw %[t3],%[t3],1\n\t"
+  "xxland %x[t2],%x[t2],%x[t3]\n\txxlor %x[t1],%x[t1],%x[t2]\n\t"
+  "xxlxor %x[t3],%x[t3],%x[t3]\n\txvaddsp %x[t1],%x[t1],%x[t3]\n\t"
+  "xscvspdp %x[a],%x[t1]")
+
 /* ---- integer / GPR sequences ------------------------------------------------
  * BENCH above chains through a VECTOR accumulator, so the integer side of
  * ISA-OPPORTUNITIES (items 1, 2, 4, 5, 8, 10, 11, 14, 15, 16 -- most of the
@@ -355,6 +473,7 @@ int main(void) {
     &udot_1_ent, &sdot_6_ent, &pmull_2_ent, &aese_3_ent, &aes_round_fused_2_ent, &fmla_gated_3_ent, &fcvtzs_3_ent, &rbit_8_ent, &zip1_1_ent, &uzp2_3_ent, &ext_1_ent, &rev32_p8_2_ent,
     &xxland_lowhalf_ent, &xxlor_move_halves_ent,
     &fmaxnm_cur_dp_ent, &fmaxnm_new_dp_ent, &fmaxnm_cur_sp_ent, &fmaxnm_new_sp_ent, &xvmaxdp_alone_ent,
+    &h2d_cur_normal_ent, &h2d_cur_denorm_ent, &h2d_id_gprconst_ent, &h2d_id_poolconst_ent,
     &g_add_ent, &g_mulld_ent, &g_popcntd_ent, &g_divd_ent, &rem_divd_mulld_subf_ent, &threeway_isel_ent, &stp_preindex_addi_ent, &stp_preindex_stdu_ent,
     &fence_sync_ent, &fence_lwsync_ent, &fence_isync_ent, &fence_eieio_ent, &store_then_sync_ent, &store_then_lwsync_ent,
     &ldarx_stdcx_loop_ent, &lwarx_stwcx_loop_ent, &cr0_save_mfocrf_ent, &cr0_save_mcrf_ent, &rmw_fetchadd_larx_ent,

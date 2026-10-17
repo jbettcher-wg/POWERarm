@@ -671,6 +671,39 @@ nothing on the store side moves.
   moot, because the string redirect that could reach a `cmpb`-shaped `strlen` would call the
   host's, which already uses it.
 
+### 4a. Scalar half converts on POWER8, branch-free -- REJECTED on measurement, 2026-10-17
+
+After the vector FP16 converts landed, the scalar ones looked like the last place a pre-ISA-3.0
+host pays an order of magnitude: `fcvt d,h` 43 host instructions against 4 on ISA 3.0, `fcvt h,s`
+80 against 19. Recommended twice on that basis. The basis was wrong.
+
+**43 is the STATIC size of `EmitHalfToDouble`'s whole decision tree.** A normal half executes 17
+of it -- `NotSpecial` then `Normal`, both branches taken -- and a denormal about 26, through the
+`cntlzd` renormalise. So the comparison was never 43 against 4; it was a branch-free sequence
+against 17 instructions and two branches.
+
+Measured (`../neon/probes/RESULTS-p9.txt`, the `h2d_*` rows), throughput in cycles:
+
+| shape | insns | lat | tp |
+|---|---|---|---|
+| current, normal input | 17 | 25.29 | **7.88** |
+| current, denormal input | 26 | 36.59 | 11.08 |
+| the vector identity, one lane, constants pooled | 15 | 33.45 | **13.89** |
+| the same, constants built through a GPR as today | 24 | 34.26 | **20.03** |
+
+**1.76x worse** with the constants pooled and 2.5x worse without, and worse on latency too. The
+identity's strength is that it converts four lanes for ~26 instructions; spent on ONE lane it pays
+the whole sequence and all three constants for a single value, while the branchy GPR path runs
+cheap (~0.5 cycle) integer ops and its two branches are perfectly predicted. Pooling the
+constants helps -- 20.03 to 13.89, which is the `PPC64VConstIndex` follow-up measured in passing
+-- but not nearly enough to close the gap.
+
+**The limit of this result.** The probe feeds one value, so those two branches are predicted every
+iteration. A guest stream that makes them unpredictable would shift the comparison, and that is a
+property of the workload rather than of the lowering; it was not measured. For anything
+predominantly normal -- which is what FP16 image and inference code is -- the current code wins
+decisively and should be left alone.
+
 ## 5. What a POWER10 host would change
 
 Not a proposal -- this port runs on a POWER9 -- but the list says what the ceiling of
