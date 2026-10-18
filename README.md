@@ -50,6 +50,60 @@ in full and advertised through `AT_HWCAP`, `ID_AA64ISAR0_EL1` and `/proc/cpuinfo
 no SVE or SME. The EL0-readable generic timer (`CNTVCT_EL0`, `CNTFRQ_EL0`) is present, which is
 what JavaScript engines use as their high-resolution clock.
 
+## What's new in 0.20.0
+
+A stability and clean-up release. The headline is that POWERarm no longer leaves processes
+behind, which was the most visible defect a desktop user could hit.
+
+**Processes left behind, and the cache that went with them.** The code-cache exit-save `fork()`
+handed its child one thread and every lock the exiting threads were holding. The child blocked
+on the first lock it touched, reparented to init, and sat in a futex for the uptime of the
+machine -- and the cache that exit was meant to write was lost with it. Measured on an idle
+machine, **35.7% of threaded guest exits** leaked one; 153 were found alive on the development
+box, the oldest over four hours. The fix is asymmetric, because the parent cannot reserve those
+locks without deadlocking against the exiting threads: the child recovers them from its own
+side, and arms a watchdog for any lock nobody enumerated. **Zero survivors over 1728 exits**,
+with the cache still written.
+
+**The test suite could not see it, and now can.** `threadexit_loop` reported PASS through
+roughly 200 leaked processes across four runs, because the process it waits on exits cleanly
+and the orphan is nothing's child. It now counts emulator processes before and after the loop
+and fails on any new one. Separately, the two teardown-race tests could wedge the suite
+indefinitely rather than report a hang.
+
+**Signals.** A process-directed signal handed to a thread already in its own teardown was
+consumed and lost. The kernel is actively likely to pick such a thread, because it chooses the
+first in the group that does not block the signal and `PF_EXITING` is not set until long after
+teardown begins. Across seven headless Chrome sessions every one lost one to three
+kernel-generated `SIGCHLD`, so a guest that installs a handler to reap its children -- which
+Chrome does -- never learned the child exited. An exiting thread now blocks asynchronous signals
+before it can lose one, so the kernel skips it and the signal reaches a thread that can take it.
+
+**POWER8.** The vector FP16 converts went out to a 246-instruction software helper on POWER8,
+and the helper was wrong. Every ISA 3.0 instruction in the emitter is now gated behind runtime
+feature detection and linted against leaking into a POWER8 path, with the host assembler as the
+oracle instead of a hand-maintained list -- the previous list was wrong three times, and the
+lint that checked it was itself scanning two files and verifying nothing in them.
+
+**Build.** `TUNE_CPU=native` probed the x86 spelling of the flag, so a native build got no
+tuning at all.
+
+**Code generation.** FMAXNM/FMINNM check their result for a NaN rather than both inputs
+(1.74x on the sequence); the vector lane-test idiom branches on CR6 instead of reducing the
+mask, now including the `addv` form that is 17x the sites of the one it already accepted; `PRFM`
+was a nop and becomes `dcbt`/`dcbtst`; a load and the `REV` beside it become one byte-reversed
+access; CCMP/CCMN lower to two compares and one CR logical op; `sra*` serves ASR and SBFX and
+`rldicl.` serves TBZ where the carry is dead; `NEG.4S`/`NEG.2D` become one `vnegw`/`vnegd`;
+fifteen more vector ops can name the VSX low bank; and the guest's `memset`/`memcpy`/`memmove`
+can be redirected to the host's routines, gated and off by default.
+
+**Lowerings are now costed on hardware before they are written.** That rejected four ranked
+candidates this cycle rather than shipping them -- the ISA 3.0 atomic memory operations are
+**11x slower** than the LL/SC loop they would have replaced, and `setb`, pre-index `stdu` and
+the scalar POWER8 half converts are all regressions -- and confirmed the two that shipped. The
+`ctrl`+`isync` acquire load was also rejected, by the memory model rather than the clock: it is
+a dependency, not a cumulative fence.
+
 ## Requirements
 
 - **Host:** a ppc64le POWER8 or newer machine. POWER9 (ISA 3.0) fast paths are selected at run time
