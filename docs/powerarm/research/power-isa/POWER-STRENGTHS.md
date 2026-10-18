@@ -69,7 +69,7 @@ suite gates a `disableisa30` mode, so every item names its 2.07 fallback.
 | 2 | **Load+REV and REV+store through `lhbrx`/`lwbrx`/`ldbrx` and `sthbrx`/`stwbrx`/`stdbrx`; standalone REV64 through `xxbrd`** (§2.2) | W 4, X 4 + a store-forward stall; REV64 alone 3 + stall | 1; 3 without the stall | base/2.06 (`xxbrd` 3.0; 2.07 keeps today's REV64) | VS Code 4,577 adjacent pairs, libxul 3,604, Claude 1,049, Factorio 307, libc 160 | low: same fault behaviour as the load | 1 day |
 | 3 | **PRFM -> `dcbt`/`dcbtst`** (§2.4) | 0 (nop) | 1 | base | VS Code 6,822, Claude 1,626, libxul 1,023, Factorio 722, cc1 16 | none for correctness; the *sign* of the gain is the one thing to confirm by a run | hours |
 | 4 | **Scalar popcount idiom -> `popcntd`** (`fmov d,x; cnt; addv; fmov w,s`) (§2.3) | 9-11 | 2-3 | 2.06 (`mtvsrdd` 3.0 for the V rematerialisation; 2.07 +1) | VS Code 778, Claude 75, libxul 66, libc 7, Factorio 5, cc1 2 | low | hours to 1 day |
-| 5 | **Build the emulator's own binary for POWER9** (§2.5) | native text has 0 ISA 3.0 instructions; 750 `xxswapd`, 9,734 `lxvd2x`/`stxvd2x` | the compiler's P9 codegen for the decoder, IR passes, RA, dispatcher, cache | 3.0 (native; a packaging decision, not a `disableisa30` one) | every cold-translation path; Firefox's hitching is cold translation (HANDOVER item 10) | low technically; packaging must say which hosts the package runs on | hours + one packaging decision |
+| 5 | **Build the emulator's own binary for POWER9** (§2.5) -- **DONE**, as a side effect of the TUNE_CPU=native fix (88d645f52): 6,944 ISA 3.0 instructions in the 0.20.0 `POWERarm` text, where this row was written against 0. POWER8 ships as a separate `-mcpu=power8` build, gated by `check-native-isa.py` | native text has 0 ISA 3.0 instructions; 750 `xxswapd`, 9,734 `lxvd2x`/`stxvd2x` | the compiler's P9 codegen for the decoder, IR passes, RA, dispatcher, cache | 3.0 (native; a packaging decision, not a `disableisa30` one) | every cold-translation path; Firefox's hitching is cold translation (HANDOVER item 10) | low technically; packaging must say which hosts the package runs on | hours + one packaging decision |
 | 6 | **DC ZVA on a 128-byte-line host** (§2.6): `CacheLineZero` as `clrrdi; stxv x4` against the pinned zero, or DZP=1 | 9 (`clrrdi` + 8 `std`), 8 store slots | 5, 4 store slots (DZP=1: glibc's own `stp q` loop, 7 per 64 B) | 3.0 `stxv` (2.07: `stxvd2x` + `addi`, 8) | `memset` of 128+ bytes of zero in every guest: calloc, V8/JSC heap clearing; libc 2 sites, Claude 1 | low | hours; bounded by the memset redirect (THUNKS §4), which would use the host's `dcbz` natively |
 | 7 | **FMAXNM/FMINNM through the hardware maxNum rule: one result check instead of two input checks** (§2.7) -- **DONE**, measured 2.26 -> 1.30 cycles throughput | 5 | 3 (4 where the RA ties Dst to a source) | 2.06 | scalar: libxul 5,328, Factorio 3,256, VS Code 652, Claude 137; vector `fmaxnm`/`fminnm` 456/502/143/18 | medium: the both-NaN order and FPCR.DN are exactly what the result check must route to the stub | done |
 | 8 | **`vnegw`/`vnegd` for NEG.4S/.2D** (§2.8) | 2 | 1 | 3.0 (2.07 stays 2) | libxul 979, VS Code 868, Claude 249, Factorio 106, cc1 39 | none | hours |
@@ -333,8 +333,22 @@ tries `-march=native`, which clang rejects on PowerPC (`-mcpu=native` is the spe
 so no CPU flag is added; otherwise it adds `-mcpu=${TUNE_CPU}`. `build-powerarm/CMakeCache.txt`
 carries `-mtune=native` and nothing else; `CMAKE_CXX_FLAGS_RELEASE` is `-O3 -DNDEBUG`.
 
-**What the binary says** [MEASURED]. `build-powerarm/Bin/POWERarm` (4.2 MB, 696,689
-instructions) contains **0** of `cnttzd`, `cnttzw`, `setb`, `maddld`, `extswsli`, `modsd`,
+**DONE, and by accident.** The TUNE_CPU=native fix (88d645f52, released in 0.20.0) is what did
+it: `native` had been probing `-march=native`, which this target does not have at all, and the
+`-mcpu=` branch below it was an `elseif`, so a native ppc64le build appended NO cpu flag and
+compiled at the ISA 2.07 baseline. With `-mcpu=native` actually reaching the compiler, the
+emulator's own text is now POWER9 code. Measured 2026-10-17 by
+`Scripts/powerarm/check-native-isa.py` over the 0.20.0 build: `POWERarm` carries **6,944** ISA
+3.0 instructions (3,602 `stxv`, 2,590 `lxv`, 162 `cnttzd`, 148 `modud`, 105 `cnttzw`, 87
+`maddld`, 80 `stxvb16x`, 72 `stxsd`, ...), `POWERarmOfflineCompiler` 3,607, `POWERarmGetConfig`
+97 and `POWERarmServer` 16; the four small tools carry none. **This is the intended state, not a
+regression:** POWER8 hosts are served by a separate `-mcpu=power8 -mtune=power8` build, and that
+build is the one which must come back clean -- which is what the check is for. The packaging
+decision this item named is now load-bearing rather than hypothetical: the native/POWER9 package
+does not run on POWER8 at all, so it has to say so.
+
+**What the binary said before that fix** [MEASURED, pre-88d645f52]. `build-powerarm/Bin/POWERarm`
+(4.2 MB, 696,689 instructions) contained **0** of `cnttzd`, `cnttzw`, `setb`, `maddld`, `extswsli`, `modsd`,
 `modud`, `modsw`, `moduw`, `addpcis`, `cmprb`, `cmpeqb`, `darn`, `lxv`, `stxv`, `mffsl`,
 `mtvsrdd`, `mfvsrld`, `xxspltib`, `xxbrd`, `lxvx`, `stxvx` -- every emitted-code mnemonic in
 the JIT's own tables is data, not text -- against 13,227 of the POWER8-era set, among them
