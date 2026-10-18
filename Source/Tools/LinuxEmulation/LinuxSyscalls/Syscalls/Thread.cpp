@@ -972,10 +972,55 @@ void RegisterThread(FEX::HLE::SyscallHandler* Handler) {
       return Env && *Env == '1';
     }();
     pid_t WriterPID = -1;
+    // Whether this thread does the save itself: everywhere the fork did not
+    // take it, which includes the case where caching is off and the call below
+    // is a no-op.
+    bool SaveHere = true;
     if (!Stats && FEXCore::Config::Get_ENABLECODECACHINGWIP() && FEX::HLE::_SyscallHandler->CodeCacheWriteEnabled()) {
-      FEX::HLE::_SyscallHandler->TM.Stop(true);
+      // Stop's answer is whether the siblings finished tearing down. Its wait
+      // is bounded and on a threaded guest it does time out; the result used
+      // to be discarded, and below is what that cost. It decides one thing
+      // here: whether saving on THIS thread is safe if the fork fails. It is
+      // not, when a straggler still holds the code buffer -- saving anyway
+      // hung 7 of 96 threaded guest exits until `timeout' killed them, which
+      // is the same wedge moved into the process the test waits on. Dropping
+      // the cache is the alternative, and a save is best-effort on every
+      // other path too (a publish whose namespace lock is busy gives its
+      // segment up; CodeCache.cpp, PublishLockWaitSeconds).
+      const bool SiblingsQuiesced = FEX::HLE::_SyscallHandler->TM.Stop(true);
+
+      // The fork is unconditional, as it has always been, and it takes no
+      // LockBeforeFork handshake -- it must not. That takes
+      // CodeInvalidationMutex EXCLUSIVELY, and at exit the sibling threads,
+      // not torn down until Threads::Shutdown, still hold its shared side:
+      // tried here and measured, every run of a 96-exit loop blocked in the
+      // exiting thread and was killed at the test's 60 s timeout. It is the
+      // deadlock RetireGuestCode exists to avoid, and the reason Context.h
+      // documents this fork as a raw one.
+      //
+      // So the child recovers the locks instead of the parent reserving them;
+      // see below. Measured on a swept machine, 4 x 96 exits each: 137
+      // permanent survivors without that, 0 with it.
       WriterPID = fork();
+      SaveHere = SiblingsQuiesced && WriterPID < 0;
       if (WriterPID == 0) {
+        // Before anything else in the child: a bound is only worth having if
+        // it covers the code that might not return. The unlock below is the
+        // fix; this is the backstop for a lock it does not know about, and it
+        // is what turns any future wedge into a 300 s process instead of a
+        // permanent one. Verified by watching two wedged children from an
+        // earlier build die at the bound.
+        FEX::HLE::ArmExitSaveWatchdog();
+        // The locks the parent could not take, dropped from this side instead.
+        // StealAndDropActiveLocks is documented for exactly this case -- a
+        // lock whose holder is not in this process -- and UnlockAfterFork's
+        // child path is where it is called from: it drops the allocator
+        // mutex, SaveIOLock, CodeInvalidationMutex and the VMA tracker, resets
+        // the cache's in-flight save state, and frees the sibling threads that
+        // did not come across. Without it the child blocked on its first
+        // acquisition and never woke. It runs before anything that allocates,
+        // which is why the order inside UnlockAfterFork matters.
+        FEX::HLE::_SyscallHandler->UnlockAfterFork(Frame->Thread, true);
         // This child exists only to run the save, and the parent is already on
         // its way out of exit_group without waiting for it. So the fold is off
         // everything's critical path here and this pass does it itself; a
@@ -986,10 +1031,8 @@ void RegisterThread(FEX::HLE::SyscallHandler* Handler) {
         _exit(0);
       }
     }
-    if (WriterPID <= 0) {
-      if (WriterPID < 0) {
-        FEX::HLE::_SyscallHandler->CodeCacheImageExit(Frame->Thread);
-      }
+    if (SaveHere) {
+      FEX::HLE::_SyscallHandler->CodeCacheImageExit(Frame->Thread);
     }
     FEX::HLE::StartupTimer.Mark(FEX::HLE::StartupTimes::SAVE);
     // Release this thread's shared-lock holdings before the kernel kills it

@@ -997,7 +997,7 @@ int main(int argc, char** argv, char** const envp) {
   // The JIT thread (current thread) has already exited — sending SIGRTMIN to
   // ourselves with a stale ReturningStackLocation would corrupt r1 and crash.
   // Pass IgnoreCurrentThread=true so only other (worker) threads are stopped.
-  SyscallHandler->TM.Stop(true);
+  const bool SiblingsQuiesced = SyscallHandler->TM.Stop(true);
 
   // Final checkpoint, after every other thread has stopped and before any thread
   // state is torn down. Force it: the periodic trigger only fires from the
@@ -1009,9 +1009,21 @@ int main(int argc, char** argv, char** const envp) {
     return Env && *Env == '1';
   }();
   pid_t WriterPID = -1;
+  // As in exit_group: this thread saves wherever the fork did not take it.
+  bool SaveHere = true;
   if (!Stats && FEXCore::Config::Get_ENABLECODECACHINGWIP() && SyscallHandler->CodeCacheWriteEnabled()) {
+    // Same shape as exit_group, and for the same measured reasons: an
+    // unconditional fork with no LockBeforeFork handshake (that deadlocks
+    // against the siblings' shared hold on CodeInvalidationMutex), the locks
+    // recovered from the child's side, a bound on the child, and a save on
+    // this thread only where Stop proved that is safe.
     WriterPID = fork();
+    SaveHere = SiblingsQuiesced && WriterPID < 0;
     if (WriterPID == 0) {
+      FEX::HLE::ArmExitSaveWatchdog();
+      // As in exit_group: the inherited locks are dropped from this side,
+      // because the parent cannot take them without deadlocking.
+      SyscallHandler->UnlockAfterFork(ParentThread->Thread, true);
       // As in exit_group: this child is here only for the save and nothing
       // waits for it, so its final pass folds whatever it finds rather than
       // handing the fold to a writer process.
@@ -1020,10 +1032,8 @@ int main(int argc, char** argv, char** const envp) {
       _exit(0);
     }
   }
-  if (WriterPID <= 0) {
-    if (WriterPID < 0) {
-      SyscallHandler->CodeCacheImageExit(ParentThread->Thread);
-    }
+  if (SaveHere) {
+    SyscallHandler->CodeCacheImageExit(ParentThread->Thread);
   }
   FEX::HLE::StartupTimer.Mark(FEX::HLE::StartupTimes::SAVE);
 

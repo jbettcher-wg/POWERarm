@@ -523,7 +523,7 @@ void ThreadManager::Step() {
   // TODO: Set back to full running mode.
 }
 
-void ThreadManager::Stop(bool IgnoreCurrentThread) {
+bool ThreadManager::Stop(bool IgnoreCurrentThread) {
   // Terminal stop. Take the translate-ahead helper down with the guest
   // threads: every caller goes on to save (and, for the code cache, fork()
   // without the LockBeforeFork handshake), and a helper still compiling would
@@ -563,12 +563,22 @@ void ThreadManager::Stop(bool IgnoreCurrentThread) {
   // When stopping all worker threads from the main/exiting thread, wait for them
   // to complete teardown so subsequent operations (e.g. fork() or memory unmaps)
   // do not race with worker threads holding jemalloc/allocator or libc locks.
+  //
+  // The answer has to be read, and a false is not rare: on a guest whose
+  // threads are still tearing down this wait does time out. It says only that
+  // a sibling may still be holding something, which makes doing the code-cache
+  // save on THIS thread unsafe -- that save blocks on the straggler's hold and
+  // the exit never completes. It is not a licence to fork(): the exit-save
+  // child recovers the inherited locks from its own side instead, because the
+  // parent cannot reserve them (see exit_group in Syscalls/Thread.cpp).
   if (IgnoreCurrentThread) {
     std::unique_lock<std::mutex> lk(IdleWaitMutex);
-    IdleWaitCV.wait_for(lk, std::chrono::milliseconds(1000), [this] {
-      return IdleWaitRefCount.load() <= 1;
-    });
+    return IdleWaitCV.wait_for(lk, std::chrono::milliseconds(1000), [this] { return IdleWaitRefCount.load() <= 1; });
   }
+
+  // No wait was asked for, so nothing has been established about the siblings.
+  // The predicate is still the honest answer, and no forking caller is here.
+  return IdleWaitRefCount.load() <= 1;
 }
 
 void ThreadManager::SleepThread(FEXCore::Context::Context* CTX, FEXCore::Core::CpuStateFrame* Frame) {

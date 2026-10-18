@@ -47,17 +47,12 @@ if [ "${1:-}" = --threadexit-loop ]; then
         # that normally takes well under a second, so a timeout means a hang
         # and not a loaded machine; it lands in codes as 124.
         #
-        # It does NOT catch the leaked emulators this test leaves behind, and
-        # cannot: those are the code cache's forked save writer, which
-        # deadlocks inside fork(2) and reparents to init, so the process this
-        # loop launched has already exited cleanly and nothing in its lifetime
-        # bounds the orphan (HANDOVER item 42's last bullet; the `setsid'
-        # above does not cover it either). Measured here 2026-10-15: 40 exits
-        # leave 4 survivors with the writer on and 0 with
-        # POWERARM_CODECACHEFORKWRITER=0. They accumulate for the box's
-        # uptime -- 257 were cleared by hand that day -- so if this box is
-        # suddenly full of ./threadexit processes, that is what they are and
-        # they are not this test failing.
+        # It does NOT catch the leaked emulators this test used to leave
+        # behind, and cannot: those are the code cache's forked exit-save
+        # child, and the process this loop launched has already exited
+        # cleanly, so nothing in its lifetime bounds the orphan (the `setsid'
+        # above does not cover it either -- the orphan reparents out of the
+        # group). The survivor count after the loop is what catches them.
         timeout -k 5 60 "$te_emu" ./threadexit > /dev/null 2>&1
         echo $? >> "$te_work/codes"
       ) & } 2> /dev/null
@@ -1465,6 +1460,23 @@ if [ -f threadexit ]; then
   # this run is the only one writing the file it counts.
   te_work=$(mktemp -d "${TMPDIR:-/tmp}/threadexit-loop.XXXXXX") || exit 2
   : > "$te_work/codes"
+  # Emulator processes running ./threadexit, read out of /proc rather than with
+  # `pgrep -f': the loop's own shell carries --threadexit-loop in its argv and
+  # pgrep would count it as one of these.
+  # In a subshell so the glob and the reads cannot move this shell's cwd: both
+  # callers below happen to pipe it, which already forks, but a direct call
+  # would otherwise leave the suite sitting in /proc.
+  te_live() {
+    (
+      for te_d in /proc/[0-9]*; do
+        [ "$(cat "$te_d/comm" 2> /dev/null)" = POWERarm ] || continue
+        case $(tr '\0' ' ' < "$te_d/cmdline" 2> /dev/null) in
+        *threadexit*) echo "${te_d#/proc/}" ;;
+        esac
+      done
+    )
+  }
+  te_live | sort > "$te_work/before"
   if command -v setsid > /dev/null 2>&1 && setsid --wait true > /dev/null 2>&1; then
     setsid --wait sh "$me" --threadexit-loop "$emu" "$te_total" "$te_batch" "$te_work" > /dev/null 2>&1
     te_pg=$(cat "$te_work/pgid" 2> /dev/null || echo)
@@ -1477,8 +1489,24 @@ if [ -f threadexit ]; then
   fi
   te_bad=$(awk '$1 != 0' "$te_work/codes" | wc -l)
   te_ran=$(wc -l < "$te_work/codes")
-  if [ "$te_bad" = 0 ] && [ "$te_ran" = "$te_total" ]; then
-    report PASS threadexit_loop "$te_total exits with threads mid-teardown, all clean"
+  # Every run above either exited or was killed by `timeout', and the process
+  # group was reaped, so an emulator still running ./threadexit now is one
+  # nothing can reach: the exit-save child that inherited a sibling's lock,
+  # reparented away and will sit in a futex for the life of the box. Four full
+  # suite runs produced ~200 of these while every run reported PASS, because
+  # the process this loop waits on exits cleanly and the orphan is nothing's
+  # child. Counting them is the only way the suite can see them.
+  #
+  # New pids only, so a survivor left by an earlier run is not charged to this
+  # one. A suite running concurrently elsewhere can have its leak counted here
+  # instead -- that is still a leak, and the header above already asks for one
+  # run at a time.
+  te_live | sort > "$te_work/after"
+  te_leaked=$(comm -13 "$te_work/before" "$te_work/after" | wc -l)
+  if [ "$te_bad" = 0 ] && [ "$te_ran" = "$te_total" ] && [ "$te_leaked" = 0 ]; then
+    report PASS threadexit_loop "$te_total exits with threads mid-teardown, all clean, no survivors"
+  elif [ "$te_bad" = 0 ] && [ "$te_ran" = "$te_total" ]; then
+    report FAIL threadexit_loop "$te_total exits all returned 0 but left $te_leaked wedged emulator(s) behind: $(comm -13 "$te_work/before" "$te_work/after" | tr '\n' ' ')- each is an exit-save child that forked with a sibling still holding a lock; see ThreadManager::Stop"
   else
     # 124 in the list is timeout's: that run hung with a thread stuck in
     # teardown rather than crashing. 139 is the old SIGSEGV mode, 191 the old

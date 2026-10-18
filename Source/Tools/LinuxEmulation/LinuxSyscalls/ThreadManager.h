@@ -317,7 +317,10 @@ public:
   void Pause();
   void Run();
   void Step();
-  void Stop(bool IgnoreCurrentThread = false);
+  // Returns whether the sibling threads are known to be out of the way. The
+  // bounded wait it reports on can and does time out; see the body for what
+  // the answer decides.
+  bool Stop(bool IgnoreCurrentThread = false);
 
   void WaitForIdle();
   void WaitForIdleWithTimeout();

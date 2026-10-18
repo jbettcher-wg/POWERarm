@@ -42,9 +42,11 @@ $end_info$
 #include <errno.h>
 #include <limits.h>
 #include <fcntl.h>
+#include <signal.h>
 #include <stdint.h>
 #include <sys/resource.h>
 #include <sys/socket.h>
+#include <unistd.h>
 #include <type_traits>
 #include <list>
 #ifdef ARCHITECTURE_x86_64
@@ -86,6 +88,26 @@ class ThunkHandler;
 // frontend uses it to report errors it held back while the log destination was
 // unknown (FEXInterpreter's FlushHeldErrorsToStderr).
 inline void (*GuestErrorExitHook)() {};
+
+// A bound on the exit-save child, to be armed as its first act.
+//
+// Both exit paths fork() a child that does nothing but write this process's
+// code cache and _exit. Nothing waits for it: the parent is already on its way
+// out, so the child reparents to init and no one ever reaps or kills it. That
+// is fine while it finishes, and permanent when it does not -- a child that
+// inherited a sibling's lock blocks on its first acquisition for the life of
+// the machine. The child drops those locks itself (UnlockAfterFork's child
+// path, called right after this), and measured over 384 exits that leaves
+// none; this is the backstop for the lock nobody accounted for. Losing one
+// process's cache beats leaking a wedged emulator, and the bound is the writer
+// process's own (WriterRequestSeconds in CodeCache.cpp): the same work.
+inline void ArmExitSaveWatchdog() {
+  // The emulator catches SIGILL/SIGTRAP/SIGBUS/SIGSEGV, never SIGALRM, but say
+  // so anyway: this child runs no guest code and is about to _exit regardless,
+  // so the delegator's bookkeeping is not in play.
+  ::signal(SIGALRM, SIG_DFL);
+  ::alarm(300);
+}
 
 void RegisterEpoll(FEX::HLE::SyscallHandler* Handler);
 void RegisterFD(FEX::HLE::SyscallHandler* Handler);
