@@ -95,6 +95,29 @@ report() {
   echo "$1 $2${3:+ ($3)}"
 }
 
+# The ISA 3.0 guard lint. It is a SOURCE check, so it belongs to no mode and no
+# build -- and it is in this file, rather than only in the release-gate list,
+# because the mistake it catches is invisible to everything else here. An ISA
+# 3.0 instruction that escapes its SupportsISA30 guard builds without complaint
+# (`clang -mcpu=power8` assembles `lxv`, and llvm-objdump decodes it at
+# --mcpu=pwr8, so neither tool is an oracle), runs on this POWER9 box, and
+# PASSES POWERARM_HOSTFEATURES=disableisa30 -- that flips the feature FLAG and
+# takes the POWER8 code PATH, on POWER9 HARDWARE, so the instruction still
+# executes. It traps only on a real POWER8, which is to say only at a user.
+#
+# Lints the tree this script came from, not the build under test: the two can
+# differ, and the source is what the check is about.
+isa30_lint=$(cd "$(dirname "$me")/../.." && pwd)/Scripts/powerarm/check-isa30-guards.py
+if ! command -v python3 > /dev/null 2>&1; then
+  report SKIP isa30_guards "no python3"
+elif [ ! -f "$isa30_lint" ]; then
+  report SKIP isa30_guards "not in this tree: $isa30_lint"
+elif isa30_out=$(python3 -I "$isa30_lint" 2>&1); then
+  report PASS isa30_guards "$(printf '%s\n' "$isa30_out" | grep -c '^ok') tiers over $(printf '%s\n' "$isa30_out" | sed -n 's/.*[^0-9]\([0-9][0-9]*\) function bodies.*/\1/p') function bodies"
+else
+  report FAIL isa30_guards "$(printf '%s\n' "$isa30_out" | grep -v '^#' | grep -v '^ok ' | tr '\n' ' ')"
+fi
+
 # The guest vDSO (vdso, vdso_syscalls) is libVDSO-a64-guest.so, which only a
 # -DBUILD_THUNKS=ON build produces, in <build>/Guest. Point POWERarm at the one
 # next to the emulator under test unless the caller already chose, so a

@@ -60,6 +60,46 @@ EXEMPT = {
     # (method, enclosing function): reason
 }
 
+# Instructions the backend HAND-ENCODES through Emit32() rather than calling an
+# emitter method. They cannot appear in the generated list, because that list is
+# built by asking the assembler about the EMITTER's methods and these have none
+# -- so every call site of them was invisible to this check until a positive
+# control happened to name one (2026-10-17; all five were in fact guarded, but
+# nothing here was checking). The helper names are therefore checked exactly as
+# an emitter method is.
+HAND_ENCODED = {
+    "EmitXxspltib": "xxspltib, VectorOps.cpp: splat a byte immediate across a VSR",
+    "EmitVpermr": "vpermr, VectorOps.cpp: the VTBL/VTBX table lookups",
+}
+
+# Emit32() operands that are not instructions needing a guard. Anything else is
+# a hand-encoded instruction and must be declared in HAND_ENCODED above -- that
+# is what keeps the NEXT one from being invisible the way these two were.
+RAW_EMIT_OK = {
+    "0x7fe00008": "tw 31,0,0, the base-ISA trap the branch paths pad with",
+    "0x00000000": "primary opcode 0, deliberately invalid",
+    "0": "a placeholder that is backpatched later",
+}
+
+def raw_emit_operand(line):
+    """The first argument of an Emit32( call, normalised, or None."""
+    i = line.find("Emit32(")
+    if i < 0:
+        return None
+    arg = line[i + len("Emit32("):]
+    depth, out = 0, []
+    for c in arg:
+        if c == "(":
+            depth += 1
+        elif c == ")":
+            if depth == 0:
+                break
+            depth -= 1
+        elif c == "," and depth == 0:
+            break
+        out.append(c)
+    return "".join(out).strip().rstrip("uU").lower()
+
 # Named predicates that ARE the flag, as well as the flag itself.
 # ProjectXERUsesMcrxrx() is `return HostFeatures.SupportsISA30` (JIT.cpp:994).
 GUARD = re.compile(r'SupportsISA30|HostSupportsISA30|ISA30\b|Isa30|isa30'
@@ -172,7 +212,10 @@ def enclosing_guarded(body, call_line_idx):
 
 
 def main():
-    calls = {m: re.compile(r'(?<![A-Za-z0-9_])' + re.escape(m) + r'\s*\(') for m in ISA30}
+    # The generated emitter methods plus the hand-encoded helpers: a call site is
+    # a call site however the bytes get written.
+    CHECKED = sorted(set(ISA30) | set(HAND_ENCODED))
+    calls = {m: re.compile(r'(?<![A-Za-z0-9_])' + re.escape(m) + r'\s*\(') for m in CHECKED}
     hard, review = [], []
     scanned = 0
     files = []
@@ -186,13 +229,13 @@ def main():
     blind = []
     for fn, path in files:
         text = io.open(path, encoding="utf-8", errors="replace").read()
-        text_hits = sum(1 for m in ISA30
+        text_hits = sum(1 for m in CHECKED
                         if re.search(r'(?<![A-Za-z0-9_])' + re.escape(m) + r'\s*\(', text))
         body_count = 0
         covered = 0
         for name, body in functions(path):
             body_count += 1
-            covered += sum(1 for m in ISA30
+            covered += sum(1 for m in CHECKED
                            if re.search(r'(?<![A-Za-z0-9_])' + re.escape(m) + r'\s*\(', body))
         if text_hits and not covered:
             blind.append((fn, text_hits, body_count))
@@ -204,8 +247,14 @@ def main():
             # saying "on ISA 3.0 this is native xxbrw" is not a call, and
             # reporting it is how a lint earns being ignored.
             blines = [strip_noncode(x) for x in body.split("\n")]
+            # functions() yields the body starting AT its definition line, so
+            # line 0 is the head. A head is never a call -- without this the
+            # hand-encoded helpers report themselves.
+            head_is_def = bool(blines) and bool(FUNCDEF_match(blines[0]))
             for m, rx in calls.items():
                 for i, L in enumerate(blines):
+                    if i == 0 and head_is_def:
+                        continue
                     if not rx.search(L):
                         continue
                     key = (m, name)
@@ -217,9 +266,36 @@ def main():
                     inside, neg_ret = enclosing_guarded(body, i)
                     if not inside and not neg_ret:
                         review.append((fn, name, m, L.strip()[:72]))
-    print("# ISA 3.0 guard lint: %d ISA 3.0 emitters (generated list), %d function bodies in %s"
-          % (len(ISA30), scanned, ", ".join(os.path.relpath(d, ROOT) for d in SCAN)))
+    # Every Emit32() must be a known-safe word or live in a declared hand-encoded
+    # helper. A new one is a new instruction nothing else here can see.
+    undeclared = []
+    for fn, path in files:
+        for name, body in functions(path):
+            if any(h in name for h in HAND_ENCODED):
+                continue
+            for L in body.split("\n"):
+                L = strip_noncode(L)
+                arg = raw_emit_operand(L)
+                if arg is None or arg in RAW_EMIT_OK:
+                    continue
+                undeclared.append((fn, name, L.strip()[:64]))
+
+    print("# ISA 3.0 guard lint: %d ISA 3.0 emitters (generated list) + %d hand-encoded,"
+          " %d function bodies in %s"
+          % (len(ISA30), len(HAND_ENCODED), scanned,
+             ", ".join(os.path.relpath(d, ROOT) for d in SCAN)))
     rc = 0
+    if undeclared:
+        print("FAIL %d raw Emit32() call(s) that are neither a known-safe word nor inside a"
+              " declared hand-encoded helper:" % len(undeclared))
+        for fn, name, src in sorted(undeclared):
+            print("  %s\n    %s\n    %s" % (fn, name, src))
+        print("  If it encodes an instruction, wrap it in a helper and declare that helper in")
+        print("  HAND_ENCODED so its call sites get checked. If it is not an instruction, add")
+        print("  the word to RAW_EMIT_OK with what it is.")
+        rc = 1
+    else:
+        print("ok   tier 0: every raw Emit32() is a known-safe word or a declared helper")
     if blind:
         # A file whose ISA 3.0 calls fall outside every parsed body is not a
         # clean file, it is an unexamined one, and saying "ok" about it is worse
