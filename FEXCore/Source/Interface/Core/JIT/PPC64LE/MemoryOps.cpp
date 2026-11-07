@@ -457,8 +457,15 @@ DEF_OP(SpillRegister) {
 
   if (IsFPR(Src)) {
     auto VSrc = GetVReg(Src);
-    LoadConstant(TMP1, static_cast<uint64_t>(static_cast<int64_t>(SlotOffset)));
-    stvx(VSrc, r1, TMP1);
+    if (CTX->HostFeatures.SupportsISA30 && (SlotOffset & 0xF) == 0 &&
+        SlotOffset >= -32768 && SlotOffset <= 32752) {
+      stxv(VSrc, static_cast<int16_t>(SlotOffset), r1);
+    } else if (CTX->HostFeatures.SupportsISA31 && FitsSigned34(SlotOffset)) {
+      pstxv(VSrc, SlotOffset, r1);
+    } else {
+      LoadConstant(TMP1, static_cast<uint64_t>(static_cast<int64_t>(SlotOffset)));
+      stvx(VSrc, r1, TMP1);
+    }
   } else {
     auto GSrc = GetReg(Src);
     switch (IR::OpSizeToSize(IROp->Size)) {
@@ -466,9 +473,11 @@ DEF_OP(SpillRegister) {
     case 2: sth(GSrc, static_cast<int16_t>(SlotOffset), r1); break;
     case 4: stw(GSrc, static_cast<int16_t>(SlotOffset), r1); break;
     case 8:
-      if ((SlotOffset & 3) == 0 && SlotOffset >= -32768 && SlotOffset <= 32764)
+      if ((SlotOffset & 3) == 0 && SlotOffset >= -32768 && SlotOffset <= 32764) {
         std(GSrc, static_cast<int16_t>(SlotOffset), r1);
-      else {
+      } else if (CTX->HostFeatures.SupportsISA31 && FitsSigned34(SlotOffset)) {
+        pstd(GSrc, SlotOffset, r1);
+      } else {
         LoadConstant(TMP1, static_cast<uint64_t>(static_cast<int64_t>(SlotOffset)));
         stdx(GSrc, r1, TMP1);
       }
@@ -485,8 +494,15 @@ DEF_OP(FillRegister) {
 
   if (IsFPR(DstRef)) {
     auto VDst = GetVReg(DstRef);
-    LoadConstant(TMP1, static_cast<uint64_t>(static_cast<int64_t>(SlotOffset)));
-    lvx(VDst, r1, TMP1);
+    if (CTX->HostFeatures.SupportsISA30 && (SlotOffset & 0xF) == 0 &&
+        SlotOffset >= -32768 && SlotOffset <= 32752) {
+      lxv(VDst, static_cast<int16_t>(SlotOffset), r1);
+    } else if (CTX->HostFeatures.SupportsISA31 && FitsSigned34(SlotOffset)) {
+      plxv(VDst, SlotOffset, r1);
+    } else {
+      LoadConstant(TMP1, static_cast<uint64_t>(static_cast<int64_t>(SlotOffset)));
+      lvx(VDst, r1, TMP1);
+    }
   } else {
     auto GDst = GetReg(DstRef);
     switch (IR::OpSizeToSize(IROp->Size)) {
@@ -494,9 +510,11 @@ DEF_OP(FillRegister) {
     case 2: lhz(GDst, static_cast<int16_t>(SlotOffset), r1); break;
     case 4: lwz(GDst, static_cast<int16_t>(SlotOffset), r1); break;
     case 8:
-      if ((SlotOffset & 3) == 0 && SlotOffset >= -32768 && SlotOffset <= 32764)
+      if ((SlotOffset & 3) == 0 && SlotOffset >= -32768 && SlotOffset <= 32764) {
         ld(GDst, static_cast<int16_t>(SlotOffset), r1);
-      else {
+      } else if (CTX->HostFeatures.SupportsISA31 && FitsSigned34(SlotOffset)) {
+        pld(GDst, SlotOffset, r1);
+      } else {
         LoadConstant(TMP1, static_cast<uint64_t>(static_cast<int64_t>(SlotOffset)));
         ldx(GDst, r1, TMP1);
       }
@@ -594,7 +612,7 @@ DEF_OP(StoreRegister) {
 struct MemAddrForm {
   GPR Base;
   GPR Index;      // meaningful only when HasIndex
-  int32_t Disp;   // meaningful only when !HasIndex
+  int64_t Disp;   // meaningful only when !HasIndex
   bool HasIndex;
 };
 
@@ -612,8 +630,9 @@ struct MemOffsetOperand {
 // scaling, or a wide-constant materialization. Matches ComputeAddress's old
 // contract so callers' TMP assumptions are unchanged.
 //
-// ISA30 selects extswsli for a scaled SXTW offset; everything else here is base
-// ISA. The A64 frontend's register-offset loads and stores (`ldr w0, [x1, w2,
+// ISA30 selects extswsli for a scaled SXTW offset; ISA31 keeps 34-bit signed
+// displacements in Disp so D/DS/8ls/MLS forms and paddi can absorb them directly.
+// The A64 frontend's register-offset loads and stores (`ldr w0, [x1, w2,
 // sxtw #2]` and friends) are what feed the UXTW/SXTW arms -- before them only
 // x86 reached this function, and x86 only ever asks for SXTX.
 template<typename Emit>
@@ -624,11 +643,12 @@ static MemAddrForm MakeAddrForm(Emit& E, GPR Base, const MemOffsetOperand& Off, 
   }
   if (Off.IsConst) {
     const int64_t sOff = static_cast<int64_t>(Off.Const) * Off.Scale;
-    if (sOff >= -32768 && sOff <= 32767) {
-      A.Disp = static_cast<int32_t>(sOff);
+    if ((sOff >= -32768 && sOff <= 32767) ||
+        (E.HostSupportsISA31() && PPC64Emitter::Emitter::FitsSigned34(sOff))) {
+      A.Disp = sOff;
       return A;
     }
-    // Wider than any D/DS displacement: materialize and hand it to the X-form's
+    // Wider than any D/DS/MLS displacement: materialize and hand it to the X-form's
     // RB rather than folding it into Base with a separate add.
     E.LoadConstant(TMP3, static_cast<uint64_t>(sOff));
     A.Index = TMP3;
@@ -683,7 +703,16 @@ static GPR MaterializeAddr(Emit& E, const MemAddrForm& A) {
   if (A.Disp == 0) {
     return A.Base;
   }
-  E.addi(TMP3, A.Base, static_cast<int16_t>(A.Disp));
+  if (A.Disp >= -32768 && A.Disp <= 32767) {
+    E.addi(TMP3, A.Base, static_cast<int16_t>(A.Disp));
+    return TMP3;
+  }
+  if (E.HostSupportsISA31() && PPC64Emitter::Emitter::FitsSigned34(A.Disp)) {
+    E.paddi(TMP3, A.Base, A.Disp);
+    return TMP3;
+  }
+  E.LoadConstant(TMP3, static_cast<uint64_t>(A.Disp));
+  E.add(TMP3, A.Base, TMP3);
   return TMP3;
 }
 
@@ -704,6 +733,13 @@ static bool CanUseDForm(const MemAddrForm& A, IR::OpSize Size) {
   return true;
 }
 
+// ISA 3.1 prefixed MLS/8ls forms take any signed 34-bit byte displacement
+// (including non-4-byte-aligned 64-bit displacements that DS-form ld/std reject).
+template<typename Emit>
+static bool CanUsePForm(const Emit& E, const MemAddrForm& A) {
+  return !A.HasIndex && E.HostSupportsISA31() && PPC64Emitter::Emitter::FitsSigned34(A.Disp);
+}
+
 // rA=0 in D/DS-form encodes the literal value zero, not r0's contents, so a
 // base of r0 would silently become an absolute address. TMPs are r3-r6 and both
 // RA pools start at r7, so this cannot happen — assert rather than assume.
@@ -711,17 +747,17 @@ static void AssertNonZeroBase(const MemAddrForm& A) {
   LOGMAN_THROW_A_FMT(A.Base != r0, "PPC64 D-form base register must not be r0");
 }
 
-// A displacement that no D/DS-form can hold must move into the X-form's RB;
+// A displacement that no D/DS/MLS-form can hold must move into the X-form's RB;
 // the X-form has no displacement field, so leaving it in the form would drop it
 // silently. That is not hypothetical: `mov rbx, qword [data+2]` folds a
-// displacement of 2, which DS-form ld cannot encode.
+// displacement of 2, which DS-form ld cannot encode on pre-3.1 hosts.
 template<typename Emit>
 static MemAddrForm LegalizeForm(Emit& E, const MemAddrForm& A, IR::OpSize Size) {
-  if (A.HasIndex || CanUseDForm(A, Size)) {
+  if (A.HasIndex || CanUseDForm(A, Size) || CanUsePForm(E, A)) {
     return A;
   }
   MemAddrForm R = A;
-  E.LoadConstant(TMP3, static_cast<uint64_t>(static_cast<int64_t>(A.Disp)));
+  E.LoadConstant(TMP3, static_cast<uint64_t>(A.Disp));
   R.Index = TMP3;
   R.HasIndex = true;
   return R;
@@ -790,6 +826,17 @@ static void EmitLoadGPR(Emit& E, IR::OpSize Size, GPR Dst, const MemAddrForm& A_
     }
     return;
   }
+  if (CanUsePForm(E, A)) {
+    AssertNonZeroBase(A);
+    switch (Size) {
+    case IR::OpSize::i8Bit:  E.plbz(Dst, A.Disp, A.Base); break;
+    case IR::OpSize::i16Bit: E.plhz(Dst, A.Disp, A.Base); break;
+    case IR::OpSize::i32Bit: E.plwz(Dst, A.Disp, A.Base); break;
+    case IR::OpSize::i64Bit: E.pld(Dst, A.Disp, A.Base);  break;
+    default: break;
+    }
+    return;
+  }
   // X-form base+index. When there is no index the old shape's r0 stand-in is
   // still correct (r0 in RB reads GPR0's contents, and the backend holds r0==0).
   const GPR Index = A.HasIndex ? A.Index : r0;
@@ -813,6 +860,17 @@ static void EmitStoreGPR(Emit& E, IR::OpSize Size, GPR Src, const MemAddrForm& A
     case IR::OpSize::i16Bit: E.sth(Src, D, A.Base); break;
     case IR::OpSize::i32Bit: E.stw(Src, D, A.Base); break;
     case IR::OpSize::i64Bit: E.std(Src, D, A.Base); break;
+    default: break;
+    }
+    return;
+  }
+  if (CanUsePForm(E, A)) {
+    AssertNonZeroBase(A);
+    switch (Size) {
+    case IR::OpSize::i8Bit:  E.pstb(Src, A.Disp, A.Base); break;
+    case IR::OpSize::i16Bit: E.psth(Src, A.Disp, A.Base); break;
+    case IR::OpSize::i32Bit: E.pstw(Src, A.Disp, A.Base); break;
+    case IR::OpSize::i64Bit: E.pstd(Src, A.Disp, A.Base); break;
     default: break;
     }
     return;
@@ -910,6 +968,8 @@ static GPR ComputeOffsetAddrInto(Emit& E, GPR Addr, int64_t Offset, GPR scratch)
   if (Offset == 0) return Addr;
   if (Offset >= -32768 && Offset <= 32767) {
     E.addi(scratch, Addr, static_cast<int16_t>(Offset));
+  } else if (E.HostSupportsISA31() && PPC64Emitter::Emitter::FitsSigned34(Offset)) {
+    E.paddi(scratch, Addr, Offset);
   } else {
     E.LoadConstant(scratch, static_cast<uint64_t>(Offset));
     E.add(scratch, Addr, scratch);
@@ -1501,14 +1561,9 @@ DEF_OP(RMWHandle) {
 // linear in element count but the elements are typically small.
 DEF_OP(MemSet) {
   auto Op = IROp->C<IR::IROp_MemSet>();
-  // x86 REP STOS preserves flags per Intel SDM.  Save CR0 (packed-NZCV)
-  // to the red zone before the loop's cmpdi clobbers it; restore after
-  // the loop.  TMP3 is overwritten below by the direction-step setup, so
-  // we use it briefly here as a transit before the std to memory.
-  // mfocrf 0x80 (single-field): only the CR0 nibble is defined pre-3.0C —
-  // sufficient, the sole consumer is the mtocrf(0x80) restore below.
-  mfocrf(TMP3, 0x80);
-  std(TMP3, -8, r1);
+  // x86 REP STOS preserves flags per Intel SDM. Save CR0 (packed-NZCV) into
+  // volatile CR1 before the loop's cmpdi clobbers it (avoids touching r1-8).
+  mcrf(1, 0);
   GPR AddrIn = GetReg(Op->Addr);
   // Op->Value is annotated "Inline: Any" in IR.json — IsInlineConstant may
   // return true and GetReg(Op->Value) would index the RA pool with a stale
@@ -1770,9 +1825,8 @@ DEF_OP(MemSet) {
   }
   Bind(&out);
 
-  // Restore CR0 (saved at op entry) — REP STOS preserves flags.
-  ld(TMP3, -8, r1);
-  mtocrf(0x80, TMP3);
+  // Restore CR0 (saved in CR1 at op entry) — REP STOS preserves flags.
+  mcrf(0, 1);
 
   // Final pointer may sit in upper-half-dirty form for 32-bit guest; mask
   // before writing back to the SSA destination.
@@ -1780,14 +1834,10 @@ DEF_OP(MemSet) {
 }
 
 DEF_OP(MemCpy) {
-  // x86 REP MOVS preserves flags per Intel SDM.  Save CR0 (packed-NZCV)
-  // to the red zone before the loop's cmpdi clobbers it; restore after.
-  // TMP3 is overwritten below by the direction-step setup — that's fine,
-  // we've already stashed the CR0 snapshot to memory.
-  // mfocrf 0x80 (single-field): only the CR0 nibble is defined pre-3.0C —
-  // sufficient, the sole consumer is the mtocrf(0x80) restore below.
-  mfocrf(TMP3, 0x80);
-  std(TMP3, -8, r1);
+  // x86 REP MOVS preserves flags per Intel SDM. Save CR0 (packed-NZCV) into
+  // volatile CR1 before the loop's cmpdi clobbers it (the loop uses CR0/5/6/7
+  // only, never CR1; avoids touching r1-8).
+  mcrf(1, 0);
   auto Op = IROp->C<IR::IROp_MemCpy>();
   GPR DestIn = GetReg(Op->Dest);
   GPR SrcIn  = GetReg(Op->Src);
@@ -2178,9 +2228,8 @@ DEF_OP(MemCpy) {
   // r0 was clobbered as the value scratch above; restore the JIT's r0=0
   // zero-index invariant before subsequent indexed mem ops.
   li(r(0), 0);
-  // Restore CR0 (saved at op entry) — REP MOVS preserves flags.
-  ld(TMP3, -8, r1);
-  mtocrf(0x80, TMP3);
+  // Restore CR0 (saved in CR1 at op entry) — REP MOVS preserves flags.
+  mcrf(0, 1);
 }
 
 // =========================================================================

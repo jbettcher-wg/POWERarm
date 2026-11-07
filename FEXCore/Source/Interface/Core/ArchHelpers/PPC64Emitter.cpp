@@ -57,20 +57,30 @@ void PPC64EmitterBase::SpillStaticRegs(GPR tmp) {
   for (size_t i = 0; i < SRAFPR.size(); ++i) {
     int32_t v_off = static_cast<int32_t>(
       offsetof(FEXCore::Core::CpuStateFrame, State.v[i][0]));
-    LoadImm32(tmp, static_cast<uint32_t>(v_off));
-    stvx(SRAFPR[i], STATE, tmp);
+    if (EmitterCTX && EmitterCTX->HostFeatures.SupportsISA30 &&
+        (v_off & 0xF) == 0 && v_off >= -32768 && v_off <= 32752) {
+      stxv(SRAFPR[i], static_cast<int16_t>(v_off), STATE);
+    } else {
+      LoadImm32(tmp, static_cast<uint32_t>(v_off));
+      stvx(SRAFPR[i], STATE, tmp);
+    }
   }
 
   // Spill pinned VSX low bank (V16-V31 in vs16-vs31) to State.v[16..31]
   for (size_t i = 16; i < 32; ++i) {
     int32_t v_off = static_cast<int32_t>(
       offsetof(FEXCore::Core::CpuStateFrame, State.v[i][0]));
-    LoadImm32(tmp, static_cast<uint32_t>(v_off));
-    if (EmitterCTX->HostFeatures.SupportsISA30) {
-      stxvx(PPC64Emitter::vsx(i), STATE, tmp);
+    if (EmitterCTX && EmitterCTX->HostFeatures.SupportsISA30 &&
+        (v_off & 0xF) == 0 && v_off >= -32768 && v_off <= 32752) {
+      stxv(PPC64Emitter::vsx(i), static_cast<int16_t>(v_off), STATE);
     } else {
-      xxpermdi(VTMP3_VSX, PPC64Emitter::vsx(i), PPC64Emitter::vsx(i), 2);
-      stxvd2x(VTMP3_VSX, STATE, tmp);
+      LoadImm32(tmp, static_cast<uint32_t>(v_off));
+      if (EmitterCTX && EmitterCTX->HostFeatures.SupportsISA30) {
+        stxvx(PPC64Emitter::vsx(i), STATE, tmp);
+      } else {
+        xxpermdi(VTMP3_VSX, PPC64Emitter::vsx(i), PPC64Emitter::vsx(i), 2);
+        stxvd2x(VTMP3_VSX, STATE, tmp);
+      }
     }
   }
 
@@ -177,20 +187,30 @@ void PPC64EmitterBase::FillStaticRegs(FillMode Mode) {
   for (size_t i = 0; i < SRAFPR.size(); ++i) {
     int32_t v_off = static_cast<int32_t>(
       offsetof(FEXCore::Core::CpuStateFrame, State.v[i][0]));
-    LoadImm32(TMP1, static_cast<uint32_t>(v_off));
-    lvx(SRAFPR[i], STATE, TMP1);
+    if (EmitterCTX && EmitterCTX->HostFeatures.SupportsISA30 &&
+        (v_off & 0xF) == 0 && v_off >= -32768 && v_off <= 32752) {
+      lxv(SRAFPR[i], static_cast<int16_t>(v_off), STATE);
+    } else {
+      LoadImm32(TMP1, static_cast<uint32_t>(v_off));
+      lvx(SRAFPR[i], STATE, TMP1);
+    }
   }
 
   // Fill pinned VSX low bank (V16-V31 in vs16-vs31) from State.v[16..31]
   for (size_t i = 16; i < 32; ++i) {
     int32_t v_off = static_cast<int32_t>(
       offsetof(FEXCore::Core::CpuStateFrame, State.v[i][0]));
-    LoadImm32(TMP1, static_cast<uint32_t>(v_off));
-    if (EmitterCTX->HostFeatures.SupportsISA30) {
-      lxvx(PPC64Emitter::vsx(i), STATE, TMP1);
+    if (EmitterCTX && EmitterCTX->HostFeatures.SupportsISA30 &&
+        (v_off & 0xF) == 0 && v_off >= -32768 && v_off <= 32752) {
+      lxv(PPC64Emitter::vsx(i), static_cast<int16_t>(v_off), STATE);
     } else {
-      lxvd2x(PPC64Emitter::vsx(i), STATE, TMP1);
-      xxpermdi(PPC64Emitter::vsx(i), PPC64Emitter::vsx(i), PPC64Emitter::vsx(i), 2);
+      LoadImm32(TMP1, static_cast<uint32_t>(v_off));
+      if (EmitterCTX && EmitterCTX->HostFeatures.SupportsISA30) {
+        lxvx(PPC64Emitter::vsx(i), STATE, TMP1);
+      } else {
+        lxvd2x(PPC64Emitter::vsx(i), STATE, TMP1);
+        xxpermdi(PPC64Emitter::vsx(i), PPC64Emitter::vsx(i), PPC64Emitter::vsx(i), 2);
+      }
     }
   }
 
@@ -295,16 +315,28 @@ void PPC64EmitterBase::PushCalleeSavedRegisters() {
   }
   for (int i = 20; i <= 31; ++i) {
     int32_t off = FRAME_VMX_SAVE + (i - 20) * 16;
-    LoadImm32(TMP2, static_cast<uint32_t>(off - FRAME_TOTAL));
-    stvx(VR{static_cast<uint32_t>(i)}, r1, TMP2);
+    int32_t frame_off = off - FRAME_TOTAL;
+    if (EmitterCTX && EmitterCTX->HostFeatures.SupportsISA30 &&
+        (frame_off & 0xF) == 0 && frame_off >= -32768 && frame_off <= 32752) {
+      stxv(VR{static_cast<uint32_t>(i)}, static_cast<int16_t>(frame_off), r1);
+    } else {
+      LoadImm32(TMP2, static_cast<uint32_t>(frame_off));
+      stvx(VR{static_cast<uint32_t>(i)}, r1, TMP2);
+    }
   }
 }
 
 void PPC64EmitterBase::PopCalleeSavedRegisters() {
   for (int i = 20; i <= 31; ++i) {
     int32_t off = FRAME_VMX_SAVE + (i - 20) * 16;
-    LoadImm32(TMP2, static_cast<uint32_t>(off - FRAME_TOTAL));
-    lvx(VR{static_cast<uint32_t>(i)}, r1, TMP2);
+    int32_t frame_off = off - FRAME_TOTAL;
+    if (EmitterCTX && EmitterCTX->HostFeatures.SupportsISA30 &&
+        (frame_off & 0xF) == 0 && frame_off >= -32768 && frame_off <= 32752) {
+      lxv(VR{static_cast<uint32_t>(i)}, static_cast<int16_t>(frame_off), r1);
+    } else {
+      LoadImm32(TMP2, static_cast<uint32_t>(frame_off));
+      lvx(VR{static_cast<uint32_t>(i)}, r1, TMP2);
+    }
   }
   for (int i = 14; i <= 31; ++i) {
     int32_t off = FRAME_FPR_SAVE + (i - 14) * 8;
@@ -376,8 +408,13 @@ size_t PPC64EmitterBase::PushDynamicRegs(GPR tmp) {
       continue;  // not live across this call (see DynVRSpillMask contract)
     }
     int32_t off = static_cast<int32_t>(FPRStart + i * 16);
-    LoadImm32(tmp, static_cast<uint32_t>(off));
-    stvx(RAFPR[i], r1, tmp);
+    if (EmitterCTX && EmitterCTX->HostFeatures.SupportsISA30 &&
+        (off & 0xF) == 0 && off >= -32768 && off <= 32752) {
+      stxv(RAFPR[i], static_cast<int16_t>(off), r1);
+    } else {
+      LoadImm32(tmp, static_cast<uint32_t>(off));
+      stvx(RAFPR[i], r1, tmp);
+    }
   }
   return SaveSize;
 }
@@ -398,8 +435,13 @@ void PPC64EmitterBase::PopDynamicRegs() {
       continue;  // not spilled by PushDynamicRegs (mask unchanged in between)
     }
     int32_t off = static_cast<int32_t>(FPRStart + i * 16);
-    LoadImm32(TMP1, static_cast<uint32_t>(off));
-    lvx(RAFPR[i], r1, TMP1);
+    if (EmitterCTX && EmitterCTX->HostFeatures.SupportsISA30 &&
+        (off & 0xF) == 0 && off >= -32768 && off <= 32752) {
+      lxv(RAFPR[i], static_cast<int16_t>(off), r1);
+    } else {
+      LoadImm32(TMP1, static_cast<uint32_t>(off));
+      lvx(RAFPR[i], r1, TMP1);
+    }
   }
 
   addi(r1, r1, static_cast<int16_t>(SaveSize));
@@ -420,8 +462,13 @@ void PPC64EmitterBase::SaveDynVRsToFrame(int32_t BaseOffset) {
     if (RAFPR[i].idx >= 20 || !(DynVRSpillMask & (1u << i))) {
       continue;
     }
-    LoadImm32(TMP3, static_cast<uint32_t>(off));
-    stvx(RAFPR[i], r1, TMP3);
+    if (EmitterCTX && EmitterCTX->HostFeatures.SupportsISA30 &&
+        (off & 0xF) == 0 && off >= -32768 && off <= 32752) {
+      stxv(RAFPR[i], static_cast<int16_t>(off), r1);
+    } else {
+      LoadImm32(TMP3, static_cast<uint32_t>(off));
+      stvx(RAFPR[i], r1, TMP3);
+    }
     off += 16;
   }
 }
@@ -434,8 +481,13 @@ void PPC64EmitterBase::RestoreDynVRsFromFrame(int32_t BaseOffset) {
     if (RAFPR[i].idx >= 20 || !(DynVRSpillMask & (1u << i))) {
       continue;
     }
-    LoadImm32(TMP3, static_cast<uint32_t>(off));
-    lvx(RAFPR[i], r1, TMP3);
+    if (EmitterCTX && EmitterCTX->HostFeatures.SupportsISA30 &&
+        (off & 0xF) == 0 && off >= -32768 && off <= 32752) {
+      lxv(RAFPR[i], static_cast<int16_t>(off), r1);
+    } else {
+      LoadImm32(TMP3, static_cast<uint32_t>(off));
+      lvx(RAFPR[i], r1, TMP3);
+    }
     off += 16;
   }
 }
@@ -492,7 +544,10 @@ PPC64EmitterBase::V128AddrForm PPC64EmitterBase::PrepareV128Addr(GPR base, GPR i
   // scales imm12 by 16 and `ldp q`/`stp q` scales imm7 by 16, so the common
   // guest shapes land here; LDUR's unscaled simm9 does not and falls through.
   if (EmitterCTX->HostFeatures.SupportsISA30 && (disp & 0xF) == 0 && disp >= -32768 && disp <= 32752) {
-    return {base, GPRegs::r0, static_cast<int16_t>(disp)};
+    return {base, GPRegs::r0, disp};
+  }
+  if (EmitterCTX->HostFeatures.SupportsISA30 && EmitterCTX->HostFeatures.SupportsISA31 && FitsSigned34(disp)) {
+    return {base, GPRegs::r0, disp};
   }
   if (disp >= -32768 && disp <= 32767) {
     addi(TMP3, base, static_cast<int16_t>(disp));
@@ -507,8 +562,15 @@ PPC64EmitterBase::V128AddrForm PPC64EmitterBase::PrepareV128Addr(GPR base, GPR i
 void PPC64EmitterBase::LoadUnalignedV128(VSXR dst, const V128AddrForm& A) {
   if (EmitterCTX->HostFeatures.SupportsISA30) {
     if (A.Disp != 0) {
-      lxv(dst, A.Disp, A.RA);           // DQ-form: EA = GPR[RA] + Disp
-      return;
+      if ((A.Disp & 0xF) == 0 && A.Disp >= -32768 && A.Disp <= 32752) {
+        lxv(dst, static_cast<int16_t>(A.Disp), A.RA); // DQ-form: EA = GPR[RA] + Disp
+        return;
+      }
+      if (EmitterCTX->HostFeatures.SupportsISA31) {
+        plxv(dst, A.Disp, A.RA);                      // 8ls-form: EA = GPR[RA] + 34-bit Disp
+        return;
+      }
+      ERROR_AND_DIE_FMT("LoadUnalignedV128: unsupported non-DQ displacement {}", A.Disp);
     }
     lxvx(dst, A.RA, A.RB);              // EA = GPR[RA] + GPR[RB], r0 ≡ 0
     return;
@@ -523,8 +585,15 @@ void PPC64EmitterBase::LoadUnalignedV128(VSXR dst, const V128AddrForm& A) {
 void PPC64EmitterBase::StoreUnalignedV128(VSXR src, const V128AddrForm& A) {
   if (EmitterCTX->HostFeatures.SupportsISA30) {
     if (A.Disp != 0) {
-      stxv(src, A.Disp, A.RA);
-      return;
+      if ((A.Disp & 0xF) == 0 && A.Disp >= -32768 && A.Disp <= 32752) {
+        stxv(src, static_cast<int16_t>(A.Disp), A.RA);
+        return;
+      }
+      if (EmitterCTX->HostFeatures.SupportsISA31) {
+        pstxv(src, A.Disp, A.RA);
+        return;
+      }
+      ERROR_AND_DIE_FMT("StoreUnalignedV128: unsupported non-DQ displacement {}", A.Disp);
     }
     stxvx(src, A.RA, A.RB);
     return;

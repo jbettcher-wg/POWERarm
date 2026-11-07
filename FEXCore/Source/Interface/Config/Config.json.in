@@ -228,6 +228,8 @@
         "Enums": {
           "ENABLEISA30": "enableisa30",
           "DISABLEISA30": "disableisa30",
+          "ENABLEISA31": "enableisa31",
+          "DISABLEISA31": "disableisa31",
           "ENABLESVE": "enablesve",
           "DISABLESVE": "disablesve",
           "ENABLEAVX": "enableavx",

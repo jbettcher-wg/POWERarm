@@ -516,7 +516,7 @@ uint64_t ComputeCodeCacheConfigId() {
                      F.SupportsSHA, F.SupportsPMULL_128Bit, F.SupportsCSSC, F.SupportsFCMA, F.SupportsFlagM, F.SupportsFlagM2, F.SupportsFCmpX86,
                      F.SupportsRPRES, F.SupportsPreserveAllABI, F.SupportsAES256, F.SupportsSVEBitPerm, F.SupportsCPUIndexInTPIDRRO,
                      F.SupportsFRINTTS, F.SupportsECV, F.SupportsWFXT, F.Supports3DNow, F.SupportsSSE4a, F.SupportsMOPS, F.SupportsISA30,
-                     F.SupportsVCmpFlagBranch, F.SupportsFlagTransparentSelect, F.SupportsAFP, F.SupportsFloatExceptions, F.IsInstCountCI}) {
+                     F.SupportsISA31, F.SupportsVCmpFlagBranch, F.SupportsFlagTransparentSelect, F.SupportsAFP, F.SupportsFloatExceptions, F.IsInstCountCI}) {
         Hasher.Add(uint64_t {B});
       }
       // The distinct MIDR values, not one per CPU: the count follows the
@@ -1235,7 +1235,59 @@ namespace {
   bool ReadGuest(uint64_t Address, std::byte* Out, size_t Size) {
     const struct iovec Local {.iov_base = Out, .iov_len = Size};
     const struct iovec Remote {.iov_base = reinterpret_cast<void*>(Address), .iov_len = Size};
-    return ::process_vm_readv(::getpid(), &Local, 1, &Remote, 1, 0) == static_cast<ssize_t>(Size);
+    if (::process_vm_readv(::getpid(), &Local, 1, &Remote, 1, 0) == static_cast<ssize_t>(Size)) {
+      return true;
+    }
+    if (errno != ENOSYS) {
+      return false;
+    }
+    // Fallback for kernels without CONFIG_CROSS_MEMORY_ATTACH (e.g. minimal
+    // embedded configs) or user-mode QEMU: write() into a pipe uses the
+    // kernel's copy_from_user, returning EFAULT instead of raising SIGSEGV.
+    struct PipePair {
+      int FDs[2] {-1, -1};
+      PipePair() {
+        if (::pipe2(FDs, O_CLOEXEC | O_NONBLOCK) != 0) {
+          FDs[0] = FDs[1] = -1;
+        }
+      }
+      ~PipePair() {
+        if (FDs[0] != -1) ::close(FDs[0]);
+        if (FDs[1] != -1) ::close(FDs[1]);
+      }
+    };
+    thread_local PipePair Pipe;
+    if (Pipe.FDs[0] == -1) {
+      return false;
+    }
+    const auto* Src = reinterpret_cast<const std::byte*>(Address);
+    while (Size > 0) {
+      const size_t Chunk = std::min<size_t>(Size, 4096);
+      const ssize_t W = ::write(Pipe.FDs[1], Src, Chunk);
+      if (W != static_cast<ssize_t>(Chunk)) {
+        if (W > 0) {
+          ssize_t Rem = W;
+          while (Rem > 0) {
+            const ssize_t R = ::read(Pipe.FDs[0], Out, static_cast<size_t>(Rem));
+            if (R <= 0) break;
+            Rem -= R;
+          }
+        }
+        return false;
+      }
+      size_t ReadLeft = Chunk;
+      while (ReadLeft > 0) {
+        const ssize_t R = ::read(Pipe.FDs[0], Out, ReadLeft);
+        if (R <= 0) {
+          return false;
+        }
+        Out += R;
+        ReadLeft -= static_cast<size_t>(R);
+      }
+      Src += Chunk;
+      Size -= Chunk;
+    }
+    return true;
   }
 
   // Everything one segment holds, before it is written.
@@ -2249,15 +2301,23 @@ std::optional<CodeCache::LoadedBlock> CodeCache::TryLoadBlock(Core::InternalThre
   const uint32_t ColdSize = Block->ColdSize;
   const uint32_t HotSize = Block->CodeSize - ColdSize;
 
-  if (!CTX.EnsureHeadroom(HotSize + ColdSize + BlockAlignment)) {
+  // Power ISA 3.1 PO=1 prefixed instructions must not cross a 64-byte boundary.
+  // Emissions enforce `(offset & 63) != 60` relative to block start, so installing
+  // cached ISA 3.1 blocks on a 64-byte boundary keeps every prefixed instruction
+  // inside its original 64-byte chunk without changing the on-disk segment format.
+  const uint64_t InstallAlign = CTX.HostFeatures.SupportsISA31 ? 64u : BlockAlignment;
+  if (!CTX.EnsureHeadroom(HotSize + ColdSize + InstallAlign)) {
     // Leave rotation to the compiler.
     return std::nullopt;
   }
-  const uint64_t HotOffset = AlignUp(CTX.LatestOffset, BlockAlignment);
+  const uint64_t HotOffset = AlignUp(CTX.LatestOffset, InstallAlign);
   if (HotOffset > CTX.ColdOffset || HotSize > CTX.ColdOffset - HotOffset) {
     return std::nullopt;
   }
 
+  if (HotOffset > CTX.LatestOffset) {
+    ::memset(CodeBuffer->Ptr + CTX.LatestOffset, 0, HotOffset - CTX.LatestOffset);
+  }
   auto HotDest = std::as_writable_bytes(std::span {CodeBuffer->Ptr, CodeBuffer->UsableSize()}).subspan(HotOffset, HotSize);
   ::memcpy(HotDest.data(), Seg->Code + Block->CodeOffset, HotSize);
 
@@ -2790,7 +2850,7 @@ namespace {
     int LockFD = -1;
     if (Info.HasLock) {
       LockFD = RawFile::Open(LockPath.c_str(), O_RDWR | O_CLOEXEC);
-      if (LockFD != -1 && ::flock(LockFD, LOCK_EX | LOCK_NB) != 0) {
+      if (LockFD != -1 && ::flock(LockFD, LOCK_EX | LOCK_NB) != 0 && errno != ENOSYS) {
         ::close(LockFD);
         return false;
       }
@@ -2822,7 +2882,7 @@ namespace {
     if (LockFD == -1) {
       return;
     }
-    if (::flock(LockFD, LOCK_EX | LOCK_NB) != 0) {
+    if (::flock(LockFD, LOCK_EX | LOCK_NB) != 0 && errno != ENOSYS) {
       ::close(LockFD);
       return;
     }
@@ -3032,7 +3092,7 @@ namespace {
   bool LockWithDeadline(int FD, int Operation, uint64_t WaitSeconds) {
     const uint64_t Deadline = MonotonicSeconds() + WaitSeconds;
     for (;;) {
-      if (::flock(FD, Operation | LOCK_NB) == 0) {
+      if (::flock(FD, Operation | LOCK_NB) == 0 || errno == ENOSYS) {
         return true;
       }
       if ((errno != EWOULDBLOCK && errno != EINTR) || MonotonicSeconds() >= Deadline) {
@@ -3658,7 +3718,7 @@ bool CodeCache::CompactAllSegments(const fextl::string& DurableBase, uint64_t Fi
   }
   bool Done = false;
   bool Compacted = false;
-  if (::flock(LockFD, LOCK_EX | LOCK_NB) == 0) {
+  if (::flock(LockFD, LOCK_EX | LOCK_NB) == 0 || errno == ENOSYS) {
     Compacted = RawFile::Access(SegmentPath(Base, 1).c_str(), F_OK) == 0 && CompactSegments(Base, {}, ComputeCodeCacheConfigId(), FileId);
     Done = Compacted || RawFile::Access(SegmentPath(Base, 1).c_str(), F_OK) != 0;
     Stats.Compactions.fetch_add(Done ? 1 : 0, std::memory_order_relaxed);

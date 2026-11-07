@@ -999,6 +999,10 @@ bool PPC64JITCore::HostSupportsISA30() const {
   return EmitterCTX->HostFeatures.SupportsISA30;
 }
 
+bool PPC64JITCore::HostSupportsISA31() const {
+  return EmitterCTX->HostFeatures.SupportsISA31;
+}
+
 uint32_t PPC64JITCore::XEROVBitIndex() const {
   // CR1.LT on the mcrxrx layout, CR1.GT on the pre-3.0 layout.
   return ProjectXERUsesMcrxrx() ? 4u : 5u;
@@ -5212,6 +5216,7 @@ CPUBackend::CompiledCode PPC64JITCore::CompileCode(
   // pessimise -- and, more importantly, so it can never make a unit look
   // clean that isn't.
   ResetR0Dirty();
+  ResetPrefixed();
 
   // Same for pending block-link jump thunks: their LinkPath labels are the
   // targets of miss-leg branches recorded in PendingBranches, so the lists
@@ -6217,7 +6222,8 @@ CPUBackend::CompiledCode PPC64JITCore::CompileCode(
   // CodeBufferLock, LatestOffset is 0 in the new buffer. Loop, because one
   // rotation only grows the buffer geometrically and a very large unit may
   // need several before it fits.
-  const size_t PlacementBytes = CodeSize + FEXCore::AlignUp(ColdSize, 16);
+  const uint64_t HotAlign = HasEmittedPrefixed() ? 64u : 16u;
+  const size_t PlacementBytes = CodeSize + (HotAlign - 16u) + FEXCore::AlignUp(ColdSize, 16);
   while (!CodeBuffers.EnsureHeadroom(PlacementBytes)) {
     const size_t PrevUsable = CurrentCodeBuffer->UsableSize();
 
@@ -6248,10 +6254,14 @@ CPUBackend::CompiledCode PPC64JITCore::CompileCode(
   }
 
   auto* CB = CurrentCodeBuffer.get();
-  const uint64_t FinalOffset = CodeBuffers.LatestOffset;
+  const uint64_t RawOffset = CodeBuffers.LatestOffset;
+  const uint64_t FinalOffset = FEXCore::AlignUp(RawOffset, HotAlign);
+  if (FinalOffset > RawOffset) {
+    ::memset(CB->Ptr + RawOffset, 0, FinalOffset - RawOffset);
+  }
   uint8_t* const Dest = CB->Ptr + FinalOffset;
   ::memcpy(Dest, StagingBase, CodeSize);
-  CodeBuffers.LatestOffset += CodeSize;
+  CodeBuffers.LatestOffset = FinalOffset + CodeSize;
 
   const uint64_t ColdBaseOffset = CodeBuffers.AllocateColdThunkBytes(ColdSize);
   uint8_t* ColdBasePtr = CB->Ptr + ColdBaseOffset;

@@ -489,6 +489,7 @@ static void OverrideFeatures(FEXCore::HostFeatures* Features, uint64_t ForceSVEW
   LogMan::Throw::AFmt(!(Disable##name && Enable##name), "Disabling and Enabling CPU feature (" #name ") is mutually exclusive");
 
   ENABLE_DISABLE_OPTION(SupportsISA30, ISA30, ISA30);
+  ENABLE_DISABLE_OPTION(SupportsISA31, ISA31, ISA31);
   ENABLE_DISABLE_OPTION(SupportsAVX, AVX, AVX);
   ENABLE_DISABLE_OPTION(SupportsAVX2, AVX2, AVX2);
   ENABLE_DISABLE_OPTION(SupportsSVE128, SVE, SVE);
@@ -537,6 +538,7 @@ static void OverrideFeatures(FEXCore::HostFeatures* Features, uint64_t ForceSVEW
   // displacement folding; ride the LRCPC2 override so
   // FEX_HOSTFEATURES=disablelrcpc2 disables TSO displacement folding wholesale.
   Features->SupportsTSODisp16 &= Features->SupportsTSOImm9;
+  Features->SupportsISA31 &= Features->SupportsISA30;
 }
 
 static void HandleErrata(FEXCore::HostFeatures* HostFeatures, uint64_t MIDR) {
@@ -748,9 +750,11 @@ void FetchHostFeatures(FEX::CPUFeatures& Features, FEXCore::HostFeatures& HostFe
     // Linux ABI constant from arch/powerpc/include/uapi/asm/cputable.h. Defined locally rather
     // than including <asm/cputable.h>, which is not reliably present in userspace sysroots.
     constexpr unsigned long PPC_FEATURE2_ARCH_3_00_ = 0x00800000UL;
+    constexpr unsigned long PPC_FEATURE2_ARCH_3_1_  = 0x00040000UL;
 
     const unsigned long HWCAP2 = getauxval(AT_HWCAP2);
     HostFeatures.SupportsISA30 = (HWCAP2 & PPC_FEATURE2_ARCH_3_00_) != 0;
+    HostFeatures.SupportsISA31 = HostFeatures.SupportsISA30 && (HWCAP2 & PPC_FEATURE2_ARCH_3_1_) != 0;
 
     // Record-form VMX integer compares (vcmpequ{b,h,w}.) are Power ISA 2.03
     // era -- available on every 64-bit POWER part FEX can run on, so this is

@@ -1828,7 +1828,57 @@ namespace {
 bool SafeReadGuest(void* Dst, uint64_t Src, size_t Size) {
   const struct iovec Local {.iov_base = Dst, .iov_len = Size};
   const struct iovec Remote {.iov_base = reinterpret_cast<void*>(Src), .iov_len = Size};
-  return process_vm_readv(::getpid(), &Local, 1, &Remote, 1, 0) == static_cast<ssize_t>(Size);
+  if (process_vm_readv(::getpid(), &Local, 1, &Remote, 1, 0) == static_cast<ssize_t>(Size)) {
+    return true;
+  }
+  if (errno != ENOSYS) {
+    return false;
+  }
+  struct PipePair {
+    int FDs[2] {-1, -1};
+    PipePair() {
+      if (::pipe2(FDs, O_CLOEXEC | O_NONBLOCK) != 0) {
+        FDs[0] = FDs[1] = -1;
+      }
+    }
+    ~PipePair() {
+      if (FDs[0] != -1) ::close(FDs[0]);
+      if (FDs[1] != -1) ::close(FDs[1]);
+    }
+  };
+  thread_local PipePair Pipe;
+  if (Pipe.FDs[0] == -1) {
+    return false;
+  }
+  auto* Out = static_cast<std::byte*>(Dst);
+  const auto* In = reinterpret_cast<const std::byte*>(Src);
+  while (Size > 0) {
+    const size_t Chunk = std::min<size_t>(Size, 4096);
+    const ssize_t W = ::write(Pipe.FDs[1], In, Chunk);
+    if (W != static_cast<ssize_t>(Chunk)) {
+      if (W > 0) {
+        ssize_t Rem = W;
+        while (Rem > 0) {
+          const ssize_t R = ::read(Pipe.FDs[0], Out, static_cast<size_t>(Rem));
+          if (R <= 0) break;
+          Rem -= R;
+        }
+      }
+      return false;
+    }
+    size_t ReadLeft = Chunk;
+    while (ReadLeft > 0) {
+      const ssize_t R = ::read(Pipe.FDs[0], Out, ReadLeft);
+      if (R <= 0) {
+        return false;
+      }
+      Out += R;
+      ReadLeft -= static_cast<size_t>(R);
+    }
+    In += Chunk;
+    Size -= Chunk;
+  }
+  return true;
 }
 
 template<typename T>

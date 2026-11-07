@@ -92,6 +92,7 @@ public:
     Buffer = buf;
     BufferSize = size;
     Offset = 0;
+    EmittedPrefixed = false;
   }
 
   // Re-point the buffer at a new base WITHOUT disturbing the cursor or the
@@ -175,6 +176,13 @@ public:
   void MarkR0Dirty()  { R0MaybeDirty = true; }
   [[nodiscard]] bool R0Dirty() const { return R0MaybeDirty; }
 
+  void ResetPrefixed() { EmittedPrefixed = false; }
+  [[nodiscard]] bool HasEmittedPrefixed() const { return EmittedPrefixed; }
+
+  static constexpr bool FitsSigned34(int64_t v) {
+    return v >= -(int64_t{1} << 33) && v < (int64_t{1} << 33);
+  }
+
   void Emit32(uint32_t insn) {
     assert(Offset + 4 <= BufferSize && "Code buffer overflow");
     if (insn == kInsnLiR0Zero || insn == kInsnBctrl || insn == kInsnBlrl ||
@@ -183,6 +191,19 @@ public:
     }
     memcpy(Buffer + Offset, &insn, 4);
     Offset += 4;
+  }
+
+  // Power ISA v3.1 Book I §1.6.3: a 64-bit PO=1 prefixed instruction must not
+  // cross a 64-byte boundary (`CIA % 64 == 60` raises an alignment exception).
+  // Pad with a 4-byte `nop` when at offset 60 (mod 64) relative to block start,
+  // and mark `EmittedPrefixed` so `CompileCode` installs the block 64B-aligned.
+  void EmitPrefixed(uint32_t prefix, uint32_t suffix) {
+    if ((Offset & 63u) == 60u) {
+      nop();
+    }
+    EmittedPrefixed = true;
+    Emit32(prefix);
+    Emit32(suffix);
   }
 
   void dc64(uint64_t v) {
@@ -2434,6 +2455,103 @@ private:
   // Set by Emit32 when a word that implies an r0 clobber goes out; reset per
   // compile unit by CompileCode. See the tracking comment above Emit32.
   bool     R0MaybeDirty = false;
+  bool     EmittedPrefixed = false;
+
+  // =========================================================================
+  // Power ISA v3.1 instructions (gated on HostFeatures.SupportsISA31)
+  // =========================================================================
+public:
+  // Scalar byte-reverse (X-form, PO=31): brw XO=155, brd XO=187, brh XO=219.
+  void brw(GPR ra, GPR rs) { EmitX(31, rs.idx, ra.idx, 0, 155, 0); }
+  void brd(GPR ra, GPR rs) { EmitX(31, rs.idx, ra.idx, 0, 187, 0); }
+  void brh(GPR ra, GPR rs) { EmitX(31, rs.idx, ra.idx, 0, 219, 0); }
+
+  // Parallel bit deposit / extract (X-form, PO=31): pdepd XO=156, pextd XO=188.
+  void pdepd(GPR ra, GPR rs, GPR rb) { EmitX(31, rs.idx, ra.idx, rb.idx, 156, 0); }
+  void pextd(GPR ra, GPR rs, GPR rb) { EmitX(31, rs.idx, ra.idx, rb.idx, 188, 0); }
+
+  // Set boolean condition (X-form, PO=31):
+  //   setbc  RT, BI (XO=384): RT = CR[BI] ?  1 : 0
+  //   setbcr RT, BI (XO=416): RT = CR[BI] ?  0 : 1
+  //   setnbc RT, BI (XO=448): RT = CR[BI] ? -1 : 0
+  //   setnbcr RT,BI (XO=480): RT = CR[BI] ?  0 : -1
+  void setbc  (GPR rt, uint32_t bi) { EmitX(31, rt.idx, bi & 0x1Fu, 0, 384, 0); }
+  void setbcr (GPR rt, uint32_t bi) { EmitX(31, rt.idx, bi & 0x1Fu, 0, 416, 0); }
+  void setnbc (GPR rt, uint32_t bi) { EmitX(31, rt.idx, bi & 0x1Fu, 0, 448, 0); }
+  void setnbcr(GPR rt, uint32_t bi) { EmitX(31, rt.idx, bi & 0x1Fu, 0, 480, 0); }
+
+  // Vector extract mask to GPR (VX-form, PO=4, XO=1602, subop 8..11 in VRA):
+  void vextractbm(GPR rt, VR vrb) { EmitVX(rt.idx,  8, vrb.idx, 1602); }
+  void vextracthm(GPR rt, VR vrb) { EmitVX(rt.idx,  9, vrb.idx, 1602); }
+  void vextractwm(GPR rt, VR vrb) { EmitVX(rt.idx, 10, vrb.idx, 1602); }
+  void vextractdm(GPR rt, VR vrb) { EmitVX(rt.idx, 11, vrb.idx, 1602); }
+
+  // Vector insert GPR word / doubleword at immediate byte index (VX-form, PO=4):
+  void vinsw(VR vrt, GPR rb, uint32_t uim) { EmitVX(vrt.idx, uim & 0xFu, rb.idx, 207); }
+  void vinsd(VR vrt, GPR rb, uint32_t uim) { EmitVX(vrt.idx, uim & 0xFu, rb.idx, 463); }
+
+  // 64-bit PO=1 prefixed arithmetic & scalar load/store (signed 34-bit immediate/disp, R=0):
+  void paddi(GPR rt, GPR ra, int64_t si34) { EmitPMLS(14, rt.idx, ra.idx, si34); }
+  void pli  (GPR rt, int64_t si34)         { paddi(rt, GPRegs::r0, si34); }
+  void plbz (GPR rt, int64_t d34, GPR ra)  { EmitPMLS(34, rt.idx, ra.idx, d34); }
+  void plhz (GPR rt, int64_t d34, GPR ra)  { EmitPMLS(40, rt.idx, ra.idx, d34); }
+  void plha (GPR rt, int64_t d34, GPR ra)  { EmitPMLS(42, rt.idx, ra.idx, d34); }
+  void plwz (GPR rt, int64_t d34, GPR ra)  { EmitPMLS(32, rt.idx, ra.idx, d34); }
+  void plwa (GPR rt, int64_t d34, GPR ra)  { Emit8LS (41, rt.idx, ra.idx, d34); }
+  void pld  (GPR rt, int64_t d34, GPR ra)  { Emit8LS (57, rt.idx, ra.idx, d34); }
+  void pstb (GPR rs, int64_t d34, GPR ra)  { EmitPMLS(38, rs.idx, ra.idx, d34); }
+  void psth (GPR rs, int64_t d34, GPR ra)  { EmitPMLS(44, rs.idx, ra.idx, d34); }
+  void pstw (GPR rs, int64_t d34, GPR ra)  { EmitPMLS(36, rs.idx, ra.idx, d34); }
+  void pstd (GPR rs, int64_t d34, GPR ra)  { Emit8LS (61, rs.idx, ra.idx, d34); }
+
+  // 64-bit PO=1 prefixed VSX 128-bit load/store (8LS, PO=50/51 and 54/55):
+  void plxv (VSXR xt, int64_t d34, GPR ra) {
+    Emit8LS(50u | ((xt.idx >> 5) & 1u), xt.idx & 31u, ra.idx, d34);
+  }
+  void pstxv(VSXR xs, int64_t d34, GPR ra) {
+    Emit8LS(54u | ((xs.idx >> 5) & 1u), xs.idx & 31u, ra.idx, d34);
+  }
+
+  // 64-bit PO=1 8RR VSX immediate splat, ternary logic, and MSB lane blends:
+  void xxspltiw(VSXR xt, uint32_t imm32) {
+    const uint32_t prefix = 0x05000000u | (imm32 >> 16);
+    const uint32_t suffix = (32u << 26) | ((xt.idx & 31u) << 21) | (3u << 17) |
+                            (((xt.idx >> 5) & 1u) << 16) | (imm32 & 0xFFFFu);
+    EmitPrefixed(prefix, suffix);
+  }
+  void xxeval(VSXR xt, VSXR xa, VSXR xb, VSXR xc, uint8_t imm8) {
+    const uint32_t prefix = 0x05000000u | static_cast<uint32_t>(imm8);
+    const uint32_t suffix = (34u << 26) | ((xt.idx & 31u) << 21) | ((xa.idx & 31u) << 16) |
+                            ((xb.idx & 31u) << 11) | ((xc.idx & 31u) << 6) | (1u << 4) |
+                            (((xc.idx >> 5) & 1u) << 3) | (((xa.idx >> 5) & 1u) << 2) |
+                            (((xb.idx >> 5) & 1u) << 1) | ((xt.idx >> 5) & 1u);
+    EmitPrefixed(prefix, suffix);
+  }
+  void xxblendvb(VSXR xt, VSXR xa, VSXR xb, VSXR xc) { Emit8RRBlend(xt, xa, xb, xc, 0); }
+  void xxblendvh(VSXR xt, VSXR xa, VSXR xb, VSXR xc) { Emit8RRBlend(xt, xa, xb, xc, 1); }
+  void xxblendvw(VSXR xt, VSXR xa, VSXR xb, VSXR xc) { Emit8RRBlend(xt, xa, xb, xc, 2); }
+  void xxblendvd(VSXR xt, VSXR xa, VSXR xb, VSXR xc) { Emit8RRBlend(xt, xa, xb, xc, 3); }
+
+private:
+  void EmitPMLS(uint32_t suffix_op, uint32_t rt, uint32_t ra, int64_t d34) {
+    LOGMAN_THROW_A_FMT(FitsSigned34(d34), "PPC64 EmitPMLS: displacement {} outside signed 34-bit range", d34);
+    const uint32_t d0 = static_cast<uint32_t>(static_cast<uint64_t>(d34) >> 16) & 0x3FFFFu;
+    const uint32_t d1 = static_cast<uint32_t>(d34) & 0xFFFFu;
+    EmitPrefixed(0x06000000u | d0, (suffix_op << 26) | (rt << 21) | (ra << 16) | d1);
+  }
+  void Emit8LS(uint32_t suffix_op, uint32_t rt, uint32_t ra, int64_t d34) {
+    LOGMAN_THROW_A_FMT(FitsSigned34(d34), "PPC64 Emit8LS: displacement {} outside signed 34-bit range", d34);
+    const uint32_t d0 = static_cast<uint32_t>(static_cast<uint64_t>(d34) >> 16) & 0x3FFFFu;
+    const uint32_t d1 = static_cast<uint32_t>(d34) & 0xFFFFu;
+    EmitPrefixed(0x04000000u | d0, (suffix_op << 26) | (rt << 21) | (ra << 16) | d1);
+  }
+  void Emit8RRBlend(VSXR xt, VSXR xa, VSXR xb, VSXR xc, uint32_t sz) {
+    const uint32_t suffix = (33u << 26) | ((xt.idx & 31u) << 21) | ((xa.idx & 31u) << 16) |
+                            ((xb.idx & 31u) << 11) | ((xc.idx & 31u) << 6) | ((sz & 3u) << 4) |
+                            (((xc.idx >> 5) & 1u) << 3) | (((xa.idx >> 5) & 1u) << 2) |
+                            (((xb.idx >> 5) & 1u) << 1) | ((xt.idx >> 5) & 1u);
+    EmitPrefixed(0x05000000u, suffix);
+  }
 
   // Pending branch list for forward-label fixup.
   //

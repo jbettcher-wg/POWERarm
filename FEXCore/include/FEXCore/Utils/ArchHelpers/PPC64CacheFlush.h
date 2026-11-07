@@ -83,37 +83,29 @@ namespace FEXCore::ArchHelpers::PPC64 {
  * non-HWCAP tag is a walk of the auxv array saved at startup: no lock, no
  * allocation, nothing that a signal can interrupt unsafely.
  */
-// Same signal-safety rules as CacheBlockSize below: constant-initialised
+// Same signal-safety rules as the block-size helpers below: constant-initialised
 // atomic, no guard variable. 0 = unknown, 1 = no, 2 = yes.
 inline bool CoherentICache() {
   static std::atomic<uint8_t> Cached {0};
   uint8_t State = Cached.load(std::memory_order_relaxed);
   if (State == 0) [[unlikely]] {
-    constexpr unsigned long PPC_FEATURE_ICACHE_COHERENT_BIT = 0x00000002UL;
-    State = (::getauxval(AT_HWCAP) & PPC_FEATURE_ICACHE_COHERENT_BIT) ? 2 : 1;
+    // Linux UAPI arch/powerpc/include/uapi/asm/cputable.h:
+    // PPC_FEATURE_ICACHE_SNOOP = 0x00002000 (NOT 0x00000002, which is PPC_FEATURE_TRUE_LE).
+    constexpr unsigned long PPC_FEATURE_ICACHE_SNOOP_BIT = 0x00002000UL;
+    State = (::getauxval(AT_HWCAP) & PPC_FEATURE_ICACHE_SNOOP_BIT) ? 2 : 1;
     Cached.store(State, std::memory_order_relaxed);
   }
   return State == 2;
 }
 
-inline size_t CacheBlockSize() {
+inline size_t DCacheBlockSize() {
   static std::atomic<size_t> Cached {0}; // constant-initialised: no guard variable
   size_t Size = Cached.load(std::memory_order_relaxed);
   if (Size != 0) [[likely]] {
     return Size;
   }
 
-  const unsigned long DBlock = ::getauxval(AT_DCACHEBSIZE);
-  const unsigned long IBlock = ::getauxval(AT_ICACHEBSIZE);
-
-  unsigned long Chosen = 0;
-  if (DBlock && IBlock) {
-    Chosen = DBlock < IBlock ? DBlock : IBlock;
-  } else {
-    Chosen = DBlock ? DBlock : IBlock;
-  }
-
-  // Reject 0 and non-power-of-two; the align-down below depends on the mask.
+  unsigned long Chosen = ::getauxval(AT_DCACHEBSIZE);
   if (Chosen == 0 || (Chosen & (Chosen - 1)) != 0) {
     Chosen = 32;
   }
@@ -121,6 +113,30 @@ inline size_t CacheBlockSize() {
   Size = static_cast<size_t>(Chosen);
   Cached.store(Size, std::memory_order_relaxed);
   return Size;
+}
+
+inline size_t ICacheBlockSize() {
+  static std::atomic<size_t> Cached {0}; // constant-initialised: no guard variable
+  size_t Size = Cached.load(std::memory_order_relaxed);
+  if (Size != 0) [[likely]] {
+    return Size;
+  }
+
+  unsigned long Chosen = ::getauxval(AT_ICACHEBSIZE);
+  if (Chosen == 0 || (Chosen & (Chosen - 1)) != 0) {
+    Chosen = 32;
+  }
+
+  Size = static_cast<size_t>(Chosen);
+  Cached.store(Size, std::memory_order_relaxed);
+  return Size;
+}
+
+// Backwards-compatible helper returning min(DCacheBlockSize, ICacheBlockSize).
+inline size_t CacheBlockSize() {
+  const size_t DBlock = DCacheBlockSize();
+  const size_t IBlock = ICacheBlockSize();
+  return DBlock < IBlock ? DBlock : IBlock;
 }
 
 /**
@@ -141,30 +157,31 @@ inline void FlushICacheRange(const void* Start, size_t Length) {
     return;
   }
 
-  // PPC_FEATURE_ICACHE_COHERENT (POWER5 and later, including POWER9): the
-  // processor keeps its instruction cache coherent with stores, so a `sync`
-  // (every prior store observed) and an `isync` (this thread refetches) are
-  // all that is needed. This is what the kernel's flush_icache_range and the
-  // vDSO's __kernel_sync_dicache do on such CPUs. The per-block dcbst/icbi
-  // loops cost 2.7% of a warm `gcc -c empty.c`, one pair per 128 bytes of
-  // every installed block and per patched link word.
+  // PPC_FEATURE_ICACHE_SNOOP (POWER5 through POWER10): the processor keeps its
+  // instruction cache coherent with stores, so `sync; icbi 0,%0; isync`
+  // (matching Linux's arch/powerpc/kernel/vdso/cacheflush.S and
+  // flush_icache_range) is all that is needed. Non-snooping implementations
+  // (e.g. FPGA cores with split D/I caches such as 128B D-cache + 64B I-cache)
+  // clear PPC_FEATURE_ICACHE_SNOOP and stride each loop by its own block size.
   if (CoherentICache()) [[likely]] {
-    asm volatile("sync; isync" ::: "memory");
+    asm volatile("sync; icbi 0,%0; isync" ::"r"(Start) : "memory");
     return;
   }
 
-  const size_t BlockSize = CacheBlockSize();
+  const size_t DBlockSize = DCacheBlockSize();
+  const size_t IBlockSize = ICacheBlockSize();
   const uintptr_t Base = reinterpret_cast<uintptr_t>(Start);
   const uintptr_t End = Base + Length;
-  const uintptr_t Begin = Base & ~static_cast<uintptr_t>(BlockSize - 1);
 
-  for (uintptr_t P = Begin; P < End; P += BlockSize) {
+  const uintptr_t DBegin = Base & ~static_cast<uintptr_t>(DBlockSize - 1);
+  for (uintptr_t P = DBegin; P < End; P += DBlockSize) {
     asm volatile("dcbst 0,%0" ::"r"(P) : "memory");
   }
   // Orders every dcbst above ahead of every icbi below.
   asm volatile("sync" ::: "memory");
 
-  for (uintptr_t P = Begin; P < End; P += BlockSize) {
+  const uintptr_t IBegin = Base & ~static_cast<uintptr_t>(IBlockSize - 1);
+  for (uintptr_t P = IBegin; P < End; P += IBlockSize) {
     asm volatile("icbi 0,%0" ::"r"(P) : "memory");
   }
   // sync: the icbis have been performed. isync: this thread refetches.

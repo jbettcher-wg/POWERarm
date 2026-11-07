@@ -202,12 +202,26 @@ DEF_OP(Constant) {
   if (!ConstCacheDisabled() && LastConstantCache.Valid && !(RetainRelocations && LastConstantCache.GuestRIP)) {
     const int64_t Delta = static_cast<int64_t>(Op->Constant) - static_cast<int64_t>(LastConstantCache.Value);
     const GPR Base = GeneralRegisters[LastConstantCache.Reg];
+    if (Delta == 0 && Base != Dst) {
+      mr(Dst, Base);
+      return;
+    }
     if (Delta >= -32768 && Delta <= 32767 && Base != r0 && Base != Dst) {
       addi(Dst, Base, static_cast<int16_t>(Delta));
       return;
     }
-    if (Delta == 0 && Base != Dst) {
-      mr(Dst, Base);
+    if (CTX->HostFeatures.SupportsISA31 && FitsSigned34(Delta) && Base != r0 && Base != Dst) {
+      paddi(Dst, Base, Delta);
+      return;
+    }
+  }
+
+  if (CTX->HostFeatures.SupportsISA31) {
+    const int64_t SVal = static_cast<int64_t>(Op->Constant);
+    const bool Fits1Insn = (SVal >= -32768 && SVal <= 32767) ||
+                           (SVal >= -0x80000000LL && SVal <= 0x7FFFFFFFLL && (SVal & 0xFFFF) == 0);
+    if (!Fits1Insn && FitsSigned34(SVal)) {
+      pli(Dst, SVal);
       return;
     }
   }
@@ -250,6 +264,10 @@ DEF_OP(EntrypointOffset) {
       }
       if (Delta >= -32768 && Delta <= 32767) {
         addi(Dst, Base, static_cast<int16_t>(Delta));
+        return;
+      }
+      if (CTX->HostFeatures.SupportsISA31 && FitsSigned34(Delta)) {
+        paddi(Dst, Base, Delta);
         return;
       }
     }
@@ -1826,53 +1844,56 @@ DEF_OP(Rev) {
   auto Op  = IROp->C<IR::IROp_Rev>();
   auto Dst = GetReg(Node);
   auto Src = GetReg(Op->Src);
-  // RA may tie Dst to Src. The byte-swap sequences below all do at least one
-  // write to Dst before the final read of Src, so stash Src in a temp when
-  // they alias. Otherwise the first rlwinm overwrites Src, and the second
-  // rlwinm reads garbage — manifested as MOVBE 16-bit storing the LOW byte
-  // twice (bytes [+0]=0x58, [+1]=0x58 instead of [+0]=0x57, [+1]=0x58 for
-  // r15w=0x5758).
-  if (Dst == Src) { mr(TMP4, Src); Src = TMP4; }
-  // PPC64LE doesn't have a simple bswap GPR instruction.
-  // Approach: use brh/brw/brd if available (POWER10), otherwise use rotates.
-  // For POWER8: combine rotate+mask to do byte swap.
+  if (CTX->HostFeatures.SupportsISA31) {
+    // ISA 3.1 GPR byte-reverse: brh reverses all 4 halfwords, brw reverses
+    // both 32-bit words, and brd reverses the whole 64-bit doubleword.
+    switch (IROp->Size) {
+    case IR::OpSize::i16Bit:
+      brh(Dst, Src);
+      rlwinm(Dst, Dst, 0, 16, 31);
+      return;
+    case IR::OpSize::i32Bit:
+      brw(Dst, Src);
+      Mask32Tail(Dst, Node);
+      return;
+    default:
+      brd(Dst, Src);
+      return;
+    }
+  }
+  if (IROp->Size == IR::OpSize::i64Bit && CTX->HostFeatures.SupportsISA30) {
+    mtvsrd(VTMP3_VSX, Src);
+    xxbrd(VTMP3_VSX, VTMP3_VSX);
+    mfvsrd(Dst, VTMP3_VSX);
+    return;
+  }
+  // RA may tie Dst to Src. The rotate-insert byte-swap sequences below write
+  // Dst before the final read of Src, so stash Src in a temp when they alias.
+  if (Dst == Src && IROp->Size != IR::OpSize::i64Bit) {
+    mr(TMP4, Src);
+    Src = TMP4;
+  }
   switch (IROp->Size) {
   case IR::OpSize::i16Bit: {
     // Swap the two bytes of the low halfword, zero-extending the result.
-    // PPC (MSB=0) bit numbering: the low halfword's high byte H is at PPC
-    // 16..23, its low byte L at PPC 24..31. ROTL32 by SH moves PPC q to
-    // (q - SH) mod 32.
-    //   L (24..31) -> 16..23 needs SH = 8;  mask MB=16, ME=23.
-    //   H (16..23) -> 24..31 needs SH = 24; mask MB=24, ME=31.
-    // rlwinm zeroes everything outside its mask (including bits 0..31 of the
-    // 64-bit register), and rlwimi then merges the second byte in, so the
-    // separate or_ and the trailing zero-extension mask both disappear.
     rlwinm(Dst, Src, 8,  16, 23);   // L into the high byte slot
     rlwimi(Dst, Src, 24, 24, 31);   // H into the low byte slot
     break;
   }
   case IR::OpSize::i32Bit: {
-    // Canonical 3-instruction PPC bswap32. For Src = AABBCCDD (PPC bytes
-    // 0..7 = AA, 8..15 = BB, 16..23 = CC, 24..31 = DD) we want DDCCBBAA.
-    //   rlwinm Dst, Src, 8, 0, 31   -> Dst = ROTL32(Src, 8)  = BBCCDDAA
-    //        which already has CC in byte 1 and AA in byte 3 — correct.
-    //   ROTL32(Src, 24) = DDAABBCC has DD in byte 0 and BB in byte 2, so two
-    //   rlwimi with SH = 24 insert exactly those two byte lanes:
-    //   mask 0..7 for DD and mask 16..23 for BB.
-    // The first rlwinm zeroes bits 0..31 of the 64-bit register, and rlwimi
-    // preserves them, so the result is zero-extended as before.
+    // Canonical 3-instruction PPC bswap32.
     rlwinm(Dst, Src, 8,  0,  31);
     rlwimi(Dst, Src, 24, 0,  7);
     rlwimi(Dst, Src, 24, 16, 23);
     break;
   }
-  default: {  // 64-bit
-    // stdbrx stores in big-endian byte order; a subsequent regular ld reads
-    // it back in little-endian order, producing bswap(Src). Use the red-zone
-    // (r1-8) rather than modifying r1 so async signals can't corrupt the frame.
-    addi(TMP1, r1, -8);
+  default: {  // 64-bit (pre-ISA 3.0)
+    // Bounce through STATE+JITScratch rather than r1-8 (tight clone stacks have
+    // no guaranteed mapping below r1).
+    constexpr int16_t kScratchOff = static_cast<int16_t>(offsetof(FEXCore::Core::CpuStateFrame, JITScratch));
+    addi(TMP1, STATE, kScratchOff);
     stdbrx(Src, TMP1, r0);
-    ld(Dst, -8, r1);
+    ld(Dst, kScratchOff, STATE);
     break;
   }
   }
@@ -1954,11 +1975,11 @@ DEF_OP(Rbit) {
     and_(TMP4, TMP1, TMP2);
     sldi(TMP4, TMP4, 4);
     or_(TMP1, TMP3, TMP4);
-    // Byte-reverse the result through the red zone (r1-8), not by moving r1:
-    // same reason DEF_OP(Rev)'s 64-bit arm does, and one instruction fewer.
-    addi(TMP2, r1, -8);
+    // Byte-reverse the result through STATE+JITScratch (not r1-8).
+    constexpr int16_t kScratchOff = static_cast<int16_t>(offsetof(FEXCore::Core::CpuStateFrame, JITScratch));
+    addi(TMP2, STATE, kScratchOff);
     stdbrx(TMP1, TMP2, r0);
-    ld(Dst, -8, r1);
+    ld(Dst, kScratchOff, STATE);
   } else {
     // 32-bit reverse
     mr(TMP1, Src);
@@ -1980,13 +2001,11 @@ DEF_OP(Rbit) {
     and_(TMP4, TMP1, TMP2);
     sldi(TMP4, TMP4, 4);
     or_(TMP1, TMP3, TMP4);
-    // byte-reverse word.  On LE host, stw stores native LE and lwbrx
-    // byte-reverses on load — those two operations cancel out, leaving
-    // an identity load (no actual byte swap).  Match the 64-bit path
-    // which correctly uses stdbrx + ld for the bswap.
-    addi(TMP2, r1, -8);
+    // byte-reverse word via STATE+JITScratch (not r1-8).
+    constexpr int16_t kScratchOff = static_cast<int16_t>(offsetof(FEXCore::Core::CpuStateFrame, JITScratch));
+    addi(TMP2, STATE, kScratchOff);
     stwbrx(TMP1, TMP2, r0); // byte-reverse on store
-    lwz(Dst, -8, r1);       // load native LE -> bswap(TMP1)
+    lwz(Dst, kScratchOff, STATE); // load native LE -> bswap(TMP1)
   }
 }
 
@@ -2230,15 +2249,20 @@ DEF_OP(Extr) {
 }
 
 DEF_OP(PDep) {
-  // Parallel bits deposit. POWER8 has no equivalent; iterate set bits of mask.
-  // Algorithm (per arm64 reference): T0 = isolate-low-set-bit(mask); for each
-  // such bit, OR (input&1 ? T0 : 0) into Dst, shift input right by 1, clear T0
-  // from mask, repeat until mask==0.
   auto Op       = IROp->C<IR::IROp_PDep>();
   auto Dest     = GetReg(Node);
   auto OrigIn   = GetReg(Op->Input);
   auto OrigMask = GetReg(Op->Mask);
 
+  if (CTX->HostFeatures.SupportsISA31) {
+    pdepd(Dest, OrigIn, OrigMask);
+    if (IROp->Size == IR::OpSize::i32Bit) {
+      Mask32Tail(Dest, Node);
+    }
+    return;
+  }
+
+  // Parallel bits deposit. Pre-3.1 has no equivalent; iterate set bits of mask.
   GPR Input = TMP1, Mask = TMP2, T0 = TMP3, T1 = TMP4;
   PPC64Emitter::Label NextBit, Done;
 
@@ -2246,13 +2270,8 @@ DEF_OP(PDep) {
   mr(Mask, OrigMask);
   li(Dest, 0);
   // x86 BMI2 PDEP preserves flags per Intel SDM ("Flags Affected: None").
-  // CR0 here is the canonical packed-NZCV scratch — save it to a red-zone
-  // slot before the loop and restore at the end so flags survive the op.
-  // mfocrf 0x80: CR0 nibble valid in T0 bits 31:28 (LSB), all other bits
-  // UNDEFINED pre-ISA-3.0C — safe because the only consumer is the
-  // mtocrf(0x80) restore below, which reads exactly that nibble.
-  mfocrf(T0, 0x80);            // T0 = CR0 snapshot (using T0 briefly)
-  std(T0, -16, r1);            // stash to red zone
+  // Save CR0 (packed-NZCV) in volatile CR1 before the loop's cmpdi clobbers it.
+  mcrf(1, 0);
   cmpdi(Mask, 0);              // read snapshot (Dest may alias OrigMask)
   bc(CC_EQ, &Done);
 
@@ -2270,32 +2289,34 @@ DEF_OP(PDep) {
 
   Bind(&Done);
   if (IROp->Size == IR::OpSize::i32Bit) rldicl(Dest, Dest, 0, 32);
-  // Restore CR0 (only — mtocrf field 0 mask = 0x80) so any packed-NZCV
-  // held there pre-PDep survives.
-  ld(T0, -16, r1);
-  mtocrf(0x80, T0);
+  mcrf(0, 1);
 }
 
 DEF_OP(PExt) {
-  // Parallel bits extract, branchless (Hacker's Delight 7-4 "compress right").
-  // Rounds s = 1,2,4,8,16(,32) each shift every kept bit right past the mask
-  // zeros below it, guided by a parallel-suffix XOR of the zero counts.
-  // Straight-line, ~100 (i32) / ~130 (i64) instructions, and — the point —
-  // NO compares: x86 PEXT is architecturally flag-transparent, and CR0 holds
-  // the packed NZCV, so the old per-set-bit loop had to save/restore CR0
-  // around its cmpdi spine (and once corrupted it; see pext_pdep_flags.asm).
-  // Cost is also independent of mask density where the loop paid ~10
-  // instructions and two branches PER SET BIT (a 32-bit Morton mask: ~320
-  // instructions + 64 branches, versus ~100 with no branch at all).
   auto Op       = IROp->C<IR::IROp_PExt>();
   auto Dest     = GetReg(Node);
   auto OrigIn   = GetReg(Op->Input);
   auto OrigMask = GetReg(Op->Mask);
+  const bool Is32 = IROp->Size == IR::OpSize::i32Bit;
 
+  if (CTX->HostFeatures.SupportsISA31) {
+    if (Is32) {
+      // Confine the mask to the low word so a dirty bit >= 32 cannot pull an
+      // upper input bit into a low result position.
+      rldicl(TMP1, OrigMask, 0, 32);
+      pextd(Dest, OrigIn, TMP1);
+    } else {
+      pextd(Dest, OrigIn, OrigMask);
+    }
+    return;
+  }
+
+  // Parallel bits extract, branchless (Hacker's Delight 7-4 "compress right").
+  // Rounds s = 1,2,4,8,16(,32) each shift every kept bit right past the mask
+  // zeros below it, guided by a parallel-suffix XOR of the zero counts.
   // Register plan: x compresses in place in Dest; m = TMP1, mk = TMP2,
   // mp/t = TMP3, mv = TMP4. Dest may alias either source, so m is copied
   // out first and x is formed from OrigIn & m (never read again after).
-  const bool Is32 = IROp->Size == IR::OpSize::i32Bit;
   if (Is32) {
     // Confine the mask to the low word up front: a stale mask bit >= 32
     // would pull an input bit into a low result position. x = in & m is
@@ -3044,6 +3065,30 @@ DEF_OP(Select) {
   // been used by the TSTZ/TSTNZ rldicl_ and TMP4 by EmitCompare's constant
   // path, but both are dead once the compare has executed; TMP2/TMP3 are free
   // on every path here.
+  if (CTX->HostFeatures.SupportsISA31 && is_const_true && is_const_false) {
+    const uint64_t all_ones_sel = IROp->Size == IR::OpSize::i64Bit
+      ? 0xFFFFFFFFFFFFFFFFull : 0xFFFFFFFFull;
+    const bool cond_pos = (CC.BO & 8) != 0;
+    if (const_true == 1 && const_false == 0) {
+      if (cond_pos) setbc(Dst, CC.BI); else setbcr(Dst, CC.BI);
+      return;
+    }
+    if (const_true == 0 && const_false == 1) {
+      if (cond_pos) setbcr(Dst, CC.BI); else setbc(Dst, CC.BI);
+      return;
+    }
+    if ((const_true == all_ones_sel || const_true == ~0ull) && const_false == 0) {
+      if (cond_pos) setnbc(Dst, CC.BI); else setnbcr(Dst, CC.BI);
+      if (IROp->Size <= IR::OpSize::i32Bit) Mask32Tail(Dst, Node);
+      return;
+    }
+    if (const_true == 0 && (const_false == all_ones_sel || const_false == ~0ull)) {
+      if (cond_pos) setnbcr(Dst, CC.BI); else setnbc(Dst, CC.BI);
+      if (IROp->Size <= IR::OpSize::i32Bit) Mask32Tail(Dst, Node);
+      return;
+    }
+  }
+
   GPR True_reg = GPR{0}, False_reg = GPR{0};
   if (is_const_true) {
     LoadConstant(TMP2, const_true);
@@ -3115,6 +3160,16 @@ DEF_OP(NZCVSelect) {
     LOGMAN_THROW_A_FMT(is_const_false && const_false == 0 &&
                          (const_true == 1 || const_true == all_ones),
                        "NZCVSelect: unsupported constant pair ({}, {})", const_true, const_false);
+    if (CTX->HostFeatures.SupportsISA31) {
+      const bool cond_pos = (CC.BO & 8) != 0;
+      if (const_true == 1) {
+        if (cond_pos) setbc(Dst, CC.BI); else setbcr(Dst, CC.BI);
+      } else {
+        if (cond_pos) setnbc(Dst, CC.BI); else setnbcr(Dst, CC.BI);
+        if (IROp->Size <= IR::OpSize::i32Bit) Mask32Tail(Dst, Node);
+      }
+      return;
+    }
     // isel's rA=0 encoding supplies a literal zero, so only the true value needs materialising.
     LoadConstant(TMP1, const_true == all_ones ? ~0ull : 1);
     iselcc(Dst, CC, TMP1, GPR{0});
@@ -3152,12 +3207,15 @@ DEF_OP_VSX(NZCVSelectV) {
   auto False_= GetVSXReg(Op->FalseVal);
   auto CC    = MapNZCVCC(IntegerNZCVCond(Op->Cond));
 
-  // Branch-free vector select via GPR isel and VSX xxsel (F5).
-  // GPR isel generates an all-ones (-1) or all-zeros (0) mask from the condition bit,
-  // avoiding the branch and eliminating branch misprediction penalties on data-dependent selects.
-  li(TMP1, -1);
-  li(TMP2, 0);
-  iselcc(TMP1, CC, TMP1, TMP2);
+  // Branch-free vector select via GPR mask and VSX xxsel (F5).
+  if (CTX->HostFeatures.SupportsISA31) {
+    if (CC.BO & 8) setnbc(TMP1, CC.BI);
+    else           setnbcr(TMP1, CC.BI);
+  } else {
+    li(TMP1, -1);
+    li(TMP2, 0);
+    iselcc(TMP1, CC, TMP1, TMP2);
+  }
   if (CTX->HostFeatures.SupportsISA30) {
     mtvsrdd(VTMP1_VSX, TMP1, TMP1);
   } else {
@@ -3627,9 +3685,8 @@ DEF_OP(ShiftFlags) {
   // anyway. XER needs NO save: nothing between here and the noShift restore
   // writes it (andi. touches CR0 alone) — the old XER save/restore pair here
   // was dead weight and cost a serializing mtspr on every count==0 shift.
-  // Single-field CR0 save (was a full mfcr + mtcrf 0xff round-trip); the
-  // -16(r1) red-zone slot mirrors DEF_OP(RotateFlags).
-  mfocrf(TMP4, 0x80); std(TMP4, -16, r1);
+  // Save CR0 in volatile CR1 before andi_ (avoids touching r1-16).
+  mcrf(1, 0);
 
   andi_(TMP1, Src2, Mask);
   bc(CC_EQ, &noShift);
@@ -3685,9 +3742,8 @@ DEF_OP(ShiftFlags) {
 
   b(&done);
   Bind(&noShift);
-  // Restore CR0 to the value it held before the andi_ above (the only thing
-  // this path clobbered; XER was never touched — see the save-site comment).
-  ld(TMP4, -16, r1); mtocrf(0x80, TMP4);
+  // Restore CR0 to the value it held before the andi_ above.
+  mcrf(0, 1);
   if (Dst != PFIn) mr(Dst, PFIn);
   Bind(&done);
 }
@@ -3722,10 +3778,8 @@ DEF_OP(RotateFlags) {
   // scratch) to the red zone before andi_ which would otherwise clobber it
   // for both the rotate-body and rotate-by-0-fallthrough paths.  Restore
   // at the noRotate label so the prior compare's NZCV survives the op.
-  // mfocrf 0x80: only field 0 is defined pre-3.0C — sufficient, since the
-  // sole consumer is the mtocrf(0x80) restore at noRotate.
-  mfocrf(TMP4, 0x80);
-  std(TMP4, -16, r1);
+  // Save CR0 in volatile CR1 before andi_ (avoids touching r1-16).
+  mcrf(1, 0);
   andi_(TMP1, Shift, Mask);
   bc(CC_EQ, &noRotate);
 
@@ -3759,8 +3813,7 @@ DEF_OP(RotateFlags) {
 
   Bind(&noRotate);
   // Restore CR0 (packed-NZCV) saved before the andi_ above.
-  ld(TMP4, -16, r1);
-  mtocrf(0x80, TMP4);
+  mcrf(0, 1);
   Bind(&done);
 }
 DEF_OP(CmpPairZ) {

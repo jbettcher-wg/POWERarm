@@ -146,7 +146,12 @@ DEF_OP(VectorImm) {
   case IR::OpSize::i8Bit:
     // vspltisb takes a 5-bit signed immediate (-16..15). 0x10..0x7F used to
     // take it too and lost their high bits (0x55 splatted as 0xF5).
-    if ((int8_t)val < -16 || (int8_t)val > 15) {
+    if ((int8_t)val >= -16 && (int8_t)val <= 15) {
+      vspltisb(Dst, (int8_t)(val & 0xFF));
+    } else if (CTX->HostFeatures.SupportsISA31) {
+      const uint32_t b = static_cast<uint32_t>(val & 0xFF);
+      xxspltiw(Dst, b * 0x01010101u);
+    } else {
       // mtvsrd lands the GPR in BE-dword 0 (BE-bytes 0..7) and leaves BE-dword 1
       // (BE-bytes 8..15) undefined per ISA. SplatByteIdx(0)=15 reads from the
       // undefined half. Duplicate dword 0 into both halves first (same fix as
@@ -155,13 +160,14 @@ DEF_OP(VectorImm) {
       mtvsrd(Dst, TMP1);
       xxpermdi(Dst, Dst, Dst, 0);          // dword0 || dword0
       vspltb(Dst, Dst, SplatByteIdx(0));   // broadcast LE-byte 0 (= BE-byte 15)
-    } else {
-      vspltisb(Dst, (int8_t)(val & 0xFF));
     }
     break;
   case IR::OpSize::i16Bit:
     if ((int16_t)val >= -16 && (int16_t)val <= 15) {
       vspltish(Dst, (int16_t)val);
+    } else if (CTX->HostFeatures.SupportsISA31) {
+      const uint32_t h = static_cast<uint32_t>(val & 0xFFFF);
+      xxspltiw(Dst, (h << 16) | h);
     } else {
       LoadConstant(TMP1, val & 0xFFFF);
       mtvsrd(Dst, TMP1);
@@ -172,6 +178,8 @@ DEF_OP(VectorImm) {
   case IR::OpSize::i32Bit:
     if ((int32_t)val >= -16 && (int32_t)val <= 15) {
       vspltisw(Dst, (int32_t)val);
+    } else if (CTX->HostFeatures.SupportsISA31) {
+      xxspltiw(Dst, static_cast<uint32_t>(val));
     } else {
       LoadConstant(TMP1, val & 0xFFFFFFFF);
       mtvsrd(Dst, TMP1);
@@ -180,6 +188,17 @@ DEF_OP(VectorImm) {
     }
     break;
   case IR::OpSize::i64Bit:
+    if (static_cast<uint32_t>(val >> 32) == static_cast<uint32_t>(val)) {
+      const int32_t w = static_cast<int32_t>(static_cast<uint32_t>(val));
+      if (w >= -16 && w <= 15) {
+        vspltisw(Dst, w);
+        break;
+      }
+      if (CTX->HostFeatures.SupportsISA31) {
+        xxspltiw(Dst, static_cast<uint32_t>(val));
+        break;
+      }
+    }
     // mtvsrd writes BE-dword 0 (phys 0..7); BE-dword 1 (phys 8..15) is UNDEFINED
     // per POWER ISA. `vsldoi(Dst, Dst, Dst, 8)` would rotate by reading that
     // undefined half — on POWER8 it observably zeroes BE-dword 0 of the result,
@@ -2581,26 +2600,18 @@ DEF_OP(VMul) {
   const auto V2  = GetVReg(Op->Vector2);
   switch (ElemSz) {
   case IR::OpSize::i8Bit: {
-    // POWER8 has no per-byte modular multiply (vmulubm). Spill V1/V2 to the
-    // stack scratch, multiply each lane scalar (mullw on byte values is fine
-    // for the low 8 bits), and reload. PSIGNB is the only common caller and
-    // it is rarely a hot path, so the per-element loop cost is acceptable.
-    addi(TMP3, r1, -32);
-    li(TMP1, 0);
-    stvx(V1, TMP3, TMP1);
-    addi(TMP3, r1, -16);
-    stvx(V2, TMP3, TMP1);
-    for (int i = 0; i < 16; ++i) {
-      const int16_t Off1 = static_cast<int16_t>(-32 + i);
-      const int16_t Off2 = static_cast<int16_t>(-16 + i);
-      lbz (TMP1, Off1, r1);
-      lbz (TMP2, Off2, r1);
-      mullw(TMP1, TMP1, TMP2);
-      stb (TMP1, Off1, r1);
-    }
-    addi(TMP3, r1, -32);
-    li(TMP1, 0);
-    lvx(Dst, TMP3, TMP1);
+    // Power ISA has no single vmulubm instruction, but AltiVec even/odd byte
+    // widens + halfword modulo pack + high-byte merge compute all 16 lanes in
+    // 5 pure-VMX instructions (ISA 2.03+, no memory bounce, no GPR scratch):
+    //   vmuleub -> 8x u16 products for BE bytes 0,2,...,14 (low byte at 2k+1)
+    //   vmuloub -> 8x u16 products for BE bytes 1,3,...,15 (low byte at 2k+1)
+    //   vpkuhum -> packs low bytes of the 8 halfwords into BE bytes 0..7
+    //   vmrghb  -> interleaves even[0..7] and odd[0..7] back into BE bytes 0..15
+    vmuleub(VTMP1, V1, V2);
+    vmuloub(VTMP2, V1, V2);
+    vpkuhum(VTMP1, VTMP1, VTMP1);
+    vpkuhum(VTMP2, VTMP2, VTMP2);
+    vmrghb(Dst, VTMP1, VTMP2);
     break;
   }
   case IR::OpSize::i32Bit:
@@ -2850,6 +2861,27 @@ DEF_OP(VExtractSignBits) {
   // IROp->Size is the *destination* (GPR) size rather than the vector width.
   // One result bit per element, so it is also the number of bits to keep.
   const uint32_t KeepBits = Op->NumElements;
+
+  if (CTX->HostFeatures.SupportsISA31) {
+    switch (Op->NumElements) {
+    case 16:
+      vextractbm(Dst, Src);
+      return;
+    case 8:
+      vextractbm(Dst, Src);
+      clrldi(Dst, Dst, 56);
+      return;
+    case 4:
+      vextractwm(Dst, Src);
+      return;
+    case 2:
+      vextractdm(Dst, Src);
+      return;
+    default:
+      Op_Unhandled(IROp, Node);
+      return;
+    }
+  }
 
   uint32_t Shift;  // vslb amount
   int32_t  Sh;     // lvsl ramp base
@@ -3714,12 +3746,13 @@ DEF_OP(VInsGPR) {
   for (int b = 0; b < 8; b++) ctrl_hi = (ctrl_hi << 8) | perm[b];
   for (int b = 8; b < 16; b++) ctrl_lo = (ctrl_lo << 8) | perm[b];
 
-  LoadConstant(TMP1, ctrl_lo);
-  std(TMP1, -16, r1);
+  // Assemble {ctrl_hi, ctrl_lo} directly in VTMP1 via VSX (ISA 2.07) without
+  // touching r1-16..r1-8 or VTMP2 (which holds the moved Src GPR).
   LoadConstant(TMP1, ctrl_hi);
-  std(TMP1, -8, r1);
-  addi(TMP1, r1, -16);
-  lvx(VTMP1, r(0), TMP1);
+  mtvsrd(VTMP1, TMP1);
+  LoadConstant(TMP1, ctrl_lo);
+  mtvsrd(VTMP3_VSX, TMP1);
+  xxpermdi(VTMP1, VTMP1, VTMP3_VSX, 0b00);
 
   vperm(Dst, DestVec, VTMP2, VTMP1);
 }
@@ -3912,30 +3945,35 @@ DEF_OP(VLoadVectorElement) {
   const auto Dst      = GetVReg(Node);
   const auto DstSrc   = GetVReg(Op->DstSrc);
   const auto Addr     = GetReg(Op->Addr);
-  const int16_t Offset = static_cast<int16_t>(Index * ElemSz - 16);  // r1-relative
+  constexpr int16_t kScratchOff = static_cast<int16_t>(offsetof(FEXCore::Core::CpuStateFrame, JITScratch));
+  const int16_t ElemOff = static_cast<int16_t>(kScratchOff + Index * ElemSz);
 
-  // Stash Addr in case it equals TMP3 (which we'll clobber for the scratch ptr).
   GPR AddrSafe = Addr;
-  if (Addr == TMP3) { mr(TMP4, Addr); AddrSafe = TMP4; }
+  if (Addr == TMP1 || Addr == TMP2) { mr(TMP4, Addr); AddrSafe = TMP4; }
 
-  // 1. Dump DstSrc to stack scratch [r1-16 .. r1).
-  addi(TMP3, r1, -16);
-  li(TMP1, 0);
-  stvx(DstSrc, TMP3, TMP1);
+  // 1. Dump DstSrc to 16B-aligned STATE+JITScratch (avoids r1-16 red-zone hazard).
+  if (CTX->HostFeatures.SupportsISA30) {
+    stxv(DstSrc, kScratchOff, STATE);
+  } else {
+    li(TMP1, kScratchOff);
+    stvx(DstSrc, STATE, TMP1);
+  }
 
   // 2. Load ElemSz bytes from Addr; store into scratch at element offset.
   switch (ElemSz) {
-  case 1: lbzx(TMP2, AddrSafe, r0); stb(TMP2, Offset, r1); break;
-  case 2: lhzx(TMP2, AddrSafe, r0); sth(TMP2, Offset, r1); break;
-  case 4: lwzx(TMP2, AddrSafe, r0); stw(TMP2, Offset, r1); break;
-  case 8: ldx(TMP2,  AddrSafe, r0); std(TMP2, Offset, r1); break;
+  case 1: lbzx(TMP2, AddrSafe, r0); stb(TMP2, ElemOff, STATE); break;
+  case 2: lhzx(TMP2, AddrSafe, r0); sth(TMP2, ElemOff, STATE); break;
+  case 4: lwzx(TMP2, AddrSafe, r0); stw(TMP2, ElemOff, STATE); break;
+  case 8: ldx(TMP2,  AddrSafe, r0); std(TMP2, ElemOff, STATE); break;
   default: break;
   }
 
   // 3. Reload modified scratch into Dst.
-  addi(TMP3, r1, -16);
-  li(TMP1, 0);
-  lvx(Dst, TMP3, TMP1);
+  if (CTX->HostFeatures.SupportsISA30) {
+    lxv(Dst, kScratchOff, STATE);
+  } else {
+    lvx(Dst, STATE, TMP1);
+  }
 }
 
 DEF_OP(VStoreVectorElement) {
@@ -3944,22 +3982,26 @@ DEF_OP(VStoreVectorElement) {
   const auto Index    = Op->Index;
   const auto Value    = GetVReg(Op->Value);
   const auto Addr     = GetReg(Op->Addr);
-  const int16_t Offset = static_cast<int16_t>(Index * ElemSz - 16);
+  constexpr int16_t kScratchOff = static_cast<int16_t>(offsetof(FEXCore::Core::CpuStateFrame, JITScratch));
+  const int16_t ElemOff = static_cast<int16_t>(kScratchOff + Index * ElemSz);
 
   GPR AddrSafe = Addr;
-  if (Addr == TMP3) { mr(TMP4, Addr); AddrSafe = TMP4; }
+  if (Addr == TMP1 || Addr == TMP2) { mr(TMP4, Addr); AddrSafe = TMP4; }
 
-  // 1. Dump Value to stack scratch.
-  addi(TMP3, r1, -16);
-  li(TMP1, 0);
-  stvx(Value, TMP3, TMP1);
+  // 1. Dump Value to 16B-aligned STATE+JITScratch (avoids r1-16 red-zone hazard).
+  if (CTX->HostFeatures.SupportsISA30) {
+    stxv(Value, kScratchOff, STATE);
+  } else {
+    li(TMP1, kScratchOff);
+    stvx(Value, STATE, TMP1);
+  }
 
   // 2. Reload the requested element from the LE-byte-position in scratch.
   switch (ElemSz) {
-  case 1: lbz(TMP2, Offset, r1); stbx(TMP2, AddrSafe, r0); break;
-  case 2: lhz(TMP2, Offset, r1); sthx(TMP2, AddrSafe, r0); break;
-  case 4: lwz(TMP2, Offset, r1); stwx(TMP2, AddrSafe, r0); break;
-  case 8: ld(TMP2,  Offset, r1); stdx(TMP2, AddrSafe, r0); break;
+  case 1: lbz(TMP2, ElemOff, STATE); stbx(TMP2, AddrSafe, r0); break;
+  case 2: lhz(TMP2, ElemOff, STATE); sthx(TMP2, AddrSafe, r0); break;
+  case 4: lwz(TMP2, ElemOff, STATE); stwx(TMP2, AddrSafe, r0); break;
+  case 8: ld(TMP2,  ElemOff, STATE); stdx(TMP2, AddrSafe, r0); break;
   default: break;
   }
 }

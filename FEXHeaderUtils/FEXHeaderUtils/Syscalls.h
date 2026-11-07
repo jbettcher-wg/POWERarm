@@ -50,6 +50,9 @@ namespace FHU::Syscalls {
 #ifndef SYS_pidfd_open
 #define SYS_pidfd_open 434
 #endif
+#ifndef SYS_fchmodat2
+#define SYS_fchmodat2 452
+#endif
 
 #ifndef _WIN32
 inline int32_t getcpu(uint32_t* cpu, uint32_t* node) {

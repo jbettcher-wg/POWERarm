@@ -243,6 +243,12 @@ public:
     return std::move(Relocations);
   }
 
+  // HostFeatures.SupportsISA30 / SupportsISA31, for inline emitters and file-local
+  // template helpers in MemoryOps.cpp. ContextImpl is incomplete here, so CTX cannot
+  // be dereferenced inline; defined beside ProjectXERUsesMcrxrx in JIT.cpp.
+  [[nodiscard]] bool HostSupportsISA30() const;
+  [[nodiscard]] bool HostSupportsISA31() const;
+
 private:
   FEXCore::Context::ContextImpl*     CTX {};
   const FEXCore::IR::IRListView*     IR {};
@@ -1093,11 +1099,6 @@ private:
   // the emitted sequence and every bit index read back out of CR1 — otherwise
   // the sequence and the index can drift apart silently.
   [[nodiscard]] bool ProjectXERUsesMcrxrx() const;
-
-  // HostFeatures.SupportsISA30, for the inline emitters in this header.
-  // ContextImpl is incomplete here, so CTX cannot be dereferenced inline;
-  // defined beside ProjectXERUsesMcrxrx in JIT.cpp.
-  [[nodiscard]] bool HostSupportsISA30() const;
 
   // PPC CR-bit index holding XER.OV after ProjectXERToCR1(): 4 (CR1.LT) on the
   // mcrxrx layout, 5 (CR1.GT) on the pre-3.0 layout. XER.CA is CR1.EQ (bit 6)

@@ -1,40 +1,3 @@
-// SPDX-License-Identifier: MIT
-//
-// The re-export list of PPC64VSXReexport: the only names a VSX-clean lowering
-// (DEF_OP_VSX, see JITClass.h) can see.
-//
-// GENERATED, and re-derivable at any time with
-//     python3 Scripts/powerarm/gen-vsx-view.py > \
-//       FEXCore/Source/Interface/Core/JIT/PPC64LE/PPC64VSXView.inc
-// from one rule applied to PPC64Emitter::Emitter, PPC64EmitterBase and
-// PPC64JITCore:
-//
-//   re-export a member NAME iff no overload of that name takes OR RETURNS a
-//   `VR` or an `FPR`, and the name is not one of the raw Emit* encoders, which
-//   can splice any primary opcode -- including the VMX one.
-//
-// The return type matters as much as the arguments, and leaving it out was a
-// real hole the first time this list was derived: GetVReg takes a
-// PhysicalRegister and HANDS BACK a VR, so a parameter-only rule re-exported
-// the one name the whole view exists to remove.
-//
-// The four typed VSX encoders EmitXX2VSX / EmitXX2VSXWithRA / EmitXX3VSX /
-// EmitXX3BF survive that cut on purpose: they hardcode primary opcode 60, so
-// however they are called they cannot reach a VMX form.
-//
-// The rule is also why this list GROWS when a helper is made VSX-form: the
-// memory helpers (Load/StoreFPRSized, Load/StoreUnalignedV128) took VR and
-// were absent; every arm of each is now a VSX-form instruction, they take
-// VSXR, and the rule re-exports them. Nothing about the rule changed.
-//
-// What is therefore ABSENT, and must stay absent: GetVReg, SRAFPR,
-// StaticFPRegisters, GeneralFPRegisters, every `v*` mnemonic, lvx/stvx/lvsl/
-// lvsr/lve*x/stve*x, every FPR-form (opcode 59/63) instruction, and every
-// helper that carries a VR through (EmitRoundNearestEven's VR twin,
-// EmitSha1Rounds4, ...). A VSX-clean lowering that names any of them does not
-// compile.
-//
-// docs/powerarm/research/power-isa/VSX-REGISTER-CLASSES.md 7.2.
   // --- PPC64Emitter::Emitter
   using PPC64JITCore::Bind;
   using PPC64JITCore::BindAt;
@@ -44,9 +7,11 @@
   using PPC64JITCore::EmitXX2VSXWithRA;
   using PPC64JITCore::EmitXX3BF;
   using PPC64JITCore::EmitXX3VSX;
+  using PPC64JITCore::FitsSigned34;
   using PPC64JITCore::GetBufferBase;
   using PPC64JITCore::GetCursorAddress;
   using PPC64JITCore::GetOffset;
+  using PPC64JITCore::HasEmittedPrefixed;
   using PPC64JITCore::LoadImm32;
   using PPC64JITCore::LoadImm64;
   using PPC64JITCore::LoadImm64Fixed;
@@ -54,6 +19,7 @@
   using PPC64JITCore::PatchBranchAt;
   using PPC64JITCore::R0Dirty;
   using PPC64JITCore::RebaseBuffer;
+  using PPC64JITCore::ResetPrefixed;
   using PPC64JITCore::ResetR0Dirty;
   using PPC64JITCore::SetBuffer;
   using PPC64JITCore::add;
@@ -89,6 +55,9 @@
   using PPC64JITCore::blr;
   using PPC64JITCore::blrl;
   using PPC64JITCore::bpermd;
+  using PPC64JITCore::brd;
+  using PPC64JITCore::brh;
+  using PPC64JITCore::brw;
   using PPC64JITCore::clrldi;
   using PPC64JITCore::clrrdi;
   using PPC64JITCore::cmpd;
@@ -113,6 +82,7 @@
   using PPC64JITCore::crnor;
   using PPC64JITCore::crnot;
   using PPC64JITCore::cror;
+  using PPC64JITCore::crorc;
   using PPC64JITCore::crset;
   using PPC64JITCore::crxor;
   using PPC64JITCore::darn;
@@ -228,9 +198,25 @@
   using PPC64JITCore::orc;
   using PPC64JITCore::ori;
   using PPC64JITCore::oris;
+  using PPC64JITCore::paddi;
+  using PPC64JITCore::pdepd;
+  using PPC64JITCore::pextd;
+  using PPC64JITCore::plbz;
+  using PPC64JITCore::pld;
+  using PPC64JITCore::plha;
+  using PPC64JITCore::plhz;
+  using PPC64JITCore::pli;
+  using PPC64JITCore::plwa;
+  using PPC64JITCore::plwz;
+  using PPC64JITCore::plxv;
   using PPC64JITCore::popcntd;
   using PPC64JITCore::popcntw;
   using PPC64JITCore::prtyd;
+  using PPC64JITCore::pstb;
+  using PPC64JITCore::pstd;
+  using PPC64JITCore::psth;
+  using PPC64JITCore::pstw;
+  using PPC64JITCore::pstxv;
   using PPC64JITCore::rfid;
   using PPC64JITCore::rldcl;
   using PPC64JITCore::rldcr;
@@ -244,6 +230,10 @@
   using PPC64JITCore::rlwinm_;
   using PPC64JITCore::rlwnm;
   using PPC64JITCore::sc;
+  using PPC64JITCore::setbc;
+  using PPC64JITCore::setbcr;
+  using PPC64JITCore::setnbc;
+  using PPC64JITCore::setnbcr;
   using PPC64JITCore::sld;
   using PPC64JITCore::sldi;
   using PPC64JITCore::slw;
@@ -409,10 +399,15 @@
   using PPC64JITCore::xvsqrtsp;
   using PPC64JITCore::xvsubdp;
   using PPC64JITCore::xvsubsp;
+  using PPC64JITCore::xxblendvb;
+  using PPC64JITCore::xxblendvd;
+  using PPC64JITCore::xxblendvh;
+  using PPC64JITCore::xxblendvw;
   using PPC64JITCore::xxbrd;
   using PPC64JITCore::xxbrh;
   using PPC64JITCore::xxbrq;
   using PPC64JITCore::xxbrw;
+  using PPC64JITCore::xxeval;
   using PPC64JITCore::xxinsertw;
   using PPC64JITCore::xxland;
   using PPC64JITCore::xxlandc;
@@ -427,6 +422,7 @@
   using PPC64JITCore::xxpermdi;
   using PPC64JITCore::xxsel;
   using PPC64JITCore::xxsldwi;
+  using PPC64JITCore::xxspltiw;
   using PPC64JITCore::xxspltw;
   // --- PPC64EmitterBase
   using PPC64JITCore::Align16B;
@@ -498,6 +494,7 @@
   using PPC64JITCore::GetVSXReg;
   using PPC64JITCore::GetZeroableReg;
   using PPC64JITCore::HostSupportsISA30;
+  using PPC64JITCore::HostSupportsISA31;
   using PPC64JITCore::IdInVec;
   using PPC64JITCore::InsertGuestRIPMove;
   using PPC64JITCore::InsertNamedThunkRelocation;

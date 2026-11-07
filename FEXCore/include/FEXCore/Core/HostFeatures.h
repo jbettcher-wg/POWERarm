@@ -64,6 +64,13 @@ struct HostFeatures {
   // POWER8 path on POWER9 hardware — the only way the pre-3.0 paths stay tested.
   bool SupportsISA30 {};
 
+  // Power ISA v3.1 (POWER10, Houshou, and later; PPC_FEATURE2_ARCH_3_1 in AT_HWCAP2).
+  // Gates every ISA 3.1 codegen path in the PPC64LE backend (brd/brw/brh, pdepd/pextd,
+  // setbc/setbcr/setnbc/setnbcr, vextract*m, vinsw/vinsd, and 64B-boundary-safe PO=1
+  // prefixed instructions) so POWER8 and POWER9 hosts take their ISA 2.07 / ISA 3.0 paths.
+  // Force off with POWERARM_HOSTFEATURES=disableisa31 to exercise ISA 3.0 paths on ISA 3.1 hardware.
+  bool SupportsISA31 {};
+
   // The backend implements OP_CONDJUMP with VCmpElementSize != iInvalid: a
   // conditional branch whose condition is "did any lane of Cmp1 == Cmp2"
   // evaluated straight out of a record-form vector compare's condition field,

@@ -742,7 +742,7 @@ public:
   struct V128AddrForm {
     GPR RA;
     GPR RB;
-    int16_t Disp;
+    int64_t Disp;
   };
 
   // Build one. Emits at most one instruction, always arithmetic (addi, or a

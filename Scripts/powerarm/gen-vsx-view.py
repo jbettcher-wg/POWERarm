@@ -26,7 +26,8 @@ import re, collections, sys
 # hardcode primary opcode 60. Everything else called Emit* -- the lowering
 # helpers -- is judged by its signature like any other member.
 RAW_ENCODERS = {
-    'Emit32', 'EmitXO', 'EmitX', 'EmitD', 'EmitDQ', 'EmitM', 'EmitMD',
+    'Emit32', 'EmitPrefixed', 'EmitPMLS', 'Emit8LS', 'Emit8RRBlend',
+    'EmitXO', 'EmitX', 'EmitD', 'EmitDQ', 'EmitM', 'EmitMD',
     'EmitA63', 'EmitA59', 'EmitFX63', 'EmitFX59', 'EmitVX', 'EmitVA',
     'EmitAtom', 'EmitSPR',
 }
