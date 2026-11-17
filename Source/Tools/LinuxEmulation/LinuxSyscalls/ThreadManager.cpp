@@ -611,6 +611,39 @@ void ThreadManager::UnpauseThread(FEX::HLE::ThreadStateObject* Thread) {
   Thread->ThreadPaused.NotifyOne();
 }
 
+void ThreadManager::YieldProcessExit(FEX::HLE::ThreadStateObject* Thread, int Status) {
+  // The first exit_group to give way decides the status if main owns the exit;
+  // if another exit_group owns it, that one passes its own status to the kernel
+  // and this record is never read.
+  int64_t Expected = NoGroupExitStatus;
+  GroupExitStatus.compare_exchange_strong(Expected, Status, std::memory_order_acq_rel);
+
+  // Leave exactly as a sibling the owner stopped would: the stop event hijacks
+  // this thread out to the dispatcher's exit, and ExecuteThread's normal
+  // teardown releases its idle reference. Nothing is held here, so the hijack
+  // abandons nothing. The owner may already have sent the same event; either
+  // one is enough.
+  StopThread(Thread);
+
+  // The event is delivered on the way out of tgkill. Should it not be, the
+  // owner's exit_group takes this thread with the rest of the process.
+  for (;;) {
+    ::pause();
+  }
+}
+
+void ThreadManager::AwaitProcessExit() {
+  {
+    std::lock_guard lk(IdleWaitMutex);
+    --IdleWaitRefCount;
+  }
+  IdleWaitCV.notify_all();
+
+  for (;;) {
+    ::pause();
+  }
+}
+
 void ThreadManager::LockBeforeFork() {
   Stat.LockBeforeFork();
 }
@@ -661,6 +694,11 @@ void ThreadManager::UnlockAfterFork(FEXCore::Core::InternalThreadState* LiveThre
   // We now only have one thread.
   IdleWaitRefCount = 1;
   ThreadCreationMutex.StealAndDropActiveLocks();
+
+  // A process of its own, whose exit nobody has started: a guest fork taken
+  // while a sibling was in exit_group must still be able to exit.
+  ProcessExitClaimed.store(false, std::memory_order_relaxed);
+  GroupExitStatus.store(NoGroupExitStatus, std::memory_order_relaxed);
 }
 
 void ThreadManager::WaitForIdle() {

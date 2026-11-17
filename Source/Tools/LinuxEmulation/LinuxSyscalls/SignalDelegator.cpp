@@ -1833,8 +1833,11 @@ bool SignalDelegator::HandleSignalPause(FEXCore::Core::InternalThreadState* Thre
   }
 
   if (SignalReason == SignalEvent::Stop) {
-    // If the thread is already outside the dispatcher or is a zombie, do not hijack it.
-    if (Frame->ReturningStackLocation == 0 || ThreadObject->ThreadInfo.IsZombie.load()) {
+    // If the thread is already outside the dispatcher, is a zombie, or is the
+    // one taking the process down (ThreadManager::ClaimProcessExit), do not
+    // hijack it.
+    if (Frame->ReturningStackLocation == 0 || ThreadObject->ThreadInfo.IsZombie.load() ||
+        ThreadObject->ExitingProcess.load(std::memory_order_acquire)) {
       ThreadObject->SignalReason.store(SignalEvent::Nothing);
       return true;
     }

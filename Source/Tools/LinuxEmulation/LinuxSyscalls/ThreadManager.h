@@ -27,6 +27,7 @@ $end_info$
 #include <condition_variable>
 #include <cstddef>
 #include <cstdint>
+#include <limits>
 #include <mutex>
 #include <optional>
 #include <unistd.h>
@@ -224,6 +225,12 @@ struct ThreadStateObject : public FEXCore::Allocator::FEXAllocOperators {
   std::atomic_bool ThreadSleeping {false};
   FEXCore::InterruptableConditionVariable ThreadPaused;
 
+  // Set on the one thread taking the process down (ThreadManager::
+  // ClaimProcessExit). The stop handler leaves such a thread alone: it is in
+  // host code that has to run to the end, and a thread torn out of a wait there
+  // leaves the wait's bookkeeping behind for good -- see ClaimProcessExit.
+  std::atomic_bool ExitingProcess {false};
+
   // GDB signal information
   struct GdbInfoStruct {
     int Signal {};
@@ -321,6 +328,47 @@ public:
   // bounded wait it reports on can and does time out; see the body for what
   // the answer decides.
   bool Stop(bool IgnoreCurrentThread = false);
+
+  // Process exit has exactly one owner, as in the kernel, where the first
+  // exit_group fixes the group's exit code and later ones just die.
+  //
+  // Two paths take the process down: exit_group on any guest thread, and main
+  // once ExecuteThread returns for the initial thread. They used to run at
+  // once, and that is not survivable. exit_group's Stop() stops the initial
+  // thread, which is exactly what returns ExecuteThread, so main began an exit
+  // of its own whose Stop() hijacked the exit_group thread out of its wait on
+  // IdleWaitCV. The guest's exit_group never ran (the process exited with the
+  // initial thread's status), and the wait it was torn out of stayed registered
+  // with glibc: ~ThreadManager's pthread_cond_destroy then waited for it
+  // forever. A Go or Rust guest that exits from a worker hung that way whenever
+  // it lost the race: 12 of 20 parallel `agy --version` runs, every codex exit.
+  //
+  // True for the first caller only. A caller that gets false must not exit the
+  // process itself: a guest thread gives way with YieldProcessExit, main with
+  // AwaitProcessExit.
+  bool ClaimProcessExit() {
+    bool Expected = false;
+    return ProcessExitClaimed.compare_exchange_strong(Expected, true, std::memory_order_acq_rel);
+  }
+
+  // For an exit_group that lost the claim. Records Status in case the owner is
+  // main (which reports it; GroupExitStatusOr), then leaves the way any
+  // stopped sibling leaves, so the owner's quiesce wait sees it go.
+  [[noreturn]] void YieldProcessExit(FEX::HLE::ThreadStateObject* Thread, int Status);
+
+  // For main, when ExecuteThread returned because another thread owns the
+  // exit. The initial thread will never be destroyed (that is main's own
+  // teardown, which must not run), so its idle reference is released here for
+  // the owner's quiesce wait, and main then waits for the owner's exit_group to
+  // end the process.
+  [[noreturn]] void AwaitProcessExit();
+
+  // The status of the first exit_group that gave way to main's exit, or
+  // Fallback when none did.
+  int GroupExitStatusOr(int Fallback) const {
+    const int64_t Status = GroupExitStatus.load(std::memory_order_acquire);
+    return Status == NoGroupExitStatus ? Fallback : static_cast<int>(Status);
+  }
 
   void WaitForIdle();
   void WaitForIdleWithTimeout();
@@ -612,6 +660,11 @@ private:
   std::mutex IdleWaitMutex;
   std::condition_variable IdleWaitCV;
   std::atomic<uint32_t> IdleWaitRefCount {};
+
+  // See ClaimProcessExit. Reset in a fork child, which is a process of its own.
+  static constexpr int64_t NoGroupExitStatus = std::numeric_limits<int64_t>::min();
+  std::atomic_bool ProcessExitClaimed {false};
+  std::atomic<int64_t> GroupExitStatus {NoGroupExitStatus};
 
   void HandleThreadDeletion(FEX::HLE::ThreadStateObject* Thread, bool NeedsTLSUninstall = false);
   void NotifyPause();

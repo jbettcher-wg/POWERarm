@@ -787,6 +787,42 @@ if [ -f sigchildteardown ]; then
   fi
 fi
 
+# exit_group from a thread that is not the initial one: the exit of every Go
+# guest (os.Exit runs on whichever thread holds the main goroutine) and of any
+# program that quits from a worker. Every run must end with the status the
+# guest asked for, 42; see exitgroup_sibling.c for the three shapes.
+#
+# Before ThreadManager::ClaimProcessExit, main began a second process exit
+# whenever exit_group stopped the initial thread, hijacked the exit_group
+# thread out of its wait on IdleWaitCV, and then hung for good in
+# ~ThreadManager's pthread_cond_destroy: every run of all three shapes was
+# killed here, and one in nine "many" runs segfaulted instead. A run normally
+# takes well under a second, so the 30s bound means a hang, not a slow box.
+# SIGKILL straight away because the emulator catches TERM for the guest.
+if [ -f exitgroup_sibling ]; then
+  egs_bad=""
+  egs_runs=0
+  for egs_mode in join spin many; do
+    egs_i=0
+    while [ "$egs_i" -lt 8 ]; do
+      timeout -s KILL 30 "$emu" ./exitgroup_sibling "$egs_mode" > /dev/null 2>&1
+      egs_rc=$?
+      if [ "$egs_rc" = 137 ]; then
+        egs_bad="$egs_bad $egs_mode:HUNG"
+      elif [ "$egs_rc" != 42 ]; then
+        egs_bad="$egs_bad $egs_mode:rc=$egs_rc"
+      fi
+      egs_i=$((egs_i + 1))
+      egs_runs=$((egs_runs + 1))
+    done
+  done
+  if [ -z "$egs_bad" ]; then
+    report PASS exitgroup_sibling "$egs_runs exits from a sibling thread, every one status 42"
+  else
+    report FAIL exitgroup_sibling "expected status 42 from every run:$egs_bad"
+  fi
+fi
+
 # ld1r runs in both switch states, because the lowering it exercises is the
 # one the register classes change: a 4 or 8-byte LD1R into V16-V31 is a single
 # VSX load only while VBroadcastFromMem is VSXClean, and the same instruction
