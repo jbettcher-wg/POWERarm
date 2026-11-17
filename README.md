@@ -50,6 +50,27 @@ in full and advertised through `AT_HWCAP`, `ID_AA64ISAR0_EL1` and `/proc/cpuinfo
 no SVE or SME. The EL0-readable generic timer (`CNTVCT_EL0`, `CNTFRQ_EL0`) is present, which is
 what JavaScript engines use as their high-resolution clock.
 
+## What's new in 0.20.1
+
+A fix for the most visible defect left in 0.20.0: quitting some programs never gave the shell
+back.
+
+**A guest that exits from a worker thread no longer hangs.** Go's `os.Exit` runs on whichever
+thread holds the main goroutine, and Rust and C++ programs often quit from a worker. Their
+`exit_group` stopped the initial thread, which started a second process exit on the host's main
+thread, and that exit tore the first one out of a wait it never left. The emulator then sat in a
+futex for good, with its code-cache save child left defunct beside it, and the guest's exit
+status was lost. Process exit now has exactly one owner, as in the kernel, where the first
+`exit_group` decides the status. On 0.20.0, **12 of 20 parallel `agy --version` runs hung** and
+codex hung on every exit; on 0.20.1 all of them return, codex in about 0.4 s.
+`unittests/A64Frontend/exitgroup_sibling.c` covers it in three shapes.
+
+**Known issue.** A thread stopped while it holds the 64-bit allocator's lock abandons that lock,
+because a stop does not wait out a signal-deferring section. Several threads entering cold code
+at the moment of exit can therefore stall it for a second, and the exit-save child that inherits
+the lock deadlocks until its watchdog. This is the likely cause of the remaining code-cache
+fork-writer deadlock and is the next fix.
+
 ## What's new in 0.20.0
 
 A stability and clean-up release. The headline is that POWERarm no longer leaves processes
