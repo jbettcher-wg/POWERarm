@@ -963,6 +963,19 @@ void RegisterThread(FEX::HLE::SyscallHandler* Handler) {
   REGISTER_SYSCALL_IMPL(exit_group, [](FEXCore::Core::CpuStateFrame* Frame, int status) -> uint64_t {
     FEX::HLE::StartupTimer.Mark(FEX::HLE::StartupTimes::GUEST);
     FEX::HLE::VForkChildSync();
+    // One thread takes the process down (ThreadManager::ClaimProcessExit).
+    // After VForkChildSync on purpose: a vfork child's writes are copied back
+    // into its parent there, and the claim must be this process's alone.
+    {
+      auto ThreadObject = FEX::HLE::ThreadManager::GetStateObjectFromCPUState(Frame);
+      if (!FEX::HLE::_SyscallHandler->TM.ClaimProcessExit()) {
+        FEX::HLE::_SyscallHandler->TM.YieldProcessExit(ThreadObject, status);
+      }
+      // From here this thread must not be hijacked by a stop: the Stop() below
+      // waits on IdleWaitCV, and the save and the exit_group after it are what
+      // the guest asked for.
+      ThreadObject->ExitingProcess.store(true, std::memory_order_release);
+    }
     if ((status & 0xff) != 0 && FEX::HLE::GuestErrorExitHook) {
       FEX::HLE::GuestErrorExitHook();
     }

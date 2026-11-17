@@ -182,6 +182,11 @@ fi
 # both sides.
 "$CC" -static -O2 -pthread -o sigchildteardown "$here/sigchildteardown.c"
 
+# exitgroup_sibling is self-checking too: its whole answer is its exit status,
+# 42, which the Pi gives as surely as any correct emulator, so a golden would
+# add nothing and one minted under POWERarm could only hide a failure.
+"$CC" -static -O2 -pthread -o exitgroup_sibling "$here/exitgroup_sibling.c"
+
 # memrev and prfmhint are self-checking and MUST stay that way, like
 # fcmp_denorm. memrev asserts the byte order of a load-and-reverse and a
 # reverse-and-store, which is forced by the architecture and which the test

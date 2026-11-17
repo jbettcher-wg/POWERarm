@@ -993,6 +993,16 @@ int main(int argc, char** argv, char** const envp) {
   CTX->ExecuteThread(ParentThread->Thread);
   FEX::HLE::StartupTimer.Mark(FEX::HLE::StartupTimes::GUEST);
 
+  // ExecuteThread returns only when the initial thread was stopped -- the guest
+  // `exit` syscall leaves through the thread's own exit instead -- and nearly
+  // always the stopper is a guest exit_group on another thread, which owns the
+  // exit and is still running it. Everything below is a second exit racing
+  // that one, so it runs only when this thread wins the claim (a debugger's
+  // stop, say). See ThreadManager::ClaimProcessExit.
+  if (!SyscallHandler->TM.ClaimProcessExit()) {
+    SyscallHandler->TM.AwaitProcessExit();
+  }
+
   DebugServer.reset();
   // The JIT thread (current thread) has already exited — sending SIGRTMIN to
   // ourselves with a stale ReturningStackLocation would corrupt r1 and crash.
@@ -1037,7 +1047,9 @@ int main(int argc, char** argv, char** const envp) {
   }
   FEX::HLE::StartupTimer.Mark(FEX::HLE::StartupTimes::SAVE);
 
-  auto ProgramStatus = ParentThread->StatusCode;
+  // A guest exit_group that gave way to this exit sets the status, as the
+  // first group exit does in the kernel.
+  auto ProgramStatus = SyscallHandler->TM.GroupExitStatusOr(ParentThread->StatusCode);
   if (ProgramStatus & 0xff) {
     FEX::Logging::FlushHeldErrorsToStderr();
   }
